@@ -1,0 +1,26 @@
+[package]
+name = "gbatopy-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gbatopy-cli"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { workspace = true }
+
+gbatopy-disasm = { path = "../gbatopy-disasm" }
+gbatopy-mgba = { path = "../gbatopy-mgba" }
+gbatopy-ir = { path = "../gbatopy-ir" }
+gbatopy-types = { path = "../gbatopy-types" }
+gbatopy-codegen = { path = "../gbatopy-codegen" }
+unarm = "2.1"

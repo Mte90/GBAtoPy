@@ -1,0 +1,10 @@
+"""Main entry point for generated GBA Python code"""
+
+
+def main():
+    """Generated main function - will be replaced by actual code"""
+    pass
+
+
+if __name__ == "__main__":
+    main_entry()

@@ -1,0 +1,79 @@
+# Rust build
+/target/
+Cargo.lock
+*.rs.bk
+.migba/
+# Temporary build artifacts
+build/
+*.o
+*.a
+*.so
+# Compiled binaries
+*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+*.egg
+.venv/
+venv/
+.env/
+*.bin
+*.gba
+uv.lock
+
+# Generated output (transpiled Python - too large for git)
+output_python/
+*.py  # Generated Python files are large, exclude all
+/test_*.py
+/test_arm*.py
+/test_thumb*.py
+
+# Evidence from testing
+/.sisyphus/evidence/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+/tmp/*
+temp/
+tmp/
+*.tmp
+*.bak
+
+# Documentation drafts (not for public upload)
+.sisyphus/drafts/
+docs/v3/
+
+# mGBA build (binary, not source)
+mgba/build/
+
+# Plans archive (old plans)
+.sisyphus/plans/archive/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env.*
+!/.env.example
+
+test_roms/
+AGENTS.md

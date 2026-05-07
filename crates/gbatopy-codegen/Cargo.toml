@@ -1,0 +1,18 @@
+[package]
+name = "gbatopy-codegen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+indoc = "2.0"
+gbatopy-ir = { path = "../gbatopy-ir" }
+
+[dev-dependencies]
+tempfile = "3.8"

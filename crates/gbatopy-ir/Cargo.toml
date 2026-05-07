@@ -1,0 +1,19 @@
+[package]
+name = "gbatopy-ir"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+petgraph = { workspace = true }
+itertools = { workspace = true }
+gbatopy-disasm = { path = "../gbatopy-disasm" }
+
+[dev-dependencies]
+tempfile = "3.8"

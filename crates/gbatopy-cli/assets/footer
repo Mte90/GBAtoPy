@@ -1,0 +1,4 @@
+"""Footer for generated Python code"""
+
+# Create func_map for dynamic dispatch
+func_map = {}
