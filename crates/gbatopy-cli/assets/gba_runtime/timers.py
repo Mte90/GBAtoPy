@@ -3,7 +3,7 @@
 
 class TimerChannel:
     """Individual timer channel"""
-
+    
     def __init__(self):
         self.count = 0
         self.reload = 0
@@ -11,7 +11,7 @@ class TimerChannel:
 
     @property
     def enabled(self) -> bool:
-        """Check if timer is enabled (bit 7)"""
+        """Check if timer is enabled (bit 8)"""
         return bool(self.control & 0x80)
 
     @property
@@ -33,12 +33,17 @@ class TimerChannel:
 
 class Timers:
     """GBA Timer Controller with 4 timer channels"""
-
+    
     PRESCALER_VALUES = [1, 64, 256, 1024]
 
     def __init__(self):
         self._channels = [TimerChannel() for _ in range(4)]
         self._overflow_flags = [False] * 4
+        self._interrupts = None
+
+    def attach_interrupts(self, interrupts):
+        """Attach interrupt controller for timer IRQ callbacks"""
+        self._interrupts = interrupts
 
     @property
     def channels(self):
@@ -94,7 +99,11 @@ class Timers:
         self._overflow_flags[channel] = False
 
     def step(self, cycles: int) -> None:
-        """Advance all enabled timers by given cycles"""
+        """Advance all enabled timers by given cycles.
+        
+        Args:
+            cycles: Number of CPU cycles to advance timers
+        """
         # Reset overflow flags at start of step
         self._overflow_flags = [False] * 4
 
@@ -130,3 +139,6 @@ class Timers:
                     self._overflow_flags[i] = True
                     # Reload from reload value on overflow
                     channel.count = channel.reload
+                    # Fire timer interrupt if enabled
+                    if channel.irq_enable and self._interrupts:
+                        self._interrupts.timer_irq(i)

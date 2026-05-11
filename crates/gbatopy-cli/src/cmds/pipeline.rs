@@ -1,8 +1,6 @@
-#![allow(dead_code)]
-
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn embed_pyboyadvance(_runtime_dir: &str) -> io::Result<String> {
     // T4: No longer embedding runtime files
@@ -122,11 +120,13 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen = pygame.display.set_mode((240 * scale, 160 * scale))
         pygame.display.set_caption("GBAtoPy - Transpiled GBA")
     else:
-        screen = None
+        screen = pygame.Surface((240 * scale, 160 * scale))
     
     clock = pygame.time.Clock()
     frame_count = 0
     running = True
+    instruction_count = 0
+    max_instructions_per_frame = 2000  # ~120K instructions/sec for 60fps
     
     # Input state
     keys_down = {}
@@ -180,7 +180,31 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     keys_down.pop('L', None)
                 elif event.key == pygame.K_s:
                     keys_down.pop('R', None)
-        
+
+        # Execute transpiled GBA code for this frame
+        pc = r15
+        instructions_this_frame = 0
+
+        while instructions_this_frame < max_instructions_per_frame:
+            # Look up function by address
+            if pc not in func_map:
+                print(f"Unknown PC: 0x{pc:08X} - execution halted")
+                running = False
+                break
+
+            # Get the function and call it
+            func = func_map[pc]
+            func()  # This updates r15 (PC) for next instruction
+
+            pc = r15
+            instructions_this_frame += 1
+            instruction_count += 1
+
+            # If PC didn't change, we're in an infinite loop - break to prevent hang
+            if r15 == pc and instructions_this_frame > 100:
+                print(f"PC unchanged at 0x{pc:08X} - possible infinite loop, breaking")
+                break
+
         # TODO: Render PPU framebuffer to screen
         # For now, show a placeholder
         if not headless and screen:

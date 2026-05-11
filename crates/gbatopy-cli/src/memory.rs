@@ -1,5 +1,4 @@
 //! GBA Memory Map Implementation
-#![allow(dead_code)]
 //!
 //! Memory layout:
 //! - 0x00000000-0x00003FFF: BIOS ROM (16KB)

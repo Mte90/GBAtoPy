@@ -73,6 +73,30 @@ class ARM7TDMI:
         v = (self.cpsr >> 28) & 1
         return (n, z, c, v)
 
+    def _update_flags_nzcv(self, result: int, carry: int = 0, overflow: int = 0) -> int:
+        """Update CPSR N, Z, C, V flags based on result.
+        
+        Args:
+            result: The computation result (32-bit value)
+            carry: Carry flag value (optional, defaults to 0)
+            overflow: Overflow flag value (optional, defaults to 0)
+            
+        Returns:
+            New CPSR value with updated flags
+        """
+        # N: Negative flag (bit 31)
+        n = (result >> 31) & 1
+        # Z: Zero flag (bit 30)
+        z = 1 if result == 0 else 0
+        # C: Carry flag (use provided value or 0)
+        c = carry & 1
+        # V: Overflow flag (use provided value or 0)
+        v = overflow & 1
+        
+        # Clear old flags and set new ones
+        self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
+        return self.cpsr
+
     def check_condition(self, cond: int) -> bool:
         if cond == 0xE or cond == 0xF:
             return True
@@ -385,62 +409,122 @@ class ARM7TDMI:
         return 2
 
     def swi_handler(self, num: int):
-        """Handle BIOS SWI calls using BIOS module."""
-        from .bios import BIOS
-
-        bios = BIOS(self.memory)
+        """Handle BIOS SWI calls.
+        
+        GBA SWI numbers (from bios.h):
+        0x00: SoftReset
+        0x01: RegisterRamReset
+        0x02: Halt
+        0x03: Stop
+        0x04: IntrWait
+        0x05: VBlankIntrWait
+        0x06: Div
+        0x07: DivArm
+        0x08: Sqrt
+        0x09: ArcTan
+        0x0A: ArcTan2
+        0x0B: CpuSet
+        0x0C: CpuFastSet
+        0x0E: BgAffineSet
+        0x0F: ObjAffineSet
+        0x11: LZ77UnCompWram
+        0x12: LZ77UnCompVram
+        """
         if num == 0x00:  # SoftReset
             for i in range(13):
                 self.registers[i] = 0
             self.registers[13] = 0x03007F00
             self.registers[15] = 0x08000000
         elif num == 0x01:  # RegisterRamReset
-            # Reset EWRAM, IWRAM, and registers (based on mask in R0)
-            reset_mask = self.registers[0]
-            if reset_mask & 0x01:  # EWRAM
-                self.memory.ewram[:] = [0] * len(self.memory.ewram)
-            if reset_mask & 0x02:  # IWRAM
-                self.memory.iwram[:] = [0] * len(self.memory.iwram)
-            if reset_mask & 0x04:  # Registers R0-R7
-                for i in range(8):
-                    self.registers[i] = 0
-            if reset_mask & 0x08:  # Registers R8-R12
-                for i in range(8, 13):
-                    self.registers[i] = 0
-            if reset_mask & 0x10:  # SP IRQ
-                self.registers[13] = 0
-            if reset_mask & 0x20:  # SP others
-                pass  # Handled above
-            if reset_mask & 0x40:  # LR IRQ
-                pass  # No direct register access
-            if reset_mask & 0x80:  # PC
-                self.registers[15] = 0
+            flags = self.registers[0]
+            # Reset EWRAM
+            if flags & 0x01:
+                for addr in range(0x02000000, 0x02040000, 4):
+                    self.memory.write_u32(addr, 0)
+            # Reset IWRAM
+            if flags & 0x02:
+                for addr in range(0x03000000, 0x03008000, 4):
+                    self.memory.write_u32(addr, 0)
+            # Reset Palette
+            if flags & 0x04:
+                for addr in range(0x05000000, 0x05000400, 2):
+                    self.memory.write_u16(addr, 0)
+            # Reset VRAM
+            if flags & 0x08:
+                for addr in range(0x06000000, 0x06018000, 2):
+                    self.memory.write_u16(addr, 0)
+            # Reset OAM
+            if flags & 0x10:
+                for addr in range(0x07000000, 0x07000400, 2):
+                    self.memory.write_u16(addr, 0)
         elif num == 0x02:  # Halt
-            self.running = False
-        elif num == 0x03:  # IntrWait
-            self.registers[0] = 0
-        elif num == 0x04:  # VBlankIntrWait
-            self.registers[0] = 0
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_halt()
+        elif num == 0x03:  # Stop
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_stop(self.registers[0])
+        elif num == 0x04:  # IntrWait
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_intr_wait(self.registers[0], self.registers[1])
+        elif num == 0x05:  # VBlankIntrWait
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_vblank_intr_wait()
         elif num == 0x06:  # Div
-            self.registers[0] = bios.swi_div(self.registers[0], self.registers[1])
-        elif num == 0x07:  # Sqrt
-            self.registers[0] = bios.swi_sqrt(self.registers[0])
-        elif num == 0x08:  # DivArm
-            self.registers[0] = bios.swi_divarm(
-                self.registers[0] | (self.registers[1] << 32), self.registers[1]
-            )
-        elif num == 0x09:  # DivArmMod
-            result = bios.swi_divmod(
-                self.registers[0] | (self.registers[1] << 32), self.registers[1]
-            )
-            self.registers[0] = result[0]
-            self.registers[1] = result[1]
-        elif num == 0x12:  # CpuSet
-            bios.swi_cpuset(
-                self.registers[0], self.registers[1], self.registers[2], self.registers[3]
-            )
-        elif num == 0x14:  # LZ77UnCompWram
-            bios.swi_lz77_uncomp_wram(self.registers[0], self.registers[1])
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_div(self.registers[0], self.registers[1])
+                remainder = self.registers[0] % self.registers[1] if self.registers[1] != 0 else 0
+                self.registers[0] = result & 0xFFFFFFFF
+                self.registers[1] = remainder & 0xFFFFFFFF
+        elif num == 0x07:  # DivArm (unsigned division)
+            if hasattr(self, 'bios') and self.bios is not None:
+                dividend = self.registers[0] & 0xFFFFFFFF
+                divisor = self.registers[1] & 0xFFFFFFFF
+                if divisor == 0:
+                    self.registers[0] = 0
+                else:
+                    result = dividend // divisor
+                    self.registers[0] = result & 0xFFFFFFFF
+        elif num == 0x08:  # Sqrt
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_sqrt(self.registers[0])
+                self.registers[0] = result & 0xFFFFFFFF
+        elif num == 0x09:  # ArcTan
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_arctan(self.registers[0])
+                self.registers[0] = result & 0xFFFF
+        elif num == 0x0A:  # ArcTan2
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_arctan2(self.registers[0], self.registers[1])
+                self.registers[0] = result & 0xFFFF
+        elif num == 0x0B:  # CpuSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_cpuset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
+        elif num == 0x0C:  # CpuFastSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_cpufastset(self.registers[0], self.registers[1], self.registers[2], self.registers[3])
+        elif num == 0x0E:  # BgAffineSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_bg_affine_set(self.registers[0], self.registers[1], self.registers[2], self.registers[3])
+        elif num == 0x0F:  # ObjAffineSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                data = self.registers[0]
+                param_table = self.registers[1]
+                num_objects = self.registers[2]
+                increment = self.registers[3]
+                for i in range(num_objects):
+                    offset = i * increment
+                    self.bios.swi_obj_affine_set(
+                        param_table + offset,
+                        self.memory.read_u16(data + offset * 2),
+                        self.memory.read_u16(data + offset * 2 + 2),
+                        self.memory.read_u16(data + offset * 2 + 4)
+                    )
+        elif num == 0x11:  # LZ77UnCompWram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_lz77_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x12:  # LZ77UnCompVram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_lz77_uncomp(self.registers[0], self.registers[1])
 
     def execute_thumb(self, instr: int) -> int:
         """Execute Thumb instruction."""
@@ -687,3 +771,68 @@ class ARM7TDMI:
 
         self.registers[15] += 2
         return 2
+
+
+class ISRHandler:
+    """Default ISR handler placed at 0x03007FFC in IWRAM."""
+
+    def __init__(self, memory, interrupts):
+        self.memory = memory
+        self.interrupts = interrupts
+        self._handlers = {}
+    
+    def register_handler(self, irq_id: int, callback):
+        self._handlers[irq_id] = callback
+    
+    def handle_irq(self):
+        if_reg = self.interrupts.if_reg
+        ie_reg = self.interrupts.ie_reg
+        pending = if_reg & ie_reg & 0xFFFF
+        
+        if pending == 0:
+            return
+        
+        irq_bit = 0
+        while irq_bit < 14:
+            if pending & (1 << irq_bit):
+                if irq_bit in self._handlers:
+                    try:
+                        self._handlers[irq_bit]()
+                    except Exception as e:
+                        print(f"  WARNING: ISR handler {irq_bit} raised exception: {e}")
+                self.interrupts.if_reg &= ~(1 << irq_bit)
+                break
+            irq_bit += 1
+    
+    def handle_vblank(self):
+        if InterruptController.IRQ_VBLANK in self._handlers:
+            self._handlers[InterruptController.IRQ_VBLANK]()
+    
+    def handle_hblank(self):
+        if InterruptController.IRQ_HBLANK in self._handlers:
+            self._handlers[InterruptController.IRQ_HBLANK]()
+    
+    def handle_vcounter(self):
+        if InterruptController.IRQ_VCOUNTER in self._handlers:
+            self._handlers[InterruptController.IRQ_VCOUNTER]()
+    
+    def handle_timer(self, channel: int):
+        irq_id = InterruptController.IRQ_TIMER0 + channel
+        if irq_id in self._handlers:
+            self._handlers[irq_id]()
+    
+    def handle_dma(self, channel: int):
+        irq_id = InterruptController.IRQ_DMA0 + channel
+        if irq_id in self._handlers:
+            self._handlers[irq_id]()
+    
+    def handle_keypad(self):
+        if InterruptController.IRQ_KEYPAD in self._handlers:
+            self._handlers[InterruptController.IRQ_KEYPAD]()
+    
+    def handle_gamepak(self):
+        if InterruptController.IRQ_GAMEPAK in self._handlers:
+            self._handlers[InterruptController.IRQ_GAMEPAK]()
+
+
+from gba_runtime.interrupts import InterruptController

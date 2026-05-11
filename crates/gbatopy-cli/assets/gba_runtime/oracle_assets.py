@@ -39,6 +39,10 @@ class OracleAssetTracker:
             self.tilemap_write_addrs.add(addr)
             self.vram_tilemap_writes[addr] = data[:size]
 
+        elif offset >= 0x10000:  # Framebuffer (bitmap modes)
+            self.vram_tile_writes[addr] = data[:size]
+            self.tile_write_addrs.add(addr)
+
     def track_palette_write(self, addr: int, data: bytes, size: int):
         """Track a palette write"""
         # Palette RAM: 0x05000000-0x050003FF (512 colors)

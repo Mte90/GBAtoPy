@@ -1,261 +1,16 @@
-use gbatopy_disasm::{DecodedInstruction, Disassembler};
 use std::fs;
+use std::path::Path;
 
-use crate::apu;
+// Import PPU code generator
+use crate::ppu::generate_ppu_code;
 
-/// Generate Python code for a single ARM/Thumb instruction
-fn generate_instruction_python(instr: &DecodedInstruction) -> String {
-    let mut code = String::new();
-
-    // Add comment with original instruction
-    code.push_str(&format!(
-        "# 0x{:08X}: {} {}\n",
-        instr.address,
-        instr.opcode,
-        instr
-            .operands
-            .iter()
-            .map(|o| o.display())
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
-
-    // Generate code based on opcode
-    match instr.opcode.to_uppercase().as_str() {
-        "MOV" => code.push_str(&generate_mov_python(instr)),
-        "ADD" => code.push_str(&generate_add_python(instr)),
-        "SUB" => code.push_str(&generate_sub_python(instr)),
-        "LDR" => code.push_str(&generate_ldr_python(instr)),
-        "STR" => code.push_str(&generate_str_python(instr)),
-        "LDM" | "LDMIA" | "LDMIB" | "LDMDA" | "LDMDB" | "LDM!" | "LDMIA!" | "LDMIB!" | "LDMDA!"
-        | "LDMDB!" => code.push_str(&generate_ldm_python(instr)),
-        "STM" | "STMIA" | "STMIB" | "STMDA" | "STMDB" | "STM!" | "STMIA!" | "STMIB!" | "STMDA!"
-        | "STMDB!" => code.push_str(&generate_stm_python(instr)),
-        "STRH" => code.push_str(&generate_strh_python(instr)),
-        "B" | "BL" => code.push_str(&generate_branch_python(instr)),
-        "BX" => code.push_str(&generate_bx_python(instr)),
-        "AND" | "EOR" | "ORR" | "BIC" | "MVN" => {
-            code.push_str(&generate_logic_python(instr));
-        }
-        "NOP" => code.push_str("pass  # NOP\n"),
-        _ => {
-            // Unimplemented instruction
-            code.push_str(&format!("pass  # TODO: {} not implemented\n", instr.opcode));
-        }
-    }
-
-    code
-}
-
-/// Generate Python for MOV Rd, #imm or MOV Rd, Rm
-fn generate_mov_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.len() >= 2 {
-        let rd = instr.operands[0].display();
-        let rm_or_imm = instr.operands[1].display();
-
-        // Check if second operand is immediate or register
-        if rm_or_imm.starts_with("#") {
-            // MOV Rd, #imm
-            let imm = rm_or_imm.trim_start_matches("#");
-            format!("{} = {}  # MOV Rd, #imm\n", rd, imm)
-        } else {
-            // MOV Rd, Rm
-            format!("{} = {}  # MOV Rd, Rm\n", rd, rm_or_imm)
-        }
-    } else {
-        format!("pass  # MOV: insufficient operands\n")
-    }
-}
-
-/// Generate Python for ADD Rd, Rm, #imm or ADD Rd, Rm, Rn
-fn generate_add_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.len() >= 2 {
-        let rd = instr.operands[0].display();
-        if instr.operands.len() == 2 {
-            // ADD Rd, Rm (Rd = Rd + Rm)
-            format!(
-                "{} = {} + {}  # ADD Rd, Rm\n",
-                rd,
-                rd,
-                instr.operands[1].display()
-            )
-        } else {
-            // ADD Rd, Rn, #imm or ADD Rd, Rn, Rm
-            let op2_raw = instr.operands[2].display();
-            let op2 = op2_raw.trim_start_matches('#');
-            format!(
-                "{} = {} + {}  # ADD\n",
-                rd,
-                instr.operands[1].display(),
-                op2
-            )
-        }
-    } else {
-        format!("pass  # ADD: insufficient operands\n")
-    }
-}
-
-/// Generate Python for SUB
-fn generate_sub_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.len() >= 2 {
-        let rd = instr.operands[0].display();
-        let op1_raw = instr.operands[1].display();
-        let op1 = op1_raw.trim_start_matches('#');
-        format!("{} = {} - {}  # SUB\n", rd, rd, op1)
-    } else {
-        format!("pass  # SUB: insufficient operands\n")
-    }
-}
-
-/// Generate Python for LDR
-fn generate_ldr_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.len() < 2 {
-        return format!("pass  # LDR: insufficient operands\n");
-    }
-
-    let rd = instr.operands[0].display();
-    let base = instr.operands[1].display();
-
-    // Handle PC-relative LDR Rd, =addr
-    if base.starts_with("=") {
-        let addr_str = base.trim_start_matches("=");
-        if let Ok(addr) = addr_str.parse::<u32>() {
-            format!(
-                "{} = ROM_DATA[0x{:X} - 0x08000000]  # LDR Rd, =addr (PC-relative)\n",
-                rd, addr
-            )
-        } else {
-            format!("{} = 0  # LDR Rd, ={} (unresolved)\n", rd, addr_str)
-        }
-    } else if base.starts_with("#") {
-        // LDR Rd, #addr (load from absolute address - treat as ROM_DATA access)
-        let addr_str = base.trim_start_matches("#");
-        if let Ok(addr) = addr_str.parse::<u32>() {
-            if addr >= 0x08000000 && addr < 0x0C000000 {
-                let offset = addr - 0x08000000;
-                format!("{} = ROM_DATA[{}]  # LDR Rd, #addr\n", rd, offset)
-            } else {
-                format!("{} = memory.read_32({})  # LDR Rd, #addr\n", rd, addr)
-            }
-        } else {
-            format!("{} = 0  # LDR Rd, #{} (unresolved)\n", rd, addr_str)
-        }
-    } else {
-        // LDR Rd, [Rn] or LDR Rd, [Rn, #offset] or LDR Rd, [Rn, Rm]
-        let addr = if instr.operands.len() >= 3 {
-            let offset_raw = instr.operands[2].display();
-            let offset = offset_raw.trim_start_matches('#');
-            format!("{} + {}", base, offset)
-        } else {
-            base.clone()
-        };
-        format!("{} = memory.read_32({})  # LDR\n", rd, addr)
-    }
-}
-
-/// Generate Python for STR
-fn generate_str_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.len() < 2 {
-        return format!("pass  # STR: insufficient operands\n");
-    }
-
-    let rm = instr.operands[0].display();
-    let base = instr.operands[1].display();
-
-    // Calculate address: base + offset (if present)
-    let addr = if instr.operands.len() >= 3 {
-        let offset_raw = instr.operands[2].display();
-        let offset = offset_raw.trim_start_matches('#');
-        if offset_raw.starts_with('#') {
-            format!("{} + {}", base, offset) // No extra parens - write_32 adds them
-        } else {
-            format!("{} + {}", base, offset)
-        }
-    } else {
-        base.clone()
-    };
-
-    // STR Rm, [Rn] or STR Rm, [Rn, #offset]
-    format!("memory.write_32({}, {})  # STR\n", addr, rm)
-}
-
-/// Generate Python for STRH (store halfword)
-fn generate_strh_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.len() < 2 {
-        return format!("pass  # STRH: insufficient operands\n");
-    }
-
-    let rm = instr.operands[0].display();
-    let base = instr.operands[1].display();
-
-    let addr = if instr.operands.len() >= 3 {
-        let offset_raw = instr.operands[2].display();
-        let offset = offset_raw.trim_start_matches('#');
-        format!("{} + {}", base, offset)
-    } else {
-        base.clone()
-    };
-
-    // Check if this is a VRAM write (0x06000000-0x06017FFF)
-    // Generate ppu.vram_write(offset, value) for VRAM addresses
-    format!(
-        "if 0x06000000 <= {} < 0x06018000: ppu.vram_write({} - 0x06000000, {})  # STRH to VRAM\nelse: memory.write_u16({}, {})  # STRH\n",
-        addr, addr, rm, addr, rm
-    )
-}
-
-/// Generate Python for branch instructions
-fn generate_branch_python(instr: &DecodedInstruction) -> String {
-    // Branch handling - update PC (r15)
-    // For now, just comment - actual branching needs more complex logic
-    format!(
-        "pass  # Branch instruction {} at 0x{:08X} - TODO: implement branching\n",
-        instr.opcode, instr.address
-    )
-}
-
-/// Generate Python for BX (branch exchange)
-fn generate_bx_python(instr: &DecodedInstruction) -> String {
-    // BX Rn - switch mode and branch
-    format!(
-        "pass  # BX instruction at 0x{:08X} - TODO: implement mode switch\n",
-        instr.address
-    )
-}
-
-/// Generate Python for logical instructions
-fn generate_logic_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.len() >= 2 {
-        let opcode = instr.opcode.to_uppercase();
-        let rd = instr.operands[0].display();
-        let rm = instr.operands[1].display();
-
-        // Map opcode to Python operator
-        let op = match opcode.as_str() {
-            "AND" => "&",
-            "EOR" => "^",
-            "ORR" => "|",
-            "BIC" => "& ~",
-            "MVN" => "~",
-            _ => "&",
-        };
-
-        if opcode == "MVN" {
-            // MVN Rd, Rm: Rd = NOT Rm (unary)
-            format!("{} = {} {}  # {}\n", rd, op, rm, opcode)
-        } else {
-            // Binary operations: Rd = Rd op Rm
-            format!("{} = {} {} {}  # {}\n", rd, rd, op, rm, opcode)
-        }
-    } else {
-        format!("pass  # {}: insufficient operands\n", instr.opcode)
-    }
-}
+// Disassembler module
+use gbatopy_disasm::{AddressingMode, Disassembler, Operand};
 
 pub fn run_pipeline(
     rom_path: &str,
     output_path: &str,
-    _assets_dir: &std::path::Path,
+    assets_dir: &Path,
     _use_ir: bool,
 ) -> Result<(), String> {
     let rom = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
@@ -266,380 +21,985 @@ pub fn run_pipeline(
     eprintln!("  Disassembled {} instructions", instructions.len());
 
     eprintln!("Step 2: Asset Extraction");
-    let assets = extract_assets(&rom);
+    eprintln!("  (Asset extraction skipped - not implemented yet)");
 
-    eprintln!("Step 3: Python Code Generation");
+    eprintln!("Step 3: Python Code Generation (direct from disassembly)");
 
-    // Generate ARM instruction codegen - collect instructions first
-    eprintln!(
-        "  Generating code for {} instructions...",
-        instructions.len()
-    );
-    let mut instruction_count = 0;
-    let max_instructions = 100000; // Safety limit
-    let mut instruction_code = String::new();
-
-    for instr in &instructions {
-        if instruction_count >= max_instructions {
-            eprintln!("  Warning: Reached max instructions ({})", max_instructions);
-            break;
-        }
-
-        // Skip data regions
-        if instr.is_data {
-            continue;
-        }
-
-        // Generate Python for this instruction
-        let python_code = generate_instruction_python(instr);
-        instruction_code.push_str(&python_code);
-        instruction_count += 1;
-    }
-    eprintln!("  Generated Python for {} instructions", instruction_count);
-
-    // Now build the complete output in correct order:
-    // 1. Classes (Memory, GBA)
-    // 2. Global variables (registers)
-    // 3. Instructions
-    // 4. Assets and ROM data
-    // 5. Game loop
-
+    // Generate Python directly from disassembled instructions
     let mut code = String::new();
 
-    // 1. Classes first
-    code.push_str("# Memory object for backward compatibility\n");
-    code.push_str("class Memory:\n");
-    code.push_str("    def __init__(self, gba):\n");
-    code.push_str("        self.gba = gba\n");
-    code.push_str("    \n");
-    code.push_str("    def read_32(self, addr):\n");
-    code.push_str("        if isinstance(addr, int):\n");
-    code.push_str("            if 0x08000000 <= addr < 0x0C000000:  # ROM\n");
-    code.push_str("                idx = addr - 0x08000000\n");
-    code.push_str("                if idx + 3 < len(ROM_DATA):\n");
-    code.push_str("                    return ROM_DATA[idx] | (ROM_DATA[idx+1] << 8) | (ROM_DATA[idx+2] << 16) | (ROM_DATA[idx+3] << 24)\n");
-    code.push_str("            elif 0x06000000 <= addr < 0x06020000:  # VRAM\n");
-    code.push_str("                idx = addr - 0x06000000\n");
-    code.push_str("                if idx + 3 < len(self.gba.vram):\n");
-    code.push_str("                    return self.gba.vram[idx] | (self.gba.vram[idx+1] << 8) | (self.gba.vram[idx+2] << 16) | (self.gba.vram[idx+3] << 24)\n");
-    code.push_str("            elif 0x04000000 <= addr < 0x04000400:  # MMIO\n");
-    code.push_str("                return self.gba.read_io(addr - 0x04000000)\n");
-    code.push_str("            elif 0x02000000 <= addr < 0x02040000:  # EWRAM\n");
-    code.push_str("                idx = addr - 0x02000000\n");
-    code.push_str("                if idx + 3 < len(self.gba.ewram):\n");
-    code.push_str("                    return self.gba.ewram[idx] | (self.gba.ewram[idx+1] << 8) | (self.gba.ewram[idx+2] << 16) | (self.gba.ewram[idx+3] << 24)\n");
-    code.push_str("        return 0\n");
-    code.push_str("    \n");
-    code.push_str("    def write_32(self, addr, value):\n");
-    code.push_str("        if isinstance(addr, int):\n");
-    code.push_str("            if 0x06000000 <= addr < 0x06020000:  # VRAM\n");
-    code.push_str("                idx = addr - 0x06000000\n");
-    code.push_str("                if idx + 3 < len(self.gba.vram):\n");
-    code.push_str("                    self.gba.vram[idx] = value & 0xFF\n");
-    code.push_str("                    self.gba.vram[idx+1] = (value >> 8) & 0xFF\n");
-    code.push_str("                    self.gba.vram[idx+2] = (value >> 16) & 0xFF\n");
-    code.push_str("                    self.gba.vram[idx+3] = (value >> 24) & 0xFF\n");
-    code.push_str("            elif 0x04000000 <= addr < 0x04000400:  # MMIO\n");
-    code.push_str("                self.gba.write_io(addr - 0x04000000, value)\n");
-    code.push_str("            elif 0x02000000 <= addr < 0x02040000:  # EWRAM\n");
-    code.push_str("                idx = addr - 0x02000000\n");
-    code.push_str("                if idx + 3 < len(self.gba.ewram):\n");
-    code.push_str("                    self.gba.ewram[idx] = value & 0xFF\n");
-    code.push_str("                    self.gba.ewram[idx+1] = (value >> 8) & 0xFF\n");
-    code.push_str("                    self.gba.ewram[idx+2] = (value >> 16) & 0xFF\n");
-    code.push_str("                    self.gba.ewram[idx+3] = (value >> 24) & 0xFF\n");
-    code.push_str("    \n");
-    code.push_str("    def write_u16(self, addr, value):\n");
-    code.push_str("        if isinstance(addr, int):\n");
-    code.push_str("            if 0x06000000 <= addr < 0x06020000:  # VRAM\n");
-    code.push_str("                idx = addr - 0x06000000\n");
-    code.push_str("                if idx + 1 < len(self.gba.vram):\n");
-    code.push_str("                    self.gba.vram[idx] = value & 0xFF\n");
-    code.push_str("                    self.gba.vram[idx+1] = (value >> 8) & 0xFF\n");
-    code.push_str("            elif 0x04000000 <= addr < 0x04000400:  # MMIO\n");
-    code.push_str("                self.gba.write_io(addr - 0x04000000, value)\n");
-    code.push_str("            elif 0x02000000 <= addr < 0x02040000:  # EWRAM\n");
-    code.push_str("                idx = addr - 0x02000000\n");
-    code.push_str("                if idx + 1 < len(self.gba.ewram):\n");
-    code.push_str("                    self.gba.ewram[idx] = value & 0xFF\n");
-    code.push_str("                    self.gba.ewram[idx+1] = (value >> 8) & 0xFF\n");
-    code.push_str("\n");
-    code.push_str("memory = None  # Will be initialized in run_transpiled\n\n");
+    // Add imports
+    code.push_str("import pygame\n");
+    code.push_str("import argparse\n");
+    code.push_str("import sys\n");
+    code.push_str("import os\n\n");
 
-    // 2. Global variables (registers)
-    code.push_str("# Global ARM registers\n");
+    code.push_str("# Global ARM registers (r0-r15, cpsr, spsr)\n");
     code.push_str("r0 = r1 = r2 = r3 = r4 = r5 = r6 = r7 = 0\n");
     code.push_str("r8 = r9 = r10 = r11 = r12 = r13 = r14 = r15 = 0\n");
-    code.push_str("cpsr = 0\nspsr = 0\n\n");
+    code.push_str("cpsr = 0  # Current Program Status Register\n");
+    code.push_str("spsr = 0  # Saved Program Status Register\n\n");
 
-    // 3. Instructions wrapped in main function
-    code.push_str("def main():\n");
-    code.push_str("    # Load assets into GBA memory before executing ROM code\n");
-    code.push_str("    _load_assets(gba)\n");
-    for line in instruction_code.lines() {
-        code.push_str("    ");
-        code.push_str(line);
-        code.push('\n');
-    }
-    code.push_str("\n");
+    // Embed PPU code
+    code.push_str("# PPU (Picture Processing Unit) - Graphics rendering\n");
+    code.push_str(&format!("{}\n\n", generate_ppu_code()));
 
-    // 4. Assets and ROM data
+    // Generate SINGLE function from ALL disassembled instructions
+    let mut func_map_entries = Vec::new();
+    let mut func_body = Vec::new();
+    let base_addr = if let Some(first) = instructions.first() {
+        first.address
+    } else {
+        0x08000000
+    };
 
-    code.push_str("# Extracted Assets from ROM\n");
+    // Helper function to generate Python from ARM instruction
+    fn generate_python_from_instruction(inst: &gbatopy_disasm::DecodedInstruction) -> String {
+        use gbatopy_disasm::Operand;
 
-    // Write TILES_4BPP (runtime expects this name)
-    code.push_str("TILES_4BPP = bytearray([\n");
-    for (_i, byte) in assets.tile_data.iter().enumerate() {
-        code.push_str(format!("    0x{:02X},\n", byte).as_str());
-    }
-    code.push_str("])\n\n");
+        let opcode = &inst.opcode;
+        let ops = &inst.operands;
 
-    // Write PALETTE_BG (runtime expects this name)
-    code.push_str("PALETTE_BG = bytearray([\n");
-    for (_i, byte) in assets.palette_data.iter().enumerate() {
-        code.push_str(format!("    0x{:02X},\n", byte).as_str());
-    }
-    code.push_str("])\n\n");
+        // Remove condition suffix from opcode (eq, ne, cs, cc, etc.)
+        let base_opcode = opcode.split_whitespace().next().unwrap_or(opcode);
+        let base_opcode = base_opcode
+            .trim_end_matches("eq")
+            .trim_end_matches("ne")
+            .trim_end_matches("cs")
+            .trim_end_matches("cc")
+            .trim_end_matches("hs")
+            .trim_end_matches("lo")
+            .trim_end_matches("mi")
+            .trim_end_matches("pl")
+            .trim_end_matches("vs")
+            .trim_end_matches("vc")
+            .trim_end_matches("hi")
+            .trim_end_matches("ls")
+            .trim_end_matches("ge")
+            .trim_end_matches("lt")
+            .trim_end_matches("gt")
+            .trim_end_matches("le")
+            .trim_end_matches("al");
 
-    // Write TILEMAP (runtime expects this name)
-    if !assets.tilemap_data.is_empty() {
-        code.push_str("TILEMAP = bytearray([\n");
-        for (_i, byte) in assets.tilemap_data.iter().enumerate() {
-            code.push_str(format!("    0x{:02X},\n", byte).as_str());
+        // Generate Python based on opcode type
+        match base_opcode {
+            // MOV Rd, #imm
+            "MOV" => {
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Immediate(imm) = ops[1] {
+                            return format!("r{} = {}", rd, imm);
+                        }
+                    }
+                }
+            }
+            // MOV Rd, Rm
+            "MOV" if ops.len() == 2 => {
+                if let Operand::Register(rd) = ops[0] {
+                    if let Operand::Register(rm) = ops[1] {
+                        return format!("r{} = r{}", rd, rm);
+                    }
+                }
+            }
+            // ADD Rd, Rn, #imm
+            "ADD" => {
+                if ops.len() >= 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            if ops.len() == 3 {
+                                if let Operand::Immediate(imm) = ops[2] {
+                                    return format!("r{} = (r{} + {}) & 0xFFFFFFFF", rd, rn, imm);
+                                }
+                            } else if let Operand::Register(rm) = ops[2] {
+                                return format!("r{} = (r{} + r{}) & 0xFFFFFFFF", rd, rn, rm);
+                            }
+                        }
+                    }
+                }
+            }
+            // ADD Rd, Rn, Rm
+            "ADD" if ops.len() == 3 => {
+                if let Operand::Register(rd) = ops[0] {
+                    if let Operand::Register(rn) = ops[1] {
+                        if let Operand::Register(rm) = ops[2] {
+                            return format!("r{} = (r{} + r{}) & 0xFFFFFFFF", rd, rn, rm);
+                        }
+                    }
+                }
+            }
+            // SUB Rd, Rn, #imm
+            "SUB" => {
+                if ops.len() >= 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            if ops.len() == 3 {
+                                if let Operand::Immediate(imm) = ops[2] {
+                                    return format!("r{} = (r{} - {}) & 0xFFFFFFFF", rd, rn, imm);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // SUB Rd, Rn, Rm
+            "SUB" if ops.len() == 3 => {
+                if let Operand::Register(rd) = ops[0] {
+                    if let Operand::Register(rn) = ops[1] {
+                        if let Operand::Register(rm) = ops[2] {
+                            return format!("r{} = (r{} - r{}) & 0xFFFFFFFF", rd, rn, rm);
+                        }
+                    }
+                }
+            }
+            // AND, EOR, ORR, BIC
+            "AND" | "EOR" | "ORR" | "BIC" => {
+                if ops.len() == 3 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            if let Operand::Register(rm) = ops[2] {
+                                let op = match base_opcode {
+                                    "AND" => "&",
+                                    "EOR" => "^",
+                                    "ORR" => "|",
+                                    "BIC" => "& ~",
+                                    _ => "&",
+                                };
+                                return format!("r{} = (r{} {} r{}) & 0xFFFFFFFF", rd, rn, op, rm);
+                            }
+                        }
+                    }
+                }
+            }
+            // MVN Rd, Rm
+            "MVN" if ops.len() == 2 => {
+                if let Operand::Register(rd) = ops[0] {
+                    if let Operand::Register(rm) = ops[1] {
+                        return format!("r{} = (~r{}) & 0xFFFFFFFF", rd, rm);
+                    }
+                }
+            }
+            // B, BL - Branch instructions
+            "B" | "BL" => {
+                if ops.len() == 1 {
+                    if let Operand::Immediate(offset) = ops[0] {
+                        if base_opcode == "BL" {
+                            // BL: Link register to return address (PC + 4)
+                            return format!(
+                                "r14, r15 = r15 + 4, r15 + {}\n# Branch with link",
+                                offset
+                            );
+                        } else {
+                            // B: Unconditional branch
+                            return format!("r15 = r15 + {}\n# Branch", offset);
+                        }
+                    }
+                }
+                return format!("# {} (parsing failed)", base_opcode);
+            }
+            "BX" => {
+                // BX: Branch exchange (branch to address in register)
+                if ops.len() == 1 {
+                    if let Operand::Register(rn) = ops[0] {
+                        return format!("r15 = {}\n# Branch exchange", rn);
+                    }
+                }
+                return format!("# BX (parsing failed)");
+            }
+            // LDR Rd, [Rn, #offset] - Load word from memory
+            "LDR" => {
+                if ops.len() >= 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::MemoryAddress {
+                            base,
+                            offset,
+                            writeback,
+                        } = &ops[1]
+                        {
+                            // Generate address expression based on addressing mode
+                            let addr_expr = match offset {
+                                AddressingMode::ImmediateOffset(off) => {
+                                    if *off == 0 {
+                                        format!("r{}", base)
+                                    } else if *off >= 0 {
+                                        format!("r{} + {}", base, off)
+                                    } else {
+                                        format!("r{} + ({})", base, off)
+                                    }
+                                }
+                                AddressingMode::RegisterOffset(reg) => {
+                                    format!("r{} + r{}", base, reg)
+                                }
+                                AddressingMode::ScaledRegisterOffset {
+                                    reg,
+                                    shift: _,
+                                    amount,
+                                } => {
+                                    format!("r{} + (r{} << {})", base, reg, amount)
+                                }
+                                AddressingMode::PreIndexed { offset: off, .. } => {
+                                    if *off == 0 {
+                                        format!("r{}", base)
+                                    } else if *off >= 0 {
+                                        format!("r{} + {}", base, off)
+                                    } else {
+                                        format!("r{} + ({})", base, off)
+                                    }
+                                }
+                                AddressingMode::PostIndexed { .. } => {
+                                    format!("r{}", base)
+                                }
+                                AddressingMode::Multi { .. } => {
+                                    return format!("# LDR (multi-register not applicable)");
+                                }
+                            };
+
+                            let mut code = format!("r{} = memory.read_32({})", rd, addr_expr);
+
+                            // Handle writeback
+                            if *writeback {
+                                let new_addr = match offset {
+                                    AddressingMode::PreIndexed { offset: off, .. }
+                                    | AddressingMode::PostIndexed { offset: off, .. } => {
+                                        if *off == 0 {
+                                            format!("r{}", base)
+                                        } else if *off >= 0 {
+                                            format!("r{} + {}", base, off)
+                                        } else {
+                                            format!("r{} + ({})", base, off)
+                                        }
+                                    }
+                                    _ => format!("r{}", base),
+                                };
+                                code = format!("{}; r{} = {}", code, base, new_addr);
+                            }
+
+                            return code;
+                        }
+                    }
+                }
+                return format!("# LDR (parsing failed)");
+            }
+            // STR Rd, [Rn, #offset] - Store word to memory
+            "STR" => {
+                if ops.len() >= 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::MemoryAddress {
+                            base,
+                            offset,
+                            writeback,
+                        } = &ops[1]
+                        {
+                            // Generate address expression based on addressing mode
+                            let addr_expr = match offset {
+                                AddressingMode::ImmediateOffset(off) => {
+                                    if *off == 0 {
+                                        format!("r{}", base)
+                                    } else if *off >= 0 {
+                                        format!("r{} + {}", base, off)
+                                    } else {
+                                        format!("r{} + ({})", base, off)
+                                    }
+                                }
+                                AddressingMode::RegisterOffset(reg) => {
+                                    format!("r{} + r{}", base, reg)
+                                }
+                                AddressingMode::ScaledRegisterOffset {
+                                    reg,
+                                    shift: _,
+                                    amount,
+                                } => {
+                                    format!("r{} + (r{} << {})", base, reg, amount)
+                                }
+                                AddressingMode::PreIndexed { offset: off, .. } => {
+                                    if *off == 0 {
+                                        format!("r{}", base)
+                                    } else if *off >= 0 {
+                                        format!("r{} + {}", base, off)
+                                    } else {
+                                        format!("r{} + ({})", base, off)
+                                    }
+                                }
+                                AddressingMode::PostIndexed { .. } => {
+                                    format!("r{}", base)
+                                }
+                                AddressingMode::Multi { .. } => {
+                                    return format!("# STR (multi-register not applicable)");
+                                }
+                            };
+
+                            let mut code = format!("memory.write_32({}, r{})", addr_expr, rd);
+
+                            // Handle writeback
+                            if *writeback {
+                                let new_addr = match offset {
+                                    AddressingMode::PreIndexed { offset: off, .. }
+                                    | AddressingMode::PostIndexed { offset: off, .. } => {
+                                        if *off == 0 {
+                                            format!("r{}", base)
+                                        } else if *off >= 0 {
+                                            format!("r{} + {}", base, off)
+                                        } else {
+                                            format!("r{} + ({})", base, off)
+                                        }
+                                    }
+                                    _ => format!("r{}", base),
+                                };
+                                code = format!("{}; r{} = {}", code, base, new_addr);
+                            }
+
+                            return code;
+                        }
+                    }
+                }
+                return format!("# STR (parsing failed)");
+            } // LDM/STM - Block transfer instructions
+            "LDM" | "STM" => {
+                if ops.len() >= 1 {
+                    if let Operand::MemoryAddress {
+                        base,
+                        offset,
+                        writeback: wb,
+                    } = &ops[0]
+                    {
+                        if let AddressingMode::Multi {
+                            base: _,
+                            registers,
+                            increment,
+                            writeback: _,
+                        } = offset
+                        {
+                            // Generate code for block transfer
+                            let is_load = base_opcode == "LDM";
+
+                            // Determine addressing mode from the full opcode (which includes suffix)
+                            // The base_opcode was stripped of condition codes, but retains the mode suffix
+                            let mode_suffix =
+                                opcode.trim_start_matches("LDM").trim_start_matches("STM");
+
+                            // Determine direction: IA/IB increment, DA/DB decrement
+                            let (pre_increment, addr_start) =
+                                if mode_suffix.contains("IB") || mode_suffix.contains("DB") {
+                                    // Pre-indexed: start at base + 4
+                                    (true, format!("r{} + 4", base))
+                                } else {
+                                    // Post-indexed or increment after: start at base
+                                    (false, format!("r{}", base))
+                                };
+
+                            // Calculate address for each register based on mode
+                            let mut addr_var = "addr".to_string();
+                            let mut code_lines = Vec::new();
+
+                            // For decrement modes, we need to calculate the start address
+                            if !*increment {
+                                let count = registers.len();
+                                let offset = count * 4 - 4;
+                                if offset > 0 {
+                                    addr_var = format!("r{} - {}", base, offset);
+                                } else {
+                                    addr_var = format!("r{}", base);
+                                }
+                            }
+
+                            // Generate load/store for each register
+                            for (i, &reg) in registers.iter().enumerate() {
+                                let current_addr = if *increment {
+                                    if pre_increment {
+                                        format!("{} + {}", addr_var, i * 4 + 4)
+                                    } else {
+                                        format!("{} + {}", addr_var, i * 4)
+                                    }
+                                } else {
+                                    let idx = registers.len() - 1 - i;
+                                    if mode_suffix.contains("DB") {
+                                        format!("{} + {}", addr_var, idx * 4 + 4)
+                                    } else {
+                                        format!("{} + {}", addr_var, idx * 4)
+                                    }
+                                };
+
+                                if is_load {
+                                    code_lines.push(format!(
+                                        "r{} = memory.read_32({})",
+                                        reg, current_addr
+                                    ));
+                                } else {
+                                    code_lines.push(format!(
+                                        "memory.write_32({}, r{})",
+                                        current_addr, reg
+                                    ));
+                                }
+                            }
+
+                            // Handle writeback
+                            if *wb {
+                                let new_base = if *increment {
+                                    let offset = registers.len() * 4;
+                                    format!("r{} + {}", base, offset)
+                                } else {
+                                    let offset = registers.len() * 4;
+                                    format!("r{} - {}", base, offset)
+                                };
+                                code_lines.push(format!("r{} = {}", base, new_base));
+                            }
+
+                            return code_lines.join("; ");
+                        }
+                    }
+                }
+                return format!("# {} (parsing failed)", base_opcode);
+            }
+            // LDRB/STRB - Byte transfer
+            "LDRB" | "STRB" => {
+                if ops.len() >= 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::MemoryAddress {
+                            base,
+                            offset,
+                            writeback,
+                        } = &ops[1]
+                        {
+                            // Generate address expression based on addressing mode
+                            let addr_expr = match offset {
+                                AddressingMode::ImmediateOffset(off) => {
+                                    if *off == 0 {
+                                        format!("r{}", base)
+                                    } else if *off >= 0 {
+                                        format!("r{} + {}", base, off)
+                                    } else {
+                                        format!("r{} + ({})", base, off)
+                                    }
+                                }
+                                AddressingMode::RegisterOffset(reg) => {
+                                    format!("r{} + r{}", base, reg)
+                                }
+                                AddressingMode::ScaledRegisterOffset {
+                                    reg,
+                                    shift: _,
+                                    amount,
+                                } => {
+                                    format!("r{} + (r{} << {})", base, reg, amount)
+                                }
+                                AddressingMode::PreIndexed { offset: off, .. } => {
+                                    if *off == 0 {
+                                        format!("r{}", base)
+                                    } else if *off >= 0 {
+                                        format!("r{} + {}", base, off)
+                                    } else {
+                                        format!("r{} + ({})", base, off)
+                                    }
+                                }
+                                AddressingMode::PostIndexed { .. } => {
+                                    format!("r{}", base)
+                                }
+                                AddressingMode::Multi { .. } => {
+                                    return format!(
+                                        "# {} (multi-register not applicable)",
+                                        base_opcode
+                                    );
+                                }
+                            };
+
+                            let mut code = if base_opcode == "LDRB" {
+                                format!("r{} = memory.read_8({})", rd, addr_expr)
+                            } else {
+                                format!("memory.write_8({}, r{})", addr_expr, rd)
+                            };
+
+                            // Handle writeback
+                            if *writeback {
+                                let new_addr = match offset {
+                                    AddressingMode::PreIndexed { offset: off, .. }
+                                    | AddressingMode::PostIndexed { offset: off, .. } => {
+                                        if *off == 0 {
+                                            format!("r{}", base)
+                                        } else if *off >= 0 {
+                                            format!("r{} + {}", base, off)
+                                        } else {
+                                            format!("r{} + ({})", base, off)
+                                        }
+                                    }
+                                    _ => format!("r{}", base),
+                                };
+                                code = format!("{}; r{} = {}", code, base, new_addr);
+                            }
+
+                            return code;
+                        }
+                    }
+                }
+                return format!("# {} (parsing failed)", base_opcode);
+            }
+            // LDRH/STRH - Halfword transfer
+            "LDRH" | "STRH" => {
+                if ops.len() >= 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::MemoryAddress {
+                            base,
+                            offset,
+                            writeback,
+                        } = &ops[1]
+                        {
+                            // Generate address expression based on addressing mode
+                            let addr_expr = match offset {
+                                AddressingMode::ImmediateOffset(off) => {
+                                    if *off == 0 {
+                                        format!("r{}", base)
+                                    } else if *off >= 0 {
+                                        format!("r{} + {}", base, off)
+                                    } else {
+                                        format!("r{} + ({})", base, off)
+                                    }
+                                }
+                                AddressingMode::RegisterOffset(reg) => {
+                                    format!("r{} + r{}", base, reg)
+                                }
+                                AddressingMode::PreIndexed { offset: off, .. } => {
+                                    if *off == 0 {
+                                        format!("r{}", base)
+                                    } else if *off >= 0 {
+                                        format!("r{} + {}", base, off)
+                                    } else {
+                                        format!("r{} + ({})", base, off)
+                                    }
+                                }
+                                AddressingMode::PostIndexed { .. } => {
+                                    format!("r{}", base)
+                                }
+                                _ => {
+                                    return format!(
+                                        "# {} (addressing mode not supported)",
+                                        base_opcode
+                                    );
+                                }
+                            };
+
+                            let mut code = if base_opcode == "LDRH" {
+                                format!("r{} = memory.read_16({})", rd, addr_expr)
+                            } else {
+                                format!("memory.write_16({}, r{})", addr_expr, rd)
+                            };
+
+                            // Handle writeback
+                            if *writeback {
+                                let new_addr = match offset {
+                                    AddressingMode::PreIndexed { offset: off, .. }
+                                    | AddressingMode::PostIndexed { offset: off, .. } => {
+                                        if *off == 0 {
+                                            format!("r{}", base)
+                                        } else if *off >= 0 {
+                                            format!("r{} + {}", base, off)
+                                        } else {
+                                            format!("r{} + ({})", base, off)
+                                        }
+                                    }
+                                    _ => format!("r{}", base),
+                                };
+                                code = format!("{}; r{} = {}", code, base, new_addr);
+                            }
+
+                            return code;
+                        }
+                    }
+                }
+                return format!("# {} (parsing failed)", base_opcode);
+            }
+            // Branch instructions
+            "B" | "BL" => {
+                return format!("# {} branch (not implemented)", base_opcode);
+            }
+            "BX" => {
+                return format!("# BX (branch exchange not implemented)");
+            }
+            // CMP, CMN, TST, TEQ (condition tests - set CPSR flags only)
+            "CMP" => {
+                // CMP Rd, Rn: sets flags based on Rd - Rn
+                if ops.len() >= 2 {
+                    let rd = &ops[0];
+                    let rn = &ops[1];
+                    return format!(
+                        "cpsr = _update_flags_nzcv({} - {})",
+                        rd.to_python(),
+                        rn.to_python()
+                    );
+                }
+                return format!("# {} (parsing failed)", base_opcode);
+            }
+            "CMN" => {
+                // CMN Rd, Rn: sets flags based on Rd + Rn
+                if ops.len() >= 2 {
+                    let rd = &ops[0];
+                    let rn = &ops[1];
+                    return format!(
+                        "cpsr = _update_flags_nzcv({} + {})",
+                        rd.to_python(),
+                        rn.to_python()
+                    );
+                }
+                return format!("# {} (parsing failed)", base_opcode);
+            }
+            "TST" => {
+                // TST Rd, Rn: sets flags based on Rd AND Rn
+                if ops.len() >= 2 {
+                    let rd = &ops[0];
+                    let rn = &ops[1];
+                    return format!(
+                        "cpsr = _update_flags_nzcv({} & {})",
+                        rd.to_python(),
+                        rn.to_python()
+                    );
+                }
+                return format!("# {} (parsing failed)", base_opcode);
+            }
+            "TEQ" => {
+                // TEQ Rd, Rn: sets flags based on Rd XOR Rn
+                if ops.len() >= 2 {
+                    let rd = &ops[0];
+                    let rn = &ops[1];
+                    return format!(
+                        "cpsr = _update_flags_nzcv({} ^ {})",
+                        rd.to_python(),
+                        rn.to_python()
+                    );
+                }
+                return format!("# {} (parsing failed)", base_opcode);
+            }
+            // MUL/MLA - Multiply instructions
+            "MUL" => {
+                // MUL Rd, Rm, Rs: Rd = Rm * Rs
+                if ops.len() >= 3 {
+                    let rd = &ops[0];
+                    let rm = &ops[1];
+                    let rs = &ops[2];
+                    return format!(
+                        "r{} = (r{} * r{}) & 0xFFFFFFFF",
+                        rd.to_python(),
+                        rm.to_python(),
+                        rs.to_python()
+                    );
+                }
+                return format!("# MUL (parsing failed)");
+            }
+            "MLA" => {
+                // MLA Rd, Rm, Rs, Ra: Rd = (Rm * Rs) + Ra
+                if ops.len() >= 4 {
+                    let rd = &ops[0];
+                    let rm = &ops[1];
+                    let rs = &ops[2];
+                    let ra = &ops[3];
+                    return format!(
+                        "r{} = ((r{} * r{}) + r{}) & 0xFFFFFFFF",
+                        rd.to_python(),
+                        rm.to_python(),
+                        rs.to_python(),
+                        ra.to_python()
+                    );
+                }
+                return format!("# MLA (parsing failed)");
+            }
+            "UMULL" => {
+                // UMULL RdLo, RdHi, Rm, Rs: 64-bit unsigned multiply
+                if ops.len() >= 4 {
+                    let rd_lo = &ops[0];
+                    let rd_hi = &ops[1];
+                    let rm = &ops[2];
+                    let rs = &ops[3];
+                    return format!(
+                        "result_64 = r{} * r{}; r{} = result_64 & 0xFFFFFFFF; r{} = (result_64 >> 32) & 0xFFFFFFFF",
+                        rm.to_python(), rs.to_python(), rd_lo.to_python(), rd_hi.to_python()
+                    );
+                }
+                return format!("# UMULL (parsing failed)");
+            }
+            "SMULL" => {
+                // SMULL RdLo, RdHi, Rm, Rs: 64-bit signed multiply
+                if ops.len() >= 4 {
+                    let rd_lo = &ops[0];
+                    let rd_hi = &ops[1];
+                    let rm = &ops[2];
+                    let rs = &ops[3];
+                    return format!(
+                        "result_64 = (r{} if r{} < 0x80000000 else r{} - 0x100000000) * (r{} if r{} < 0x80000000 else r{} - 0x100000000); r{} = result_64 & 0xFFFFFFFF; r{} = (result_64 >> 32) & 0xFFFFFFFF",
+                        rm.to_python(), rm.to_python(), rm.to_python(), rs.to_python(), rs.to_python(), rs.to_python(), rd_lo.to_python(), rd_hi.to_python()
+                    );
+                }
+                return format!("# SMULL (parsing failed)");
+            }
+            "MRS" => {
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Immediate(reg_type) = ops[1] {
+                            let source = if reg_type == 0 { "cpsr" } else { "spsr" };
+                            return format!("r{} = {}", rd, source);
+                        } else {
+                            return format!("r{} = cpsr", rd);
+                        }
+                    }
+                }
+                return format!("# MRS (parsing failed)");
+            }
+            "MSR" => {
+                if ops.len() >= 2 {
+                    let flags_operand = &ops[0];
+                    let src_operand = &ops[1];
+
+                    let is_flags_immediate = matches!(flags_operand, Operand::Immediate(_));
+
+                    let flags_field = if is_flags_immediate {
+                        if let Operand::Immediate(f) = flags_operand {
+                            *f
+                        } else {
+                            0
+                        }
+                    } else {
+                        0xF
+                    };
+
+                    let mut flag_mask = String::new();
+                    if flags_field & 0x1 != 0 {
+                        flag_mask.push_str("0x00010000 | ");
+                    }
+                    if flags_field & 0x2 != 0 {
+                        flag_mask.push_str("0x00020000 | ");
+                    }
+                    if flags_field & 0x4 != 0 {
+                        flag_mask.push_str("0x00040000 | ");
+                    }
+                    if flags_field & 0x8 != 0 {
+                        flag_mask.push_str("0x00080000 | ");
+                    }
+
+                    let mask = if flag_mask.is_empty() {
+                        "0xFFFF_FFFF".to_string()
+                    } else {
+                        flag_mask.trim_end_matches(" | ").to_string()
+                    };
+
+                    let src_val = match src_operand {
+                        Operand::Register(rn) => format!("r{}", rn),
+                        Operand::Immediate(imm) => format!("{}", imm),
+                        _ => "0".to_string(),
+                    };
+
+                    if flags_field & 0x1 != 0 || flags_field & 0x8 != 0 || flags_field == 0xF {
+                        return format!("cpsr = (cpsr & ~0x0F000000) | ({} & {})", src_val, mask);
+                    }
+
+                    if flags_field & 0x4 != 0 {
+                        return format!("spsr = (spsr & ~{}) | {}", mask, src_val);
+                    }
+
+                    let full_mask = if flag_mask.is_empty() {
+                        "0xFFFF_FFFF".to_string()
+                    } else {
+                        "0xFFFF_FFFF".to_string()
+                    };
+                    return format!("spsr = (spsr & ~{}) | {}", full_mask, src_val);
+                }
+                return format!("# MSR (parsing failed)");
+            }
+            "SWP" => {
+                // SWP Rd, [Rn], Rm: Rd = memory[Rn]; memory[Rn] = Rm (32-bit atomic swap)
+                // Format: SWP Rd, [Rn], Rm
+                if ops.len() >= 3 {
+                    let rd = &ops[0];
+                    let rn = &ops[1];
+                    let rm = &ops[2];
+                    return format!(
+                        "r{} = memory.read_32(r{}); memory.write_32(r{}, r{})",
+                        rd.to_python(),
+                        rn.to_python(),
+                        rn.to_python(),
+                        rm.to_python()
+                    );
+                }
+                return format!("# SWP (parsing failed)");
+            }
+            "SWPB" => {
+                // SWPB Rd, [Rn], Rm: Rd = memory[Rn]; memory[Rn] = Rm & 0xFF (8-bit atomic swap)
+                // Format: SWPB Rd, [Rn], Rm
+                if ops.len() >= 3 {
+                    let rd = &ops[0];
+                    let rn = &ops[1];
+                    let rm = &ops[2];
+                    return format!(
+                        "r{} = memory.read_8(r{}); memory.write_8(r{}, r{} & 0xFF)",
+                        rd.to_python(),
+                        rn.to_python(),
+                        rn.to_python(),
+                        rm.to_python()
+                    );
+                }
+                return format!("# SWPB (parsing failed)");
+            }
+            "SWI" => {
+                if let Operand::Immediate(swi_num) = ops[0] {
+                    return format!("bios_swi(0x{:06X})", swi_num);
+                }
+                return format!("# SWI (parsing failed)");
+            }
+            "COPROCESSOR" => {
+                // Coprocessor instructions (MCR, MRC, LDC, STC) - not used on GBA
+                return format!("# COPROCESSOR (not used on GBA)");
+            }
+            _ => {
+                // Fallback to comment for unimplemented opcodes
+                let ops_str = ops
+                    .iter()
+                    .map(|op| format!("{:?}", op))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return format!("# {} {}", base_opcode, ops_str);
+            }
         }
-        code.push_str("])\n\n");
+
+        // Default fallback
+        let ops_str = ops
+            .iter()
+            .map(|op| format!("{:?}", op))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("# {} {}", base_opcode, ops_str)
     }
 
-    // Add asset loading code after assets are defined
-    code.push_str("# Load assets into GBA memory at startup\n");
-    code.push_str("def _load_assets(gba):\n");
-    code.push_str("    \"\"\"Load extracted assets into GBA memory\"\"\"\n");
-    code.push_str("    if 'TILES_4BPP' in globals() and TILES_4BPP:\n");
-    code.push_str("        for i, byte in enumerate(TILES_4BPP):\n");
-    code.push_str("            gba.vram[i] = byte\n");
-    code.push_str("    if 'PALETTE_BG' in globals() and PALETTE_BG:\n");
-    code.push_str("        for i in range(0, len(PALETTE_BG), 2):\n");
-    code.push_str("            color = (PALETTE_BG[i] << 8) | PALETTE_BG[i + 1]\n");
-    code.push_str("            gba.palette[i // 2] = color\n");
-    code.push_str("    if 'TILEMAP' in globals() and TILEMAP:\n");
-    code.push_str("        for i, byte in enumerate(TILEMAP):\n");
-    code.push_str("            gba.vram[0x1800 + i] = byte\n");
-    code.push_str("\n");
+    for inst in &instructions {
+        // Generate REAL Python code from instruction (not just comments)
+        let py_stmt = generate_python_from_instruction(inst);
+        func_body.push(py_stmt);
+    }
 
-    // Write full ROM
-    code.push_str("ROM_DATA = bytearray([");
-    let mut first = true;
-    for byte in rom.iter() {
-        if !first {
+    // Embed ROM data FIRST (before GBA class needs it)
+    code.push_str("# Full ROM data\n");
+    code.push_str("ROM_DATA = bytearray([\n");
+    for (i, byte) in rom.iter().enumerate() {
+        if i > 0 {
             code.push_str(", ");
         }
+        if i % 16 == 0 {
+            code.push_str("\n    ");
+        }
         code.push_str(&format!("0x{:02X}", byte));
-        first = false;
     }
-    code.push_str("])\n\n");
+    code.push_str("\n])\n\n");
 
-    code.push_str("func_map = {}\n\n");
-    code.push_str("# Memory object for backward compatibility\n");
-    code.push_str("class Memory:\n");
-    code.push_str("    def __init__(self, gba):\n");
-    code.push_str("        self.gba = gba\n");
-    code.push_str("    \n");
-    code.push_str("    def read_32(self, addr):\n");
-    code.push_str("        if isinstance(addr, int):\n");
-    code.push_str("            if 0x08000000 <= addr < 0x0C000000:  # ROM\n");
-    code.push_str("                idx = addr - 0x08000000\n");
-    code.push_str("                if idx + 3 < len(ROM_DATA):\n");
-    code.push_str("                    return ROM_DATA[idx] | (ROM_DATA[idx+1] << 8) | (ROM_DATA[idx+2] << 16) | (ROM_DATA[idx+3] << 24)\n");
-    code.push_str("            elif 0x06000000 <= addr < 0x06020000:  # VRAM\n");
-    code.push_str("                idx = addr - 0x06000000\n");
-    code.push_str("                if idx + 3 < len(self.gba.vram):\n");
-    code.push_str("                    return self.gba.vram[idx] | (self.gba.vram[idx+1] << 8) | (self.gba.vram[idx+2] << 16) | (self.gba.vram[idx+3] << 24)\n");
-    code.push_str("            elif 0x04000000 <= addr < 0x04000400:  # MMIO\n");
-    code.push_str("                return self.gba.read_io(addr - 0x04000000)\n");
-    code.push_str("            elif 0x02000000 <= addr < 0x02040000:  # EWRAM\n");
-    code.push_str("                idx = addr - 0x02000000\n");
-    code.push_str("                if idx + 3 < len(self.gba.ewram):\n");
-    code.push_str("                    return self.gba.ewram[idx] | (self.gba.ewram[idx+1] << 8) | (self.gba.ewram[idx+2] << 16) | (self.gba.ewram[idx+3] << 24)\n");
-    code.push_str("        return 0\n");
-    code.push_str("    \n");
-    code.push_str("    def write_32(self, addr, value):\n");
-    code.push_str("        if isinstance(addr, int):\n");
-    code.push_str("            if 0x06000000 <= addr < 0x06020000:  # VRAM\n");
-    code.push_str("                idx = addr - 0x06000000\n");
-    code.push_str("                if idx + 3 < len(self.gba.vram):\n");
-    code.push_str("                    self.gba.vram[idx] = value & 0xFF\n");
-    code.push_str("                    self.gba.vram[idx+1] = (value >> 8) & 0xFF\n");
-    code.push_str("                    self.gba.vram[idx+2] = (value >> 16) & 0xFF\n");
-    code.push_str("                    self.gba.vram[idx+3] = (value >> 24) & 0xFF\n");
-    code.push_str("            elif 0x04000000 <= addr < 0x04000400:  # MMIO\n");
-    code.push_str("                self.gba.write_io(addr - 0x04000000, value)\n");
-    code.push_str("            elif 0x02000000 <= addr < 0x02040000:  # EWRAM\n");
-    code.push_str("                idx = addr - 0x02000000\n");
-    code.push_str("                if idx + 3 < len(self.gba.ewram):\n");
-    code.push_str("                    self.gba.ewram[idx] = value & 0xFF\n");
-    code.push_str("                    self.gba.ewram[idx+1] = (value >> 8) & 0xFF\n");
-    code.push_str("                    self.gba.ewram[idx+2] = (value >> 16) & 0xFF\n");
-    code.push_str("                    self.gba.ewram[idx+3] = (value >> 24) & 0xFF\n");
-    code.push_str("    \n");
-    code.push_str("    def write_u16(self, addr, value):\n");
-    code.push_str("        if isinstance(addr, int):\n");
-    code.push_str("            if 0x06000000 <= addr < 0x06020000:  # VRAM\n");
-    code.push_str("                idx = addr - 0x06000000\n");
-    code.push_str("                if idx + 1 < len(self.gba.vram):\n");
-    code.push_str("                    self.gba.vram[idx] = value & 0xFF\n");
-    code.push_str("                    self.gba.vram[idx+1] = (value >> 8) & 0xFF\n");
-    code.push_str("            elif 0x04000000 <= addr < 0x04000400:  # MMIO\n");
-    code.push_str("                self.gba.write_io(addr - 0x04000000, value)\n");
-    code.push_str("            elif 0x02000000 <= addr < 0x02040000:  # EWRAM\n");
-    code.push_str("                idx = addr - 0x02000000\n");
-    code.push_str("                if idx + 1 < len(self.gba.ewram):\n");
-    code.push_str("                    self.gba.ewram[idx] = value & 0xFF\n");
-    code.push_str("                    self.gba.ewram[idx+1] = (value >> 8) & 0xFF\n");
-    code.push_str("\n");
-    code.push_str("memory = None  # Will be initialized in run_transpiled\n\n");
-    code.push_str(&apu::generate_apu_code());
-    code.push_str("\n\n");
-    code.push_str(
-        r#"
-# Game Loop - Minimal GBA Emulator
-import pygame
-import sys
+    // Generate single function for entire ROM
+    if !func_body.is_empty() {
+        let func_name = format!("func_{:08X}", base_addr);
+
+        // Embed GBA memory class (Python version)
+        code.push_str(
+            r#"# GBA Memory Map Implementation
+# Memory layout:
+# - 0x00000000-0x00003FFF: BIOS ROM (16KB)
+# - 0x02000000-0x0203FFFF: EWRAM (256KB)
+# - 0x03000000-0x03007FFF: IWRAM (32KB)
+# - 0x04000000-0x040003FF: MMIO registers
+# - 0x05000000-0x050003FF: Palette RAM (1KB)
+# - 0x06000000-0x06017FFF: VRAM (96KB)
+# - 0x07000000-0x070003FF: OAM (1KB)
+# - 0x08000000-0x09FFFFFF: ROM (up to 32MB)
 
 class GBA:
     def __init__(self, rom_data):
-        self.vram = bytearray(0x18000)  # 96KB VRAM
-        self.palette = bytearray(0x400)  # 1KB palette
-        self.oam = bytearray(0x400)  # 1KB OAM
-        self.io = bytearray(0x400)  # MMIO
-        self.ewram = bytearray(0x40000)  # 256KB EWRAM
-        
-        # Load embedded assets if available
-        if 'VRAM_DATA' in dir() and VRAM_DATA:
-            self.vram[:len(VRAM_DATA)] = VRAM_DATA
-        if 'PALETTE_DATA' in dir() and PALETTE_DATA:
-            self.palette[:len(PALETTE_DATA)] = PALETTE_DATA
-        if 'TILEMAP_DATA' in dir() and TILEMAP_DATA:
-            # Copy tilemap to appropriate VRAM location
-            pass
-        
-        # Initialize APU for audio
-        self.apu = APU(self)
-        
-    def write_io(self, addr, value):
-        """Write to MMIO register, routing to appropriate subsystem"""
-        if 0x60 <= addr < 0x90:
-            self.apu.write_register(0x04000000 + addr, value)
-        elif addr < 0x400:
-            self.io[addr] = value & 0xFF
-            self.io[addr + 1] = (value >> 8) & 0xFF
-        
-    def read_io(self, addr):
-        """Read from MMIO register"""
-        if addr < 0x400 and addr + 1 < len(self.io):
-            return self.io[addr] | (self.io[addr + 1] << 8)
+        self.bios = bytearray(0x4000)       # 16KB
+        self.ewram = bytearray(0x40000)     # 256KB
+        self.iwram = bytearray(0x8000)      # 32KB
+        self.mmio = {}                      # MMIO registers
+        self.palette = bytearray(0x400)     # 1KB
+        self.vram = bytearray(0x18000)      # 96KB
+        self.oam = bytearray(0x400)         # 1KB
+        self.rom = rom_data                 # up to 32MB
+
+    def read_8(self, addr):
+        if 0x00000000 <= addr <= 0x00003FFF:
+            offset = addr - 0x00000000
+            return self.bios[offset] if offset < len(self.bios) else 0
+        elif 0x02000000 <= addr <= 0x0203FFFF:
+            offset = addr - 0x02000000
+            return self.ewram[offset] if offset < len(self.ewram) else 0
+        elif 0x03000000 <= addr <= 0x03007FFF:
+            offset = addr - 0x03000000
+            return self.iwram[offset] if offset < len(self.iwram) else 0
+        elif 0x04000000 <= addr <= 0x040003FF:
+            offset = addr - 0x04000000
+            return self.mmio.get(offset, 0)
+        elif 0x05000000 <= addr <= 0x050003FF:
+            offset = addr - 0x05000000
+            return self.palette[offset] if offset < len(self.palette) else 0
+        elif 0x06000000 <= addr <= 0x06017FFF:
+            offset = addr - 0x06000000
+            return self.vram[offset] if offset < len(self.vram) else 0
+        elif 0x07000000 <= addr <= 0x070003FF:
+            offset = addr - 0x07000000
+            return self.oam[offset] if offset < len(self.oam) else 0
+        elif 0x08000000 <= addr <= 0x09FFFFFF:
+            offset = addr - 0x08000000
+            return self.rom[offset] if offset < len(self.rom) else 0
         return 0
-            
-    def render_frame(self, headless=False):
-        # Minimal Mode 3 rendering (direct bitmap)
-        pygame.init()
-        
-        # Always create surface from VRAM (Mode 3 = 16-bit RGB555)
-        pixels = pygame.Surface((240, 160), depth=16)
-        
-        for y in range(160):
-            for x in range(240):
-                vram_idx = (y * 240 + x) * 2
-                if vram_idx + 1 < len(self.vram):
-                    color = self.vram[vram_idx] | (self.vram[vram_idx + 1] << 8)
-                    r = (color & 0x1F) * 8
-                    g = ((color >> 5) & 0x1F) * 8
-                    b = ((color >> 10) & 0x1F) * 8
-                    pixels.set_at((x, y), (r, g, b))
-        
-        if headless:
-            return pixels
-        
-        screen = pygame.display.set_mode((240, 160))
-        screen.blit(pixels, (0, 0))
-        pygame.display.flip()
-        return screen
 
-def run_transpiled(headless=False, frame_limit=None, screenshot_path=None):
-    # Initialize pygame regardless of headless mode
-    pygame.init()
-    
-    gba = GBA(ROM_DATA)
-    
-    # Initialize memory object with gba reference
-    global memory
-    memory = Memory(gba)
-    
-    # Load extracted assets into VRAM and palette RAM if available
-    if 'VRAM_DATA' in globals() and len(VRAM_DATA) > 0:
-        # Copy tile data to VRAM (0x06000000) using write_u16 for efficiency
-        for i in range(0, len(VRAM_DATA) - 1, 2):
-            if (i // 2) < 49152:  # 96KB VRAM limit / 2
-                value = (VRAM_DATA[i] & 0xFF) | ((VRAM_DATA[i + 1] & 0xFF) << 8)
-                memory.write_u16(0x06000000 + i, value)
-        print(f"Loaded {len(VRAM_DATA)} bytes of VRAM data")
-    
-    if 'PALETTE_DATA' in globals() and len(PALETTE_DATA) > 0:
-        # Copy palette data to palette RAM (0x05000000) using write_u16
-        for i in range(0, len(PALETTE_DATA) - 1, 2):
-            if (i // 2) < 256:  # 256 colors max
-                value = (PALETTE_DATA[i] & 0xFF) | ((PALETTE_DATA[i + 1] & 0xFF) << 8)
-                memory.write_u16(0x05000000 + i, value)
-        print(f"Loaded {len(PALETTE_DATA)} bytes of palette data")
-    
-    if 'TILEMAP_DATA' in globals() and len(TILEMAP_DATA) > 0:
-        # Copy tilemap to video memory (0x06001800 for BG0 map) using write_u16
-        for i in range(0, len(TILEMAP_DATA) - 1, 2):
-            if (i // 2) < 1024:  # Max tilemap size / 2
-                value = (TILEMAP_DATA[i] & 0xFF) | ((TILEMAP_DATA[i + 1] & 0xFF) << 8)
-                memory.write_u16(0x06001800 + i, value)
-        print(f"Loaded {len(TILEMAP_DATA)} bytes of tilemap data")
-    
-    # Execute transpiled code via func_map dispatch
-    if 0x08000000 in func_map:
-        func_map[0x08000000](gba)
-    
-    if headless:
-        # Headless mode: just execute and exit
-        if screenshot_path:
-            # Save screenshot before exiting
-            screen = gba.render_frame(headless=True)
-            if screen:
-                pygame.image.save(screen, screenshot_path)
-                print(f"Screenshot saved to: {screenshot_path}")
-        return
-    
-    # Render frames with display
-    frames_rendered = 0
-    while frame_limit is None or frames_rendered < frame_limit:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return
-        gba.render_frame(headless)
-        frames_rendered += 1
-        pygame.time.delay(16)  # ~60fps
-    
-    # Save screenshot if requested
-    if screenshot_path:
-        screen = gba.render_frame(headless=True)
-        if screen:
-            pygame.image.save(screen, screenshot_path)
-            print(f"Screenshot saved to: {screenshot_path}")
+    def read_32(self, addr):
+        b0 = self.read_8(addr)
+        b1 = self.read_8(addr + 1)
+        b2 = self.read_8(addr + 2)
+        b3 = self.read_8(addr + 3)
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--frame", type=int, default=None)
-    parser.add_argument("--screenshot", type=str, default=None)
-    args = parser.parse_args()
-    run_transpiled(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot)
+    def write_8(self, addr, value):
+        if 0x02000000 <= addr <= 0x0203FFFF:
+            offset = addr - 0x02000000
+            if offset < len(self.ewram): self.ewram[offset] = value
+        elif 0x03000000 <= addr <= 0x03007FFF:
+            offset = addr - 0x03000000
+            if offset < len(self.iwram): self.iwram[offset] = value
+        elif 0x04000000 <= addr <= 0x040003FF:
+            offset = addr - 0x04000000
+            self.mmio[offset] = value  # MMIO side effects would be handled here
+        elif 0x05000000 <= addr <= 0x050003FF:
+            offset = addr - 0x05000000
+            if offset < len(self.palette): self.palette[offset] = value
+        elif 0x06000000 <= addr <= 0x06017FFF:
+            offset = addr - 0x06000000
+            if offset < len(self.vram): self.vram[offset] = value
+        elif 0x07000000 <= addr <= 0x070003FF:
+            offset = addr - 0x07000000
+            if offset < len(self.oam): self.oam[offset] = value
+
+    def write_16(self, addr, value):
+        # Write 16-bit value (little-endian)
+        self.write_8(addr, value & 0xFF)
+        self.write_8(addr + 1, (value >> 8) & 0xFF)
+
+    def write_32(self, addr, value):
+        self.write_8(addr, value & 0xFF)
+        self.write_8(addr + 1, (value >> 8) & 0xFF)
+        self.write_8(addr + 2, (value >> 16) & 0xFF)
+        self.write_8(addr + 3, (value >> 24) & 0xFF)
+
 "#,
-    );
+        );
+
+        code.push_str("# Initialize GBA memory with ROM data\n");
+        code.push_str("memory = GBA(ROM_DATA)\n\n");
+        code.push_str(&format!("def {}():\n", func_name));
+        code.push_str(
+            "    global r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15\n",
+        );
+        code.push_str("    global cpsr, spsr\n");
+        for stmt in &func_body {
+            code.push_str(&format!("    {}\n", stmt));
+        }
+        code.push_str("\n");
+        func_map_entries.push(format!("    0x{:08X}: {},", base_addr, func_name));
+    }
+
+    // Generate func_map
+    code.push_str("# Function map for dynamic dispatch\n");
+    code.push_str("func_map = {\n");
+    code.push_str(&func_map_entries.join("\n"));
+    code.push_str("\n}\n\n");
+
+    // Add game loop (from generate_game_loop in pipeline.rs)
+    code.push_str(&generate_game_loop());
 
     fs::write(output_path, &code).map_err(|e| format!("Failed to write output: {}", e))?;
 
@@ -651,287 +1011,220 @@ if __name__ == "__main__":
     Ok(())
 }
 
-#[derive(Default)]
-pub struct ExtractedAssets {
-    pub palette_data: Vec<u8>,
-    pub tile_data: Vec<u8>,
-    pub tilemap_data: Vec<u8>,
+// Helper function to generate game loop (copied from cmds/pipeline.rs)
+fn generate_game_loop() -> String {
+    r#"
+import os
+
+def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, 
+                   dump_memory=False, compare_with_mgba=False):
+    """Execute transpiled GBA code using func_map dispatch"""
+    
+    # Set dump directory if needed
+    dump_dir = os.environ.get("GBATOPY_DUMP_DIR", ".")
+    
+    frame_count = 0
+    max_instructions = 1000000  # Safety limit
+    instruction_count = 0
+    
+    print(f"Starting transpiled execution at PC=0x{r15:08X}")
+    
+    # Import dump utilities
+    from memory import MemoryDump
+    from cpu import RegisterDump
+    
+    memory_dump = MemoryDump(memory) if 'memory' in globals() else None
+    register_dump = RegisterDump(cpu) if 'cpu' in globals() else None
+    
+    # Main execution loop
+    while instruction_count < max_instructions:
+        pc = r15
+        
+        # Look up function by address
+        if pc not in func_map:
+            print(f"Unknown PC: 0x{pc:08X} - execution halted")
+            break
+        
+        # Get the function and call it
+        func = func_map[pc]
+        func()  # This updates r15 (PC) for next instruction
+        
+        instruction_count += 1
+        
+        # If PC didn't change, we're in an infinite loop
+        if r15 == pc:
+            print(f"PC unchanged at 0x{pc:08X} - infinite loop detected")
+            break
+        
+        # Progress reporting every 10000 instructions
+        if instruction_count % 10000 == 0:
+            print(f"Executed {instruction_count} instructions, PC=0x{r15:08X}")
+        
+        # Frame limit check
+        if frame_limit and frame_count >= frame_limit:
+            break
+        
+        # For now, each instruction counts as ~1 frame
+        # Real implementation would count actual frame cycles
+        if instruction_count % 1000 == 0:
+            frame_count += 1
+    
+    print(f"Execution stopped after {instruction_count} instructions")
+    print(f"Final PC: 0x{r15:08X}")
+    
+    return frame_count
+
+def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1):
+    """Run transpiled GBA code with pygame display and input"""
+    
+    pygame.init()
+    
+    if not headless:
+        screen = pygame.display.set_mode((240 * scale, 160 * scale))
+        pygame.display.set_caption("GBAtoPy - Transpiled GBA")
+    else:
+        screen = pygame.Surface((240 * scale, 160 * scale))
+    
+    clock = pygame.time.Clock()
+    frame_count = 0
+    running = True
+    instruction_count = 0
+    max_instructions_per_frame = 2000  # ~120K instructions/sec for 60fps
+    
+    # Input state
+    keys_down = {}
+    
+    # Execute initial code to reach game loop
+    # (some ROMs need setup before entering main loop)
+    
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_UP:
+                    keys_down['UP'] = True
+                elif event.key == pygame.K_DOWN:
+                    keys_down['DOWN'] = True
+                elif event.key == pygame.K_LEFT:
+                    keys_down['LEFT'] = True
+                elif event.key == pygame.K_RIGHT:
+                    keys_down['RIGHT'] = True
+                elif event.key == pygame.K_z:
+                    keys_down['A'] = True
+                elif event.key == pygame.K_x:
+                    keys_down['B'] = True
+                elif event.key == pygame.K_RETURN:
+                    keys_down['START'] = True
+                elif event.key == pygame.K_BACKSPACE:
+                    keys_down['SELECT'] = True
+                elif event.key == pygame.K_a:
+                    keys_down['L'] = True
+                elif event.key == pygame.K_s:
+                    keys_down['R'] = True
+            elif event.type == pygame.KEYUP:
+                if event.key == pygame.K_UP:
+                    keys_down.pop('UP', None)
+                elif event.key == pygame.K_DOWN:
+                    keys_down.pop('DOWN', None)
+                elif event.key == pygame.K_LEFT:
+                    keys_down.pop('LEFT', None)
+                elif event.key == pygame.K_RIGHT:
+                    keys_down.pop('RIGHT', None)
+                elif event.key == pygame.K_z:
+                    keys_down.pop('A', None)
+                elif event.key == pygame.K_x:
+                    keys_down.pop('B', None)
+                elif event.key == pygame.K_RETURN:
+                    keys_down.pop('START', None)
+                elif event.key == pygame.K_BACKSPACE:
+                    keys_down.pop('SELECT', None)
+                elif event.key == pygame.K_a:
+                    keys_down.pop('L', None)
+                elif event.key == pygame.K_s:
+                    keys_down.pop('R', None)
+
+        # Execute transpiled GBA code for this frame
+        pc = r15
+        instructions_this_frame = 0
+
+        while instructions_this_frame < max_instructions_per_frame:
+            # Look up function by address
+            if pc not in func_map:
+                print(f"Unknown PC: 0x{pc:08X} - execution halted")
+                running = False
+                break
+
+            # Get the function and call it
+            func = func_map[pc]
+            func()  # This updates r15 (PC) for next instruction
+
+            pc = r15
+            instructions_this_frame += 1
+            instruction_count += 1
+
+            # If PC didn't change, we're in an infinite loop - break to prevent hang
+            if r15 == pc and instructions_this_frame > 100:
+                print(f"PC unchanged at 0x{pc:08X} - possible infinite loop, breaking")
+                break
+
+        # Render PPU output to screen (always, even in headless mode for screenshots)
+        if screen:
+            ppu = get_ppu(memory)
+            # Clear screen first
+            screen.fill((0, 0, 0))
+            # Render to framebuffer and get screen surface
+            framebuffer_screen = ppu.render_frame()
+            # Copy framebuffer to pygame screen
+            for y in range(160):
+                for x in range(240):
+                    color = framebuffer_screen.get_at((x, y))
+                    screen.set_at((x, y), (color[0], color[1], color[2]))
+            if not headless:
+                pygame.display.flip()
+        
+        frame_count += 1
+        clock.tick(60)
+        
+        if frame_limit and frame_count >= frame_limit:
+            break
+    
+    # Save screenshot if requested
+    if screenshot_path and screen is not None:
+        pygame.image.save(screen, screenshot_path)
+        print(f"Screenshot saved to: {screenshot_path}")
+    
+    pygame.quit()
+    return frame_count
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="GBAtoPy Transpiled GBA")
+    parser.add_argument("--headless", action="store_true", help="Run without display")
+    parser.add_argument("--frame", type=int, default=None, help="Number of frames to run")
+    parser.add_argument("--screenshot", type=str, default=None, help="Screenshot output path")
+    parser.add_argument("--scale", type=int, default=1, help="Display scale factor")
+    parser.add_argument("--benchmark", action="store_true", help="Run benchmark (1000 instructions)")
+    
+    args = parser.parse_args()
+    
+    if args.benchmark:
+        import time
+        start = time.time()
+        frames = run_transpiled(headless=True, frame_limit=1000)
+        elapsed = time.time() - start
+        print(f"Benchmark: {frames} frames in {elapsed:.3f}s")
+    else:
+        # Use pygame version for interactive display
+        frames = run_with_pygame(
+            headless=args.headless,
+            frame_limit=args.frame,
+            screenshot_path=args.screenshot,
+            scale=args.scale
+        )
+        print(f"Ran {frames} frames")
+"#
+    .to_string()
 }
-
-fn is_valid_rgb555(color: u16) -> bool {
-    let r = color & 0x1F;
-    let g = (color >> 5) & 0x1F;
-    let b = (color >> 10) & 0x1F;
-    r <= 0x1F && g <= 0x1F && b <= 0x1F && (color & 0x8000) == 0
-}
-
-fn is_valid_4bpp_tile(data: &[u8]) -> bool {
-    if data.len() < 32 {
-        return false;
-    }
-    let mut unique_nibbles = [false; 16];
-    for &byte in &data[..32] {
-        unique_nibbles[(byte & 0x0F) as usize] = true;
-        unique_nibbles[((byte >> 4) & 0x0F) as usize] = true;
-    }
-    unique_nibbles.iter().filter(|&&x| x).count() >= 3
-}
-
-fn is_likely_tilemap(data: &[u8]) -> bool {
-    if data.len() < 4 || data.len() % 2 != 0 {
-        return false;
-    }
-    let valid_entries = data
-        .chunks_exact(2)
-        .filter(|pair| {
-            let entry = u16::from_le_bytes([pair[0], pair[1]]);
-            (entry & 0x3FF) <= 1023
-        })
-        .count();
-    valid_entries * 4 >= data.len() / 2
-}
-
-pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
-    let mut assets = ExtractedAssets::default();
-    let start_offset = 0x100;
-
-    let mut palette_candidates: std::collections::HashMap<usize, usize> =
-        std::collections::HashMap::new();
-    for offset in (start_offset..rom_data.len().saturating_sub(64)).step_by(2) {
-        let mut consecutive_valid = 0;
-        for i in 0..32 {
-            let pos = offset + i * 2;
-            if pos + 1 >= rom_data.len() {
-                break;
-            }
-            let color = u16::from_le_bytes([rom_data[pos], rom_data[pos + 1]]);
-            if is_valid_rgb555(color) {
-                consecutive_valid += 1;
-            } else {
-                break;
-            }
-        }
-        if consecutive_valid >= 8 {
-            let count = palette_candidates.entry(offset).or_insert(0);
-            *count = consecutive_valid;
-        }
-    }
-
-    if let Some((best_offset, _)) = palette_candidates.iter().max_by_key(|(_, count)| *count) {
-        let offset = *best_offset;
-        let max_colors = 256;
-        for i in 0..max_colors {
-            let pos = offset + i * 2;
-            if pos + 1 >= rom_data.len() {
-                break;
-            }
-            assets.palette_data.push(rom_data[pos]);
-            assets.palette_data.push(rom_data[pos + 1]);
-        }
-        eprintln!(
-            "  Found palette at offset 0x{:X}, {} colors",
-            offset,
-            assets.palette_data.len() / 2
-        );
-    } else {
-        eprintln!("  No palette data found");
-    }
-
-    let mut best_tile_offset = 0;
-    let mut best_tile_count = 0;
-    for offset in (start_offset..rom_data.len().saturating_sub(128)).step_by(32) {
-        let mut tile_count = 0;
-        for tile_idx in 0..64 {
-            let tile_start = offset + tile_idx * 32;
-            if tile_start + 32 > rom_data.len() {
-                break;
-            }
-            if is_valid_4bpp_tile(&rom_data[tile_start..tile_start + 32]) {
-                tile_count += 1;
-            } else {
-                break;
-            }
-        }
-        if tile_count > best_tile_count {
-            best_tile_count = tile_count;
-            best_tile_offset = offset;
-        }
-    }
-
-    if best_tile_count > 0 {
-        for i in 0..best_tile_count {
-            let tile_start = best_tile_offset + i * 32;
-            if tile_start + 32 <= rom_data.len() {
-                assets
-                    .tile_data
-                    .extend_from_slice(&rom_data[tile_start..tile_start + 32]);
-            }
-        }
-        eprintln!(
-            "  Found {} tiles at offset 0x{:X}",
-            best_tile_count, best_tile_offset
-        );
-    } else {
-        eprintln!("  No tile data found");
-    }
-
-    let mut best_tilemap_offset = 0;
-    let mut best_tilemap_count = 0;
-    for offset in (start_offset..rom_data.len().saturating_sub(64)).step_by(2) {
-        let sample = &rom_data[offset..std::cmp::min(offset + 128, rom_data.len())];
-        if is_likely_tilemap(sample) {
-            let mut count = 0;
-            for i in (0..sample.len()).step_by(2) {
-                let entry = u16::from_le_bytes([sample[i], sample[i + 1]]);
-                if (entry & 0x3FF) <= 1023 {
-                    count += 1;
-                }
-            }
-            if count > best_tilemap_count {
-                best_tilemap_count = count;
-                best_tilemap_offset = offset;
-            }
-        }
-    }
-
-    if best_tilemap_count > 16 {
-        for i in 0..std::cmp::min(best_tilemap_count, 1024) {
-            let pos = best_tilemap_offset + i * 2;
-            if pos + 1 < rom_data.len() {
-                assets.tilemap_data.push(rom_data[pos]);
-                assets.tilemap_data.push(rom_data[pos + 1]);
-            }
-        }
-        eprintln!(
-            "  Found {} tilemap entries at offset 0x{:X}",
-            best_tilemap_count, best_tilemap_offset
-        );
-    }
-    assets
-}
-
-/// Generate Python for LDM (Load Multiple)
-/// Generate Python for LDM (Load Multiple)
-fn generate_ldm_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.is_empty() {
-        return format!("pass  # LDM: insufficient operands\n");
-    }
-
-    let multi_str = instr.operands[0].display();
-
-    // Extract base register
-    let base = multi_str
-        .split("base:")
-        .nth(1)
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<u8>().ok())
-        .unwrap_or(0);
-
-    // Extract the "Multi {...}" part
-    let multi_part = if let Some(start) = multi_str.find("Multi {") {
-        if let Some(end) = multi_str.rfind('}') {
-            &multi_str[start..=end]
-        } else {
-            ""
-        }
-    } else {
-        ""
-    };
-
-    // Extract register list from [0, 1, 2, ...]
-    let regs: Vec<u8> = match (multi_part.find('['), multi_part.find(']')) {
-        (Some(start), Some(end)) => multi_part[start + 1..end]
-            .split(',')
-            .filter_map(|s| s.trim().parse::<u8>().ok())
-            .collect(),
-        _ => vec![],
-    };
-
-    let increment = multi_part.contains("increment: true");
-    let writeback = multi_part.contains("writeback: true");
-
-    let addr_var = format!("ldm_addr_{}", base);
-    let mut code = format!("{} = r{}\n", addr_var, base);
-
-    // Adjust address for DB (Decrement Before) mode
-    if !increment && !regs.is_empty() {
-        code.push_str(&format!("{} -= {}\n", addr_var, (regs.len() - 1) * 4));
-    }
-
-    // Load each register
-    for reg in &regs {
-        if *reg < 16 {
-            code.push_str(&format!("r{} = memory.read_32({})\n", reg, addr_var));
-            code.push_str(&format!("{} += 4\n", addr_var));
-        }
-    }
-
-    // Writeback base register if needed
-    if writeback {
-        code.push_str(&format!("r{} = {}\n", base, addr_var));
-    }
-
-    code
-}
-/// Generate Python for STM (Store Multiple)
-fn generate_stm_python(instr: &DecodedInstruction) -> String {
-    if instr.operands.is_empty() {
-        return format!("pass  # STM: insufficient operands\n");
-    }
-
-    let multi_str = instr.operands[0].display();
-
-    // Extract base register
-    let base = multi_str
-        .split("base:")
-        .nth(1)
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<u8>().ok())
-        .unwrap_or(0);
-
-    // Extract the "Multi {...}" part from "[r11, Multi { base: 11, registers: [0, 1], ... }]"
-    let multi_part = if let Some(start) = multi_str.find("Multi {") {
-        if let Some(end) = multi_str.rfind('}') {
-            &multi_str[start..=end]
-        } else {
-            ""
-        }
-    } else {
-        ""
-    };
-
-    // Extract register list from [0, 1, 2, ...]
-    let regs: Vec<u8> = match (multi_part.find('['), multi_part.find(']')) {
-        (Some(start), Some(end)) => multi_part[start + 1..end]
-            .split(',')
-            .filter_map(|s| s.trim().parse::<u8>().ok())
-            .collect(),
-        _ => vec![],
-    };
-
-    let increment = multi_part.contains("increment: true");
-    let writeback = multi_part.contains("writeback: true");
-
-    let addr_var = format!("stm_addr_{}", base);
-    let mut code = format!("{} = r{}\n", addr_var, base);
-
-    // Adjust address for DB (Decrement Before) mode
-    if !increment && !regs.is_empty() {
-        code.push_str(&format!("{} -= {}\n", addr_var, (regs.len() - 1) * 4));
-    }
-
-    // Store each register
-    for reg in &regs {
-        if *reg < 16 {
-            code.push_str(&format!("memory.write_32({}, r{})\n", addr_var, reg));
-            code.push_str(&format!("{} += 4\n", addr_var));
-        }
-    }
-
-    // Writeback base register if needed
-    if writeback {
-        code.push_str(&format!("r{} = {}\n", base, addr_var));
-    }
-
-    code
-}
+// Force rebuild ven 1 mag 2026, 13:30:36, CEST

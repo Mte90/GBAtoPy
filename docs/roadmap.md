@@ -1,8 +1,8 @@
-# GBAtoPy Roadmap — Stato del Progetto e Cosa Manca
+# GBAtoPy Roadmap — Project Status
 
-> **Ultimo aggiornamento**: 2026-05-07
-> **Stato attuale**: Il transpiler genera Python sintatticamente valido ma semanticamente rotto.
-> Tutte le 39 ROM di test transpilano senza crash, ma nessuna produce grafica corretta.
+> **Last updated**: 2026-05-11
+> **Current state**: 27/31 tasks completed. PPU Mode 4 rendering working (35,850 non-black pixels on stripes.gba).
+> All 39 test ROMs transpile to valid Python. Infrastructure complete for validation and coverage tracking.
 
 ---
 

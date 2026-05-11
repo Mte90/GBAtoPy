@@ -25,6 +25,7 @@ class BIOS:
     def swi_div(self, dividend: int, divisor: int) -> int:
         """Division: r0 = dividend / divisor, r1 = remainder"""
         if divisor == 0:
+            # GBA ARM7TDMI: division by zero returns 0 (no exception)
             return 0
 
         result = dividend // divisor
@@ -126,6 +127,7 @@ class BIOS:
         src = self.memory.read_bytes(src_addr, 102400)
 
         if len(src) < 8 or src[0] != 0x10:
+            # Invalid header - return 0 bytes decompressed (graceful fallback)
             return 0
 
         expanded_size = struct.unpack("<I", src[1:5])[0]
@@ -174,6 +176,7 @@ class BIOS:
         src = self.memory.read_bytes(src_addr, 102400)
 
         if len(src) < 8 or src[0] != 0x11:
+            # Invalid header - return 0 bytes decompressed (graceful fallback)
             return 0
 
         expanded_size = struct.unpack("<I", src[1:5])[0]
@@ -196,6 +199,7 @@ class BIOS:
         src = self.memory.read_bytes(src_addr, 102400)
 
         if len(src) < 8 or src[0] != 0x12:
+            # Invalid header - return 0 bytes decompressed (graceful fallback)
             return 0
 
         expanded_size = struct.unpack("<I", src[1:5])[0]
@@ -522,6 +526,7 @@ class BIOS:
         """Difference decompression with filter"""
         src = self.memory.read_bytes(src_addr, 102400)
         if len(src) < 8:
+            # Invalid header - return 0 bytes decompressed (graceful fallback)
             return 0
 
         expanded_size = struct.unpack("<I", src[1:5])[0]

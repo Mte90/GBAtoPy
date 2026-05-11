@@ -438,11 +438,13 @@ class PPU:
         elif addr == self.REG_BG3Y + 2:
             return (self.bg3_y >> 16) & 0xFFFF
 
+        # Unmapped MMIO register — standard GBA behavior is to return 0
         return 0
 
     def _read_bg_control(self, bg_num: int) -> int:
         """Read BG control register"""
         if bg_num < 0 or bg_num > 3:
+            # Invalid BG number — return 0 as per GBA hardware behavior
             return 0
         value = 0
         value |= self.bg_priority[bg_num] & 0x3

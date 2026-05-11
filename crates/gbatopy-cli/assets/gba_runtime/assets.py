@@ -418,7 +418,7 @@ class AssetExtractor:
     def _score_palette_candidate(self, data: bytes) -> int:
         """Score how likely data is a palette"""
         if len(data) < 32:
-            return 0
+            return -1
 
         score = 0
 

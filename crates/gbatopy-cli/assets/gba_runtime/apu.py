@@ -70,13 +70,11 @@ class SquareWaveChannel:
         self.counter = 0
         self.timer = 0
         self.timer_period = 0
-        self.sweep_shift = 0
-        self.sweep_decrease = False
-        self.sweep_steps = 0
 
     def step(self, sample_rate: int, base_freq: int = 131072) -> int:
         """Generate one sample. Returns volume level (0-15)."""
         if not self.enabled or self.volume == 0:
+            # Silence: channel disabled or muted
             return 0
 
         # Calculate timer period from frequency
@@ -228,65 +226,40 @@ class NoiseChannel:
 
 
 class FIFO:
-    """Direct Sound FIFO buffer for DMA audio transfers
-
-    The GBA has two FIFO buffers (A and B) used for streaming audio data
-    from ROM via DMA. Each FIFO can hold up to 8 bytes and is used for
-    direct sound output from channels 1/2 (FIFO A) and channels 3/4 (FIFO B).
-    """
-
-    # Maximum FIFO depth (hardware limit)
-    MAX_FIFO_SIZE = 8
+    """Direct Sound FIFO buffer"""
 
     def __init__(self):
-        self.data = deque()  # Queue of 8-bit samples (using deque for efficiency)
-        self.max_size = self.MAX_FIFO_SIZE
+        self.data = bytearray()  # Queue of 8-bit samples
+        self.max_size = 8
         self.timer = 0
         self.timer_period = 0  # Set by DMA
         self.enabled = False
         self.volume_left = 0
         self.volume_right = 0
         self.priority = 0
+        self._dma_source = None  # Reference to DMA for direct access
 
-    @property
-    def size(self) -> int:
-        """Current number of bytes in FIFO"""
-        return len(self.data)
-
-    @property
-    def is_empty(self) -> bool:
-        """Check if FIFO is empty"""
-        return len(self.data) == 0
-
-    @property
-    def is_full(self) -> bool:
-        """Check if FIFO is full"""
-        return len(self.data) >= self.max_size
+    def attach_dma(self, dma):
+        """Attach DMA controller for audio transfers"""
+        self._dma_source = dma
 
     def write(self, value: int):
-        """Write a byte to FIFO (only if space available)"""
-        if len(self.data) < self.max_size:
-            self.data.append(value & 0xFF)
+        """Write a byte to FIFO"""
+        self.data.append(value & 0xFF)
 
     def read(self) -> int:
         """Read a byte from FIFO (FIFO pops from front)"""
         if self.data:
-            return self.data.popleft()
+            return self.data.pop(0)
         return 0
 
-    def peek(self) -> int:
-        """Peek at next byte without removing it"""
-        if self.data:
-            return self.data[0]
-        return 0
-
-    def step(self, sample_rate: int) -> int:
+    def step(self, sample_rate: int):
         """Generate one sample from FIFO data."""
         if not self.enabled or not self.data:
             return 0
 
         # Timer controls how fast we consume samples
-        # In real hardware this is controlled by DMA
+        # In real hardware this is controlled by DMA timer_period
         self.timer += 1
         if self.timer >= self.timer_period:
             self.timer = 0
@@ -296,7 +269,11 @@ class FIFO:
 
     def clear(self):
         """Clear the FIFO"""
-        self.data.clear()
+        self.data = bytearray()
+
+    def clear(self):
+        """Clear the FIFO"""
+        self.data = []
 
 
 class APU:
@@ -327,27 +304,6 @@ class APU:
 
     REG_WAVE_RAM = 0x04000090
 
-    # APU DMA (Audio Control Block) register addresses: 0x0400004E-0x0400005F
-    REG_DMDSNDCTRL = 0x0400004E  # DMA/FIFO control
-    REG_DMDSNDREPEAT = 0x04000050  # DMA/FIFO repeat mode
-    REG_DMDSNDCOUNT = 0x04000052  # DMA/FIFO sample count
-    REG_ACB_SOUND1 = 0x04000054  # Audio control block - ch1
-    REG_ACB_SOUND2 = 0x04000056  # Audio control block - ch2
-    REG_ACB_SOUND3 = 0x04000058  # Audio control block - ch3
-    REG_ACB_SOUND4 = 0x0400005A  # Audio control block - ch4
-
-    # DMA Channel 1 (Channel 1 Square Wave) registers: 0x040000B0-0x040000BF
-    REG_D1SAD = 0x040000B0  # DMA 1 Source Address
-    REG_D1DAD = 0x040000B4  # DMA 1 Destination Address (FIFO A: 0x040000A0)
-    REG_D1CNT_L = 0x040000B8  # DMA 1 Transfer Count (Lower 16 bits)
-    REG_D1CNT_H = 0x040000BA  # DMA 1 Control / Count High
-
-    # DMA Channel 2 registers: 0x040000C0-0x040000CF
-    REG_D2SAD = 0x040000C0  # DMA 2 Source Address
-    REG_D2DAD = 0x040000C4  # DMA 2 Destination Address (FIFO B: 0x040000A4)
-    REG_D2CNT_L = 0x040000C8  # DMA 2 Transfer Count
-    REG_D2CNT_H = 0x040000CA  # DMA 2 Control / Count High
-
     # Sample rate (1 MHz base / 4 for audio)
     SAMPLE_RATE = 262144
 
@@ -376,33 +332,6 @@ class APU:
 
         self._audio_output = None
 
-        # APU DMA (Audio Control Block) state
-        self.dma_enabled = False
-        self.dma_block_counter = 0  # ACBU - block counter
-        self.dma_block_selector = 0  # ACBS - block selector
-        self.dma_block_descriptor = 0  # ACBD - block descriptor
-        self.dma_control = 0  # DMDSNDCTRL
-        self.dma_repeat = 0  # DMDSNDREPEAT
-        self.dma_count = 0  # DMDSNDCOUNT
-
-        # Channel 1 DMA (Square Wave) registers: 0x040000B0-0x040000BF
-        self.d1sa = 0  # Source Address
-        self.d1da = 0  # Destination Address (FIFO A at 0x040000A0)
-        self.d1rl = 0  # Transfer Count (Repeat Length)
-        self.d1cr = 0  # Control Register
-
-        # Channel 2 DMA registers: 0x040000C0-0x040000CF
-        self.d2sa = 0
-        self.d2da = 0
-        self.d2rl = 0
-        self.d2cr = 0
-
-        self._mem = None
-
-    def attach_memory(self, mem):
-        """Attach memory interface for DMA transfers"""
-        self._mem = mem
-
     def start(self):
         if self._audio_output is None:
             self._audio_output = AudioOutput()
@@ -410,12 +339,6 @@ class APU:
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to sound registers"""
-        # Check APU DMA range first (0x0400004E-0x0400005F)
-        if 0x0400004E <= addr <= 0x0400005F:
-            reg = addr - 0x0400004E
-            self._write_apu_dma(reg, value)
-            return
-
         if self.REG_SOUND1CNT_L <= addr <= 0x04000061:
             # CH1 Sweep control
             reg = addr - self.REG_SOUND1CNT_L
@@ -449,14 +372,6 @@ class APU:
         elif self.REG_WAVE_RAM <= addr <= 0x0400009F:
             # Wave RAM
             self._write_wave_ram(addr, value)
-        elif self.REG_D1SAD <= addr <= 0x040000BF:
-            # DMA Channel 1 registers (0x040000B0-0x040000BF)
-            reg = addr - self.REG_D1SAD
-            self._write_dma_ch1(reg, value)
-        elif self.REG_D2SAD <= addr <= 0x040000CF:
-            # DMA Channel 2 registers (0x040000C0-0x040000CF)
-            reg = addr - self.REG_D2SAD
-            self._write_dma_ch2(reg, value)
 
     def _write_ch1_sweep(self, reg: int, value: int):
         """Write to CH1 sweep registers"""
@@ -557,106 +472,6 @@ class APU:
         bank = self.wave_bank
         self.wave_ram[bank][offset % 16] = value & 0xFF
         self.ch3.wave_ram = self.wave_ram[bank]
-
-    def _write_apu_dma(self, reg: int, value: int):
-        """Write to APU DMA registers (0x0400004E-0x0400005F)"""
-        if reg == 0:  # DMDSNDCTRL
-            self.dma_control = value
-            self.dma_enabled = bool(value & 0x0001)
-        elif reg == 2:  # DMDSNDREPEAT
-            self.dma_repeat = value
-        elif reg == 4:  # DMDSNDCOUNT
-            self.dma_count = value
-        elif reg == 6:  # ACB sound1 - block address
-            self.dma_block_descriptor = value
-        elif reg == 8:  # ACB sound2
-            self.dma_block_counter = value
-
-    def _write_dma_ch1(self, reg: int, value: int):
-        """Write to DMA Channel 1 (Square Wave) registers"""
-        if reg == 0:  # D1SAD - Source Address
-            self.d1sa = value
-        elif reg == 4:  # D1DAD - Destination Address
-            self.d1da = value
-        elif reg == 8:  # D1RL - Repeat Length (Count High)
-            self.d1rl = value
-        elif reg == 12:  # D1CNT_H - Control High
-            self.d1cr = value & 0xFFFF
-
-    def _write_dma_ch2(self, reg: int, value: int):
-        """Write to DMA Channel 2 registers"""
-        if reg == 0:  # D2SAD - Source Address
-            self.d2sa = value
-        elif reg == 4:  # D2DAD - Destination Address
-            self.d2da = value
-        elif reg == 8:  # D2RL - Repeat Length
-            self.d2rl = value
-        elif reg == 12:  # D2CNT_H - Control High
-            self.d2cr = value & 0xFFFF
-
-    def dma_transfer(self, channel: int, count: int):
-        """Perform DMA transfer from ROM to audio buffer"""
-        if self._mem is None:
-            return
-        rom_base = 0x08000000
-        for i in range(count):
-            addr = rom_base + (channel * 0x1000) + (i * 4)
-            sample = self._mem.read_u32(addr) & 0xFF
-            if channel == 0:
-                self.fifo_a.write(sample)
-            else:
-                self.fifo_b.write(sample)
-
-    def fifo_write(self, channel: int, sample: int):
-        """Write a sample to the specified FIFO channel
-
-        Args:
-            channel: 0 for FIFO A, 1 for FIFO B
-            sample: 8-bit audio sample
-        """
-        if channel == 0:
-            self.fifo_a.write(sample)
-        else:
-            self.fifo_b.write(sample)
-
-    def fifo_read(self, channel: int) -> int:
-        """Read a sample from the specified FIFO channel
-
-        Args:
-            channel: 0 for FIFO A, 1 for FIFO B
-        Returns:
-            8-bit audio sample, or 0 if FIFO is empty
-        """
-        if channel == 0:
-            return self.fifo_a.read()
-        else:
-            return self.fifo_b.read()
-
-    def fifo_is_empty(self, channel: int) -> bool:
-        """Check if the specified FIFO is empty
-
-        Args:
-            channel: 0 for FIFO A, 1 for FIFO B
-        Returns:
-            True if FIFO is empty, False otherwise
-        """
-        if channel == 0:
-            return self.fifo_a.is_empty
-        else:
-            return self.fifo_b.is_empty
-
-    def fifo_size(self, channel: int) -> int:
-        """Get current size of the specified FIFO
-
-        Args:
-            channel: 0 for FIFO A, 1 for FIFO B
-        Returns:
-            Number of bytes currently in FIFO (0-8)
-        """
-        if channel == 0:
-            return self.fifo_a.size
-        else:
-            return self.fifo_b.size
 
     def step(self):
         """Advance audio by one sample cycle"""

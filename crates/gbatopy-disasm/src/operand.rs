@@ -108,4 +108,23 @@ impl Operand {
             Operand::Label(s) => s.clone(),
         }
     }
+
+    pub fn to_python(&self) -> String {
+        match self {
+            Operand::Register(r) => format!("r{}", r),
+            Operand::Immediate(i) => i.to_string(),
+            Operand::ShiftedRegister { reg, shift, amount } => {
+                let amount_str = match amount {
+                    ShiftAmount::Immediate(v) => format!(", {}", v),
+                    ShiftAmount::Register(r) => format!(", r{}", r),
+                };
+                format!("r{}{}{}", reg, shift.name(), amount_str)
+            }
+            Operand::MemoryAddress { base, offset, .. } => {
+                format!("[r{}, {:?}]", base, offset)
+            }
+            Operand::PcRelative(offset) => format!("pc + {}", offset),
+            Operand::Label(s) => s.clone(),
+        }
+    }
 }

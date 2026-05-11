@@ -1,6 +1,5 @@
 // Old codegen modules removed - PyBoyAdvance pipeline doesn't need ARM/Thumb codegen
 // This module is kept for potential future use but currently empty
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

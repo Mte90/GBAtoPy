@@ -206,8 +206,36 @@ else
     fi
 fi
 
-# 15. nba-emu/NanoBoyAdvance (Test matrix)
-echo -e "\n${GREEN}[15/16] nba-emu/NanoBoyAdvance (test matrix)${NC}"
+# 15. velipso/gba-sound-demo (Audio demos - song, rates)
+echo -e "\n${GREEN}[15/17] velipso/gba-sound-demo (audio demos)${NC}"
+if [ -d "gba-sound-demo" ] && [ "$(ls -A gba-sound-demo 2>/dev/null)" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    rm -rf gba-sound-demo 2>/dev/null || true
+    if git clone --depth 1 https://github.com/velipso/gba-sound-demo.git 2>&1 | tail -1; then
+        echo -e "  ${GREEN}Cloned successfully${NC}"
+        # Copy ROMs to ROMS_DIR
+        for f in gba-sound-demo/song.gba gba-sound-demo/rates.gba; do
+            if [ -f "$f" ]; then
+                cp "$f" "$ROMS_DIR/"
+                echo -e "  ${GREEN}Copied: $(basename $f)${NC}"
+            fi
+        done
+        # Copy gvasm source files to SOURCES_DIR
+        mkdir -p "$SOURCES_DIR/gba-sound-demo"
+        for f in gba-sound-demo/*.gvasm; do
+            if [ -f "$f" ]; then
+                cp "$f" "$SOURCES_DIR/gba-sound-demo/"
+                echo -e "  ${GREEN}Source: $(basename $f)${NC}"
+            fi
+        done
+    else
+        echo -e "  ${RED}Clone failed${NC}"
+    fi
+fi
+
+# 16. nba-emu/NanoBoyAdvance (Test matrix)
+echo -e "\n${GREEN}[16/17] nba-emu/NanoBoyAdvance (test matrix)${NC}"
 if [ -d "nba-emu" ] && [ "$(ls -A nba-emu 2>/dev/null)" ]; then
     echo -e "  ${GREEN}Already exists, skipping${NC}"
 else

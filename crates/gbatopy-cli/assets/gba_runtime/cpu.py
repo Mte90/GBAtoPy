@@ -505,3 +505,169 @@ class CPU:
             return True
 
         return True
+
+    # DEAD CODE: SWI handlers not used by runtime (runtime uses ARM7TDMI class from arm7tdmi.py)
+    def dump_registers(self, frame: int = None) -> dict:
+        """
+        Dump CPU register state to a dictionary.
+
+        Returns:
+            dict containing register values
+        """
+        return {
+            "timestamp": frame if frame is not None else "unknown",
+            "registers": [self.registers[i] for i in range(16)],
+            "cpsr_flags": {
+                "N": self.flag_n,
+                "Z": self.flag_z,
+                "C": self.flag_c,
+                "V": self.flag_v,
+                "T": self.thumb_mode,
+            },
+        }
+
+    def save_register_dump(self, dump: dict, filename: str = None) -> str:
+        """
+        Save register dump to JSON file.
+
+        Args:
+            dump: Register dump dictionary
+            filename: Optional filename (without extension)
+
+        Returns:
+            Path to saved file
+        """
+        import json
+        import os
+
+        dump_dir = os.environ.get("GBATOPY_DUMP_DIR", ".")
+        os.makedirs(dump_dir, exist_ok=True)
+
+        if filename is None:
+            filename = f"registers_{dump.get('timestamp', 'unknown')}"
+
+        filepath = os.path.join(dump_dir, f"{filename}.json")
+        with open(filepath, "w") as f:
+            json.dump(dump, f, indent=2)
+
+        return filepath
+
+
+class RegisterDump:
+    """Utility for dumping and comparing CPU register state."""
+
+    def __init__(self, cpu: "CPU"):
+        self.cpu = cpu
+        self.dump_dir = None
+
+    def set_dump_directory(self, directory: str):
+        """Set the output directory for dump files."""
+        self.dump_dir = directory
+
+    def dump_registers(self, frame: int = None) -> dict:
+        """
+        Dump CPU registers to a dictionary.
+
+        Returns:
+            dict containing register values
+        """
+        return self.cpu.dump_registers(frame)
+
+    def save_register_dump(self, dump: dict, filename: str = None) -> str:
+        """
+        Save register dump to JSON file.
+
+        Args:
+            dump: Register dump dictionary
+            filename: Optional filename (without extension)
+
+        Returns:
+            Path to saved file
+        """
+        import json
+        import os
+
+        if self.dump_dir is None:
+            raise ValueError("No dump directory set.")
+
+        if filename is None:
+            filename = f"registers_{dump.get('timestamp', 'unknown')}"
+
+        os.makedirs(self.dump_dir, exist_ok=True)
+
+        filepath = os.path.join(self.dump_dir, f"{filename}.json")
+        with open(filepath, "w") as f:
+            json.dump(dump, f, indent=2)
+
+        return filepath
+
+    def compare_registers(self, regs1: dict, regs2: dict) -> dict:
+        """
+        Compare two register dumps.
+
+        Args:
+            regs1: First register dump
+            regs2: Second register dump
+
+        Returns:
+            dict with comparison results
+        """
+        differences = []
+
+        if "registers" in regs1 and "registers" in regs2:
+            for i in range(len(regs1["registers"])):
+                if regs1["registers"][i] != regs2["registers"][i]:
+                    differences.append({
+                        "register": f"R{i}",
+                        "value1": regs1["registers"][i],
+                        "value2": regs2["registers"][i],
+                    })
+
+        if "cpsr_flags" in regs1 and "cpsr_flags" in regs2:
+            for flag in ["N", "Z", "C", "V", "T"]:
+                val1 = regs1["cpsr_flags"].get(flag, False)
+                val2 = regs2["cpsr_flags"].get(flag, False)
+                if val1 != val2:
+                    differences.append({
+                        "register": f"CPSR.{flag}",
+                        "value1": val1,
+                        "value2": val2,
+                    })
+
+        return {
+            "differences_found": len(differences),
+            "differences": differences,
+        }
+
+    def save_diff_report(self, comparison: dict, filename: str = None) -> str:
+        """
+        Save register comparison report to text file.
+
+        Args:
+            comparison: Result of compare_registers()
+            filename: Optional filename (without extension)
+        """
+        import os
+        if self.dump_dir is None:
+            raise ValueError("No dump directory set.")
+
+        if filename is None:
+            filename = "register_comparison"
+
+        filepath = os.path.join(self.dump_dir, f"{filename}.txt")
+        with open(filepath, "w") as f:
+            f.write("Register Comparison Report\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Differences found: {comparison['differences_found']}\n\n")
+
+            if comparison["differences"]:
+                f.write("Differences:\n")
+                f.write("-" * 60 + "\n")
+                for diff in comparison["differences"]:
+                    f.write(f"\n{diff['register']}:\n")
+                    f.write(f"  - Value 1: {diff['value1']}\n")
+                    f.write(f"  - Value 2: {diff['value2']}\n")
+            else:
+                f.write("\nNo differences found.\n")
+
+        return filepath

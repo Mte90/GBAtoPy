@@ -94,6 +94,12 @@ impl ArmDecoder {
             0b010 | 0b011 => self.decode_load_store_imm(word, address),
             0b100 => self.decode_block_transfer(word, address),
             0b101 => self.decode_branch(word, address),
+            0b110 => (format!("COPROCESSOR"), vec![], false), // Coprocessor instructions (MCR, MRC, LDC, STC) - not used on GBA
+            0b111 => {
+                // SWI (Software Interrupt) - extract immediate value from bits 23:0
+                let swi_num = (word & 0xFFFFFF) as u32;
+                (format!("SWI"), vec![Operand::Immediate(swi_num)], false)
+            }
             _ => (format!("UNKNOWN_0b{:03b}", bits_27_25), vec![], false),
         };
 
@@ -265,13 +271,13 @@ impl ArmDecoder {
                 ],
                 false,
             )
-        } else if bits_27_24 == 0x1 && bits_23_21 == 0x1 && bits_7_4 == 0x0 {
-            let s_bit = (word >> 20) & 1 != 0;
+        } else if ((word >> 28) & 0xF) == 0xE && ((word >> 27) & 1) == 1 {
             let rd = ((word >> 12) & 0xF) as u8;
+            let sr = ((word >> 8) & 0xF) as u8;
             (
                 "MRS".to_string(),
-                vec![Operand::Register(rd), Operand::Immediate(0)],
-                s_bit,
+                vec![Operand::Register(rd), Operand::Immediate(sr as u32)],
+                false,
             )
         } else if (word >> 23) & 0x1F == 0x00011 {
             let s_bit = (word >> 20) & 1 != 0;

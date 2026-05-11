@@ -10,12 +10,12 @@ from .dma import DMA
 from .timers import Timers
 from .input import Input, KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT
 from .rom import ROM
-from .interrupts import InterruptController, set_vblank_flag
+from .interrupts import InterruptController
 from .exceptions import GBARuntimeError, InvalidROMError
 from .arm7tdmi import ARM7TDMI
-from .bios import BIOS
+from .arm7tdmi import ISRHandler
 
-from .text_lib import text_init, text_color, text_glyph_data, text_glyph, text_char, GLYPHS
+from .text_lib import text_init, text_color, m_vsync, text_glyph_data, text_glyph, text_char, GLYPHS
 from .screenshot import auto_capture_screenshot, get_capture_output_path
 
 # Global runtime state
@@ -68,18 +68,22 @@ def create_runtime():
     memory = Memory()
     ppu = PPU()
     apu = APU()
-    irq = InterruptController()
-    dma = DMA(memory, irq)
+    dma = DMA()
     timers = Timers()
     input = Input()
     irq = InterruptController()
-
+    
+    # Create ISR handler and setup in IWRAM
+    isr_handler = ISRHandler(memory, irq)
+    
     memory.attach_ppu(ppu)
     memory.attach_apu(apu)
     memory.attach_dma(dma)
     memory.attach_timers(timers)
     memory.attach_input(input)
     memory.attach_interrupts(irq)
+    timers.attach_interrupts(irq)
+    memory.setup_isr_handler(isr_handler)
 
     cpu = ARM7TDMI(memory)
 
@@ -131,13 +135,6 @@ def load_assets():
                 # Load tilemap
                 if hasattr(assets, "TILEMAP"):
                     memory.write_vram(0x06001800, assets.TILEMAP)
-
-                # Parse assets after loading into VRAM
-                if _runtime is not None:
-                    ppu = _runtime["ppu"]
-                    ppu.parse_tiles_4bpp()
-                    ppu.parse_palette()
-                    ppu.parse_tilemap()
     except ImportError:
         pass  # No assets loaded, will be handled by generated code
 
@@ -160,8 +157,12 @@ def main_entry(
     print(f"Frames: {frames}")
     print(f"Headless: {headless}")
 
-    # STEP 1: Initialize pygame
-    print("\n[1/6] Initializing pygame...")
+    # STEP 1: Load assets FIRST (before pygame init)
+    print("\n[1/6] Loading assets...")
+    load_assets()
+
+    # STEP 2: Initialize pygame
+    print("[2/6] Initializing pygame...")
     pygame.init()
 
     if not headless:
@@ -198,29 +199,6 @@ def main_entry(
     generated = importlib.util.module_from_spec(spec)
     sys.modules["generated_rom"] = generated
     spec.loader.exec_module(generated)
-
-    # Load assets from generated module (after it's executed)
-    if (
-        hasattr(generated, "PALETTE_BG")
-        or hasattr(generated, "TILES_4BPP")
-        or hasattr(generated, "TILEMAP")
-    ):
-        print("  Loading assets from generated ROM...")
-        _runtime = create_runtime()
-        memory = _runtime["memory"]
-        ppu = _runtime["ppu"]
-
-        if hasattr(generated, "PALETTE_BG") and generated.PALETTE_BG:
-            memory.write_palette(0, generated.PALETTE_BG)
-        if hasattr(generated, "TILES_4BPP") and generated.TILES_4BPP:
-            memory.write_vram(0x06000000, generated.TILES_4BPP)
-        if hasattr(generated, "TILEMAP") and generated.TILEMAP:
-            memory.write_vram(0x06001800, generated.TILEMAP)
-
-        # Parse assets after loading into VRAM
-        ppu.parse_tiles_4bpp()
-        ppu.parse_palette()
-        ppu.parse_tilemap()
 
     # Check if func_map exists and call entry point
     if hasattr(generated, "func_map") and 0x08000000 in generated.func_map:
@@ -291,9 +269,6 @@ def main_entry(
         if _screen is not None:
             ppu.render_frame()
 
-            # Set VBlank flag to allow ROMs waiting for VBlank to proceed
-            set_vblank_flag()
-
             # Copy PPU buffer to screen
             surface_data = ppu.get_surface_data()
             if surface_data is not None:
@@ -305,9 +280,31 @@ def main_entry(
         if not headless and _runtime is not None:
             apu.update()
 
+        # Advance timers and trigger timer DMA
+        if _runtime is not None:
+            _runtime["timers"].step(1540)
+            _runtime["dma"].timer_trigger(0)  # Timer triggers custom DMA
+
         # Trigger VBlank interrupt
         if _runtime is not None:
             _runtime["dma"].vblank_fire()
+            _runtime["dma"].hblank_fire()
+            
+            # Fire VBlank interrupt to set IF bit and check for dispatch
+            irq = _runtime["irq"]
+            irq.vblank_irq()  # This sets IF bit and calls handler if enabled
+            
+            # Check for pending interrupts and dispatch to ISR
+            if irq.has_pending_interrupt():
+                # Read ISR address from IWRAM (0x03007FFC)
+                isr_addr = _memory.read_u32(0x03007FFC)
+                if isr_addr != 0 and isr_addr != 0xFFFFFFFF:
+                    # Call ISR through func_map if registered
+                    if hasattr(generated, "func_map") and isr_addr in generated.func_map:
+                        try:
+                            generated.func_map[isr_addr]()
+                        except Exception as e:
+                            print(f"  WARNING: ISR raised exception: {e}")
 
         # VBlank simulation
         # Set z=1 to unblock VBlank wait loops

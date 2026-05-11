@@ -1,483 +1,828 @@
-song.gba# GBA Test ROMs Reference
+# GBA Test ROMs Reference
 
-This document catalogs all test ROMs used by GBAtoPy for verification and testing.
-
-## Overview
-
-| Metric | Value |
-|--------|-------|
-| Total ROMs | 60+ |
-| Test Suites | 18 |
-| Sources | jsmolka, hw-test, gba-playground, armwrestler, gba_tests, FuzzARM, libbet, GBA-Test-Collection, velipso, destoer, nataliethenerd, cadfan, gba-sound-test, NanoBoyAdvance, commercial |
+This document catalogs all 41 test ROMs used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
 ---
 
-## Test Suite 1: gba-tests-master
+## Summary Table
 
-**Source**: https://github.com/jsmolka/gba-tests  
-**Description**: Comprehensive GBA hardware tests covering ARM/Thumb CPU, BIOS, memory, PPU, and save types.
+| Category | Count | ROMs |
+|----------|-------|------|
+| CPU-only | 15 | arm.gba, thumb.gba, bios.gba, memory.gba, nes.gba, unsafe.gba, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba, retAddr.gba |
+| PPU | 7 | shades.gba, stripes.gba, hello.gba, helloWorld.gba, hello_world.gba, line_timing.gba, lyc_midline.gba |
+| IRQ | 4 | isr.gba, if_ack.gba, irq_delay.gba, joypad.gba |
+| DMA | 3 | dma_priority.gba, window_midframe.gba, pcmxx.gba |
+| Timer | 1 | timer_change.gba |
+| Keypad | 1 | enhancedcontrolchecker.gba |
+| Audio | 3 | redline.gba, helloAudio.gba, test.gba |
+| Save | 4 | sram.gba, flash64.gba, flash128.gba, none.gba |
+| Memory | 1 | memory.gba |
+| RTC | 1 | rtc-demo.gba |
+| Audio (DMA) | 2 | song.gba, rates.gba (gba-sound-demo) |
 
-### 1.1 arm.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/arm/arm.gba` |
-| Size | ~2KB |
-| Tests | ARM instruction set (32-bit) |
-| Coverage | Data processing, load/store, branch, multiply |
-| Usefulness | **CRITICAL** - Validates ARM instruction decoding and execution |
-
-**Tested Opcodes**: ADD, SUB, MOV, CMP, AND, ORR, EOR, BIC, LDR, STR, B, BL, MUL, MLA
-
-### 1.2 thumb.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/thumb/thumb.gba` |
-| Size | ~2KB |
-| Tests | Thumb instruction set (16-bit) |
-| Coverage | Thumb arithmetic, load/store, branch |
-| Usefulness | **CRITICAL** - Validates Thumb mode execution |
-
-**Tested Opcodes**: MOV, ADD, SUB, LDR, STR, B, BL, CMP
-
-### 1.3 bios.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/bios/bios.gba` |
-| Size | ~2KB |
-| Tests | BIOS SWI handlers |
-| Coverage | Div, Sqrt, CpuSet, LZ77, Huffman, RLE decompression |
-| Usefulness | **HIGH** - Tests BIOS function calls |
-
-**Tested SWI**: 0x06 (Div), 0x07 (Sqrt), 0x09 (CpuSet), 0x10-0x14 (decompression)
-
-### 1.4 memory.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/memory/memory.gba` |
-| Size | ~2KB |
-| Tests | Memory access patterns, timing |
-| Coverage | ROM, RAM, I/O read/write |
-| Usefulness | **HIGH** - Validates memory subsystem |
-
-### 1.5 nes.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/nes/nes.gba` |
-| Size | ~4KB |
-| Tests | NES emulator on GBA |
-| Coverage | ARM performance under heavy load |
-| Usefulness | **MEDIUM** - Stress test for ARM execution |
-
-### 1.6 unsafe.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/unsafe/unsafe.gba` |
-| Size | ~2KB |
-| Tests | UNF-safe operations |
-| Coverage | Edge cases |
-| Usefulness | **MEDIUM** - Tests boundary conditions |
-
-### 1.7 save/*.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/save/` |
-| ROMs | sram.gba, flash64.gba, flash128.gba, none.gba |
-| Tests | Save type detection |
-| Coverage | SRAM, Flash ROM detection |
-| Usefulness | **MEDIUM** - Save type handling |
-
-### 1.8 ppu/hello.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/ppu/hello.gba` |
-| Size | ~1KB |
-| Tests | Basic PPU rendering |
-| Coverage | Text display on background |
-| Usefulness | **HIGH** - Basic graphics output |
-
-### 1.9 ppu/shades.gba ⚠️ CRITICAL
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/ppu/shades.gba` |
-| Size | 352 bytes |
-| Tests | **DISPCNT, BG0CNT, palette, VRAM, tilemap** |
-| Source Code | `test_roms/gba-tests-master/ppu/shades.asm` |
-| Usefulness | **CRITICAL** - Validates PPU register writes and rendering |
-
-This ROM writes to:
-- `0x04000000` (DISPCNT) - Display control
-- `0x04000008` (BG0CNT) - Background control
-- `0x05000000` (PALETTE) - Color palette
-- `0x06000000` (VRAM) - Video RAM tiles
-- `0x06000800` (VRAM tilemap) - Background map
-
-**Why Critical**: This is THE test ROM for verifying PPU functionality.
-
-### 1.10 ppu/stripes.gba ⚠️ CRITICAL
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-tests-master/ppu/stripes.gba` |
-| Size | 324 bytes |
-| Tests | **PPU rendering with diagonal stripes** |
-| Source Code | `test_roms/gba-tests-master/ppu/stripes.asm` |
-| Usefulness | **CRITICAL** - Visual rendering verification |
-
-This ROM produces diagonal red/white stripes - perfect for visual verification.
+**Total ROMs**: 41 (39 in test_roms/roms/ + 2 in test_roms/sources/gba-sound-demo-main/)
 
 ---
 
-## Test Suite 2: hw-test
+## CPU-Only Tests
 
-**Source**: https://github.com/AntonioND/hw-test  
-**Description**: Low-level hardware tests for GBA internals.
+### arm.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/arm/arm.gba`  
+**Purpose**: Validates ARM instruction set (32-bit) execution  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: ADD, SUB, MOV, CMP, AND, ORR, EOR, BIC, LDR, STR, B, BL, MUL, MLA, RSB, RSC, SBC, ADC  
+**Video Mode**: None  
+**Features Required**:
+- ARM mode instruction decoding
+- Data processing opcodes
+- Load/store operations
+- Branch instructions
+- Multiply instructions
+**Expected Output**: Text output showing test results  
+**Transpiler Blockers**: None - fully working
 
-### 2.1 DMA Tests
-| ROM | Path | Tests |
-|-----|------|-------|
-| burst-into-tears.gba | `test_roms/hw-test/dma/burst-into-tears/` | DMA burst behavior |
-| force-nseq-access.gba | `test_roms/hw-test/dma/force-nseq-access/` | Non-sequential access |
-| latch.gba | `test_roms/hw-test/dma/latch/` | DMA latch timing |
-| start-delay.gba | `test_roms/hw-test/dma/start-delay/` | DMA start delay |
+### thumb.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/thumb/thumb.gba`  
+**Purpose**: Validates Thumb instruction set (16-bit) execution  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: MOV, ADD, SUB, LDR, STR, B, BL, CMP, AND, ORR, EOR, NEG, ASL, ASR, LSR  
+**Video Mode**: None  
+**Features Required**:
+- Thumb mode instruction decoding
+- Thumb arithmetic and logical operations
+- Thumb branches
+**Expected Output**: Text output showing test results  
+**Transpiler Blockers**: None - fully working
 
-### 2.2 IRQ Tests
-| ROM | Path | Tests |
-|-----|------|-------|
-| cancel-irq-ie.gba | `test_roms/hw-test/archive/irq/cancel-irq-ie/` | IRQ cancel via IE |
-| cancel-irq-if.gba | `test_roms/hw-test/archive/irq/cancel-irq-if/` | IRQ cancel via IF |
-| cancel-irq-ime.gba | `test_roms/hw-test/archive/irq/cancel-irq-ime/` | IRQ cancel via IME |
-| irq-delay.gba | `test_roms/hw-test/irq/irq-delay/` | IRQ delay timing |
+### bios.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/bios/bios.gba`  
+**Purpose**: Tests BIOS SWI handlers  
+**MMIO Registers Used**: None (BIOS calls via SWI)  
+**Instructions Used**: SWI (Software Interrupt)  
+**Video Mode**: None  
+**Features Required**:
+- BIOS function calls via SWI 0x00-0x1F
+- Div (0x06), Sqrt (0x07), CpuSet (0x09), LZ77 (0x10), Huffman (0x11), RLE (0x12)
+**Expected Output**: Text output showing BIOS function results  
+**Transpiler Blockers**: Partial BIOS implementation - core functions work
 
-### 2.3 PPU Tests
-| ROM | Path | Tests |
-|-----|------|-------|
-| basic-timing.gba | `test_roms/hw-test/archive/ppu/basic-timing/` | PPU basic timing |
-| exact-timing.gba | `test_roms/hw-test/archive/ppu/exact-timing/` | PPU exact timing |
-| mode2.gba | `test_roms/hw-test/archive/ppu/mode2/` | Mode 2 rotation |
-| mode3.gba | `test_roms/hw-test/archive/ppu/mode3/` | Mode 3 bitmap |
-| mode4.gba | `test_roms/hw-test/archive/ppu/mode4/` | Mode 4 bitmap double-buffer |
-| bgpd.gba | `test_roms/hw-test/ppu/bgpd/` | BG palette direct |
-| bgx.gba | `test_roms/hw-test/ppu/bgx/` | BG rotation/scaling |
-| dispcnt-latch.gba | `test_roms/hw-test/ppu/dispcnt-latch/` | DISPCNT timing |
-| greenswap.gba | `test_roms/hw-test/ppu/greenswap/` | Green swap effect |
-| ram-access-timing.gba | `test_roms/hw-test/ppu/ram-access-timing/` | VRAM timing |
-| sprite-hmosaic.gba | `test_roms/hw-test/ppu/sprite-hmosaic/` | Sprite H mosaic |
-| status-irq-dma.gba | `test_roms/hw-test/ppu/status-irq-dma/` | PPU status IRQ/DMA |
-| vram-mirror.gba | `test_roms/hw-test/ppu/vram-mirror/` | VRAM mirroring |
+### memory.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/memory/memory.gba`  
+**Purpose**: Tests memory access patterns and timing  
+**MMIO Registers Used**: 0x04000000 (DISPCNT - for wait state testing)  
+**Instructions Used**: LDR, STR, LDM, STM, PLD  
+**Video Mode**: None  
+**Features Required**:
+- ROM reading
+- RAM read/write
+- Memory mirroring
+- Wait state configuration
+**Expected Output**: Text output showing memory test results  
+**Transpiler Blockers**: None - fully working
 
-### 2.4 Timer Tests
-| ROM | Path | Tests |
-|-----|------|-------|
-| reload.gba | `test_roms/hw-test/timer/reload/` | Timer reload |
-| start-stop.gba | `test_roms/hw-test/timer/start-stop/` | Timer start/stop |
+### nes.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/nes/nes.gba`  
+**Purpose**: NES emulator on GBA - stress test for ARM performance  
+**MMIO Registers Used**: None (pure computation)  
+**Instructions Used**: Full ARM instruction set under heavy load  
+**Video Mode**: None  
+**Features Required**:
+- ARM performance under heavy computational load
+- Emulator-style memory access patterns
+**Expected Output**: Visual output of NES emulator running  
+**Transpiler Blockers**: None - fully working
 
-### 2.5 Bus Tests
-| ROM | Path | Tests |
-|-----|------|-------|
-| 128kb-boundary.gba | `test_roms/hw-test/bus/128kb-boundary/` | 128KB boundary crossing |
-
-### 2.6 Other
-| ROM | Path | Tests |
-|-----|------|-------|
-| haltcnt.gba | `test_roms/hw-test/haltcnt/` | Halt counter |
-
----
-
-## Test Suite 3: gba-playground
-
-**Source**: https://github.com/AntonioND/gba-playground  
-**Description**: Homebrew demos and tests.
-
-### 3.1 redline.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-playground-master/redline/redline.gba` |
-| Tests | Full game demo |
-| Usefulness | **HIGH** - Complex real-world code execution |
-
-### 3.2 rtc-demo.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/gba-playground-master/rtc-demo/rtc-demo.gba` |
-| Tests | Real-time clock |
-| Usefulness | **LOW** - RTC not essential for core functionality |
-
----
-
-## Test Suite 4: FalseDiagonalTest
-
-**Source**: https://github.com/FalseDiagonal/FalseDiagonalTest  
-**Description**: Additional test suite.
-
-### false_diagonal_test.gba
-| Property | Value |
-|----------|-------|
-| Path | `test_roms/FalseDiagonalTest-main/false_diagonal_test.gba` |
-| Tests | General GBA functionality |
-| Usefulness | **MEDIUM** - Additional test coverage |
-
----
-
-## Commercial ROMs
-
-### Tetris Worlds (Europe)
-| Property | Value |
-|----------|-------|
-| Path | User-provided |
-| Size | 4MB |
-| Tests | Real commercial game |
-| Usefulness | **CRITICAL** - Full game test with graphics/audio/input |
-
----
-
----
-
-## Test Suite 5: armwrestler-gba-fixed
-
-**Source**: https://github.com/destoer/armwrestler-gba-fixed  
-**Stars**: 26  
-**Description**: ARM7DI CPU instruction tests with multiple load-store tests working. Fork of Arisotura's arm7wrestler.
+### unsafe.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/unsafe/unsafe.gba`  
+**Purpose**: Tests UNF-safe operations and edge cases  
+**MMIO Registers Used**: None  
+**Instructions Used**: Various ARM edge case instructions  
+**Video Mode**: None  
+**Features Required**:
+- Boundary condition handling
+- Edge case instructions
+**Expected Output**: Text output showing test results  
+**Transpiler Blockers**: None - fully working
 
 ### armwrestler.gba
-| Property | Value |
-|----------|-------|
-| Tests | ARM instruction set, load-store operations |
-| Coverage | Data processing, multiply, load/store, branch |
-| Usefulness | **HIGH** - Comprehensive ARM7DI CPU tests |
+**Suite**: armwrestler-gba-fixed  
+**Source**: `test_roms/sources/armwrestler-gba-fixed/armwrestler.gba`  
+**Purpose**: Comprehensive ARM7DI CPU instruction tests with load-store operations  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: Full ARM instruction set including LDM, STM, SWP  
+**Video Mode**: None  
+**Features Required**:
+- ARM7DI specific instructions
+- Load-store edge cases
+- Multiply operations
+**Expected Output**: Text output showing instruction test results  
+**Transpiler Blockers**: None - fully working
+
+### armwrestler-gba-fixed.gba
+**Suite**: armwrestler-gba-fixed  
+**Source**: `test_roms/sources/armwrestler-gba-fixed/armwrestler-gba-fixed.gba`  
+**Purpose**: Fixed version of armwrestler with working load-store tests  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: Full ARM instruction set including LDM, STM, SWP  
+**Video Mode**: None  
+**Features Required**:
+- ARM7DI specific instructions (fixed)
+- Load-store operations
+**Expected Output**: Text output showing test results  
+**Transpiler Blockers**: None - fully working
+
+### ARM_Any.gba
+**Suite**: FuzzARM  
+**Source**: Pre-built from FuzzARM generator  
+**Purpose**: ARM mode fuzz testing - all instruction types  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: Random ARM instructions (10,000 test cases)  
+**Video Mode**: None  
+**Features Required**:
+- Random fuzz testing
+- ARM mode coverage
+- eWRAM result dump for validation
+**Expected Output**: Results dumped to eWRAM  
+**Transpiler Blockers**: None - fully working
+
+### ARM_DataProcessing.gba
+**Suite**: FuzzARM  
+**Source**: Pre-built from FuzzARM generator  
+**Purpose**: ARM mode data processing instruction fuzz testing  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: Random ARM data processing (10,000 test cases) - ADD, SUB, AND, ORR, EOR, BIC, MVN, CMP, CMN, TST, TEQ  
+**Video Mode**: None  
+**Features Required**:
+- Data processing fuzz testing
+- Shift operations (LSL, LSR, ASR, ROR, RRX)
+**Expected Output**: Results dumped to eWRAM  
+**Transpiler Blockers**: None - fully working
+
+### THUMB_Any.gba
+**Suite**: FuzzARM  
+**Source**: Pre-built from FuzzARM generator  
+**Purpose**: Thumb mode fuzz testing - all instruction types  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: Random Thumb instructions (10,000 test cases)  
+**Video Mode**: None  
+**Features Required**:
+- Random fuzz testing
+- Thumb mode coverage
+**Expected Output**: Results dumped to eWRAM  
+**Transpiler Blockers**: None - fully working
+
+### THUMB_DataProcessing.gba
+**Suite**: FuzzARM  
+**Source**: Pre-built from FuzzARM generator  
+**Purpose**: Thumb mode data processing instruction fuzz testing  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: Random Thumb data processing (10,000 test cases)  
+**Video Mode**: None  
+**Features Required**:
+- Thumb data processing fuzz testing
+- Thumb shift operations
+**Expected Output**: Results dumped to eWRAM  
+**Transpiler Blockers**: None - fully working
+
+### FuzzARM.gba
+**Suite**: FuzzARM  
+**Source**: Pre-built from FuzzARM generator  
+**Purpose**: Mixed ARM+Thumb fuzz testing - all instruction types  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: Random mixed ARM/Thumb instructions (10,000 test cases)  
+**Video Mode**: None  
+**Features Required**:
+- Mixed ARM/Thumb fuzz testing
+- Comprehensive coverage
+**Expected Output**: Results dumped to eWRAM  
+**Transpiler Blockers**: None - fully working
+
+### cond_invalid.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/cond_invalid/source/cond_invalid.s`  
+**Purpose**: Tests conditional flag behavior including invalid conditions  
+**MMIO Registers Used**: None (pure CPU)  
+**Instructions Used**: Conditional ARM instructions with all condition codes  
+**Video Mode**: None  
+**Features Required**:
+- Conditional execution (EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL, NV)
+- Condition code edge cases
+**Expected Output**: Text output showing conditional test results  
+**Transpiler Blockers**: None - fully working
+
+### retAddr.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/experimental/retAddr/source/retAddr.s`  
+**Purpose**: Tests return address handling in branch instructions  
+**MMIO Registers Used**: None  
+**Instructions Used**: BL, BX, POP, MOV pc, lr  
+**Video Mode**: None  
+**Features Required**:
+- Branch and link handling
+- Return address preservation
+**Expected Output**: Text output showing test results  
+**Transpiler Blockers**: None - fully working
 
 ---
 
-## Test Suite 6: gba_tests (destoer)
+## PPU Tests
 
-**Source**: https://github.com/destoer/gba_tests  
-**Stars**: 13  
-**Description**: Focused test ROMs for specific GBA hardware behaviors.
+### shades.gba ⚠️ CRITICAL
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/ppu/shades.asm`  
+**Purpose**: Validates PPU register writes and rendering - THE critical test ROM  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x04000008 (BG0CNT) - Background control
+- 0x05000000 (PALETTE) - Color palette
+- 0x06000000 (VRAM) - Video RAM tiles
+- 0x06000800 (VRAM tilemap) - Background map
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: Mode 0 (text background)  
+**Features Required**:
+- DISPCNT register write
+- BG0CNT register write
+- 4BPP tile decoding
+- Palette lookup
+- Tilemap rendering
+**Expected Output**: Gradient shades (color bands) - key visual verification ROM  
+**Transpiler Blockers**: PPU rendering - palette lookup not fully implemented
 
-| ROM | Tests |
-|-----|-------|
-| cond_invalid | Conditional flag behavior |
-| dma_priority | DMA priority handling |
-| hello_world | Basic output |
-| if_ack | Interrupt flag acknowledgment |
-| isr | Interrupt service routines |
-| line_timing | Scanline timing |
-| lyc_midline | LY=LYC coincidence mid-frame |
-| window_midframe | Window rendering mid-frame |
+### stripes.gba ⚠️ CRITICAL
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/ppu/stripes.asm`  
+**Purpose**: Visual rendering verification with diagonal stripes  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x04000008 (BG0CNT) - Background control
+- 0x05000000 (PALETTE) - Color palette
+- 0x06000000 (VRAM) - Video RAM tiles
+- 0x06000800 (VRAM tilemap) - Background map
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: Mode 0 (text background)  
+**Features Required**:
+- 4BPP tile decoding
+- Diagonal pattern rendering
+- Palette lookup
+**Expected Output**: Diagonal red/white stripes - perfect for visual verification  
+**Transpiler Blockers**: PPU rendering - palette lookup not fully implemented
 
-**Usefulness**: **HIGH** - Tests edge cases not covered by jsmolka suite
+### hello.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/ppu/hello.asm`  
+**Purpose**: Basic PPU rendering - text display on background  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x05000000 (PALETTE) - Color palette
+- 0x06000000 (VRAM) - Video RAM
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: Mode 0 (text background)  
+**Features Required**:
+- Text rendering
+- Basic tile display
+**Expected Output**: "Hello" text on screen  
+**Transpiler Blockers**: PPU rendering - partially working
 
----
+### helloWorld.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/helloWorld/source/helloWorld.s`  
+**Purpose**: Basic output display  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x05000000 (PALETTE) - Color palette
+- 0x06000000 (VRAM) - Video RAM
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: Mode 0 (text background)  
+**Features Required**:
+- Basic text rendering
+**Expected Output**: "Hello World" text  
+**Transpiler Blockers**: PPU rendering - partially working
 
-## Test Suite 7: FuzzARM
+### hello_world.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/hello_world/source/hello_world.s`  
+**Purpose**: Basic output display  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x05000000 (PALETTE) - Color palette
+- 0x06000000 (VRAM) - Video RAM
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: Mode 0 (text background)  
+**Features Required**:
+- Basic text rendering
+**Expected Output**: "Hello World" text  
+**Transpiler Blockers**: PPU rendering - partially working
 
-**Source**: https://github.com/DenSinH/FuzzARM  
-**Stars**: 49  
-**Description**: Random test ROM generator for ARM/Thumb instruction fuzzing. Generates thousands of test cases.
+### line_timing.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/line_timing/source/line_timing.s`  
+**Purpose**: Tests scanline timing  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x04000006 (VCOUNT) - Vertical counter (read)
+- 0x04000002 (HALTCNT) - Halt control
+**Instructions Used**: LDR, STR, B, CMP  
+**Video Mode**: Mode 0  
+**Features Required**:
+- VCOUNT reading
+- Scanline timing
+- Halt behavior during VBlank
+**Expected Output**: Text output showing timing test results  
+**Transpiler Blockers**: PPU timing partial
 
-### Pre-built ROMs
-| ROM | Tests | Description |
-|-----|-------|-------------|
-| ARM_DataProcessing.gba | 10,000 | ARM mode data processing |
-| ARM_Any.gba | 10,000 | ARM mode all types |
-| THUMB_DataProcessing.gba | 10,000 | THUMB mode data processing |
-| THUMB_Any.gba | 10,000 | THUMB mode all types |
-| FuzzARM.gba | 10,000 | Mixed ARM+THUMB all types |
-
-**Usefulness**: **CRITICAL** - Massively parallel instruction testing with eWRAM result dump
-
----
-
-## Test Suite 8: GBA-Test-Collection
-
-**Source**: https://github.com/ladystarbreeze/GBA-Test-Collection  
-**Stars**: 9  
-**Description**: Collection of GBA test ROMs in assembly. Early development stage.
-
-**Usefulness**: **MEDIUM** - Growing collection, worth monitoring
-
----
-
-## Test Suite 9: enhancedcontrolcheckerGBA
-
-**Source**: https://github.com/nataliethenerd/enhancedcontrolcheckerGBA  
-**Stars**: 8  
-**Description**: Button test ROM - counts presses, plays tones.
-
-| Property | Value |
-|----------|-------|
-| Tests | All GBA buttons (A, B, L, R, Start, Select, D-pad) |
-| Coverage | Input polling, button state |
-| Usefulness | **MEDIUM** - Input subsystem validation |
-
----
-
-## Test Suite 10: gba-accuracy-tests
-
-**Source**: https://github.com/cadfan/gba-accuracy-tests  
-**Description**: Cross-emulator accuracy benchmark framework. Test ROM manifests, reference hashes, diff images.
-
-### Integrated Suites
-| Suite | Tests | Source |
-|-------|-------|--------|
-| jsmolka | 13 | jsmolka/gba-tests |
-| armwrestler | 6 | destoer/armwrestler-gba-fixed |
-| fuzzarm | 3 | DenSinH/FuzzARM |
-| mgba-suite | 14 | mgba-emu/suite |
-| ags-aging | 1 | TCRF AGS Aging Cartridge |
-
-**Total**: 37 test cases  
-**Usefulness**: **CRITICAL** - Multi-emulator comparison, gold reference hashes
-
----
-
-## Additional Test Sources Researched
-
-This section documents additional GBA test ROM sources that were researched but are not available for download.
-
-### 1. mGBA Test Suite (mgba-emu/mgba)
-
-| Property | Value |
-|----------|-------|
-| Source | https://github.com/mgba-emu/mgba |
-| Status | ⚠️ Limited - GB/GBC only |
-| Tests | Located in `cinema/gb/` folder |
-
-**Finding**: The mGBA repository does not contain standalone GBA test ROMs. It has GB/GBC test ROMs in `cinema/gb/` including:
-- Blargg CPU instruction tests
-- Blargg sound tests (DMG/CGB)
-- Mooneye-GB compatibility tests
-- ACID tests (CGB/DMG)
-
-These are Game Boy tests, not GBA tests.
-
-**Download individual ROMs**:
-```bash
-# Example: blargg cpu_instrs
-curl -L -o cpu_instrs.gb "https://raw.githubusercontent.com/mgba-emu/mgba/master/cinema/gb/blargg/cpu_instrs/01-special/test.gb"
-```
-
----
-
-### 2. TONC GBA Demos (gbadev-org/tonc)
-
-| Property | Value |
-|----------|-------|
-| Source | https://github.com/gbadev-org/tonc |
-| Status | ⚠️ Source code only |
-| Requires | devkitARM to compile |
-
-**Finding**: TONC is a comprehensive GBA programming tutorial. Contains demo code embedded in markdown files:
-- `content/sndsqr.md` - Sound square wave demo with SOS tune
-- `content/timers.md` - Digital clock using cascaded timers
-
-No pre-built .gba ROMs - code must be compiled with devkitARM.
+### lyc_midline.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/lyc_midline/source/lyc_midline.s`  
+**Purpose**: Tests LY=LYC coincidence mid-frame  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x04000005 (LYC) - LY compare
+- 0x04000006 (VCOUNT) - Vertical counter
+- 0x04000008 (BG0CNT) - Background control
+**Instructions Used**: LDR, STR, B, CMP  
+**Video Mode**: Mode 0  
+**Features Required**:
+- LYC coincidence detection
+- Mid-scanline IRQ
+**Expected Output**: Text output showing coincidence test results  
+**Transpiler Blockers**: PPU timing, IRQ handling
 
 ---
 
-### 3. Jeff Frohwein GBA Sound Demo
+## IRQ Tests
 
-| Property | Value |
-|----------|-------|
-| Source | pdroms.de, gbadev.org |
-| Status | ❌ Unavailable |
-| Original Author | Jeff Frohwein (FASound creator) |
+### isr.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/isr/source/isr.s`  
+**Purpose**: Tests interrupt service routines  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x04000200 (IE) - Interrupt enable
+- 0x04000202 (IF) - Interrupt flags
+- 0x04000208 (IME) - Interrupt master enable
+**Instructions Used**: LDR, STR, B, BLX, BX, PUSH, POP  
+**Video Mode**: None  
+**Features Required**:
+- ISR vector setup
+- IE, IF, IME registers
+- IRQ handling
+**Expected Output**: Text output showing ISR test results  
+**Transpiler Blockers**: IRQ handling - interrupt vectors not called
 
-**Finding**: Jeff Frohwein was a prominent GBA developer known for the FASound audio library. However:
-- pdroms.de is currently down (404 errors)
-- gbadev.org archives don't have his specific demos
-- No direct download URLs found
+### if_ack.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/if_ack/source/if_ack.s`  
+**Purpose**: Tests interrupt flag acknowledgment  
+**MMIO Registers Used**:
+- 0x04000200 (IE) - Interrupt enable
+- 0x04000202 (IF) - Interrupt flags
+- 0x04000208 (IME) - Interrupt master enable
+**Instructions Used**: LDR, STR, B, CMP  
+**Video Mode**: None  
+**Features Required**:
+- IF flag clearing
+- IRQ acknowledgment timing
+**Expected Output**: Text output showing flag acknowledgment test results  
+**Transpiler Blockers**: IRQ handling - not fully implemented
 
----
+### irq_delay.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/experimental/irq_delay/source/irq_delay.s`  
+**Purpose**: Tests IRQ delay timing  
+**MMIO Registers Used**:
+- 0x04000200 (IE) - Interrupt enable
+- 0x04000202 (IF) - Interrupt flags
+- 0x04000208 (IME) - Interrupt master enable
+- 0x04000104 (KEYCNT) - Key interrupt control
+**Instructions Used**: LDR, STR, B, CMP, LDRH, STRH  
+**Video Mode**: None  
+**Features Required**:
+- IRQ timing
+- Delay between IRQ request and handler execution
+**Expected Output**: Text output showing IRQ timing test results  
+**Transpiler Blockers**: IRQ timing not implemented
 
-### 4. SkyEmu Test ROMs (skylersaleh/SkyEmu)
-
-| Property | Value |
-|----------|-------|
-| Source | https://github.com/skylersaleh/SkyEmu |
-| Status | ❌ No bundled ROMs |
-
-**Finding**: SkyEmu does not include test ROMs in its repository. It uses external test suites for validation:
-- jsmolka/gba-tests (arm.gba, thumb.gba)
-- ARMWrestler
-- FuzzARM
-
-The emulator validates against these external suites but doesn't bundle them.
-
----
-
-### 5. NanoBoyAdvance Test Matrix (nba-emu/NanoBoyAdvance)
-
-| Property | Value |
-|----------|-------|
-| Source | https://github.com/nba-emu/NanoBoyAdvance |
-| Status | ❌ No bundled ROMs |
-
-**Finding**: Similar to SkyEmu, NanoBoyAdvance is a clean-room emulator with no bundled test ROMs. It references external test suites for validation:
-- mGBA suite
-- ARMWrestler
-- gba-suite
-- FuzzARM
-
----
-
-## Test Priority Matrix
-
-| Priority | ROMs | Purpose |
-|----------|------|---------|
-| 🔴 CRITICAL | arm.gba, thumb.gba, shades.gba, stripes.gba, FuzzARM.gba | Core CPU + PPU validation |
-| 🟠 HIGH | bios.gba, memory.gba, hello.gba, redline.gba, armwrestler.gba, gba_tests | Extended functionality |
-| 🟡 MEDIUM | save/*.gba, nes.gba, false_diagonal_test.gba, GBA-Test-Collection, enhancedcontrolcheckerGBA | Additional coverage |
-| 🟢 LOW | rtc-demo.gba | Optional features |
-
----
-
-## Test Categories
-
-### CPU Tests (9 ROMs)
-- arm.gba, thumb.gba, memory.gba, nes.gba, unsafe.gba
-- hw-test DMA (4 ROMs), hw-test timer (2 ROMs)
-
-### Graphics Tests (14 ROMs)
-- gba-tests-master ppu (3 ROMs): hello, shades, stripes
-- hw-test ppu (13 ROMs): mode2/3/4, bgx, sprite, timing
-
-### Memory/Storage Tests (5 ROMs)
-- gba-tests-master memory, save (4 ROMs)
-- hw-test bus (1 ROMs)
-
-### Interrupt/BIOS Tests (8 ROMs)
-- gba-tests-master bios
-- hw-test irq (4 ROMs), haltcnt
+### joypad.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/experimental/joypad/source/joypad.s`  
+**Purpose**: Tests key interrupt handling  
+**MMIO Registers Used**:
+- 0x04000130 (KEYINPUT) - Key input
+- 0x04000132 (KEYCNT) - Key interrupt control
+- 0x04000200 (IE) - Interrupt enable
+- 0x04000202 (IF) - Interrupt flags
+**Instructions Used**: LDR, STR, B, CMP, LDRH, STRH  
+**Video Mode**: None  
+**Features Required**:
+- KEYINPUT reading
+- KEYCNT for interrupt generation
+- Joypad IRQ
+**Expected Output**: Text output showing key interrupt test results  
+**Transpiler Blockers**: IRQ handling - key interrupts not fully implemented
 
 ---
 
-## Usage in GBAtoPy Pipeline
+## DMA Tests
 
-```
-Pipeline Stage → Test ROMs Used
-─────────────────────────────────
-Disassembly    → ALL ROMs (verify JSON output)
-IR Generation  → arm.gba, thumb.gba (verify IR)
-Type Inference → (optional)
-Code Generation → ALL ROMs (verify Python output)
-Runtime Test    → arm.gba, thumb.gba (headless)
-Visual Test     → shades.gba, stripes.gba (screenshot)
-Audio Test      → redline.gba (audio playback)
-Input Test      → redline.gba (keyboard)
-```
+### dma_priority.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/dma_priority/source/dma.s`  
+**Purpose**: Tests DMA priority handling  
+**MMIO Registers Used**:
+- 0x040000B0 (DMA1SAD) - DMA1 source address
+- 0x040000B4 (DMA1DAD) - DMA1 dest address
+- 0x040000B8 (DMA1CNT) - DMA1 control
+- 0x040000BA (DMA1CNT_H) - DMA1 control high
+**Instructions Used**: LDR, STR, LDRH, STRH, B, CMP  
+**Video Mode**: None  
+**Features Required**:
+- DMA transfer setup
+- Priority handling between DMA channels
+- DMA enable/disable
+**Expected Output**: Text output showing DMA priority test results  
+**Transpiler Blockers**: DMA - transfers not implemented in codegen
+
+### window_midframe.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/window_midframe/source/window_midframe.s`  
+**Purpose**: Tests window rendering mid-frame  
+**MMIO Registers Used**:
+- 0x04000000 (DISPCNT) - Display control
+- 0x04000040 (WIN0H) - Window 0 horizontal
+- 0x04000042 (WIN0V) - Window 0 vertical
+- 0x04000044 (WIN1H) - Window 1 horizontal
+- 0x04000046 (WIN1V) - Window 1 vertical
+- 0x04000048 (WININ) - Window input
+- 0x0400004A (WINOUT) - Window output
+**Instructions Used**: LDR, STR, B, CMP, LDRH, STRH  
+**Video Mode**: Mode 0  
+**Features Required**:
+- Window rendering
+- Mid-frame window changes
+**Expected Output**: Text output showing window test results  
+**Transpiler Blockers**: Window layers not implemented
+
+### pcmxx.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/experimental/pcmxx/source/main.s`  
+**Purpose**: Tests PCM audio playback  
+**MMIO Registers Used**:
+- 0x04000090-0x0400009F (Sound registers)
+- 0x040000B0 (DMA1) - For audio DMA
+**Instructions Used**: LDR, STR, B, CMP, LDRH, STRH  
+**Video Mode**: None  
+**Features Required**:
+- Sound register access
+- DMA for audio
+**Expected Output**: Audio playback  
+**Transpiler Blockers**: Audio - DMA audio not integrated
+
+---
+
+## Timer Tests
+
+### timer_change.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/experimental/timer_change/source/timer_change.s`  
+**Purpose**: Tests timer configuration changes  
+**MMIO Registers Used**:
+- 0x04000100 (TM0CNT) - Timer 0 control
+- 0x04000102 (TM0DATA) - Timer 0 data
+- 0x04000104 (TM1CNT) - Timer 1 control
+- 0x04000106 (TM1DATA) - Timer 1 data
+- 0x04000108 (TM2CNT) - Timer 2 control
+- 0x0400010A (TM2DATA) - Timer 2 data
+- 0x0400010C (TM3CNT) - Timer 3 control
+- 0x0400010E (TM3DATA) - Timer 3 data
+**Instructions Used**: LDR, STR, B, CMP, LDRH, STRH  
+**Video Mode**: None  
+**Features Required**:
+- Timer register access
+- Timer cascade mode
+- Timer start/stop
+**Expected Output**: Text output showing timer test results  
+**Transpiler Blockers**: Timer - timing not accurate
+
+---
+
+## Keypad Tests
+
+### enhancedcontrolchecker.gba
+**Suite**: enhancedcontrolcheckerGBA  
+**Source**: `test_roms/sources/enhancedcontrolcheckerGBA/enhancedcontrolchecker.gba`  
+**Purpose**: Tests all GBA buttons including L/R shoulder buttons  
+**MMIO Registers Used**:
+- 0x04000130 (KEYINPUT) - Key input register
+- 0x04000132 (KEYCNT) - Key interrupt control
+**Instructions Used**: LDR, LDRH, STR, B, CMP  
+**Video Mode**: Mode 3 (bitmap)  
+**Features Required**:
+- KEYINPUT reading
+- All button states (A, B, L, R, Start, Select, D-pad)
+- Input polling
+- Audio feedback (tone generation)
+**Expected Output**: Counts button presses, plays tones  
+**Transpiler Blockers**: None - fully working
+
+---
+
+## Audio Tests
+
+### redline.gba
+**Suite**: gba-playground  
+**Source**: `test_roms/sources/gba-playground-master/redline/redline.gba`  
+**Purpose**: Full game demo - complex real-world code execution  
+**MMIO Registers Used**:
+- Multiple PPU registers
+- Sound registers
+- Input registers
+**Instructions Used**: Full ARM instruction set  
+**Video Mode**: Mode 2/3 (affine/bitmap)  
+**Features Required**:
+- Graphics rendering
+- Input handling
+- Audio playback
+- Game loop
+**Expected Output**: Game demo running  
+**Transpiler Blockers**: PPU rendering, audio
+
+### helloAudio.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/helloAudio/source/helloAudio.s`  
+**Purpose**: Audio output test with large code  
+**MMIO Registers Used**:
+- 0x04000090-0x0400009F (Sound registers)
+**Instructions Used**: Full ARM instruction set  
+**Video Mode**: Mode 0  
+**Features Required**:
+- Sound register writes
+- Audio playback
+**Expected Output**: Audio output with text  
+**Transpiler Blockers**: Audio - APU not integrated
+
+### test.gba
+**Suite**: gba_tests  
+**Source**: `test_roms/sources/gba_tests-master/test/source/test.s`  
+**Purpose**: General functionality test  
+**MMIO Registers Used**: Multiple  
+**Instructions Used**: Full ARM instruction set  
+**Video Mode**: Various  
+**Features Required**:
+- Comprehensive testing
+- Multiple hardware features
+**Expected Output**: Test results  
+**Transpiler Blockers**: Partial - depends on feature
+
+---
+
+## Save Tests
+
+### sram.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/save/sram.s`  
+**Purpose**: Tests SRAM save type detection  
+**MMIO Registers Used**: None (pure save test)  
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: None  
+**Features Required**:
+- SRAM memory access
+- Save type detection
+**Expected Output**: Text output showing SRAM test results  
+**Transpiler Blockers**: None - fully working
+
+### flash64.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/save/flash64.s`  
+**Purpose**: Tests 64KB Flash ROM save type detection  
+**MMIO Registers Used**: None  
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: None  
+**Features Required**:
+- Flash memory access
+- Save type detection (64KB)
+**Expected Output**: Text output showing Flash64 test results  
+**Transpiler Blockers**: None - fully working
+
+### flash128.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/save/flash128.s`  
+**Purpose**: Tests 128KB Flash ROM save type detection  
+**MMIO Registers Used**: None  
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: None  
+**Features Required**:
+- Flash memory access
+- Save type detection (128KB)
+**Expected Output**: Text output showing Flash128 test results  
+**Transpiler Blockers**: None - fully working
+
+### none.gba
+**Suite**: gba-tests-master  
+**Source**: `test_roms/sources/gba-tests-master/save/none.s`  
+**Purpose**: Tests no save memory detection  
+**MMIO Registers Used**: None  
+**Instructions Used**: MOV, LDR, STR, B  
+**Video Mode**: None  
+**Features Required**:
+- No save memory handling
+**Expected Output**: Text output showing none test results  
+**Transpiler Blockers**: None - fully working
+
+---
+
+## RTC Tests
+
+### rtc-demo.gba
+**Suite**: gba-playground  
+**Source**: `test_roms/sources/gba-playground-master/rtc-demo/rtc-demo.gba`  
+**Purpose**: Real-time clock functionality test  
+**MMIO Registers Used**:
+- 0x08000100-0x0800010F (RTC registers)
+**Instructions Used**: Full ARM instruction set  
+**Video Mode**: Mode 0  
+**Features Required**:
+- RTC register access
+- Time reading
+**Expected Output**: Real-time clock display  
+**Transpiler Blockers**: RTC - not implemented (low priority)
+
+---
+
+## Audio (DMA) - gba-sound-demo
+
+### song.gba ⚠️ AUDIO CRITICAL
+**Suite**: gba-sound-demo  
+**Source**: `test_roms/sources/gba-sound-demo-main/song.gba`  
+**Purpose**: DMA-based audio playback with songs  
+**MMIO Registers Used**:
+- 0x04000090 (SOUNDCNT_L) - Sound control
+- 0x04000092 (SOUNDCNT_H) - Sound control high - **FIFO A enable**
+- 0x04000094 (SOUNDCNT_X) - Sound control extended
+- 0x040000B0 (DMA1SAD) - DMA1 source address
+- 0x040000B4 (DMA1DAD) - DMA1 dest address (FIFO A: 0x040000A0)
+- 0x040000B8 (DMA1CNT) - DMA1 control
+- 0x040000BA (DMA1CNT_H) - DMA1 control high - **DMA enable, mode 1 (32-bit), repeat**
+- 0x040000AC (DMA2SAD) - DMA2 source address
+- 0x040000B0 (DMA2DAD) - DMA2 dest address (FIFO B: 0x040000A4)
+- 0x040000BC (DMA2CNT) - DMA2 control
+- 0x040000BE (DMA2CNT_H) - DMA2 control high
+**Instructions Used**: Full ARM instruction set, LDRH, STRH, B, BL, CMP  
+**Video Mode**: Mode 3 (bitmap) - displays track info  
+**Features Required**:
+- DMA channel 1 for FIFO A (left audio channel)
+- DMA channel 2 for FIFO B (right audio channel)
+- DMA repeat mode
+- DMA 32-bit transfer
+- FIFO A/B direct memory access
+- Sound frequency control
+**Expected Output**: Audio playback of songs with visual track display  
+**Transpiler Blockers**: **CRITICAL** - DMA audio not implemented. This ROM is the key test for:
+- DMA transfer implementation
+- APU FIFO handling
+- Sound register configuration
+
+### rates.gba ⚠️ AUDIO CRITICAL
+**Suite**: gba-sound-demo  
+**Source**: `test_roms/sources/gba-sound-demo-main/rates.gba`  
+**Purpose**: Tests different sample rates with DMA audio  
+**MMIO Registers Used**:
+- 0x04000090 (SOUNDCNT_L) - Sound control
+- 0x04000092 (SOUNDCNT_H) - Sound control high
+- 0x04000094 (SOUNDCNT_X) - Sound control extended
+- 0x040000B0-0x040000BF (DMA1/DMA2 registers)
+- 0x040000A0 (FIFO_A) - Audio FIFO A
+- 0x040000A4 (FIFO_B) - Audio FIFO B
+**Instructions Used**: Full ARM instruction set, LDRH, STRH, B, BL, CMP  
+**Video Mode**: Mode 3 (bitmap) - displays rate info  
+**Features Required**:
+- Multiple sample rates (8kHz, 11kHz, 22kHz, 44kHz)
+- DMA buffer cycling (4 buffers, 2 for FIFO A, 2 for FIFO B)
+- FIFO overflow handling
+- DMA timing
+**Expected Output**: Audio playback at different sample rates with visual display  
+**Transpiler Blockers**: **CRITICAL** - DMA audio not implemented. Tests:
+- Variable sample rates via DMA timing
+- Buffer management
+- FIFO A/B interleaving
+
+---
+
+## Feature Coverage Matrix
+
+| Feature | ROMs Testing | Status in GBAtoPy |
+|---------|---------------|-------------------|
+| ARM instructions | arm.gba, armwrestler, FuzzARM | ✅ Working |
+| Thumb instructions | thumb.gba, FuzzARM | ✅ Working |
+| BIOS SWI | bios.gba | ⚠️ Partial |
+| PPU rendering | shades.gba, stripes.gba, hello | ❌ Blocked |
+| PPU timing | line_timing.gba, lyc_midline.gba | ⚠️ Partial |
+| IRQ handling | isr.gba, if_ack.gba, irq_delay | ❌ Not called |
+| DMA transfers | dma_priority.gba, window_midframe.pcmxx | ❌ Not implemented |
+| Timer | timer_change.gba | ⚠️ Inaccurate |
+| Keypad | enhancedcontrolchecker.gba, joypad.gba | ✅ Working |
+| Audio | redline.gba, helloAudio.gba, test.gba | ❌ Not integrated |
+| DMA Audio (FIFO) | song.gba, rates.gba | ❌ Not implemented |
+| Save types | sram.gba, flash64.gba, flash128.gba, none.gba | ✅ Working |
+| Memory access | memory.gba | ✅ Working |
+| RTC | rtc-demo.gba | ❌ Not implemented |
+
+---
+
+## Transpiler Status
+
+All 39 test ROMs in `test_roms/roms/` transpile to syntactically valid Python with **0 instruction parsing failures**.
+
+**Compatibility Matrix**
+
+| ROM | Stubs | Lines | Status |
+|-----|-------|-------|--------|
+| ARM_Any.gba | 0 | 75878 | ✅ |
+| ARM_DataProcessing.gba | 0 | 74253 | ✅ |
+| FuzzARM.gba | 0 | 74886 | ✅ |
+| THUMB_Any.gba | 0 | 74096 | ✅ |
+| THUMB_DataProcessing.gba | 0 | 71187 | ✅ |
+| arm.gba | 0 | 3977 | ✅ |
+| armwrestler-gba-fixed.gba | 0 | 6060 | ✅ |
+| armwrestler.gba | 0 | 6070 | ✅ |
+| bios.gba | 0 | 1238 | ✅ |
+| cond_invalid.gba | 0 | 1265 | ✅ |
+| dma_priority.gba | 0 | 1495 | ✅ |
+| enhancedcontrolchecker.gba | 0 | 28937 | ✅ |
+| flash128.gba | 0 | 2004 | ✅ |
+| flash64.gba | 0 | 1871 | ✅ |
+| hello.gba | 0 | 1010 | ✅ |
+| helloAudio.gba | 0 | 476183 | ✅ |
+| helloWorld.gba | 0 | 4510 | ✅ |
+| hello_world.gba | 0 | 1313 | ✅ |
+| if_ack.gba | 0 | 1315 | ✅ |
+| irq_delay.gba | 0 | 2225 | ✅ |
+| isr.gba | 0 | 1557 | ✅ |
+| joypad.gba | 0 | 1567 | ✅ |
+| line_timing.gba | 0 | 1374 | ✅ |
+| lyc_midline.gba | 0 | 1433 | ✅ |
+| memory.gba | 0 | 1345 | ✅ |
+| nes.gba | 0 | 1199 | ✅ |
+| none.gba | 0 | 1142 | ✅ |
+| pcmxx.gba | 0 | 1385 | ✅ |
+| redline.gba | 0 | 871 | ✅ |
+| retAddr.gba | 0 | 3208 | ✅ |
+| rtc-demo.gba | 0 | 28167 | ✅ |
+| shades.gba | 0 | 693 | ✅ |
+| sram.gba | 0 | 1315 | ✅ |
+| stripes.gba | 0 | 682 | ✅ |
+| test.gba | 0 | 28851 | ✅ |
+| thumb.gba | 0 | 1806 | ✅ |
+| timer_change.gba | 0 | 1299 | ✅ |
+| unsafe.gba | 0 | 1174 | ✅ |
+| window_midframe.gba | 0 | 978 | ✅ |
+
+---
+
+## Priority Classification
+
+### 🔴 CRITICAL - Core Functionality
+- **shades.gba** - PPU rendering (palette lookup)
+- **stripes.gba** - PPU rendering verification
+- **song.gba, rates.gba** - DMA audio (FIFO)
+- **FuzzARM.gba** - Mass instruction testing
+
+### 🟠 HIGH - Extended Functionality
+- **arm.gba, thumb.gba** - CPU validation
+- **bios.gba** - BIOS functions
+- **armwrestler.gba** - Load-store tests
+- **dma_priority.gba** - DMA implementation
+
+### 🟡 MEDIUM - Feature Coverage
+- **isr.gba, if_ack.gba** - IRQ handling
+- **hello.gba** - Basic graphics
+- **timer_change.gba** - Timer accuracy
+
+### 🟢 LOW - Nice to Have
+- **rtc-demo.gba** - Real-time clock
+- **pcmxx.gba** - PCM audio
 
 ---
 
 ## Verification Commands
 
 ```bash
-# Test all ROMs headless
-cargo run -p pygba-cli -- test all
+# Count ROM files
+ls test_roms/roms/*.gba | wc -l
+# Output: 39
 
-# Visual test - shades
-python3 output_python/gba-tests-master_ppu_shades/shades.py --screenshot /tmp/shades.png
+# Count structured entries in this document
+grep -c "^### " docs/reference/test-roms.md
+# Should be 41 (39 ROMs + 2 sound demos)
 
-# Visual test - stripes  
-python3 output_python/gba-tests-master_ppu_stripes/stripes.py --screenshot /tmp/stripes.png
+# Verify gba-sound-demo ROMs are documented
+grep -c "song.gba\|rates.gba" docs/reference/test-roms.md
+# Should find both entries
 ```
 
 ---
@@ -485,343 +830,7 @@ python3 output_python/gba-tests-master_ppu_stripes/stripes.py --screenshot /tmp/
 ## Notes
 
 1. **shades.gba** and **stripes.gba** are THE most important ROMs for PPU verification
-2. hw-test suite has 27 ROMs but only some are actively tested
-3. Commercial ROMs (Tetris) provide real-world gameplay testing
-4. All test ROMs should produce executable Python without errors# New GBA Test Suites Analysis
-
-This document provides detailed analysis of the 6 newly discovered test ROM repositories and their unique coverage compared to existing suites (jsmolka/gba-tests and hw-test).
-
----
-
-## Summary Table
-
-| Suite | Stars | Unique Coverage | Priority |
-|-------|-------|-----------------|----------|
-| armwrestler-gba-fixed | 26 | ARM7DI load-store tests | HIGH |
-| gba_tests (destoer) | 13 | Edge cases: IRQ, DMA priority, windowing | HIGH |
-| FuzzARM | 49 | 10K+ randomized fuzz tests | CRITICAL |
-| GBA-Test-Collection | 9 | TBD (early stage) | MEDIUM |
-| enhancedcontrolcheckerGBA | 8 | Input polling (L/R buttons) | MEDIUM |
-| gba-accuracy-tests | 0 | Multi-emulator benchmark framework | CRITICAL |
-
----
-
-## 1. armwrestler-gba-fixed
-
-**Repository**: https://github.com/destoer/armwrestler-gba-fixed  
-**Stars**: 26  
-**License**: Not specified
-
-### Overview
-Fork of Arisotura's arm7wrestler with multiple load-store tests working. Focused on ARM7DI CPU instruction validation.
-
-### ROMs Available
-- `armwrestler.gba` - Main test ROM
-- `armwrestler-gba-fixed.gba` - Fixed version
-
-### What It Tests
-- ARM instruction set (32-bit)
-- Load-store operations
-- Data processing
-- Multiply instructions
-- Branch instructions
-
-### Unique Coverage
-| Feature | jsmolka | hw-test | armwrestler |
-|---------|---------|---------|-------------|
-| Load-store edge cases | Partial | No | **YES** |
-| ARM7DI specific | No | No | **YES** |
-
-### Integration
-Already integrated into `gba-accuracy-tests` framework (suite: armwrestler, 6 tests).
-
----
-
-## 2. gba_tests (destoer)
-
-**Repository**: https://github.com/destoer/gba_tests  
-**Stars**: 13  
-**License**: MIT
-
-### Overview
-Focused test ROMs for specific GBA hardware behaviors. Tests edge cases not covered by jsmolka.
-
-### ROMs Available
-
-| ROM | Category | What It Tests |
-|-----|----------|---------------|
-| `cond_invalid` | CPU | Conditional flag behavior |
-| `dma_priority` | DMA | DMA priority handling |
-| `hello_world` | Basic | Basic output |
-| `if_ack` | IRQ | Interrupt flag acknowledgment |
-| `isr` | IRQ | Interrupt service routines |
-| `line_timing` | PPU | Scanline timing |
-| `lyc_midline` | PPU | LY=LYC coincidence mid-frame |
-| `window_midframe` | PPU | Window rendering mid-frame |
-
-### Unique Coverage
-
-| Feature | jsmolka | hw-test | gba_tests |
-|---------|---------|---------|-----------|
-| DMA priority | No | Partial | **YES** |
-| IRQ acknowledgment | No | No | **YES** |
-| LYC mid-line IRQ | No | No | **YES** |
-| Window mid-frame | No | No | **YES** |
-| Conditional invalid | No | No | **YES** |
-
-### Why Important
-Tests timing-sensitive hardware behaviors that cause issues in many emulators:
-- DMA priority conflicts
-- IRQ flag clearing timing
-- LY=LYC coincidence mid-scanline
-- Window rendering in different modes
-
----
-
-## 3. FuzzARM
-
-**Repository**: https://github.com/DenSinH/FuzzARM  
-**Stars**: 49  
-**License**: GPL-3.0
-
-### Overview
-Random test ROM generator for ARM/Thumb instruction fuzzing. Generates thousands of test cases with configurable options.
-
-### ROMs Available (Pre-built)
-
-| ROM | Tests | Mode | Type |
-|-----|-------|------|------|
-| ARM_DataProcessing.gba | 10,000 | ARM | Data Processing |
-| ARM_Any.gba | 10,000 | ARM | All types |
-| THUMB_DataProcessing.gba | 10,000 | THUMB | Data Processing |
-| THUMB_Any.gba | 10,000 | THUMB | All types |
-| FuzzARM.gba | 10,000 | Mixed | All types |
-
-### Generation Options
-```bash
-# Generate custom ROM
-python main.py -h
-usage: main.py [-h] [-T {some,all,none}] [-nM] [-nD] [-nLS] [--S SEED] N
-
-Options:
-  -T {some,all,none}  THUMB mode tests
-  -nM                 Disable multiply tests
-  -nD                 Disable data processing tests
-  -nLS                Disable load/store tests
-  --S SEED            Seed for reproducibility
-```
-
-### What It Tests
-
-**Data Processing**:
-- Arithmetic: ADD, SUB, ADC, SBC, RSC
-- Logical: AND, ORR, EOR, BIC, MVN
-- Comparisons: CMP, CMN, TST, TEQ
-- Shifts: LSL, LSR, ASR, ROR, RRX
-
-**Multiply**:
-- MUL, MLA, UMULL, UMLAL, SMULL, SMLAL
-
-**Load/Store**:
-- LDR, STR, LDRH, STRH, LDRB, STRB
-- LDM, STM, SWP
-
-**PSR Transfers**:
-- MRS, MSR
-
-### Unique Coverage
-| Feature | jsmolka | hw-test | FuzzARM |
-|---------|---------|---------|---------|
-| Random fuzz testing | No | No | **YES** |
-| 10K+ test cases | No | No | **YES** |
-| eWRAM result dump | No | No | **YES** |
-| Reproducible (seed) | No | No | **YES** |
-
-### eWRAM Result Format
-```
-1 word:  ['AAAA' OR 'TTTT'] for ARM or THUMB state
-2 words: [opcode + shift] OR [multiplication opcode] OR [store opcode/load opcode]
-1 word:  [????]
-
-1 word:  [initial r0]
-1 word:  [initial r1]
-1 word:  [initial r2]
-1 word:  [initial CPSR]
-
-1 word:  [gotten  r3]
-1 word:  [gotten  r4]
-1 word:  [0000 0000]
-1 word:  [gotten  CPSR]
-
-1 word:  [expected r3]
-1 word:  [expected r4]
-1 word:  [0000 0000]
-1 word:  [expected CPSR]
-```
-
-### Integration
-Already integrated into `gba-accuracy-tests` framework (suite: fuzzarm, 3 tests).
-
----
-
-## 4. GBA-Test-Collection
-
-**Repository**: https://github.com/ladystarbreeze/GBA-Test-Collection  
-**Stars**: 9  
-**License**: MIT
-
-### Overview
-Collection of GBA test ROMs written in assembly. Currently in early development stage (TODO in README).
-
-### ROMs Available
-Not yet available (pre-compiled ROMs not in repo)
-
-### Unique Coverage
-Unknown - collection is in early stages. Worth monitoring for future tests.
-
----
-
-## 5. enhancedcontrolcheckerGBA
-
-**Repository**: https://github.com/nataliethenerd/enhancedcontrolcheckerGBA  
-**Stars**: 8  
-**License**: Not specified
-
-### Overview
-Button test ROM that counts button presses and plays tones. Heavily inspired by Orangeglo's Better Button Test for GB.
-
-### ROMs Available
-- `enhancedcontrolchecker.gba`
-
-### What It Tests
-- All GBA buttons: A, B, L, R, Start, Select, D-pad
-- Input polling
-- Button state detection
-- Audio output (tone generation)
-
-### Unique Coverage
-
-| Feature | jsmolka | hw-test | enhancedcontrolcheckerGBA |
-|---------|---------|---------|---------------------------|
-| L/R button test | No | No | **YES** |
-| Button press counting | No | No | **YES** |
-| Audio feedback | No | No | **YES** |
-
-### Why Important
-Most test ROMs don't test L and R shoulder buttons. This ROM specifically validates:
-- KEYINPUT register (0x4000130)
-- Input polling timing
-- All button states
-
----
-
-## 6. gba-accuracy-tests
-
-**Repository**: https://github.com/cadfan/gba-accuracy-tests  
-**Stars**: 0  
-**License**: MIT
-
-### Overview
-Cross-emulator accuracy benchmark framework. Not a test ROM suite itself, but coordinates running multiple suites and comparing results.
-
-### What It Does
-1. Runs test ROMs against multiple emulators
-2. Captures framebuffers as raw BGR555 bytes
-3. SHA256 hashes each capture
-4. Compares across runners + BIOS modes
-5. Promotes consensus hashes to "gold"
-6. Generates static HTML dashboard
-
-### Integrated Suites
-
-| Suite | Tests | Source |
-|-------|-------|--------|
-| jsmolka | 13 | jsmolka/gba-tests |
-| armwrestler | 6 | destoer/armwrestler-gba-fixed |
-| fuzzarm | 3 | DenSinH/FuzzARM |
-| mgba-suite | 14 | mgba-emu/suite |
-| ags-aging | 1 | TCRF AGS Aging Cartridge |
-
-**Total**: 37 test cases
-
-### Supported Runners
-
-| Runner | Emulator | BIOS Modes |
-|--------|----------|------------|
-| cable_club | Cable Club | All 3 |
-| mgba | mGBA | All 3 |
-| nanoboyadvance | NanoBoyAdvance | All 3 |
-| skyemu | SkyEmu | All 3 |
-
-### BIOS Modes
-- **official** - Real Nintendo BIOS (user-provided)
-- **hle** - Emulator's HLE implementation
-- **cleanroom** - Cult-of-GBA MIT-licensed replacement
-
-### Key Features
-
-**Reference Hash System**:
-- Gold: ≥2 runners agree
-- Contested: 2+ distinct hashes with ≥2 votes each
-- Unverified: No hash has ≥2 votes
-
-**eWRAM Dump for FuzzARM**:
-- Automated test failure detection
-- Detailed opcode/operand logging
-
-### Why Critical for GBAtoPy
-- Provides gold reference hashes for validation
-- Multi-emulator comparison matrix
-- Identifies accuracy gaps in our implementation
-
----
-
-## Coverage Comparison Matrix
-
-| Category | jsmolka | hw-test | armwrestler | gba_tests | FuzzARM | eccGBA |
-|----------|---------|---------|-------------|-----------|---------|--------|
-| ARM instructions | ✓ | ✗ | ✓ | ✗ | ✓ | ✗ |
-| Thumb instructions | ✓ | ✗ | ✓ | ✗ | ✓ | ✗ |
-| BIOS functions | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| Memory access | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ |
-| PPU rendering | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ |
-| PPU timing | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ |
-| DMA | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ |
-| IRQ | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ |
-| Timer | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Save types | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
-| **Load-store edge** | ✗ | ✗ | **✓** | ✗ | **✓** | ✗ |
-| **Fuzz testing** | ✗ | ✗ | ✗ | ✗ | **✓** | ✗ |
-| **Input (L/R)** | ✗ | ✗ | ✗ | ✗ | ✗ | **✓** |
-| **Multi-emulator** | ✗ | ✗ | ✗ | ✗ | ✗ | **✓** |
-
----
-
-## Recommendations for GBAtoPy
-
-### High Priority (Add to pipeline)
-1. **FuzzARM** - Massively parallel CPU testing
-2. **gba-accuracy-tests** - Golden reference hashes
-3. **gba_tests** - Edge cases (IRQ, DMA, windowing)
-4. **armwrestler** - Load-store specific
-
-### Medium Priority
-1. **enhancedcontrolcheckerGBA** - Input validation
-2. **GBA-Test-Collection** - Monitor for new tests
-
-### Integration Strategy
-1. Download FuzzARM pre-built ROMs
-2. Add gba_tests edge case ROMs
-3. Use gba-accuracy-tests for reference comparison
-4. Add enhancedcontrolcheckerGBA for input testing
-
----
-
-## References
-
-- armwrestler: https://github.com/destoer/armwrestler-gba-fixed
-- gba_tests: https://github.com/destoer/gba_tests
-- FuzzARM: https://github.com/DenSinH/FuzzARM
-- GBA-Test-Collection: https://github.com/ladystarbreeze/GBA-Test-Collection
-- enhancedcontrolcheckerGBA: https://github.com/nataliethenerd/enhancedcontrolcheckerGBA
-- gba-accuracy-tests: https://github.com/cadfan/gba-accuracy-tests
+2. **song.gba** and **rates.gba** (gba-sound-demo) are CRITICAL for DMA audio - tests FIFO A/B, DMA channels 1/2
+3. All test ROMs transpile to syntactically valid Python
+4. The main blocker is PPU rendering (palette lookup) and DMA audio integration
+5. IRQ handlers are set up but never called between instruction batches

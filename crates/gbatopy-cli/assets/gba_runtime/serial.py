@@ -66,11 +66,11 @@ class Serial:
         elif addr == 0x04000124:
             if self.sio_mode == 1:
                 return self.multi_player_data[2]
-            return 0
+            return 0xFF  # Unconnected
         elif addr == 0x04000126:
             if self.sio_mode == 1:
                 return self.multi_player_data[3]
-            return 0
+            return 0xFF
         elif addr == 0x04000128:
             return self._read_siocnt()
         elif addr == 0x0400012A:
@@ -79,7 +79,7 @@ class Serial:
             return self.send_data & 0xFFFF
         elif addr == 0x0400012C:
             return self._read_siocnt()
-        return 0
+        return 0xFF
 
     def _read_siocnt(self) -> int:
         value = 0
