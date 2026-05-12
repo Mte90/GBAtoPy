@@ -1115,6 +1115,9 @@ class PPU:
         if self.vblank:
             # Set VBlank flag (bit 0)
             self.memory.write_u16(dispstat_addr, current_dispstat | 0x0001)
+            # Fire VBlank interrupt if enabled
+            if hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
+                self.memory._interrupts.vblank_irq()
         else:
             # Clear VBlank flag
             self.memory.write_u16(dispstat_addr, current_dispstat & ~0x0001)

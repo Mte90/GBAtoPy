@@ -280,6 +280,7 @@ class DMA:
         ch.write_to_memory()
         
         ch.busy = False
+        ch.pending = False  # Clear pending flag after transfer completes
         
         # Fire DMA completion interrupt if enabled
         if ch.irq_enabled and self._interrupts:

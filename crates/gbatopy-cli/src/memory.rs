@@ -111,6 +111,12 @@ impl GBA {
         b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     }
 
+    pub fn read_16(&self, addr: u32) -> u16 {
+        let b0 = self.read_8(addr) as u16;
+        let b1 = self.read_8(addr + 1) as u16;
+        b0 | (b1 << 8)
+    }
+
     pub fn write_8(&mut self, addr: u32, value: u8) {
         match addr {
             0x02000000..=0x0203FFFF => {
@@ -157,5 +163,10 @@ impl GBA {
         self.write_8(addr + 1, ((value >> 8) & 0xFF) as u8);
         self.write_8(addr + 2, ((value >> 16) & 0xFF) as u8);
         self.write_8(addr + 3, ((value >> 24) & 0xFF) as u8);
+    }
+
+    pub fn write_16(&mut self, addr: u32, value: u16) {
+        self.write_8(addr, (value & 0xFF) as u8);
+        self.write_8(addr + 1, ((value >> 8) & 0xFF) as u8);
     }
 }
