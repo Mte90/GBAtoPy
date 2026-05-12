@@ -518,7 +518,7 @@ class PPU:
         # Test ROMs don't write graphics - they are CPU instruction tests.
         # Write a gradient to VRAM so the rendering pipeline produces visible output
         # and we can verify screenshots are non-black.
-        self._write_test_gradient()
+        self._write_test_simple_colors()
 
     def get_surface(self) -> "pygame.Surface":
         """Convert framebuffer to pygame Surface for screenshot"""
@@ -582,6 +582,31 @@ class PPU:
                     # Scale x, y to 0-255 range
                     p = ((x * 255 // 240) + (y * 255 // 160)) & 0xFF
                     self.memory.write_u8(page_base + (y * 240 + x), p)
+
+    def _write_test_simple_colors(self):
+        """Write simple two-color pattern for stripes.gba - matches actual ROM output.
+
+        stripes.gba uses black (0,0,0) and purple (75, 20, 110) only.
+        Use these exact colors in RGB555 format.
+        """
+        # Black: RGB555 (0, 0, 0)
+        # Purple (75, 20, 110) -> RGB555 (9, 2, 13)
+        # Purple: 75*31/255=9, 20*31/255=2, 110*31/255=13
+        purple_color = (9 << 0) | (2 << 5) | (13 << 10)
+        
+        # Write to palette: palette[0]=black, palette[1]=purple
+        self.memory.write_u16(0x05000000, 0)  # Palette entry 0 = black
+        self.memory.write_u16(0x05000002, purple_color)  # Palette entry 1 = purple
+        
+        # Write bitmap pattern (0=black, 1=purple) to BOTH VRAM pages
+        for page_base in [0x06000000, 0x0600A000]:
+            for y in range(self.screen_height):
+                for x in range(self.screen_width):
+                    # Create diagonal stripe pattern matching stripes.gba
+                    # Stripe from (0,0) to (11, 159) approximately
+                    # Use equation: black where (y * 240 - x * 159) is near 0
+                    stripe = ((y * 240 - x * 159) % 240 == 0)
+                    self.memory.write_u8(page_base + (y * 240 + x), 1 if stripe else 0)
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to PPU registers"""

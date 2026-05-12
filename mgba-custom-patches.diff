@@ -1,0 +1,156 @@
+include/mgba/core/interface.h      | 20 ++++++++++++++++++++
+ include/mgba/feature/commandline.h |  1 +
+ src/feature/commandline.c          | 18 +++++++++++++++++-
+ src/platform/qt/CMakeLists.txt     |  6 +++++-
+ src/platform/sdl/CMakeLists.txt    |  4 ++++
+ src/platform/sdl/main.c            | 31 ++++++++++++++++++++-----------
+ 6 files changed, 67 insertions(+), 13 deletions(-)
+
+--- Changes ---
+
+include/mgba/core/interface.h
+  @@ -23,6 +23,26 @@ CXX_GUARD_START
+  +#define mCALLBACKS_INVOKE_IE(BOARD, PC, OPCODE, THUMB) do {\
+  +		size_t c; \
+  +		for (c = 0; c < mCoreCallbacksListSize(&(BOARD)->coreCallbacks); ++c) { \
+  +			const struct mCoreCallbacks* callbacks = mCoreCallbacksListGetConstPointer(&(BOARD)->coreCallbacks, c); \
+  +			if (callbacks->instructionExecuted) { \
+  +				callbacks->instructionExecuted(callbacks->context, PC, OPCODE, THUMB); \
+  +			} \
+  +		} \
+  +	} while (0);
+  +
+  +#define mCALLBACKS_INVOKE_MEM(BOARD, ADDR, VALUE, WRITE) do {\
+  +		size_t c; \
+  +		for (c = 0; c < mCoreCallbacksListSize(&(BOARD)->coreCallbacks); ++c) { \
+  +			const struct mCoreCallbacks* callbacks = mCoreCallbacksListGetConstPointer(&(BOARD)->coreCallbacks, c); \
+  +			if (callbacks->memoryAccessed) { \
+  +				callbacks->memoryAccessed(callbacks->context, ADDR, VALUE, WRITE); \
+  +			} \
+  +		} \
+  +	} while (0);
+  +
+   struct mCore;
+   struct mStateExtdataItem;
+   
+  +20 -0
+
+include/mgba/feature/commandline.h
+  @@ -20,6 +20,7 @@ struct mArguments {
+  +	char* scriptFile;
+   	int logLevel;
+   	int frameskip;
+   
+  +1 -0
+
+src/feature/commandline.c
+  @@ -42,6 +42,9 @@ static const struct option _options[] = {
+  +#endif
+  +#ifdef ENABLE_SCRIPTING
+  +	{ "script",    required_argument, 0, 'S' },
+   #endif
+   	{ "help",      no_argument, 0, 'h' },
+   	{ "log-level", required_argument, 0, 'l' },
+  @@ -81,7 +84,7 @@ static void _tableApply(const char* key, void* value, void* user) {
+  -		"b:c:C:hl:p:s:t:"
+  +		"b:c:C:hl:p:s:t:S:"
+   #ifdef USE_EDITLINE
+   		"d"
+   #endif
+  @@ -156,6 +159,11 @@ bool mArgumentsParse(struct mArguments* args, int argc, char* const* argv, struc
+  +#endif
+  +#ifdef ENABLE_SCRIPTING
+  +		case 'S':
+  +			args->scriptFile = strdup(optarg);
+  +			break;
+   #endif
+   		case 'h':
+   			args->showHelp = true;
+  @@ -306,6 +314,11 @@ void mArgumentsDeinit(struct mArguments* args) {
+  +#ifdef ENABLE_SCRIPTING
+  +	free(args->scriptFile);
+  +	args->scriptFile = 0;
+  +#endif
+  +
+   	HashTableDeinit(&args->configOverrides);
+   }
+   
+  @@ -380,6 +393,9 @@ void usage(const char* arg0, const char* prologue, const char* epilogue, const s
+  +#endif
+  +#ifdef ENABLE_SCRIPTING
+  +	     "  -S, --script FILE          Run Lua script on startup\n"
+   #endif
+   	     "  -l, --log-level N          Log level mask\n"
+   	     "  -t, --savestate FILE       Load savestate when starting\n"
+  +17 -1
+
+src/platform/qt/CMakeLists.txt
+  @@ -502,7 +502,11 @@ if(UNIX AND NOT APPLE)
+  -		string(REPLACE "\n" ";" TAGS_LIST ${RELEASE_TAGS})
+  +		if(RELEASE_TAGS)
+  +			string(REPLACE "\n" ";" TAGS_LIST ${RELEASE_TAGS})
+  +		else()
+  +			set(TAGS_LIST "")
+  +		endif()
+   		foreach(TAG ${TAGS_LIST})
+   			string(REPLACE " " ";" TAG_LIST ${TAG})
+   			list(GET TAG_LIST 0 TAG_REF)
+  +5 -1
+
+src/platform/sdl/CMakeLists.txt
+  @@ -132,3 +132,7 @@ if(UNIX)
+  +
+  +# Lua scripting support
+  +if(ENABLE_SCRIPTING)
+  +endif()
+  +4 -0
+
+src/platform/sdl/main.c
+  @@ -9,6 +9,8 @@
+  +#include <mgba/script/context.h>
+  +#include <mgba/script/base.h>
+   
+   #ifdef ENABLE_PYTHON
+   #include "platform/python/engine.h"
+  @@ -210,13 +212,19 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
+  -	struct mScriptBridge* bridge = mScriptBridgeCreate();
+  -#ifdef ENABLE_PYTHON
+  -	mPythonSetup(bridge);
+  -#endif
+  -#ifdef ENABLE_DEBUGGERS
+  -	CLIDebuggerScriptEngineInstall(bridge);
+  -#endif
+  +	struct mScriptContext scriptContext;
+  +	mScriptContextInit(&scriptContext);
+  +	mScriptContextAttachStdlib(&scriptContext);
+  +	mScriptContextAttachImage(&scriptContext);
+  +
+  +	mScriptContextRegisterEngines(&scriptContext);
+  +	mScriptContextAttachCore(&scriptContext, renderer->core);
+  +
+  +	if (args->scriptFile) {
+  +		if (!mScriptContextLoadFile(&scriptContext, args->scriptFile)) {
+  +			mLOG(STATUS, ERROR, "Failed to load script \"%s\"", args->scriptFile);
+  +		}
+  +	}
+   #endif
+   
+   #ifdef ENABLE_DEBUGGERS
+  @@ -227,9 +235,8 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
+  -#ifdef ENABLE_SCRIPTING
+  -		mScriptBridgeSetDebugger(bridge, &debugger);
+  -#endif
+  +// Script debugger setup not needed with mScriptContext
+  +		// mScriptBridgeSetDebugger(bridge, &debugger);
+   	} else {
+   		mDebuggerDeinit(&debugger);
+   	}
+  @@ -286,7 +293,9 @@ int mSDLRun(struct mSDLRenderer* renderer, struct mArguments* args) {
+  -	mScriptBridgeDestroy(bridge);
+  +	if (args->scriptFile) {
+  +		mScriptContextDeinit(&scriptContext);
+  +	}
+   #endif
+   
+   #ifdef ENABLE_DEBUGGERS
+  +20 -11

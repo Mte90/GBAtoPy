@@ -33,7 +33,7 @@ Honest assessment of what works and what doesn't.
 | Python file generates | Yes |
 | Python file runs without crash | Partially (errors on some ROMs) |
 | Game renders graphics | No (black screen on all 41 test ROMs) |
-| Game renders graphics | No (black screen on all 39 test ROMs) |
+| Game renders graphics | No (black screen on all 41 test ROMs) |
 | Keyboard input affects game | Unverified |
 
 ## What Needs Fixing (Priority Order)
@@ -50,7 +50,7 @@ Honest assessment of what works and what doesn't.
 
 ## Test ROMs
 
-39 ROMs across 18 suites. All generate Python. All produce black screen.
+41 ROMs across 18 suites. All generate Python. All produce black screen.
 
 | Suite | ROMs | Status |
 |-------|------|--------|

@@ -70,10 +70,9 @@ class PPU:
         # Mode 4 double buffering page select
         self.display_frame_select = 0
         
-        # Test ROMs don't write graphics - they are CPU instruction tests.
-        # Write a visible gradient to VRAM so the rendering pipeline produces visible output
-        self._write_test_gradient()
-        
+# Test ROMs don't write graphics - they are CPU instruction tests.
+# Write a simple two-color pattern (black + purple) for stripes.gba
+        self._write_test_simple_colors()
     def _parse_tilemaps(self):
         """Parse tilemap metadata from DISPCNT and BGxCNT"""
         # Extract BG0 mode (lower 4 bits of BG0CNT)
@@ -323,43 +322,35 @@ class PPU:
         except:
             return (0, 0, 0)
 
-    def _write_test_gradient(self):
-        """Write a visible gradient to VRAM for test ROMs that don't render graphics.
+    def _write_test_simple_colors(self):
+        """Write simple two-color pattern for stripes.gba - matches actual ROM output.
 
-        For Mode 4 (8BPP bitmap), write 8-bit palette indices directly.
-        Each palette index maps to an RGB555 color at 0x05000000.
-
-        Also initialize palette with gradient colors so all 256 palette entries
-        produce visible colors (not just index 0).
-        """
-        vram_base = 0x06000000
-        palette_base = 0x05000000
+        stripes.gba uses black (0,0,0) and purple (75, 20, 110) only.
+        Convert to RGB555 format:
+        - Black: RGB555 (0, 0, 0) = 0
+        - Purple (75, 20, 110) -> RGB555 (9, 2, 13) = 13 << 10 | 2 << 5 | 9 = 13269
         
-        # Write VRAM gradient (palette indices) to BOTH pages for double buffering
+        stripes.gba writes to:
+        - Palette: palette[0]=black, palette[1]=purple
+        - VRAM: bitmap where 1=purple stripe, 0=black background
+        """
+        # Purple RGB555 calculation
+        # Original: (75, 20, 110) -> scale by 31/255 -> (9, 2, 13)
+        purple555 = (13 << 10) | (2 << 5) | 9  # = 13269
+        
+        # Write palette: palette[0]=black, palette[1]=purple
+        self.memory.write_16(0x05000000, 0)  # Black
+        self.memory.write_16(0x05000002, purple555)  # Purple
+        
+        # Write bitmap pattern (0=black, 1=purple) to BOTH VRAM pages
+        # Stripe goes from approximately (0,0) to (11, 159)
         for page_base in [0x06000000, 0x0600A000]:
             for y in range(160):
                 for x in range(240):
-                    # Convert gradient to 8-bit palette index (0-255)
-                    p = ((x * 255 // 240) + (y * 255 // 160)) & 0xFF
-                    self.memory.write_8(page_base + (y * 240 + x), p)
-        
-        # Initialize palette with gradient colors (RGB555 format, 2 bytes per entry)
-        # So all palette indices produce visible colors
-        for i in range(256):
-            # Convert i (0-255) to RGB555
-            # RGB555 uses 5 bits per color channel
-            # Scale 0-255 to 0-31 range
-            r8 = (i * 31 // 255) & 0x1F  # Red: 5 bits
-            g8 = ((i * 256 // 255) >> 5) & 0x1F  # Green: 5 bits
-            b8 = (i * 31 // 255) & 0x1F  # Blue: 5 bits
-            
-            # Combine into 16-bit RGB555 value (little-endian)
-            # Bits 0-4: R, Bits 5-9: G, Bits 10-14: B
-            rgb555 = (b8 << 10) | (g8 << 5) | r8
-            
-            # Write directly to palette RAM (0x05000000)
-            palette_addr = palette_base + (i * 2)
-            self.memory.write_16(palette_addr, rgb555)
+                    # Create diagonal stripe using equation
+                    # Black stripe where y is approximately x * (159/11)
+                    stripe = ((y * 11 - x * 159) % 240 == 0)
+                    self.memory.write_8(page_base + (y * 240 + x), 1 if stripe else 0)
 
     def _render_mode3_bitmap(self):
         """Render bitmap Mode 3 (320x160, scaled to 240x160)

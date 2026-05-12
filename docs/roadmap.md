@@ -611,8 +611,8 @@ crates/gbatopy-cli/assets/templates/  — Template Python
   ├── game_loop.py                    — 7K (execution loop)
   └── ppu.py                          — 5K (PPU template)
 crates/gbatopy-cli/src/cmds/pipeline.rs — Pipeline principale
-test_roms/roms/                        — 39 ROM di test
-mgba/                                  — Fork mGBA (branch: extend-lua)
+test_roms/roms/                        — 41 ROM di test
+mgba/                                  — mGBA (con custom patches, vedi mgba-custom-patches.diff)
 ```
 
 ---
@@ -865,7 +865,7 @@ end)
 
 ### Cosa abbiamo oggi
 - Un transpiler che genera Python sintatticamente valido ma semanticamente rotto
-- 39 ROM transpilano senza crash ma nessuna produce grafica corretta
+- 41 ROM transpilano senza crash ma nessuna produce grafica corretta
 - ~165K linee di codice tra Rust e Python, quasi tutto da riscrivere
 
 ### Cosa serve davvero

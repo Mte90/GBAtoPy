@@ -88,50 +88,12 @@ python3 /tmp/test.py --scale=2
 
 ## Test ROMs
 
-Test ROMs are downloaded automatically via `scripts/setup/download_test_roms.sh` (**39 ROMs**):
+Test ROMs are downloaded automatically via `scripts/setup/download_roms.sh` (**41 ROMs**):
 
 ```bash
 # First time setup
-bash scripts/setup/download_test_roms.sh
+bash scripts/setup/download_roms.sh
 ```
-
----
-
-## Current Status (May 2026)
-
-### ✅ What Works
-
-- **Rust pipeline**: Compiles without warnings
-- **Disassembler**: Decodes 56,000+ ARM instructions from test ROMs
-- **Code generation**: Produces valid Python (75,000+ lines output)
-- **Syntax validation**: Generated Python passes `python3 -m py_compile`
-- **Memory model**: `memory.read_32()`/`memory.write_32()` operations work
-- **Asset extraction**: Loads VRAM, palette, and sprite data at runtime
-
-### ❌ What Doesn't Work
-
-- **No instruction codegen**: Pipeline does NOT translate instructions. Output is template + ROM data.
-- **603+ stubs**: Generated Python has `pass # TODO: {opcode} not implemented` for all opcodes.
-- **No execution**: Codegen match uses exact strings; disassembler emits suffixed forms (e.g., `ORRVS`, `ADDGT`, `STRBEQ`). 603+ stubs from mismatch.
-- **No PPU rendering**: Screenshots are blank (PPU not implemented)
-- **No Thumb codegen**: Thumb coverage ~0%
-- **No multiply instructions**: MUL, MLA not handled
-- **No interrupts**: VBlank/HBlank IRQ handling incomplete
-- **No audio**: APU stubs return 0
-
-### Root Cause
-
-The pipeline was simplified — `run_pipeline()` does not call disassembly or codegen. The output is a template with ROM data embedded. The actual codegen path (strip condition codes, full opcode map, branch handling) exists as **unexecuted plan tasks T8-T12** in `.sisyphus/plans/roadmap-rewrite.md`.
-
----
-
-## Known Limitations
-
-1. **Blank Screenshots**: All generated Python produces black/blank screens - PPU rendering not implemented
-2. **603+ Stubs**: Most instructions generate `pass` statements instead of code
-3. **No Execution**: Generated Python cannot execute real game logic
-4. **No Audio**: APU emulation not integrated
-5. **No Interrupts**: VBlank wait loops may hang
 
 ---
 
@@ -156,8 +118,11 @@ cargo build --workspace
 # Rust unit tests
 cargo test --workspace
 
+# Python tests (inside gba_runtime module)
+python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/ -v
+
 # Transpile smoke test
-bash scripts/setup/download_test_roms.sh  # First time only
+bash scripts/setup/download_roms.sh  # First time only
 for rom in test_roms/roms/*.gba; do
   cargo run --release -p gbatopy-cli -- pipeline --rom "$rom" --output /tmp/test.py && \
   python3 -m py_compile /tmp/test.py && \
@@ -183,28 +148,41 @@ python3 -c "from PIL import Image; img=Image.open('/tmp/test.png'); px=list(img.
 
 ### mGBA Integration
 
-For golden screenshots and debugging, GBAtoPy integrates with **mGBA** emulator.
+For golden screenshots and debugging, GBAtoPy uses **mGBA** with custom patches for Lua scripting via `--script` flag.
 
-mGBA source is NOT included in this repository (see `.gitignore`). To use:
+mGBA source is NOT included in this repository (see `.gitignore`). To build:
 
 ```bash
-# Clone mGBA with Lua scripting extension
-git clone --branch extend-lua https://github.com/Mte90/mgba.git
-
-# Build mGBA
+# Clone mGBA
+git clone https://github.com/mgba-emu/mgba.git
 cd mgba
-cmake -B build . && cmake --build build -j$(nproc)
 
-# Run with Lua scripting
-./build/sdl/mgba --lua-script your_script.lua game.gba
+# Apply custom patches (adds --script flag + mScriptContext integration)
+patch -p1 < ../mgba-custom-patches.diff
+
+# Build with Lua scripting enabled
+cmake -B build -DENABLE_SCRIPTING=ON -DBUILD_PYTHON=OFF -DUSE_QT=OFF
+cmake --build build -j$(nproc)
 ```
 
-The `extend-lua` branch adds APIs for memory/instruction tracing:
-- `emu:traceMemory(enabled, callback)` - Memory access monitoring
-- `emu:traceInstructions(enabled, callback)` - Instruction execution tracing
-- `emu:watchRegister("r0", callback)` - Register change detection
+#### Taking Golden Screenshots
 
-See [PR #3752](https://github.com/mgba-emu/mgba/pull/3752) for details.
+```bash
+# Single ROM
+./build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/stripes.gba
+
+# Full comparison (golden + transpile + compare)
+python3 scripts/screenshot/compare_screenshots.py test_roms/roms/stripes.gba
+```
+
+The Lua API exposed by mGBA (after patching):
+- `emu:currentFrame()` - Get current frame number
+- `emu:runFrame()` - Advance one frame
+- `emu:screenshot(filename)` - Save screenshot to PNG
+- `callbacks:add("frame", fn)` - Register per-frame callback
+
+See [mgba-custom-patches.diff](mgba-custom-patches.diff) for the full diff against upstream mGBA.
+See [PR #3752](https://github.com/mgba-emu/mgba/pull/3752) for the upstream Lua scripting extension.
 
 ---
 
