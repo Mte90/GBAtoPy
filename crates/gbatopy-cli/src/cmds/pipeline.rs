@@ -1,43 +1,13 @@
+use crate::codegen::{
+    branch::generate_b_instruction, condition::generate_cmp_instruction,
+    data_processing::generate_mov_instruction, load_store::generate_store_instruction,
+    multiply::generate_mul_instruction, thumb::branch::generate_b_instruction_thumb,
+    thumb::load_store::generate_ldrh_instruction,
+};
+
 use std::fs;
-use std::io;
+
 use std::path::Path;
-
-pub fn embed_pyboyadvance(_runtime_dir: &str) -> io::Result<String> {
-    // T4: No longer embedding runtime files
-    // PyBoyAdvance is imported directly in generate_game_loop()
-    // This function now returns empty string (no embedded code)
-    Ok(String::new())
-}
-
-fn strip_cython_guards(code: &str) -> String {
-    let mut result = String::new();
-    let mut in_cython_guard = false;
-
-    for line in code.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("# ifndef CYTHON") || trimmed.starts_with("#if !CYTHON") {
-            in_cython_guard = true;
-            continue;
-        }
-
-        if trimmed == "# endif" || trimmed.starts_with("#endif") {
-            if in_cython_guard {
-                in_cython_guard = false;
-                continue;
-            }
-        }
-
-        if in_cython_guard {
-            continue;
-        }
-
-        result.push_str(line);
-        result.push('\n');
-    }
-
-    result
-}
 
 pub fn generate_game_loop() -> String {
     r#"
@@ -331,16 +301,18 @@ pub fn run_pipeline(
     _assets_dir: &Path,
     _use_ir: bool,
 ) -> Result<(), String> {
-    println!("Running PyBoyAdvance-based pipeline on: {}", rom_path);
+    println!("Running pipeline on: {}", rom_path);
 
     let rom_data = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
     let mut python_code = String::new();
 
-    println!("Phase 1: Embedding PyBoyAdvance runtime...");
-    let runtime_code = embed_pyboyadvance("crates/gbatopy-cli/assets")
-        .map_err(|e| format!("Failed to embed runtime: {}", e))?;
-    python_code.push_str(&runtime_code);
+    println!("Phase 1: Adding PyBoyAdvance runtime...");
+    // Runtime is now imported directly in generate_game_loop()
+    python_code.push_str(
+        r#"# PyBoyAdvance runtime (imported internally by game loop)
+"#,
+    );
     python_code.push('\n');
 
     println!("Phase 2: Embedding BIOS...");
@@ -360,25 +332,4 @@ pub fn run_pipeline(
     println!("Generated Python written to: {}", output_path);
     println!("Pipeline complete!");
     Ok(())
-}
-
-fn strip_relative_imports(code: &str) -> String {
-    code.lines()
-        .filter(|line| {
-            // Completely remove relative import lines and gba_runtime imports
-            let trimmed = line.trim();
-            if trimmed.starts_with("from .") {
-                false
-            } else if trimmed.starts_with("import .") {
-                false
-            } else if trimmed.starts_with("from gba_runtime.") {
-                false
-            } else if trimmed.starts_with("import gba_runtime") {
-                false
-            } else {
-                true
-            }
-        })
-        .collect::<Vec<&str>>()
-        .join("\n")
 }

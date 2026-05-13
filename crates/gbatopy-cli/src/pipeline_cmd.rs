@@ -153,15 +153,13 @@ pub fn run_pipeline(
                     }
                 }
             }
-            // ADD Rd, Rn, #imm
+            // ADD Rd, Rn, #imm or Rm
             "ADD" => {
-                if ops.len() >= 2 {
+                if ops.len() == 3 {
                     if let Operand::Register(rd) = ops[0] {
                         if let Operand::Register(rn) = ops[1] {
-                            if ops.len() == 3 {
-                                if let Operand::Immediate(imm) = ops[2] {
-                                    return format!("r{} = (r{} + {}) & 0xFFFFFFFF", rd, rn, imm);
-                                }
+                            if let Operand::Immediate(imm) = ops[2] {
+                                return format!("r{} = (r{} + {}) & 0xFFFFFFFF", rd, rn, imm);
                             } else if let Operand::Register(rm) = ops[2] {
                                 return format!("r{} = (r{} + r{}) & 0xFFFFFFFF", rd, rn, rm);
                             }
@@ -169,36 +167,16 @@ pub fn run_pipeline(
                     }
                 }
             }
-            // ADD Rd, Rn, Rm
-            "ADD" if ops.len() == 3 => {
-                if let Operand::Register(rd) = ops[0] {
-                    if let Operand::Register(rn) = ops[1] {
-                        if let Operand::Register(rm) = ops[2] {
-                            return format!("r{} = (r{} + r{}) & 0xFFFFFFFF", rd, rn, rm);
-                        }
-                    }
-                }
-            }
-            // SUB Rd, Rn, #imm
+            // SUB Rd, Rn, #imm or Rm
             "SUB" => {
-                if ops.len() >= 2 {
+                if ops.len() == 3 {
                     if let Operand::Register(rd) = ops[0] {
                         if let Operand::Register(rn) = ops[1] {
-                            if ops.len() == 3 {
-                                if let Operand::Immediate(imm) = ops[2] {
-                                    return format!("r{} = (r{} - {}) & 0xFFFFFFFF", rd, rn, imm);
-                                }
+                            if let Operand::Immediate(imm) = ops[2] {
+                                return format!("r{} = (r{} - {}) & 0xFFFFFFFF", rd, rn, imm);
+                            } else if let Operand::Register(rm) = ops[2] {
+                                return format!("r{} = (r{} - r{}) & 0xFFFFFFFF", rd, rn, rm);
                             }
-                        }
-                    }
-                }
-            }
-            // SUB Rd, Rn, Rm
-            "SUB" if ops.len() == 3 => {
-                if let Operand::Register(rd) = ops[0] {
-                    if let Operand::Register(rn) = ops[1] {
-                        if let Operand::Register(rm) = ops[2] {
-                            return format!("r{} = (r{} - r{}) & 0xFFFFFFFF", rd, rn, rm);
                         }
                     }
                 }
@@ -401,10 +379,6 @@ pub fn run_pipeline(
                                 }
                                 gbatopy_disasm::operand::AddressingMode::Multi { .. } => {
                                     " /* Multi-addressing */".to_string()
-                                }
-                                _ => {
-                                    eprintln!("WARNING: STR unhandled offset type: {:?}", offset);
-                                    String::new()
                                 }
                             };
                             return format!("memory.write_32(r{}{}, r{})", rn, offset_expr, rd);
