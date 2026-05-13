@@ -1,6 +1,6 @@
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn embed_pyboyadvance(_runtime_dir: &str) -> io::Result<String> {
     // T4: No longer embedding runtime files

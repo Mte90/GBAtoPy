@@ -166,7 +166,7 @@ fn main() {
             rom,
             frames,
             screenshot,
-            headless,
+            headless: _,
             dump_memory,
             compare_with_mgba,
             output_dir,
