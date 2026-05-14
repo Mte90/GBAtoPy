@@ -1,15 +1,23 @@
-pub fn generate_ldrh_instruction(ops: &[arg], _cfg: &arg) -> String {
-    format!("r{} = load_halfword(0x{:08X})", ops[0], 0x1234)
+pub fn generate_ldrh_instruction(ops: &[String]) -> String {
+    format!("r{} = read_word({})", ops[0], ops[1])
 }
 
-pub fn generate_strh_instruction(ops: &[arg], _cfg: &arg) -> String {
-    format!("store_halfword(0x{:08X}, r{})", 0x5678, ops[1])
+pub fn generate_strh_instruction(ops: &[String]) -> String {
+    format!("write_word({}, {})", ops[0], ops[1])
 }
 
-pub fn generate_ldrb_instruction(ops: &[arg], _cfg: &arg) -> String {
-    format!("r{} = load_byte(0x{:08X})", ops[0], 0x1234)
+pub fn generate_ldrhb_instruction(ops: &[String]) -> String {
+    format!("r{} = read_hword({})", ops[0], ops[1])
 }
 
-pub fn generate_strb_instruction(ops: &[arg], _cfg: &arg) -> String {
-    format!("store_byte(0x{:08X}, r{})", 0x5678, ops[1])
+pub fn generate_strhb_instruction(ops: &[String]) -> String {
+    format!("write_hword({}, {})", ops[0], ops[1])
+}
+
+pub fn generate_ldrd_instruction(ops: &[String]) -> String {
+    format!("r{} = r{}", ops[0], ops[1])
+}
+
+pub fn generate_strd_instruction(ops: &[String]) -> String {
+    format!("write_dword({}, {})", ops[0], ops[1])
 }

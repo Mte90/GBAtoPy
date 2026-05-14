@@ -4,7 +4,7 @@ mod codegen;
 mod helpers;
 mod memory;
 mod pipeline_cmd;
-pub mod ppu;
+mod ppu;
 mod test;
 mod verify;
 
@@ -66,12 +66,6 @@ enum Commands {
         #[arg(long, default_value = "false")]
         #[allow(dead_code)]
         headless: bool, // available for future use
-        #[arg(long)]
-        dump_memory: bool, // dump memory state at each frame
-        #[arg(long)]
-        compare_with_mgba: bool, // compare with mGBA reference
-        #[arg(long)]
-        output_dir: Option<PathBuf>, // directory for dump files
     },
     Verify {
         #[arg(short, long)]
@@ -166,10 +160,7 @@ fn main() {
             rom,
             frames,
             screenshot,
-            headless: _,
-            dump_memory,
-            compare_with_mgba,
-            output_dir,
+            ..
         } => {
             println!("Running test on {} for {} frames...", rom.display(), frames);
 
@@ -180,11 +171,11 @@ fn main() {
                 .unwrap_or(std::ffi::OsStr::new("rom"))
                 .to_str()
                 .unwrap_or("rom");
-            let py_output_dir = std::env::current_dir()
+            let output_dir = std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
                 .join("output_test");
-            let _ = fs::create_dir_all(&py_output_dir);
-            let py_path = py_output_dir.join(format!("{}_test.py", rom_name));
+            let _ = fs::create_dir_all(&output_dir);
+            let py_path = output_dir.join(format!("{}_test.py", rom_name));
             let assets_dir = std::path::Path::new("crates/gbatopy-cli/assets");
 
             let pipeline_status = std::process::Command::new("cargo")
@@ -219,25 +210,6 @@ fn main() {
                 }
             }
 
-            // Setup dump directory
-            let dump_dir = match output_dir {
-                Some(path) => {
-                    let dir = path.join("dumps");
-                    let _ = fs::create_dir_all(&dir);
-                    dir
-                }
-                None => std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                    .join("dumps"),
-            };
-
-            // Set environment for dump utility
-            if dump_memory || compare_with_mgba {
-                let dump_dir_str = dump_dir.to_string_lossy();
-                std::env::set_var("GBATOPY_DUMP_DIR", dump_dir_str.as_ref());
-                println!("  Dump directory: {}", dump_dir_str);
-            }
-
             // Execute generated Python
             println!("  Executing ROM for {} frames...", frames);
 
@@ -246,18 +218,6 @@ fn main() {
                 "--headless".to_string(),
                 format!("--frame={}", frames),
             ];
-
-            // Add dump-memory flag
-            if dump_memory {
-                python_args.push("--dump-memory".to_string());
-                println!("  Memory dumping enabled");
-            }
-
-            // Add compare-with-mgba flag
-            if compare_with_mgba {
-                python_args.push("--compare-with-mgba".to_string());
-                println!("  mGBA comparison enabled");
-            }
 
             // Add screenshot argument if provided
             if let Some(screenshot_path) = screenshot {
@@ -299,14 +259,6 @@ fn main() {
                         // Even if no explicit PASS, successful execution is a pass for basic test
                         println!("  {}", stdout.trim());
                         println!("RESULT: PASS (execution successful)");
-                    }
-
-                    // Report dump files if generated
-                    if dump_memory {
-                        println!("  Memory dumps saved to: {}", dump_dir.to_string_lossy());
-                    }
-                    if compare_with_mgba {
-                        println!("  mGBA comparison completed");
                     }
                 }
                 Err(e) => {

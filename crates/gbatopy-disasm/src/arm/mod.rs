@@ -85,22 +85,37 @@ impl ArmDecoder {
         let cond_bits = ((word >> 28) & 0xF) as u8;
         let cond = decode_condition(cond_bits);
 
-        // Get base name from bits 27-25
-        let bits_27_25 = (word >> 25) & 0x7;
+        // Get instruction type from bits 27-26 and bit 25
+        // ARM encoding:
+        //   Bits 27-26 = 00, Bit 25 = 0 → Data Processing (register)
+        //   Bits 27-26 = 00, Bit 25 = 1 → Data Processing (immediate)
+        //   Bits 27-26 = 01 → Load/Store
+        let bits_27_26 = (word >> 26) & 0x3;
+        let bit_25 = (word >> 25) & 0x1;
 
-        let (base_name, operands, is_thumb) = match bits_27_25 {
-            0b000 => self.decode_data_processing(word, address),
-            0b001 => self.decode_load_store(word, address),
-            0b010 | 0b011 => self.decode_load_store_imm(word, address),
-            0b100 => self.decode_block_transfer(word, address),
-            0b101 => self.decode_branch(word, address),
-            0b110 => (format!("COPROCESSOR"), vec![], false), // Coprocessor instructions (MCR, MRC, LDC, STC) - not used on GBA
-            0b111 => {
-                // SWI (Software Interrupt) - extract immediate value from bits 23:0
-                let swi_num = (word & 0xFFFFFF) as u32;
-                (format!("SWI"), vec![Operand::Immediate(swi_num)], false)
+        let (base_name, operands, is_thumb) = match (bits_27_26, bit_25) {
+            (0b00, _) => self.decode_data_processing(word, address), // Bits 27-26 = 00
+            (0b01, _) => self.decode_load_store(word, address),      // Bits 27-26 = 01
+            (0b10, _) => self.decode_load_store_imm(word, address),  // Bits 27-26 = 10
+            (0b11, _) => {
+                // Check bit 25 for more specific classification
+                let bits_27_25 = (word >> 25) & 0x7;
+                match bits_27_25 {
+                    0b100 => self.decode_block_transfer(word, address),
+                    0b101 => self.decode_branch(word, address),
+                    0b110 => (format!("COPROCESSOR"), vec![], false),
+                    0b111 => {
+                        let swi_num = (word & 0xFFFFFF) as u32;
+                        (format!("SWI"), vec![Operand::Immediate(swi_num)], false)
+                    }
+                    _ => (format!("UNKNOWN"), vec![], false),
+                }
             }
-            _ => (format!("UNKNOWN_0b{:03b}", bits_27_25), vec![], false),
+            _ => (
+                format!("UNKNOWN_0b{:02b}_{}", bits_27_26, bit_25),
+                vec![],
+                false,
+            ),
         };
 
         let full_name = match cond {
@@ -313,26 +328,44 @@ impl ArmDecoder {
             let s_bit = (word >> 20) & 1 != 0;
             let rn = ((word >> 16) & 0xF) as u8;
             let rd = ((word >> 12) & 0xF) as u8;
-            let operand2 = word & 0xFFF;
+            let i_bit = (word >> 25) & 1 != 0; // I flag: 1=immediate, 0=register
+            let operand2_bits = word & 0xFFF;
 
             if let Some(op) = DataOp::from_bits(opcode_bits) {
-                let mut operands = vec![Operand::Register(rd), Operand::Register(rn)];
+                let mut operands = vec![Operand::Register(rd)];
 
-                let rm = (operand2 & 0xF) as u8;
-                if (operand2 & 0x10) != 0 {
-                    let shift_imm = ((operand2 >> 7) & 0x1F) as u8;
-                    let shift_type_bits = ((operand2 >> 5) & 0x3) as u8;
-                    if let Some(shift) = crate::operand::ShiftType::from_bits(shift_type_bits) {
-                        operands.push(Operand::ShiftedRegister {
-                            reg: rm,
-                            shift,
-                            amount: crate::operand::ShiftAmount::Immediate(shift_imm),
-                        });
+                if i_bit {
+                    // Immediate operand: calculate rotated immediate value
+                    let imm8 = operand2_bits & 0xFF;
+                    let rot = (operand2_bits >> 8) & 0xF;
+                    // Rotate right by 2*rot bits
+                    let imm_val = if rot == 0 {
+                        imm8 as u32
+                    } else {
+                        let shift = (2 * rot) as u32;
+                        ((imm8 >> shift) | (imm8 << (32 - shift))) & 0xFFFFFFFF
+                    };
+                    operands.push(Operand::Immediate(imm_val));
+                } else {
+                    // Register operand with optional shift
+                    operands.push(Operand::Register(rn));
+
+                    let rm = (operand2_bits & 0xF) as u8;
+                    if (operand2_bits & 0x10) != 0 {
+                        let shift_imm = ((operand2_bits >> 7) & 0x1F) as u8;
+                        let shift_type_bits = ((operand2_bits >> 5) & 0x3) as u8;
+                        if let Some(shift) = crate::operand::ShiftType::from_bits(shift_type_bits) {
+                            operands.push(Operand::ShiftedRegister {
+                                reg: rm,
+                                shift,
+                                amount: crate::operand::ShiftAmount::Immediate(shift_imm),
+                            });
+                        } else {
+                            operands.push(Operand::Register(rm));
+                        }
                     } else {
                         operands.push(Operand::Register(rm));
                     }
-                } else {
-                    operands.push(Operand::Register(rm));
                 }
 
                 (op.name().to_string(), operands, s_bit)

@@ -1,8 +1,7 @@
-pub fn generate_b_instruction_thumb(ops: &[arg], _cfg: &arg) -> String {
-    let target = 0x08000000; // placeholder
-    format!("r15 = r15 + ({target - 4})")
+pub fn generate_thumb_branch_instruction(_ops: &[String]) -> String {
+    format!("// branch instruction")
 }
 
-pub fn generate_bx_instruction_thumb(ops: &[arg], _cfg: &arg) -> String {
-    format!("r15 = r{}", ops[0])
+pub fn generate_thumb_blx_instruction(ops: &[String]) -> String {
+    format!("// bx r{}", ops[0])
 }

@@ -1,6 +1,32 @@
-use gbatopy_disasm::Disassembler;
+use crate::ppu::generate_ppu_code;
+use gbatopy_disasm::{operand::ShiftAmount, Disassembler};
 use std::fs;
 use std::path::Path;
+
+/// Convert ARM shift operator to Python operator
+/// Returns the full expression like "r5 << 2" or "(r5 >> 2) | (r5 << 30) & 0xFFFFFFFF"
+fn shift_to_python(
+    reg: u8,
+    shift_type: &gbatopy_disasm::operand::ShiftType,
+    amount: &ShiftAmount,
+) -> String {
+    let amt = match amount {
+        ShiftAmount::Immediate(n) => *n,
+        _ => 0,
+    };
+
+    match shift_type {
+        gbatopy_disasm::operand::ShiftType::Lsl => format!("r{} << {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Lsr => format!("r{} >> {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Asr => format!("r{} >> {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Ror => {
+            format!(
+                "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                reg, amt, reg, amt
+            )
+        }
+    }
+}
 
 pub fn run_pipeline(
     rom_path: &str,
@@ -139,10 +165,19 @@ pub fn run_pipeline(
             .trim_end_matches("le")
             .trim_end_matches("al");
 
+        eprintln!(
+            "DEBUG: addr=0x{:08X} opcode=\"{}\" ops={:?} len={}",
+            inst.address,
+            base_opcode,
+            ops,
+            ops.len()
+        );
+
         // Generate Python based on opcode type
         match base_opcode {
             // MOV Rd, #imm
             "MOV" => {
+                eprintln!("DEBUG MOV: ops.len()={}, ops={:?}", ops.len(), ops);
                 if ops.len() == 2 {
                     if let Operand::Register(rd) = ops[0] {
                         if let Operand::Immediate(imm) = ops[1] {
@@ -155,6 +190,13 @@ pub fn run_pipeline(
             }
             // ADD Rd, Rn, #imm or Rm
             "ADD" => {
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Immediate(imm) = ops[1] {
+                            return format!("r{} = (r{} + {}) & 0xFFFFFFFF", rd, rd, imm);
+                        }
+                    }
+                }
                 if ops.len() == 3 {
                     if let Operand::Register(rd) = ops[0] {
                         if let Operand::Register(rn) = ops[1] {
@@ -169,6 +211,13 @@ pub fn run_pipeline(
             }
             // SUB Rd, Rn, #imm or Rm
             "SUB" => {
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Immediate(imm) = ops[1] {
+                            return format!("r{} = (r{} - {}) & 0xFFFFFFFF", rd, rd, imm);
+                        }
+                    }
+                }
                 if ops.len() == 3 {
                     if let Operand::Register(rd) = ops[0] {
                         if let Operand::Register(rn) = ops[1] {
@@ -176,6 +225,42 @@ pub fn run_pipeline(
                                 return format!("r{} = (r{} - {}) & 0xFFFFFFFF", rd, rn, imm);
                             } else if let Operand::Register(rm) = ops[2] {
                                 return format!("r{} = (r{} - r{}) & 0xFFFFFFFF", rd, rn, rm);
+                            } else if let Operand::ShiftedRegister { reg, shift, amount } = &ops[2]
+                            {
+                                let shift_expr = match (shift, amount) {
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Lsl,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} << {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Lsr,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} >> {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Asr,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} >> {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Ror,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!(
+                                            "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                            reg, n, reg, n
+                                        )
+                                    }
+                                    _ => format!("r{}", reg),
+                                };
+                                return format!(
+                                    "r{} = (r{} - {}) & 0xFFFFFFFF",
+                                    rd, rn, shift_expr
+                                );
                             }
                         }
                     }
@@ -186,16 +271,51 @@ pub fn run_pipeline(
                 if ops.len() == 3 {
                     if let Operand::Register(rd) = ops[0] {
                         if let Operand::Register(rn) = ops[1] {
-                            if let Operand::Register(rm) = ops[2] {
-                                let op = match base_opcode {
-                                    "AND" => "&",
-                                    "EOR" => "^",
-                                    "ORR" => "|",
-                                    "BIC" => "& ~",
-                                    _ => "&",
-                                };
-                                return format!("r{} = (r{} {} r{}) & 0xFFFFFFFF", rd, rn, op, rm);
-                            }
+                            let rm_expr = match &ops[2] {
+                                Operand::Register(rm) => format!("r{}", rm),
+                                Operand::ShiftedRegister { reg, shift, amount } => {
+                                    let shift_expr = match (shift, amount) {
+                                        (
+                                            gbatopy_disasm::operand::ShiftType::Lsl,
+                                            gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                        ) => {
+                                            format!("r{} << {}", reg, n)
+                                        }
+                                        (
+                                            gbatopy_disasm::operand::ShiftType::Lsr,
+                                            gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                        ) => {
+                                            format!("r{} >> {}", reg, n)
+                                        }
+                                        (
+                                            gbatopy_disasm::operand::ShiftType::Asr,
+                                            gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                        ) => {
+                                            format!("r{} >> {}", reg, n)
+                                        }
+                                        (
+                                            gbatopy_disasm::operand::ShiftType::Ror,
+                                            gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                        ) => {
+                                            format!(
+                                                "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                                reg, n, reg, n
+                                            )
+                                        }
+                                        _ => format!("r{}", reg),
+                                    };
+                                    shift_expr
+                                }
+                                _ => format!("r0"),
+                            };
+                            let op = match base_opcode {
+                                "AND" => "&",
+                                "EOR" => "^",
+                                "ORR" => "|",
+                                "BIC" => "& ~",
+                                _ => "&",
+                            };
+                            return format!("r{} = (r{} {} {}) & 0xFFFFFFFF", rd, rn, op, rm_expr);
                         }
                     }
                 }
@@ -208,7 +328,7 @@ pub fn run_pipeline(
                     }
                 }
             }
-            // B, BL - Branch instructions
+            // ADD Rd, Rn, #imm - Add immediate
             "B" | "BL" => {
                 if ops.len() == 1 {
                     if let Operand::Immediate(target) = ops[0] {
@@ -240,6 +360,11 @@ pub fn run_pipeline(
                 // Case 1: 2 operands - LDR Rd, [Rn, offset]
                 if ops.len() == 2 {
                     if let Operand::Register(rd) = ops[0] {
+                        // Case 1a: LDR Rd, #imm (pseudo-instruction - load immediate value)
+                        if let Operand::Immediate(val) = ops[1] {
+                            return format!("r{} = {}", rd, val);
+                        }
+                        // Case 1b: LDR Rd, [Rn, offset]
                         if let Operand::MemoryAddress {
                             base: rn, offset, ..
                         } = &ops[1]
@@ -297,24 +422,7 @@ pub fn run_pipeline(
                             let op2_expr = match &ops[2] {
                                 Operand::Register(rm) => format!("r{}", rm),
                                 Operand::ShiftedRegister { reg, shift, amount } => {
-                                    let shift_str = match shift {
-                                        gbatopy_disasm::operand::ShiftType::Lsl => "lsl",
-                                        gbatopy_disasm::operand::ShiftType::Lsr => "lsr",
-                                        gbatopy_disasm::operand::ShiftType::Asr => "asr",
-                                        gbatopy_disasm::operand::ShiftType::Ror => "ror",
-                                    };
-                                    let amount_str = match amount {
-                                        gbatopy_disasm::operand::ShiftAmount::Immediate(0) => {
-                                            "0".to_string()
-                                        }
-                                        gbatopy_disasm::operand::ShiftAmount::Register(_) => {
-                                            "0".to_string()
-                                        }
-                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n) => {
-                                            n.to_string()
-                                        }
-                                    };
-                                    format!("r{} {} {}", reg, shift_str, amount_str)
+                                    shift_to_python(*reg, shift, amount)
                                 }
                                 _ => "0".to_string(),
                             };
@@ -393,24 +501,7 @@ pub fn run_pipeline(
                             let op2_expr = match &ops[2] {
                                 Operand::Register(rm) => format!("r{}", rm),
                                 Operand::ShiftedRegister { reg, shift, amount } => {
-                                    let shift_str = match shift {
-                                        gbatopy_disasm::operand::ShiftType::Lsl => "lsl",
-                                        gbatopy_disasm::operand::ShiftType::Lsr => "lsr",
-                                        gbatopy_disasm::operand::ShiftType::Asr => "asr",
-                                        gbatopy_disasm::operand::ShiftType::Ror => "ror",
-                                    };
-                                    let amount_str = match amount {
-                                        gbatopy_disasm::operand::ShiftAmount::Immediate(0) => {
-                                            "0".to_string()
-                                        }
-                                        gbatopy_disasm::operand::ShiftAmount::Register(_) => {
-                                            "0".to_string()
-                                        }
-                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n) => {
-                                            n.to_string()
-                                        }
-                                    };
-                                    format!("r{} {} {}", reg, shift_str, amount_str)
+                                    shift_to_python(*reg, shift, amount)
                                 }
                                 _ => "0".to_string(),
                             };
@@ -451,6 +542,22 @@ pub fn run_pipeline(
                         }
                     }
                 }
+                // Case 2: 3 operands - STRB Rt, [Rn, Rm] or STRB Rt, [Rn, #imm]
+                if ops.len() == 3 {
+                    if let Operand::Register(rt) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            let offset_expr = match &ops[2] {
+                                Operand::Register(rm) => format!("r{}", rm),
+                                Operand::Immediate(val) => val.to_string(),
+                                _ => "0".to_string(),
+                            };
+                            return format!(
+                                "memory.write_u8(r{} + {}, r{} & 0xFF)",
+                                rn, offset_expr, rt
+                            );
+                        }
+                    }
+                }
                 return format!("# STRB (parsing failed)");
             }
             "LDRB" => {
@@ -469,6 +576,22 @@ pub fn run_pipeline(
                             return format!(
                                 "r{} = memory.read_u8(r{} + {}) & 0xFF",
                                 rd, rn, offset_val
+                            );
+                        }
+                    }
+                }
+                // Case 2: 3 operands - LDRB Rt, [Rn, Rm] or LDRB Rt, [Rn, #imm]
+                if ops.len() == 3 {
+                    if let Operand::Register(rt) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            let offset_expr = match &ops[2] {
+                                Operand::Register(rm) => format!("r{}", rm),
+                                Operand::Immediate(val) => val.to_string(),
+                                _ => "0".to_string(),
+                            };
+                            return format!(
+                                "r{} = memory.read_u8(r{} + {}) & 0xFF",
+                                rt, rn, offset_expr
                             );
                         }
                     }
@@ -562,24 +685,7 @@ pub fn run_pipeline(
                             let op2_expr = match &ops[2] {
                                 Operand::Register(rm) => format!("r{}", rm),
                                 Operand::ShiftedRegister { reg, shift, amount } => {
-                                    let shift_str = match shift {
-                                        gbatopy_disasm::operand::ShiftType::Lsl => "lsl",
-                                        gbatopy_disasm::operand::ShiftType::Lsr => "lsr",
-                                        gbatopy_disasm::operand::ShiftType::Asr => "asr",
-                                        gbatopy_disasm::operand::ShiftType::Ror => "ror",
-                                    };
-                                    let amount_str = match amount {
-                                        gbatopy_disasm::operand::ShiftAmount::Immediate(0) => {
-                                            "0".to_string()
-                                        }
-                                        gbatopy_disasm::operand::ShiftAmount::Register(_) => {
-                                            "0".to_string()
-                                        }
-                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n) => {
-                                            n.to_string()
-                                        }
-                                    };
-                                    format!("r{} {} {}", reg, shift_str, amount_str)
+                                    shift_to_python(*reg, shift, amount)
                                 }
                                 _ => "0".to_string(),
                             };
@@ -617,24 +723,7 @@ pub fn run_pipeline(
                                 Operand::Immediate(val) => val.to_string(),
                                 Operand::Register(rm) => format!("r{}", rm),
                                 Operand::ShiftedRegister { reg, shift, amount } => {
-                                    let shift_str = match shift {
-                                        gbatopy_disasm::operand::ShiftType::Lsl => "lsl",
-                                        gbatopy_disasm::operand::ShiftType::Lsr => "lsr",
-                                        gbatopy_disasm::operand::ShiftType::Asr => "asr",
-                                        gbatopy_disasm::operand::ShiftType::Ror => "ror",
-                                    };
-                                    let amount_str = match amount {
-                                        gbatopy_disasm::operand::ShiftAmount::Immediate(0) => {
-                                            "0".to_string()
-                                        }
-                                        gbatopy_disasm::operand::ShiftAmount::Register(_) => {
-                                            "0".to_string()
-                                        }
-                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n) => {
-                                            n.to_string()
-                                        }
-                                    };
-                                    format!("r{} {} {}", reg, shift_str, amount_str)
+                                    shift_to_python(*reg, shift, amount)
                                 }
                                 _ => "0".to_string(),
                             };
@@ -676,24 +765,54 @@ pub fn run_pipeline(
                             Operand::Immediate(val) => val.to_string(),
                             Operand::Register(rm) => format!("r{}", rm),
                             Operand::ShiftedRegister { reg, shift, amount } => {
-                                let shift_str = match shift {
-                                    gbatopy_disasm::operand::ShiftType::Lsl => "lsl",
-                                    gbatopy_disasm::operand::ShiftType::Lsr => "lsr",
-                                    gbatopy_disasm::operand::ShiftType::Asr => "asr",
-                                    gbatopy_disasm::operand::ShiftType::Ror => "ror",
+                                shift_to_python(*reg, shift, amount)
+                            }
+                            _ => "0".to_string(),
+                        };
+                        return format!(
+                            "result = r{} + {}; flags = compute_flags(result, 32)",
+                            rn, op2_expr
+                        );
+                    }
+                }
+                // Case 2: 2 operands - CMN Rn, #imm or CMN Rn, Rm
+                if ops.len() == 2 {
+                    if let Operand::Register(rn) = ops[0] {
+                        let op2_expr = match &ops[1] {
+                            Operand::Immediate(val) => val.to_string(),
+                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::ShiftedRegister { reg, shift, amount } => {
+                                let shift_expr = match (shift, amount) {
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Lsl,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} << {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Lsr,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} >> {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Asr,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} >> {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Ror,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!(
+                                            "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                            reg, n, reg, n
+                                        )
+                                    }
+                                    _ => format!("r{}", reg),
                                 };
-                                let amount_str = match amount {
-                                    gbatopy_disasm::operand::ShiftAmount::Immediate(0) => {
-                                        "0".to_string()
-                                    }
-                                    gbatopy_disasm::operand::ShiftAmount::Register(_) => {
-                                        "0".to_string()
-                                    }
-                                    gbatopy_disasm::operand::ShiftAmount::Immediate(n) => {
-                                        n.to_string()
-                                    }
-                                };
-                                format!("r{} {} {}", reg, shift_str, amount_str)
+                                shift_expr
                             }
                             _ => "0".to_string(),
                         };
@@ -712,24 +831,54 @@ pub fn run_pipeline(
                             Operand::Immediate(val) => val.to_string(),
                             Operand::Register(rm) => format!("r{}", rm),
                             Operand::ShiftedRegister { reg, shift, amount } => {
-                                let shift_str = match shift {
-                                    gbatopy_disasm::operand::ShiftType::Lsl => "lsl",
-                                    gbatopy_disasm::operand::ShiftType::Lsr => "lsr",
-                                    gbatopy_disasm::operand::ShiftType::Asr => "asr",
-                                    gbatopy_disasm::operand::ShiftType::Ror => "ror",
+                                let shift_expr = match (shift, amount) {
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Lsl,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} << {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Lsr,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} >> {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Asr,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!("r{} >> {}", reg, n)
+                                    }
+                                    (
+                                        gbatopy_disasm::operand::ShiftType::Ror,
+                                        gbatopy_disasm::operand::ShiftAmount::Immediate(n),
+                                    ) => {
+                                        format!(
+                                            "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                            reg, n, reg, n
+                                        )
+                                    }
+                                    _ => format!("r{}", reg),
                                 };
-                                let amount_str = match amount {
-                                    gbatopy_disasm::operand::ShiftAmount::Immediate(0) => {
-                                        "0".to_string()
-                                    }
-                                    gbatopy_disasm::operand::ShiftAmount::Register(_) => {
-                                        "0".to_string()
-                                    }
-                                    gbatopy_disasm::operand::ShiftAmount::Immediate(n) => {
-                                        n.to_string()
-                                    }
-                                };
-                                format!("r{} {} {}", reg, shift_str, amount_str)
+                                shift_expr
+                            }
+                            _ => "0".to_string(),
+                        };
+                        return format!(
+                            "result = r{} & {}; flags = compute_flags(result, 32)",
+                            rn, op2_expr
+                        );
+                    }
+                }
+                // Case 2: 2 operands - TST Rn, #imm or TST Rn, Rm
+                if ops.len() == 2 {
+                    if let Operand::Register(rn) = ops[0] {
+                        let op2_expr = match &ops[1] {
+                            Operand::Immediate(val) => val.to_string(),
+                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::ShiftedRegister { reg, shift, amount } => {
+                                shift_to_python(*reg, shift, amount)
                             }
                             _ => "0".to_string(),
                         };
@@ -748,24 +897,24 @@ pub fn run_pipeline(
                             Operand::Immediate(val) => val.to_string(),
                             Operand::Register(rm) => format!("r{}", rm),
                             Operand::ShiftedRegister { reg, shift, amount } => {
-                                let shift_str = match shift {
-                                    gbatopy_disasm::operand::ShiftType::Lsl => "lsl",
-                                    gbatopy_disasm::operand::ShiftType::Lsr => "lsr",
-                                    gbatopy_disasm::operand::ShiftType::Asr => "asr",
-                                    gbatopy_disasm::operand::ShiftType::Ror => "ror",
-                                };
-                                let amount_str = match amount {
-                                    gbatopy_disasm::operand::ShiftAmount::Immediate(0) => {
-                                        "0".to_string()
-                                    }
-                                    gbatopy_disasm::operand::ShiftAmount::Register(_) => {
-                                        "0".to_string()
-                                    }
-                                    gbatopy_disasm::operand::ShiftAmount::Immediate(n) => {
-                                        n.to_string()
-                                    }
-                                };
-                                format!("r{} {} {}", reg, shift_str, amount_str)
+                                shift_to_python(*reg, shift, amount)
+                            }
+                            _ => "0".to_string(),
+                        };
+                        return format!(
+                            "result = r{} ^ {}; flags = compute_flags(result, 32)",
+                            rn, op2_expr
+                        );
+                    }
+                }
+                // Case 2: 2 operands - TEQ Rn, #imm or TEQ Rn, Rm
+                if ops.len() == 2 {
+                    if let Operand::Register(rn) = ops[0] {
+                        let op2_expr = match &ops[1] {
+                            Operand::Immediate(val) => val.to_string(),
+                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::ShiftedRegister { reg, shift, amount } => {
+                                shift_to_python(*reg, shift, amount)
                             }
                             _ => "0".to_string(),
                         };
@@ -945,6 +1094,11 @@ fn generate_game_loop() -> String {
 def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):
     """Execute transpiled GBA code using func_map dispatch"""
     
+    def ror(value, amount):
+        """Rotate right: (value >> amount) | (value << (32 - amount)) & 0xFFFFFFFF"""
+        amount = amount & 31  # Mask to 0-31
+        return ((value >> amount) | (value << (32 - amount))) & 0xFFFFFFFF
+    
     frame_count = 0
     max_instructions = 1000000  # Safety limit
     instruction_count = 0
@@ -1057,11 +1211,11 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 elif event.key == pygame.K_s:
                     keys_down.pop('R', None)
         
-        # TODO: Render PPU framebuffer to screen
-        # For now, show a placeholder
-        if not headless and screen:
-            screen.fill((0, 0, 0))  # Black background
-            # TODO: Render actual PPU output
+        # Render PPU framebuffer to screen
+        if screen:
+            ppu_instance = PPU(memory)
+            ppu_instance.render_frame()
+            screen.blit(ppu_instance.screen, (0, 0))
             pygame.display.flip()
         
         frame_count += 1

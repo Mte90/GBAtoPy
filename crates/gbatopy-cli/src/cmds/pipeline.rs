@@ -1,13 +1,42 @@
-use crate::codegen::{
-    branch::generate_b_instruction, condition::generate_cmp_instruction,
-    data_processing::generate_mov_instruction, load_store::generate_store_instruction,
-    multiply::generate_mul_instruction, thumb::branch::generate_b_instruction_thumb,
-    thumb::load_store::generate_ldrh_instruction,
-};
-
+use crate::ppu::generate_ppu_code;
 use std::fs;
-
 use std::path::Path;
+
+#[allow(dead_code)]
+fn embed_pyboyadvance(_runtime_dir: &str) -> Result<String, String> {
+    Ok(String::new())
+}
+
+#[allow(dead_code)]
+fn strip_cython_guards(code: &str) -> String {
+    let mut result = String::new();
+    let mut in_cython_guard = false;
+
+    for line in code.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("# ifndef CYTHON") || trimmed.starts_with("#if !CYTHON") {
+            in_cython_guard = true;
+            continue;
+        }
+
+        if trimmed == "# endif" || trimmed.starts_with("#endif") {
+            if in_cython_guard {
+                in_cython_guard = false;
+                continue;
+            }
+        }
+
+        if in_cython_guard {
+            continue;
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    result
+}
 
 pub fn generate_game_loop() -> String {
     r#"
@@ -19,6 +48,7 @@ import pygame
 import argparse
 import sys
 import os
+import ppu
 
 # Global ARM registers (r0-r15, cpsr, spsr)
 # These are modified by the generated func_* functions
@@ -33,6 +63,10 @@ usr_sp = irq_sp = svc_sp = 0
 # Entry point - GBA ROM starts at 0x08000000
 GBA_ENTRY = 0x08000000
 r15 = GBA_ENTRY
+
+# Memory placeholders (will be replaced by PPU code with actual VRAM/palette)
+memory_vram = bytearray(0x18000)  # VRAM
+memory_palette = bytearray(0x400)  # Palette
 
 def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):
     """Execute transpiled GBA code using func_map dispatch"""
@@ -90,13 +124,11 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen = pygame.display.set_mode((240 * scale, 160 * scale))
         pygame.display.set_caption("GBAtoPy - Transpiled GBA")
     else:
-        screen = pygame.Surface((240 * scale, 160 * scale))
+        screen = None
     
     clock = pygame.time.Clock()
     frame_count = 0
     running = True
-    instruction_count = 0
-    max_instructions_per_frame = 2000  # ~120K instructions/sec for 60fps
     
     # Input state
     keys_down = {}
@@ -150,36 +182,55 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     keys_down.pop('L', None)
                 elif event.key == pygame.K_s:
                     keys_down.pop('R', None)
-
-        # Execute transpiled GBA code for this frame
-        pc = r15
-        instructions_this_frame = 0
-
-        while instructions_this_frame < max_instructions_per_frame:
-            # Look up function by address
-            if pc not in func_map:
-                print(f"Unknown PC: 0x{pc:08X} - execution halted")
-                running = False
-                break
-
-            # Get the function and call it
-            func = func_map[pc]
-            func()  # This updates r15 (PC) for next instruction
-
-            pc = r15
-            instructions_this_frame += 1
-            instruction_count += 1
-
-            # If PC didn't change, we're in an infinite loop - break to prevent hang
-            if r15 == pc and instructions_this_frame > 100:
-                print(f"PC unchanged at 0x{pc:08X} - possible infinite loop, breaking")
-                break
-
-        # TODO: Render PPU framebuffer to screen
-        # For now, show a placeholder
-        if not headless and screen:
-            screen.fill((0, 0, 0))  # Black background
-            # TODO: Render actual PPU output
+        
+        # Render PPU framebuffer to screen
+        if screen:
+            # Create minimal Memory object for PPU
+            class MemorySimple:
+                def __init__(self, vram, palette):
+                    self.vram = vram
+                    self.palette = palette
+                
+                def read_8(self, addr):
+                    if addr < len(self.vram):
+                        return self.vram[addr]
+                    return 0
+                
+                def read_16(self, addr):
+                    if addr + 1 < len(self.vram):
+                        return self.vram[addr] | (self.vram[addr + 1] << 8)
+                    return 0
+                
+                def read_32(self, addr):
+                    if addr + 3 < len(self.vram):
+                        return (self.vram[addr] | (self.vram[addr + 1] << 8) |
+                               (self.vram[addr + 2] << 16) | (self.vram[addr + 3] << 24))
+                    return 0
+                
+                def write_8(self, addr, value):
+                    if addr < len(self.vram):
+                        self.vram[addr] = value & 0xFF
+                
+                def write_16(self, addr, value):
+                    if addr < len(self.vram):
+                        self.vram[addr] = value & 0xFF
+                        if addr + 1 < len(self.vram):
+                            self.vram[addr + 1] = (value >> 8) & 0xFF
+                
+                def write_32(self, addr, value):
+                    if addr < len(self.vram):
+                        self.vram[addr] = value & 0xFF
+                        if addr + 1 < len(self.vram):
+                            self.vram[addr + 1] = (value >> 8) & 0xFF
+                        if addr + 2 < len(self.vram):
+                            self.vram[addr + 2] = (value >> 16) & 0xFF
+                        if addr + 3 < len(self.vram):
+                            self.vram[addr + 3] = (value >> 24) & 0xFF
+            
+            memory_simple = MemorySimple(memory_vram, memory_palette)
+            ppu_instance = PPU(memory_simple)
+            ppu_instance.render_frame()
+            screen.blit(ppu_instance.screen, (0, 0))
             pygame.display.flip()
         
         frame_count += 1
@@ -301,21 +352,24 @@ pub fn run_pipeline(
     _assets_dir: &Path,
     _use_ir: bool,
 ) -> Result<(), String> {
-    println!("Running pipeline on: {}", rom_path);
+    println!("Running PyBoyAdvance-based pipeline on: {}", rom_path);
 
     let rom_data = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
     let mut python_code = String::new();
 
-    println!("Phase 1: Adding PyBoyAdvance runtime...");
-    // Runtime is now imported directly in generate_game_loop()
-    python_code.push_str(
-        r#"# PyBoyAdvance runtime (imported internally by game loop)
-"#,
-    );
+    println!("Phase 1: Embedding PyBoyAdvance runtime...");
+    let runtime_code = embed_pyboyadvance("crates/gbatopy-cli/assets")
+        .map_err(|e| format!("Failed to embed runtime: {}", e))?;
+    python_code.push_str(&runtime_code);
     python_code.push('\n');
 
-    println!("Phase 2: Embedding BIOS...");
+    println!("Phase 2: Generating PPU code...");
+    let ppu_code = generate_ppu_code();
+    python_code.push_str(&ppu_code);
+    python_code.push('\n');
+
+    println!("Phase 3: Embedding BIOS...");
     let bios_code = generate_bios();
     python_code.push_str(&bios_code);
 
@@ -332,4 +386,25 @@ pub fn run_pipeline(
     println!("Generated Python written to: {}", output_path);
     println!("Pipeline complete!");
     Ok(())
+}
+
+fn strip_relative_imports(code: &str) -> String {
+    code.lines()
+        .filter(|line| {
+            // Completely remove relative import lines and gba_runtime imports
+            let trimmed = line.trim();
+            if trimmed.starts_with("from .") {
+                false
+            } else if trimmed.starts_with("import .") {
+                false
+            } else if trimmed.starts_with("from gba_runtime.") {
+                false
+            } else if trimmed.starts_with("import gba_runtime") {
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<&str>>()
+        .join("\n")
 }
