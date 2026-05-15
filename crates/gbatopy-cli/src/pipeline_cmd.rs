@@ -37,9 +37,14 @@ pub fn run_pipeline(
     let rom = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
     eprintln!("Step 1: Disassembly");
+    // Skip GBA ROM header (first 0xC0 = 192 bytes) - actual code starts at 0x080000C0
+    let rom_code = &rom[0xC0..];
     let mut disasm = Disassembler::new();
-    let instructions = disasm.disassemble(&rom, 0x08000000);
-    eprintln!("  Disassembled {} instructions", instructions.len());
+    let instructions = disasm.disassemble(rom_code, 0x080000C0);
+    eprintln!(
+        "  Disassembled {} instructions (skipped 0xC0-byte header)",
+        instructions.len()
+    );
 
     eprintln!("Step 2: Asset Extraction");
     eprintln!("  (Asset extraction skipped - not implemented yet)");
@@ -266,8 +271,8 @@ pub fn run_pipeline(
                     }
                 }
             }
-            // AND, EOR, ORR, BIC
-            "AND" | "EOR" | "ORR" | "BIC" => {
+            // AND, EOR, ORR, BIC, ADC
+            "AND" | "EOR" | "ORR" | "BIC" | "ADC" => {
                 if ops.len() == 3 {
                     if let Operand::Register(rd) = ops[0] {
                         if let Operand::Register(rn) = ops[1] {
@@ -313,22 +318,192 @@ pub fn run_pipeline(
                                 "EOR" => "^",
                                 "ORR" => "|",
                                 "BIC" => "& ~",
+                                "ADC" => "+", // ADC without carry tracking for now
                                 _ => "&",
                             };
-                            return format!("r{} = (r{} {} {}) & 0xFFFFFFFF", rd, rn, op, rm_expr);
+                            let carry = if base_opcode == "ADC" { " + 0" } else { "" }; // Simplified: carry=0
+                            return format!(
+                                "r{} = (r{} {} {}{}) & 0xFFFFFFFF",
+                                rd, rn, op, rm_expr, carry
+                            );
+                        }
+                    }
+                }
+                // Handle 2-operand form: ADC Rd, #imm (actually Rd = Rd + #imm)
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Immediate(val) = ops[1] {
+                            let op = match base_opcode {
+                                "ADC" => "+",
+                                "EOR" => "^",
+                                "ORR" => "|",
+                                "AND" => "&",
+                                "BIC" => "& ~",
+                                _ => "+",
+                            };
+                            let carry = if base_opcode == "ADC" { " + 0" } else { "" };
+                            return format!(
+                                "r{} = (r{} {} {}{}) & 0xFFFFFFFF",
+                                rd, rd, op, val, carry
+                            );
                         }
                     }
                 }
             }
-            // MVN Rd, Rm
+            // MVN Rd, Rm or MVN Rd, #imm
             "MVN" if ops.len() == 2 => {
                 if let Operand::Register(rd) = ops[0] {
-                    if let Operand::Register(rm) = ops[1] {
-                        return format!("r{} = (~r{}) & 0xFFFFFFFF", rd, rm);
+                    match &ops[1] {
+                        Operand::Register(rm) => {
+                            return format!("r{} = (~r{}) & 0xFFFFFFFF", rd, rm);
+                        }
+                        Operand::Immediate(val) => {
+                            return format!("r{} = (~{}) & 0xFFFFFFFF", rd, val);
+                        }
+                        _ => {}
                     }
                 }
             }
-            // ADD Rd, Rn, #imm - Add immediate
+            // MVN Rd, Rm, shift (3 operands)
+            "MVN" if ops.len() == 3 => {
+                if let Operand::Register(rd) = ops[0] {
+                    if let Operand::Register(rm) = ops[1] {
+                        // MVN Rd, Rm, Rn (3 registers, no shift)
+                        if let Operand::Register(rn) = ops[2] {
+                            return format!("r{} = (~r{}) & 0xFFFFFFFF", rd, rn);
+                        }
+                        // MVN Rd, Rm, Rn, shift
+                        if let Operand::ShiftedRegister { reg, shift, amount } = &ops[2] {
+                            let shift_expr = shift_to_python(*reg, shift, amount);
+                            return format!("r{} = (~{}) & 0xFFFFFFFF", rd, shift_expr);
+                        }
+                    }
+                }
+            }
+            // RSB - Reverse Subtract: Rd = Operand2 - Rn
+            "RSB" => {
+                if ops.len() == 2 {
+                    // RSB Rd, Rn, #imm: Rd = imm - Rn
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Immediate(imm) = ops[1] {
+                            return format!("r{} = ({} - r{}) & 0xFFFFFFFF", rd, imm, rd);
+                        }
+                    }
+                }
+                if ops.len() == 3 {
+                    // RSB Rd, Rn, Operand2: Rd = Operand2 - Rn
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            if let Operand::Immediate(imm) = ops[2] {
+                                return format!("r{} = ({} - r{}) & 0xFFFFFFFF", rd, imm, rn);
+                            } else if let Operand::Register(rm) = ops[2] {
+                                return format!("r{} = (r{} - r{}) & 0xFFFFFFFF", rd, rm, rn);
+                            } else if let Operand::ShiftedRegister { reg, shift, amount } = &ops[2]
+                            {
+                                let shift_expr = shift_to_python(*reg, shift, amount);
+                                return format!(
+                                    "r{} = ({} - r{}) & 0xFFFFFFFF",
+                                    rd, shift_expr, rn
+                                );
+                            }
+                        }
+                    }
+                }
+                return "# RSB (parsing failed)".to_string();
+            }
+            // SBC - Subtract with Carry: Rd = Rn - Operand2 - (1 - C)
+            // Simplified: Rd = Rn - Operand2 - 1 (assuming carry=0)
+            "SBC" => {
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Immediate(imm) = ops[1] {
+                            return format!("r{} = (r{} - {} - 1) & 0xFFFFFFFF", rd, rd, imm);
+                        }
+                    }
+                }
+                if ops.len() == 3 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            if let Operand::Immediate(imm) = ops[2] {
+                                return format!("r{} = (r{} - {} - 1) & 0xFFFFFFFF", rd, rn, imm);
+                            } else if let Operand::Register(rm) = ops[2] {
+                                return format!("r{} = (r{} - r{} - 1) & 0xFFFFFFFF", rd, rn, rm);
+                            } else if let Operand::ShiftedRegister { reg, shift, amount } = &ops[2]
+                            {
+                                let shift_expr = shift_to_python(*reg, shift, amount);
+                                return format!(
+                                    "r{} = (r{} - {} - 1) & 0xFFFFFFFF",
+                                    rd, rn, shift_expr
+                                );
+                            }
+                        }
+                    }
+                }
+                return "# SBC (parsing failed)".to_string();
+            }
+            // RSC - Reverse Subtract with Carry: Rd = Operand2 - Rn - (1 - C)
+            // Simplified: Rd = Operand2 - Rn - 1 (assuming carry=0)
+            "RSC" => {
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Immediate(imm) = ops[1] {
+                            return format!("r{} = ({} - r{} - 1) & 0xFFFFFFFF", rd, imm, rd);
+                        }
+                    }
+                }
+                if ops.len() == 3 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            if let Operand::Immediate(imm) = ops[2] {
+                                return format!("r{} = ({} - r{} - 1) & 0xFFFFFFFF", rd, imm, rn);
+                            } else if let Operand::Register(rm) = ops[2] {
+                                return format!("r{} = (r{} - r{} - 1) & 0xFFFFFFFF", rd, rm, rn);
+                            } else if let Operand::ShiftedRegister { reg, shift, amount } = &ops[2]
+                            {
+                                let shift_expr = shift_to_python(*reg, shift, amount);
+                                return format!(
+                                    "r{} = ({} - r{} - 1) & 0xFFFFFFFF",
+                                    rd, shift_expr, rn
+                                );
+                            }
+                        }
+                    }
+                }
+                return "# RSC (parsing failed)".to_string();
+            }
+            // SWP Rd, Rm, [Rn] - Swap byte or word between register and memory
+            "SWP" => {
+                if ops.len() == 3 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Register(rm) = ops[1] {
+                            if let Operand::Register(rn) = ops[2] {
+                                // SWP Rd, Rm, [Rn]: Rd = *Rn; *Rn = Rm
+                                return format!(
+                                    "r{} = memory.read_32(r{})\nmemory.write_32(r{}, r{})",
+                                    rd, rn, rn, rm
+                                );
+                            }
+                        }
+                    }
+                }
+                return "# SWP (parsing failed)".to_string();
+            }
+            // SWI - Software interrupt (stub: skip execution)
+            "SWI" => {
+                // SWI is a BIOS call - for now we skip it
+                if ops.len() >= 1 {
+                    if let Operand::Immediate(swi_num) = ops[0] {
+                        return format!("pass  # SWI {} called", swi_num);
+                    }
+                }
+                return "pass  # SWI called".to_string();
+            }
+            // COPROCESSOR - MCR/MRC/etc (stub: skip execution)
+            "COPROCESSOR" => {
+                // Coprocessor instructions - not implemented, skip
+                return "pass  # COPROCESSOR instruction skipped".to_string();
+            }
+            // B | BL - Branch
             "B" | "BL" => {
                 if ops.len() == 1 {
                     if let Operand::Immediate(target) = ops[0] {
@@ -354,6 +529,16 @@ pub fn run_pipeline(
                     }
                 }
                 return format!("# BX (parsing failed)");
+            }
+            // BLX Rm - Branch with Link and Exchange (via register)
+            "BLX" => {
+                if ops.len() == 1 {
+                    if let Operand::Register(rm) = ops[0] {
+                        // BLX Rm: LR = PC + 4, PC = Rm, switch to Thumb mode
+                        return format!("r14 = r15 + 4\nr15 = {}  # BLX to register\n# Note: Thumb mode switch not tracked", rm);
+                    }
+                }
+                return "# BLX (parsing failed)".to_string();
             }
             // LDR Rd, [Rn, #offset] - Load word from memory
             "LDR" => {
@@ -704,13 +889,110 @@ pub fn run_pipeline(
                 );
                 return format!("# LDRH (parsing failed)");
             }
+            // LDRSB Rd, [Rn, #offset] - Load Register Signed Byte
+            "LDRSB" => {
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::MemoryAddress {
+                            base,
+                            offset,
+                            writeback: _,
+                        } = &ops[1]
+                        {
+                            let rn = base;
+                            let offset_expr = match offset {
+                                gbatopy_disasm::operand::AddressingMode::ImmediateOffset(val) => {
+                                    format!("{}", val)
+                                }
+                                gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                                    format!("r{}", reg)
+                                }
+                                _ => "0".to_string(),
+                            };
+                            return format!(
+                                "r{} = memory.read_8(r{} + {}) if (val := memory.read_8(r{} + {})) & 0x80 == 0 else (val | 0xFFFFFF00)",
+                                rd, rn, offset_expr, rn, offset_expr
+                            );
+                        }
+                    }
+                }
+                return "# LDRSB (parsing failed)".to_string();
+            }
+            // LDRSH Rd, [Rn, #offset] - Load Register Signed Halfword
+            "LDRSH" => {
+                if ops.len() == 2 {
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::MemoryAddress {
+                            base,
+                            offset,
+                            writeback: _,
+                        } = &ops[1]
+                        {
+                            let rn = base;
+                            let offset_expr = match offset {
+                                gbatopy_disasm::operand::AddressingMode::ImmediateOffset(val) => {
+                                    format!("{}", val)
+                                }
+                                gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                                    format!("r{}", reg)
+                                }
+                                _ => "0".to_string(),
+                            };
+                            return format!(
+                                "r{} = memory.read_16(r{} + {}) if (val := memory.read_16(r{} + {})) & 0x8000 == 0 else (val | 0xFFFF0000)",
+                                rd, rn, offset_expr, rn, offset_expr
+                            );
+                        }
+                    }
+                }
+                return "# LDRSH (parsing failed)".to_string();
+            }
             // Multiply instructions
             "MUL" | "MLA" | "UMULL" | "SMULL" | "UMLAL" | "SMLAL" => {
-                // MUL/MLA - Multiply (operand parsing issue in disassembler, skip for now)
-                return format!(
-                    "# {} (multiply - needs disassembler operand fix)",
-                    base_opcode
+                // Debug: print operands to understand format
+                eprintln!(
+                    "DEBUG {} - ops.len={}, ops={:?}",
+                    base_opcode,
+                    ops.len(),
+                    ops
                 );
+
+                // UMULL/SMULL: RdLo, RdHi, Rm, Rs (4 operands)
+                // MUL/MLA: Rd, Rn, Rm (3 operands)
+                if ops.len() == 4 {
+                    // UMULL/SMULL form
+                    if let Operand::Register(rd_lo) = ops[0] {
+                        if let Operand::Register(rd_hi) = ops[1] {
+                            if let Operand::Register(rm) = ops[2] {
+                                if let Operand::Register(rs) = ops[3] {
+                                    let is_signed = base_opcode == "SMULL";
+                                    return format!(
+                                        "result_64 = (r{} * r{}) & 0xFFFFFFFFFFFFFFFF; r{} = result_64 & 0xFFFFFFFF; r{} = (result_64 >> 32) & 0xFFFFFFFF",
+                                        rm, rs, rd_lo, rd_hi
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else if ops.len() == 3 {
+                    // MUL/MLA form
+                    if let Operand::Register(rd) = ops[0] {
+                        if let Operand::Register(rn) = ops[1] {
+                            if let Operand::Register(rm) = ops[2] {
+                                if base_opcode == "MLA" {
+                                    // MLA: Rd = Rm * Rs + Rn (but we have Rd, Rn, Rm)
+                                    return format!(
+                                        "r{} = (r{} * r{} + r{}) & 0xFFFFFFFF",
+                                        rd, rm, rd, rn
+                                    );
+                                }
+                                return format!("r{} = (r{} * r{}) & 0xFFFFFFFF", rd, rn, rm);
+                            }
+                        }
+                    }
+                }
+
+                return format!("# {} (multiply - parsing failed)", base_opcode);
             }
             "CMP" => {
                 // CMP Rn, Operand2 - Compare Rn with Operand2, set flags
@@ -1038,6 +1320,10 @@ class GBA:
             offset = addr - 0x07000000
             if offset < len(self.oam): self.oam[offset] = value
 
+    def write_16(self, addr, value):
+        self.write_8(addr, value & 0xFF)
+        self.write_8(addr + 1, (value >> 8) & 0xFF)
+
     def write_32(self, addr, value):
         self.write_8(addr, value & 0xFF)
         self.write_8(addr + 1, (value >> 8) & 0xFF)
@@ -1075,7 +1361,13 @@ class GBA:
     code.push_str(&func_map_entries.join("\n"));
     code.push_str("\n}\n\n");
 
-    // Add game loop (from generate_game_loop in pipeline.rs)
+    // Generate PPU code
+    eprintln!("Step 4: Generating PPU code...");
+    let ppu_code = generate_ppu_code();
+    code.push_str(&ppu_code);
+    code.push_str("\n");
+
+    // Add game loop
     code.push_str(&generate_game_loop());
 
     fs::write(output_path, &code).map_err(|e| format!("Failed to write output: {}", e))?;
@@ -1212,11 +1504,16 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     keys_down.pop('R', None)
         
         # Render PPU framebuffer to screen
-        if screen:
+        if not headless:
             ppu_instance = PPU(memory)
             ppu_instance.render_frame()
             screen.blit(ppu_instance.screen, (0, 0))
             pygame.display.flip()
+        elif screen:
+            # Headless mode: render to offscreen surface for screenshot
+            ppu_instance = PPU(memory)
+            ppu_instance.render_frame()
+            screen.blit(ppu_instance.screen, (0, 0))
         
         frame_count += 1
         clock.tick(60)

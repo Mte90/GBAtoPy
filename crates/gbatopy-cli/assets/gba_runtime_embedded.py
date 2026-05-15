@@ -404,7 +404,7 @@ class ARM7TDMI:
 
     def swi_handler(self, num: int):
         """Handle BIOS SWI calls using BIOS module."""
-        from bios import BIOS
+        # BIOS is now generated inline - no import needed
 
         bios = BIOS(self.memory)
         if num == 0x00:  # SoftReset
@@ -5731,20 +5731,19 @@ def text_char(x: int, y: int, char: str, memory=None) -> int:
 import pygame
 from typing import Dict, Any, Optional
 
-from interrupts import InterruptController, set_vblank_flag
-from rom import ROM
-from exceptions import GBARuntimeError, InvalidROMError
-from arm7tdmi import ARM7TDMI
-from bios import BIOS
-from memory import Memory
-from ppu import PPU
-from apu import APU, AudioOutput
-from dma import DMA
-from timers import Timers
-from input import Input, KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT
+# Interrupts are now inline - no import needed
+# ROM class is inline - no import needed
+# Exceptions are inline - no import needed
+# ARM7TDMI CPU core is inline - no import needed
+# BIOS is now generated inline - no import needed
+# Memory mapping is inline - no import needed
+# PPU class is now generated inline - no import needed
+# APU audio is inline - no import needed
+# DMA controller is inline - no import needed
+# Timers are inline - no import needed
+# Input handling is inline - no import needed
 
-from text_lib import text_init, text_color, text_glyph_data, text_glyph, text_char, GLYPHS
-from screenshot import auto_capture_screenshot, get_capture_output_path
+# Screenshot helpers are inline - no import needed
 
 # Global runtime state
 _runtime: Optional[Dict[str, Any]] = None

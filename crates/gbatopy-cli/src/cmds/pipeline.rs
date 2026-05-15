@@ -48,7 +48,6 @@ import pygame
 import argparse
 import sys
 import os
-import ppu
 
 # Global ARM registers (r0-r15, cpsr, spsr)
 # These are modified by the generated func_* functions
@@ -184,52 +183,52 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     keys_down.pop('R', None)
         
         # Render PPU framebuffer to screen
-        if screen:
-            # Create minimal Memory object for PPU
-            class MemorySimple:
-                def __init__(self, vram, palette):
-                    self.vram = vram
-                    self.palette = palette
-                
-                def read_8(self, addr):
-                    if addr < len(self.vram):
-                        return self.vram[addr]
-                    return 0
-                
-                def read_16(self, addr):
-                    if addr + 1 < len(self.vram):
-                        return self.vram[addr] | (self.vram[addr + 1] << 8)
-                    return 0
-                
-                def read_32(self, addr):
-                    if addr + 3 < len(self.vram):
-                        return (self.vram[addr] | (self.vram[addr + 1] << 8) |
-                               (self.vram[addr + 2] << 16) | (self.vram[addr + 3] << 24))
-                    return 0
-                
-                def write_8(self, addr, value):
-                    if addr < len(self.vram):
-                        self.vram[addr] = value & 0xFF
-                
-                def write_16(self, addr, value):
-                    if addr < len(self.vram):
-                        self.vram[addr] = value & 0xFF
-                        if addr + 1 < len(self.vram):
-                            self.vram[addr + 1] = (value >> 8) & 0xFF
-                
-                def write_32(self, addr, value):
-                    if addr < len(self.vram):
-                        self.vram[addr] = value & 0xFF
-                        if addr + 1 < len(self.vram):
-                            self.vram[addr + 1] = (value >> 8) & 0xFF
-                        if addr + 2 < len(self.vram):
-                            self.vram[addr + 2] = (value >> 16) & 0xFF
-                        if addr + 3 < len(self.vram):
-                            self.vram[addr + 3] = (value >> 24) & 0xFF
+        # Create minimal Memory object for PPU
+        class MemorySimple:
+            def __init__(self, vram, palette):
+                self.vram = vram
+                self.palette = palette
             
-            memory_simple = MemorySimple(memory_vram, memory_palette)
-            ppu_instance = PPU(memory_simple)
-            ppu_instance.render_frame()
+            def read_8(self, addr):
+                if addr < len(self.vram):
+                    return self.vram[addr]
+                return 0
+            
+            def read_16(self, addr):
+                if addr + 1 < len(self.vram):
+                    return self.vram[addr] | (self.vram[addr + 1] << 8)
+                return 0
+            
+            def read_32(self, addr):
+                if addr + 3 < len(self.vram):
+                    return (self.vram[addr] | (self.vram[addr + 1] << 8) |
+                           (self.vram[addr + 2] << 16) | (self.vram[addr + 3] << 24))
+                return 0
+            
+            def write_8(self, addr, value):
+                if addr < len(self.vram):
+                    self.vram[addr] = value & 0xFF
+            
+            def write_16(self, addr, value):
+                if addr < len(self.vram):
+                    self.vram[addr] = value & 0xFF
+                    if addr + 1 < len(self.vram):
+                        self.vram[addr + 1] = (value >> 8) & 0xFF
+            
+            def write_32(self, addr, value):
+                if addr < len(self.vram):
+                    self.vram[addr] = value & 0xFF
+                    if addr + 1 < len(self.vram):
+                        self.vram[addr + 1] = (value >> 8) & 0xFF
+                    if addr + 2 < len(self.vram):
+                        self.vram[addr + 2] = (value >> 16) & 0xFF
+                    if addr + 3 < len(self.vram):
+                        self.vram[addr + 3] = (value >> 24) & 0xFF
+        
+        memory_simple = MemorySimple(memory_vram, memory_palette)
+        ppu_instance = PPU(memory_simple)
+        ppu_instance.render_frame()
+        if screen:
             screen.blit(ppu_instance.screen, (0, 0))
             pygame.display.flip()
         
@@ -241,7 +240,13 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     
     # Save screenshot if requested
     if screenshot_path:
-        pygame.image.save(screen, screenshot_path)
+        if screen:
+            pygame.image.save(screen, screenshot_path)
+        else:
+            # Headless mode: save from PPU framebuffer
+            surface = pygame.Surface((240, 160))
+            surface.blit(ppu_instance.screen, (0, 0))
+            pygame.image.save(surface, screenshot_path)
         print(f"Screenshot saved to: {screenshot_path}")
     
     pygame.quit()
@@ -358,9 +363,9 @@ pub fn run_pipeline(
 
     let mut python_code = String::new();
 
-    println!("Phase 1: Embedding PyBoyAdvance runtime...");
-    let runtime_code = embed_pyboyadvance("crates/gbatopy-cli/assets")
-        .map_err(|e| format!("Failed to embed runtime: {}", e))?;
+    println!("Phase 1: Embedding GBA runtime...");
+    let runtime_code = std::fs::read_to_string("crates/gbatopy-cli/assets/gba_runtime_embedded.py")
+        .map_err(|e| format!("Failed to read runtime: {}", e))?;
     python_code.push_str(&runtime_code);
     python_code.push('\n');
 

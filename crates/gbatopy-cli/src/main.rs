@@ -4,7 +4,7 @@ mod codegen;
 mod helpers;
 mod memory;
 mod pipeline_cmd;
-mod ppu;
+pub mod ppu;
 mod test;
 mod verify;
 
