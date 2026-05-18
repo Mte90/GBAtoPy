@@ -1160,7 +1160,7 @@ class PPU:
 
                 # Render BG layers (simplified - would need tile lookup)
                 for bg in range(4):
-                    if False and not getattr(
+                    if not getattr(
     self, f"bg{bg}_enable"):  # DISABLED: render even if bg disabled
                         continue
                     if not (layer_enable & (1 << bg)):
@@ -1215,7 +1215,7 @@ class PPU:
 
                 # Render BG layers in priority order (0, 1, 2, 3)
                 for bg in range(4):
-                    if False and not getattr(
+                    if not getattr(
     self, f"bg{bg}_enable"):  # DISABLED: render even if bg disabled
                         continue
                     if not (layer_enable & (1 << bg)):
@@ -1296,7 +1296,7 @@ class PPU:
                 layer_enable = self._get_window_layer_enable(x, y)
 
                 for bg in range(4):
-                    if False and not getattr(self, f"bg{bg}_enable"):  # DISABLED: render even if bg disabled
+                    if not getattr(self, f"bg{bg}_enable"):  # DISABLED: render even if bg disabled
                         continue
                     if not (layer_enable & (1 << bg)):
                         continue

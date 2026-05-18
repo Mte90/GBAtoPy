@@ -296,7 +296,33 @@ impl Disassembler {
             ]);
 
             let is_bl = (word >> 25) & 0x7 == 0b101 && (word >> 24) & 0x1 == 1;
+            let _is_b = ((word >> 28) & 0xF) != 0xE
+                && ((word >> 24) & 0x1) == 0
+                && ((word >> 25) & 0x1) == 0
+                && ((word >> 26) & 0x1) == 0;
+            let is_b_cond = ((word >> 28) & 0xF) != 0xE && ((word >> 24) & 0xF) == 0xA; // bits 27-24 = 1010 for B instruction
+            let _opcode = (word >> 20) & 0xFF;
+            let _cond = (word >> 28) & 0xF;
+
+            // Handle BL (branch with link)
             if is_bl {
+                let offset24 = word & 0x00FFFFFF;
+                let sign_extended = if offset24 & 0x800000 != 0 {
+                    offset24 | 0xFF000000
+                } else {
+                    offset24
+                } as i32;
+                let target = (address as i32 + 8 + (sign_extended << 2)) as u32;
+                if target >= base_address && target < end_address {
+                    let aligned_target = target & !3;
+                    if !function_starts.contains(&aligned_target) {
+                        function_starts.push(aligned_target);
+                    }
+                }
+            }
+
+            // Handle conditional B instructions (BEQ, BNE, BGT, BLT, etc.)
+            if is_b_cond {
                 let offset24 = word & 0x00FFFFFF;
                 let sign_extended = if offset24 & 0x800000 != 0 {
                     offset24 | 0xFF000000
@@ -496,6 +522,26 @@ impl Disassembler {
                 }
 
                 if is_bl && cond != 0xE {
+                    let offset24 = word & 0x00FFFFFF;
+                    let sign_extended = if offset24 & 0x800000 != 0 {
+                        offset24 | 0xFF000000
+                    } else {
+                        offset24
+                    } as i32;
+                    let target = (branch_target as i32 + 8 + (sign_extended << 2)) as u32;
+                    let aligned = target & !1;
+                    if aligned >= base_address
+                        && aligned < end_address
+                        && !discovered.contains(&aligned)
+                    {
+                        discovered.insert(aligned);
+                        stats.branch_follow += 1;
+                        pending.push(aligned);
+                    }
+                }
+
+                // Handle conditional B instructions (BEQ, BNE, BGT, BLT, etc.)
+                if is_b && cond != 0xE {
                     let offset24 = word & 0x00FFFFFF;
                     let sign_extended = if offset24 & 0x800000 != 0 {
                         offset24 | 0xFF000000

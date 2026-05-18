@@ -66,7 +66,7 @@ def poll_input() -> bool:
 def create_runtime():
     """Create and return a fully configured GBA runtime"""
     memory = Memory()
-    ppu = PPU()
+    ppu = PPU(memory)
     apu = APU()
     dma = DMA()
     timers = Timers()

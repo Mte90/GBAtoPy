@@ -4,7 +4,55 @@ use std::path::Path;
 
 #[allow(dead_code)]
 fn embed_pyboyadvance(_runtime_dir: &str) -> Result<String, String> {
-    Ok(String::new())
+    let mut code = String::new();
+
+    // List of runtime files to embed in order
+    let runtime_files = [
+        "crates/gbatopy-cli/assets/gba_runtime/memory.py",
+        "crates/gbatopy-cli/assets/gba_runtime/ppu.py",
+        "crates/gbatopy-cli/assets/gba_runtime/cpu.py",
+        "crates/gbatopy-cli/assets/gba_runtime/arm7tdmi.py",
+        "crates/gbatopy-cli/assets/gba_runtime/interrupts.py",
+        "crates/gbatopy-cli/assets/gba_runtime/timer.py",
+        "crates/gbatopy-cli/assets/gba_runtime/dma.py",
+        "crates/gbatopy-cli/assets/gba_runtime/input.py",
+        "crates/gbatopy-cli/assets/gba_runtime/apu.py",
+        "crates/gbatopy-cli/assets/gba_runtime/bios.py",
+        "crates/gbatopy-cli/assets/gba_runtime/text_lib.py",
+        "crates/gbatopy-cli/assets/gba_runtime/screenshot.py",
+        "crates/gbatopy-cli/assets/gba_runtime/rom.py",
+        "crates/gbatopy-cli/assets/gba_runtime/exceptions.py",
+    ];
+
+    for file_path in &runtime_files {
+        match std::fs::read_to_string(file_path) {
+            Ok(content) => {
+                // Remove import statements that won't work in standalone
+                let filtered: String = content
+                    .lines()
+                    .filter(|line| {
+                        let trimmed = line.trim();
+                        !trimmed.starts_with("from .")
+                            && !trimmed.starts_with("from gba_runtime")
+                            && !trimmed.starts_with("import gba_runtime")
+                            && !trimmed.starts_with("from .")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                code.push_str(&filtered);
+                code.push('\n');
+                code.push_str(&format!(
+                    "# === End of {} ===\n\n",
+                    file_path.split('/').last().unwrap_or("")
+                ));
+            }
+            Err(e) => {
+                eprintln!("Warning: Could not read {}: {}", file_path, e);
+            }
+        }
+    }
+
+    Ok(code)
 }
 
 #[allow(dead_code)]
@@ -38,6 +86,7 @@ fn strip_cython_guards(code: &str) -> String {
     result
 }
 
+#[allow(dead_code)]
 pub fn generate_game_loop() -> String {
     r#"
 # ============================================================================
@@ -48,6 +97,7 @@ import pygame
 import argparse
 import sys
 import os
+import ppu
 
 # Global ARM registers (r0-r15, cpsr, spsr)
 # These are modified by the generated func_* functions
@@ -183,52 +233,52 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     keys_down.pop('R', None)
         
         # Render PPU framebuffer to screen
-        # Create minimal Memory object for PPU
-        class MemorySimple:
-            def __init__(self, vram, palette):
-                self.vram = vram
-                self.palette = palette
-            
-            def read_8(self, addr):
-                if addr < len(self.vram):
-                    return self.vram[addr]
-                return 0
-            
-            def read_16(self, addr):
-                if addr + 1 < len(self.vram):
-                    return self.vram[addr] | (self.vram[addr + 1] << 8)
-                return 0
-            
-            def read_32(self, addr):
-                if addr + 3 < len(self.vram):
-                    return (self.vram[addr] | (self.vram[addr + 1] << 8) |
-                           (self.vram[addr + 2] << 16) | (self.vram[addr + 3] << 24))
-                return 0
-            
-            def write_8(self, addr, value):
-                if addr < len(self.vram):
-                    self.vram[addr] = value & 0xFF
-            
-            def write_16(self, addr, value):
-                if addr < len(self.vram):
-                    self.vram[addr] = value & 0xFF
-                    if addr + 1 < len(self.vram):
-                        self.vram[addr + 1] = (value >> 8) & 0xFF
-            
-            def write_32(self, addr, value):
-                if addr < len(self.vram):
-                    self.vram[addr] = value & 0xFF
-                    if addr + 1 < len(self.vram):
-                        self.vram[addr + 1] = (value >> 8) & 0xFF
-                    if addr + 2 < len(self.vram):
-                        self.vram[addr + 2] = (value >> 16) & 0xFF
-                    if addr + 3 < len(self.vram):
-                        self.vram[addr + 3] = (value >> 24) & 0xFF
-        
-        memory_simple = MemorySimple(memory_vram, memory_palette)
-        ppu_instance = PPU(memory_simple)
-        ppu_instance.render_frame()
         if screen:
+            # Create minimal Memory object for PPU
+            class MemorySimple:
+                def __init__(self, vram, palette):
+                    self.vram = vram
+                    self.palette = palette
+                
+                def read_8(self, addr):
+                    if addr < len(self.vram):
+                        return self.vram[addr]
+                    return 0
+                
+                def read_16(self, addr):
+                    if addr + 1 < len(self.vram):
+                        return self.vram[addr] | (self.vram[addr + 1] << 8)
+                    return 0
+                
+                def read_32(self, addr):
+                    if addr + 3 < len(self.vram):
+                        return (self.vram[addr] | (self.vram[addr + 1] << 8) |
+                               (self.vram[addr + 2] << 16) | (self.vram[addr + 3] << 24))
+                    return 0
+                
+                def write_8(self, addr, value):
+                    if addr < len(self.vram):
+                        self.vram[addr] = value & 0xFF
+                
+                def write_16(self, addr, value):
+                    if addr < len(self.vram):
+                        self.vram[addr] = value & 0xFF
+                        if addr + 1 < len(self.vram):
+                            self.vram[addr + 1] = (value >> 8) & 0xFF
+                
+                def write_32(self, addr, value):
+                    if addr < len(self.vram):
+                        self.vram[addr] = value & 0xFF
+                        if addr + 1 < len(self.vram):
+                            self.vram[addr + 1] = (value >> 8) & 0xFF
+                        if addr + 2 < len(self.vram):
+                            self.vram[addr + 2] = (value >> 16) & 0xFF
+                        if addr + 3 < len(self.vram):
+                            self.vram[addr + 3] = (value >> 24) & 0xFF
+            
+            memory_simple = MemorySimple(memory_vram, memory_palette)
+            ppu_instance = PPU(memory_simple)
+            ppu_instance.render_frame()
             screen.blit(ppu_instance.screen, (0, 0))
             pygame.display.flip()
         
@@ -240,13 +290,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     
     # Save screenshot if requested
     if screenshot_path:
-        if screen:
-            pygame.image.save(screen, screenshot_path)
-        else:
-            # Headless mode: save from PPU framebuffer
-            surface = pygame.Surface((240, 160))
-            surface.blit(ppu_instance.screen, (0, 0))
-            pygame.image.save(surface, screenshot_path)
+        pygame.image.save(screen, screenshot_path)
         print(f"Screenshot saved to: {screenshot_path}")
     
     pygame.quit()
@@ -281,6 +325,7 @@ if __name__ == "__main__":
     .to_string()
 }
 
+#[allow(dead_code)]
 pub fn generate_rom_data(rom_data: &[u8]) -> String {
     let mut code = String::new();
     code.push_str("\n# Full ROM data for runtime memory mapping\n");
@@ -300,6 +345,7 @@ pub fn generate_rom_data(rom_data: &[u8]) -> String {
     code
 }
 
+#[allow(dead_code)]
 pub fn generate_bios() -> String {
     let bios_path = "python/gba_runtime/bios_minimal.py";
 
@@ -351,6 +397,7 @@ def Sqrt(value):
     .to_string()
 }
 
+#[allow(dead_code)]
 pub fn run_pipeline(
     rom_path: &str,
     output_path: &str,
@@ -363,9 +410,9 @@ pub fn run_pipeline(
 
     let mut python_code = String::new();
 
-    println!("Phase 1: Embedding GBA runtime...");
-    let runtime_code = std::fs::read_to_string("crates/gbatopy-cli/assets/gba_runtime_embedded.py")
-        .map_err(|e| format!("Failed to read runtime: {}", e))?;
+    println!("Phase 1: Embedding PyBoyAdvance runtime...");
+    let runtime_code = embed_pyboyadvance("crates/gbatopy-cli/assets")
+        .map_err(|e| format!("Failed to embed runtime: {}", e))?;
     python_code.push_str(&runtime_code);
     python_code.push('\n');
 
@@ -393,6 +440,7 @@ pub fn run_pipeline(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn strip_relative_imports(code: &str) -> String {
     code.lines()
         .filter(|line| {

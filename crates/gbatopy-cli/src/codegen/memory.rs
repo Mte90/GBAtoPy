@@ -1,5 +1,6 @@
 use gbatopy_disasm::{AddressingMode, Operand};
 
+#[allow(dead_code)]
 pub fn generate_store_instruction(
     rd: u8,
     mem_op: &Operand,
@@ -63,6 +64,7 @@ pub fn generate_store_instruction(
     }
 }
 
+#[allow(dead_code)]
 pub fn generate_load_instruction(
     rd: u8,
     mem_op: &Operand,

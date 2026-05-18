@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 pub struct GBA {
     pub bios: Vec<u8>,  // 16KB
     pub ewram: Vec<u8>, // 256KB
@@ -23,6 +24,7 @@ pub struct GBA {
     pub rom: Vec<u8>,     // up to 32MB
 }
 
+#[allow(dead_code)]
 impl GBA {
     pub fn new(rom_data: Vec<u8>) -> Self {
         GBA {

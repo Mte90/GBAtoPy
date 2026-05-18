@@ -792,6 +792,9 @@ class ISRHandler:
         if pending == 0:
             return
         
+        current_cpsr = self.cpsr
+        thumb_mode_before = self.thumb_mode
+        
         irq_bit = 0
         while irq_bit < 14:
             if pending & (1 << irq_bit):
@@ -801,6 +804,14 @@ class ISRHandler:
                     except Exception as e:
                         print(f"  WARNING: ISR handler {irq_bit} raised exception: {e}")
                 self.interrupts.if_reg &= ~(1 << irq_bit)
+                
+                if 8 <= irq_bit <= 11:
+                    ch = irq_bit - 8
+                    if hasattr(self.memory, 'dma') and self.memory.dma:
+                        self.memory.dma.channels[ch].pending = False
+                
+                self.cpsr = current_cpsr
+                self.thumb_mode = thumb_mode_before
                 break
             irq_bit += 1
     

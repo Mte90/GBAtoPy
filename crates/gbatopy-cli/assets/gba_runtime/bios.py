@@ -239,56 +239,35 @@ class BIOS:
         return len(dst)
 
     def swi_vblank_intr_wait(self):
-        """Wait for VBlank interrupt (SWI 0x05)
-
-        This is a critical function for game synchronization. Games call this
-        in a loop to wait for the next VBlank. The key requirement is that
-        the Z flag must be set to 1 when VBlank occurs to unblock the wait loop.
-
-        On GBA:
-        - r0 = 1 means first call (wait for next VBlank)
-        - r0 = 0 means repeat call (continue waiting if VBlank already occurred)
-        - Returns with Z=1 when VBlank has occurred
-        - r0 = 1 if VBlank occurred, r0 = 0 to continue waiting
-        """
         if not hasattr(self, "memory") or not hasattr(self.memory, "cpu"):
             return
-
+        
         cpu = self.memory.cpu
         memory = self.memory
-
-        # Get first call flag from r0 (1 = first call, 0 = repeat)
-        first_call = cpu.registers[0] & 1
-
-        # Check if interrupts are enabled and VBlank interrupt is enabled
         interrupts = getattr(memory, "_interrupts", None)
+        
+        first_call = cpu.registers[0] & 1
+        
         if interrupts:
-            # Wait until VBlank interrupt fires
-            # The interrupt system fires vblank_irq() which sets IF bit 0
             vblank_occurred = False
-
-            # Check if VBlank is already pending in this frame
-            if interrupts.if_reg & (1 << 0):  # IRQ_VBLANK = 0
+            
+            if first_call:
+                while not (interrupts.if_reg & (1 << 0)):
+                    pass
+                
                 vblank_occurred = True
-                # Clear the interrupt flag
                 interrupts.if_reg &= ~(1 << 0)
-
+            
             if vblank_occurred:
-                # VBlank occurred - set Z flag to 1 to unblock wait loop
                 cpu.set_cpsr_flag("Z", True)
-                # Return 1 in r0 indicating VBlank occurred
                 cpu.registers[0] = 1
             else:
-                # No VBlank yet - keep Z=0 to continue waiting
                 cpu.set_cpsr_flag("Z", False)
-                # Return 0 in r0 to continue loop
                 cpu.registers[0] = 0
         else:
-            # Fallback: simulate VBlank wait
             cpu.set_cpsr_flag("Z", True)
             cpu.registers[0] = 1
             time.sleep(0.016)
-
     def swi_intr_wait(self, wait_flag: int, vblank_flag: int):
         """Wait for interrupt"""
         if wait_flag:

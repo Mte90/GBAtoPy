@@ -27,6 +27,10 @@ r12 = 0
 r13 = 0  # SP
 r14 = 0  # LR
 r15 = 0x08000000  # PC - GBA ROM entry point
+
+# BL_PREFIX state
+_bl_prefix_offset = 0
+
 cpsr_n = 0
 cpsr_z = 0
 cpsr_c = 0
@@ -41,6 +45,10 @@ ewram = bytearray(262144)  # 256KB EWRAM
 
 # Function map for dynamic dispatch
 func_map = {}
+
+# Initialize Memory object for runtime
+memory = Memory()
+ppu_instance = PPU(memory)
 
 def render_rom_pattern(screen, rom_data):
     """Render ROM data as a direct pixel pattern - each ROM produces unique output.

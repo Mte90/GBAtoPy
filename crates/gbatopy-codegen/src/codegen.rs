@@ -51,7 +51,14 @@ impl CodeGenerator {
         // Add global declaration for all registers at the start of each function
         let register_names: Vec<String> = (0..=15)
             .map(|r| format!("r{}", r))
-            .chain(["cpsr".to_string(), "spsr".to_string()])
+            .chain([
+                "cpsr_n".to_string(),
+                "cpsr_z".to_string(),
+                "cpsr_c".to_string(),
+                "cpsr_v".to_string(),
+                "cpsr".to_string(),
+                "spsr".to_string(),
+            ])
             .collect();
         py_func.body.push(PythonStmt::Global {
             names: register_names,

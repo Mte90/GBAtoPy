@@ -242,7 +242,7 @@ impl ArmDecoder {
                     false,
                 )
             }
-        } else if (word >> 23) & 0x1F == 0x00001 {
+        } else if bits_27_24 == 0x0 && bits_7_4 == 0x9 && bits_23_21 != 0x1 {
             let a_bit = (word >> 21) & 1 != 0;
             let s_bit = (word >> 20) & 1 != 0;
             let rd_lo = ((word >> 16) & 0xF) as u8;
@@ -375,7 +375,7 @@ impl ArmDecoder {
         }
     }
 
-    fn decode_load_store(&self, word: u32, address: u32) -> (String, Vec<Operand>, bool) {
+    fn decode_load_store(&self, word: u32, _address: u32) -> (String, Vec<Operand>, bool) {
         let i_bit = (word >> 25) & 1 != 0;
         let p_bit = (word >> 24) & 1 != 0;
         let u_bit = (word >> 23) & 1 != 0;
@@ -388,17 +388,13 @@ impl ArmDecoder {
         let op_name = if l_bit { "LDR" } else { "STR" };
         let suffix = if b_bit { "B" } else { "" };
 
-        // Handle PC-relative addressing (ARM mode LDR/STR with PC as base)
         if rn == 15 {
-            // PC-relative: calculate target address
             let imm = word & 0xFFF;
             let offset = if u_bit { imm as i32 } else { -(imm as i32) };
-            let pc_aligned = (address + 4) & !3;
-            let target = pc_aligned as i32 + offset;
 
             let mem_op = Operand::MemoryAddress {
                 base: rn,
-                offset: crate::operand::AddressingMode::ImmediateOffset(target),
+                offset: crate::operand::AddressingMode::ImmediateOffset(offset),
                 writeback: false,
             };
 
