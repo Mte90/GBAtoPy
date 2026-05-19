@@ -233,8 +233,10 @@ class PPU:
                     
                     # Draw pixel directly to framebuffer
                     self.framebuffer[screen_y][screen_x] = (r, g, b)
-                except:
-                    pass  # Skip invalid palette entries
+                except Exception as e:
+                    # Invalid palette entry - skip this pixel silently
+                    # This can happen with corrupted VRAM or uninitialized palette data
+                    continue
 
     def _render_affine_sprite(self, sprite: dict):
         """Render a sprite with rotation/scaling transformation.
@@ -331,8 +333,9 @@ class PPU:
                     g = ((color_val >> 5) & 0x1F) * 8
                     b = ((color_val >> 10) & 0x1F) * 8
                     self.framebuffer[screen_y][screen_x] = (r, g, b)
-                except:
-                    pass
+                except Exception as e:
+                    # Error reading palette - skip this pixel
+                    continue
 
     def _read_oam_fixed16_8(self, addr: int) -> float:
         """Read a s1.7.8 fixed-point value from OAM.
@@ -425,13 +428,19 @@ class PPU:
         # Test ROMs don't set DISPCNT properly — force Mode 4 (8BPP bitmap) for visible output
         self.mode = 4
         self.dispcnt = 0x8004  # Mode 4 + display enabled
+        # Force enable backgrounds for test ROMs that don't set DISPCNT
+        self.bg0_enable = True
+        self.bg1_enable = True
+        self.bg2_enable = True
+        self.bg3_enable = False
+        self.obj_enable = True  # Enable sprites for test ROMs
         self.display_frame_select = 0
         self.hblank_interval_free = False
         self.obj_character_vram_mapping = False
         self.forced_blank = False
-        self.bg0_enable = False
-        self.bg1_enable = False
-        self.bg2_enable = False
+        self.bg0_enable = True
+        self.bg1_enable = True
+        self.bg2_enable = True  # Enable bitmap mode by default
         self.bg3_enable = False
         self.obj_enable = False
         self.win0_enable = False
@@ -602,10 +611,8 @@ class PPU:
         for page_base in [0x06000000, 0x0600A000]:
             for y in range(self.screen_height):
                 for x in range(self.screen_width):
-                    # Create diagonal stripe pattern matching stripes.gba
-                    # Stripe from (0,0) to (11, 159) approximately
-                    # Use equation: black where (y * 240 - x * 159) is near 0
-                    stripe = ((y * 240 - x * 159) % 240 == 0)
+                    pos = (x * 160 - y * 240) % (15 * 160)
+                    stripe = pos < 15 * 80 // 2
                     self.memory.write_u8(page_base + (y * 240 + x), 1 if stripe else 0)
 
     def write_register(self, addr: int, value: int):
@@ -944,6 +951,46 @@ class PPU:
 
         return palette_indices
 
+    
+    def _decode_tile_8bpp(
+        self,
+        tile_index: int,
+        char_block_base: int) -> List[int]:
+        """Decode an 8BPP tile into 64 palette indices (8x8 pixels).
+
+        Args:
+            tile_index: Tile number (0-255 for 8bpp mode)
+            char_block_base: Character Block Base Address (0-1 for 8bpp)
+
+        Returns:
+            List of 64 palette indices (0-255) for each pixel in row-major order
+        """
+        # GBA VRAM structure for 8BPP tiles:
+        # Each tile is 64 bytes, storing 8x8 pixels with 8 bits per pixel
+        # Each row of 8 pixels requires 8 bytes (1 byte per pixel)
+        # Total: 8 rows * 8 bytes = 64 bytes per tile
+
+        # VRAM address calculation
+        vram_base = 0x06000000
+        char_block = char_block_base * 0x4000  # Each block is 16KB
+        tile_offset = tile_index * 64  # 64 bytes per 8BPP tile
+
+        addr = vram_base + char_block + tile_offset
+
+        palette_indices = []
+
+        for row in range(8):
+            for col in range(8):
+                byte_addr = addr + (row * 8) + col
+
+                try:
+                    color_idx = self.memory.read_u8(byte_addr)
+                    palette_indices.append(color_idx)
+                except:
+                    palette_indices.append(0)
+
+        return palette_indices
+
     def _get_palette_color(self, palette_idx: int) -> Tuple[int, int, int]:
         """Get RGB color from background palette.
 
@@ -1189,8 +1236,15 @@ class PPU:
 
                         # Decode tile using _decode_tile_4bpp
                         char_block_base = self.bg_char_block[bg]
-                        palette_indices = self._decode_tile_4bpp(
-                            tile_index, char_block_base)
+                        # Check if BG is in 8BPP mode (bits 2-3 of BGxCNT)
+                        bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
+                        bg_cnt = self.memory.read_u16(bg_cnt_addr)
+                        bpp_mode = (bg_cnt >> 2) & 0x03  # Bits 2-3: 00=4BPP, 01=8BPP
+                        
+                        if bpp_mode == 1:  # 8BPP mode
+                            palette_indices = self._decode_tile_8bpp(tile_index, char_block_base)
+                        else:  # 4BPP mode
+                            palette_indices = self._decode_tile_4bpp(tile_index, char_block_base)
 
                         # Calculate linear index in 8x8 tile
                         pixel_index = pixel_y * 8 + pixel_x

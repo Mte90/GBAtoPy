@@ -1,9 +1,15 @@
 pub mod cpu;
+pub mod helpers;
+pub mod instruction_codegen;
 pub mod memory;
 pub mod thumb;
 
 #[allow(unused_imports)]
 pub use cpu::*;
+#[allow(unused_imports)]
+pub use helpers::{embed_runtime_files, shift_to_python};
+#[allow(unused_imports)]
+pub use instruction_codegen::generate_instruction_python;
 #[allow(unused_imports)]
 pub use memory::*;
 #[allow(unused_imports)]

@@ -27,6 +27,12 @@ _memory = Memory()
 _input = Input()
 _memory.attach_input(_input)
 
+# CPSR flag variables (N, Z, C, V)
+cpsr_n = False  # Negative flag
+cpsr_z = False  # Zero flag
+cpsr_c = False  # Carry flag
+cpsr_v = False  # Overflow flag
+
 
 def read_memory(addr: int) -> int:
     return _memory.read_u32(addr) if addr < 0x10000000 else 0

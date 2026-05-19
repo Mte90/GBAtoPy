@@ -252,8 +252,12 @@ class BIOS:
             vblank_occurred = False
             
             if first_call:
+                # Wait for VBlank interrupt flag
+                # In real GBA, CPU would halt here until interrupt occurs
+                # We poll the IF register with minimal yield
+                import time
                 while not (interrupts.if_reg & (1 << 0)):
-                    pass
+                    time.sleep(0.0001)  # Yield CPU briefly
                 
                 vblank_occurred = True
                 interrupts.if_reg &= ~(1 << 0)

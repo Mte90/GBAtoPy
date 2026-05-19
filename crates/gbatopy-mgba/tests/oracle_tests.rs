@@ -1,5 +1,11 @@
 use gbatopy_disasm::ArmMode;
-use gbatopy_oracle::*;
+use gbatopy_mgba::AccessKind;
+use gbatopy_mgba::OracleTrace;
+use gbatopy_mgba::TraceMetadata;
+use gbatopy_mgba::OracleMode;
+use gbatopy_mgba::MemoryAccess;
+use gbatopy_mgba::RegisterState;
+
 
 #[test]
 fn test_register_state_serialization() {

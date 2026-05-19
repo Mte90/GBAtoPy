@@ -203,8 +203,15 @@ class DMA:
             ch.attach_interrupts(interrupts)
 
     def _setup_mmio(self):
-        """Setup MMIO write handlers"""
-        pass  # Handled in memory.py directly
+        """Setup MMIO write handlers for DMA control registers"""
+        # DMA control registers at 0x040000B0, 0x040000B8, 0x040000C0, 0x040000C8
+        # Each DMA channel has a control register that triggers the transfer
+        for i in range(4):
+            dma_ctrl_addr = 0x040000B0 + (i * 8)
+            self.memory.set_write_handler(
+                dma_ctrl_addr,
+                lambda addr, value, channel=i: self._dma_control_handler(channel, addr, value)
+            )
 
     def _make_mmio_handler(self, channel: int):
         """Create MMIO handler for channel control register"""

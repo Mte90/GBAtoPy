@@ -473,6 +473,18 @@ class APU:
         self.wave_ram[bank][offset % 16] = value & 0xFF
         self.ch3.wave_ram = self.wave_ram[bank]
 
+    def update(self):
+        if self._audio_output is None:
+            return
+        target_samples = self._audio_output.sample_rate // 60
+        samples = []
+        for _ in range(target_samples):
+            sample = self.get_sample()
+            signed_sample = (sample << 3) - 128
+            samples.append(signed_sample & 0xFF)
+        if samples:
+            self._audio_output.add_samples(samples)
+
     def step(self):
         """Advance audio by one sample cycle"""
         # Generate samples from each active channel
