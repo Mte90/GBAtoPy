@@ -129,12 +129,6 @@ download_zip "FuzzARM" \
     "https://github.com/DenSinH/FuzzARM/archive/refs/heads/master.zip" \
     "FuzzARM" || echo -e "${RED}  Failed, continuing...${NC}"
 
-# 6. libbet (Simple test ROMs)
-echo -e "\n${GREEN}[6/16] libbet${NC}"
-download_zip "libbet" \
-    "https://github.com/pinobatch/libbet/archive/refs/heads/main.zip" \
-    "libbet" || echo -e "${RED}  Failed, continuing...${NC}"
-
 # 7. GBA-Test-Collection (LadyStarBreeze)
 echo -e "\n${GREEN}[7/16] GBA-Test-Collection${NC}"
 download_zip "GBA-Test-Collection" \
@@ -153,12 +147,6 @@ download_zip "enhancedcontrolcheckerGBA" \
     "https://github.com/nataliethenerd/enhancedcontrolcheckerGBA/archive/refs/heads/main.zip" \
     "enhancedcontrolcheckerGBA" || echo -e "${RED}  Failed, continuing...${NC}"
 
-# 10. cadfan/gba-accuracy-tests (NEW - Framework, no ROMs)
-echo -e "\n${GREEN}[10/16] cadfan/gba-accuracy-tests (framework only)${NC}"
-download_zip "gba-accuracy-tests" \
-    "https://github.com/cadfan/gba-accuracy-tests/archive/refs/heads/main.zip" \
-    "gba-accuracy-tests" || echo -e "${RED}  Failed, continuing...${NC}"
-
 # 11. nba-emu/hw-test (CRITICAL - DMA, Timers, IRQ, PPU)
 echo -e "\n${GREEN}[11/16] nba-emu/hw-test${NC}"
 if [ -d "hw-test" ] && [ "$(ls -A hw-test 2>/dev/null)" ]; then
@@ -172,12 +160,6 @@ else
         echo -e "  ${RED}Clone failed${NC}"
     fi
 fi
-
-# 12. gbadev-org/gba-sound-test (Audio test)
-echo -e "\n${GREEN}[12/16] gbadev-org/gba-sound-test${NC}"
-download_zip "gba-sound-test" \
-    "https://github.com/gbadev-org/gba-sound-test/archive/refs/heads/master.zip" \
-    "gba-sound-test" || echo -e "${RED}  Failed, continuing...${NC}"
 
 # 13. gbadev-org/tonc (Sound demo source code)
 echo -e "\n${GREEN}[13/16] gbadev-org/tonc (sound demo source)${NC}"

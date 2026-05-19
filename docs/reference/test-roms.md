@@ -1,6 +1,8 @@
-# GBA Test ROMs Reference
+# GBA Test ROMs Reference - Updated (2026-05-19)
 
-This document catalogs all 41 test ROMs used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
+This document catalogs all **66 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
+
+**Note**: Previous version claimed 41 ROMs. This is now updated to reflect the complete inventory including hw-test/, gba-sound-demo/, and other directories.
 
 ---
 
