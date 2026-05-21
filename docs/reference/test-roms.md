@@ -8,21 +8,21 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 
 ## Summary Table
 
-| Category | Count | ROMs |
+|| Category | Count | ROMs |
 |----------|-------|------|
-| CPU-only | 15 | arm.gba, thumb.gba, bios.gba, memory.gba, nes.gba, unsafe.gba, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba, retAddr.gba |
-| PPU | 7 | shades.gba, stripes.gba, hello.gba, helloWorld.gba, hello_world.gba, line_timing.gba, lyc_midline.gba |
-| IRQ | 4 | isr.gba, if_ack.gba, irq_delay.gba, joypad.gba |
-| DMA | 3 | dma_priority.gba, window_midframe.gba, pcmxx.gba |
-| Timer | 1 | timer_change.gba |
+| CPU-only | 16 | arm.gba, thumb.gba, bios.gba, memory.gba, nes.gba, unsafe.gba, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba, retAddr.gba, basic-timing.gba |
+| PPU | 15 | shades.gba, stripes.gba, hello.gba, helloWorld.gba, hello_world.gba, line_timing.gba, lyc_midline.gba, mode2.gba, mode3.gba, mode4.gba, greenswap.gba, bgpd.gba, bgx.gba, sprite-hmosaic.gba, vram-mirror.gba |
+| IRQ | 9 | isr.gba, if_ack.gba, irq-delay.gba, irq_delay.gba, joypad.gba, cancel-irq-ie.gba, cancel-irq-if.gba, cancel-irq-ime.gba, status-irq-dma.gba |
+| DMA | 8 | dma_priority.gba, burst-into-tears.gba, force-nseq-access.gba, latch.gba, start-stop.gba, reload.gba, dispcnt-latch.gba, window_midframe.gba |
+| Timer | 2 | timer_change.gba, haltcnt.gba |
 | Keypad | 1 | enhancedcontrolchecker.gba |
-| Audio | 3 | redline.gba, helloAudio.gba, test.gba |
+| Audio | 6 | helloAudio.gba, test.gba, song.gba, rates.gba, redline.gba, pcmxx.gba |
 | Save | 4 | sram.gba, flash64.gba, flash128.gba, none.gba |
-| Memory | 1 | memory.gba |
+| Memory | 2 | 128kb-boundary.gba, ram-access-timing.gba |
 | RTC | 1 | rtc-demo.gba |
-| Audio (DMA) | 2 | song.gba, rates.gba (gba-sound-demo) |
+| Timing | 2 | exact-timing.gba, start-delay.gba |
 
-**Total ROMs**: 41 (39 in test_roms/roms/ + 2 in test_roms/sources/gba-sound-demo-main/)
+**Total ROMs**: 66 (all in test_roms/roms/)
 
 ---
 

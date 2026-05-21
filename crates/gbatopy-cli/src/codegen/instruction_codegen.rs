@@ -244,6 +244,22 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
         }
         // AND, EOR, ORR, BIC
         "AND" | "EOR" | "ORR" | "BIC" => {
+            // Case 1: 2 operands - Rd, #imm
+            if ops.len() == 2 {
+                if let Operand::Register(rd) = ops[0] {
+                    if let Operand::Immediate(val) = ops[1] {
+                        let op = match base_opcode {
+                            "AND" => "&",
+                            "EOR" => "^",
+                            "ORR" => "|",
+                            "BIC" => "& ~",
+                            _ => "&",
+                        };
+                        return format!("r{} = ({} {} {}) & 0xFFFFFFFF", rd, val, op, val);
+                    }
+                }
+            }
+            // Case 2: 3 operands - Rd, Rn, Rm or Rd, Rn, #imm
             if ops.len() == 3 {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {

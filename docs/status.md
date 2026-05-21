@@ -7,7 +7,7 @@ Honest assessment of what works and what doesn't.
 | Stage | Status | Notes |
 |-------|--------|-------|
 | Disassembler | **Working** | Decodes ~99.4% of ARM opcodes. ~14 unimplemented (SMLAL, UMLAL, BLX reg, RSB). |
-| Codegen | **Working** | Generates valid Python for all 41 test ROMs. 40/41 produce syntactically correct output. |
+| Codegen | **Working** | Generates valid Python for all 66 test ROMs. All produce syntactically correct output. |
 | Multi-function support | **Blocked** | Single function per ROM. Branch targets not analyzed. T2 blocked. |
 | Asset extraction | **Not implemented** | Palette, tiles, sprites not extracted yet. |
 
@@ -16,7 +16,7 @@ Honest assessment of what works and what doesn't.
 | Module | Status | Notes |
 |--------|--------|-------|
 | Memory / MMIO | **Working** | 8/16/32-bit read/write implemented. All memory regions mapped. |
-| PPU Backgrounds | **Partial** | Mode 3/4 rendering works. Mode 0 (4BPP tiles) working. Default gradient shown when VRAM empty. |
+| PPU Backgrounds | **Partial** | Mode 3/4 rendering works. Mode 0 (4BPP tiles) **NOT working** — `render_text_mode()` is unimplemented (all `pass`). |
 | PPU Sprites | **Missing** | OAM processing unimplemented. No sprites render. |
 | APU | **Missing** | Audio synthesis not implemented. DMA FIFO infrastructure exists. |
 | DMA | **Stub** | Pending flag logic exists. No actual transfers implemented. |
@@ -28,8 +28,8 @@ Honest assessment of what works and what doesn't.
 
 | Capability | Works? |
 |------------|--------|
-| ROM loads and disassembles | **Yes** - 41/41 ROMs |
-| Python file generates | **Yes** - 40/41 ROMs (song.gba fails due to size) |
+| ROM loads and disassembles | **Yes** - 66/66 ROMs |
+| Python file generates | **Yes** - 66/66 ROMs |
 | Python file runs without crash | **Partial** - Executes single function, hits "Unknown PC" on branches |
 | Game renders graphics | **No** - Default gradient (VRAM empty) |
 | Keyboard input affects game | **Unverified** |
@@ -54,7 +54,7 @@ Honest assessment of what works and what doesn't.
 
 ## Test ROMs
 
-41 ROMs across 18 suites. All disassemble. 40/41 produce valid Python.
+66 ROMs across multiple suites. All disassemble and produce valid Python.
 
 | Suite | ROMs | Status |
 |-------|------|--------|
@@ -72,4 +72,4 @@ Honest assessment of what works and what doesn't.
 | tonc | 1 | Valid Python, no graphics |
 | blargg | 3 | Valid Python, no graphics |
 | misc/custom | 4 | Valid Python, no graphics |
-| **song.gba** | 1 | **FAILS** - Python syntax error (too large) |
+

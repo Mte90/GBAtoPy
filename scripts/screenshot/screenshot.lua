@@ -1,21 +1,17 @@
-local targetFrames = {1, 10, 20, 30}
-local name = "/tmp/stripes_golden"
-local frameIdx = 1
+local name = "/tmp/mode3_golden.png"
 
-local function onFrame()
+callbacks:add("frame", function()
     local current = emu:currentFrame()
-    if frameIdx > #targetFrames then
+    
+    if current >= 30 then
+        emu:screenshot(name)
+        print("Captured screenshot at frame " .. current)
         os.exit(0)
     end
-    if current >= targetFrames[frameIdx] then
-        emu:screenshot(name .. "_frame_" .. targetFrames[frameIdx] .. ".png")
-        print("Captured frame " .. targetFrames[frameIdx])
-        frameIdx = frameIdx + 1
-        if frameIdx > #targetFrames then
-            os.exit(0)
-        end
+    
+    if current >= 60 then
+        os.exit(0)
     end
-end
+end)
 
-callbacks:add("frame", onFrame)
-print("Screenshot script started")
+print("Script started")

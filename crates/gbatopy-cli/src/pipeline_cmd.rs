@@ -107,77 +107,40 @@ pub fn run_pipeline(
     code.push_str("cpsr = 0  # Current Program Status Register\n");
     code.push_str("spsr = 0  # Saved Program Status Register\n\n");
 
-    // PASS 1: Collect all branch targets (function start addresses)
-    let mut branch_targets: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // PASS 1: Collect ALL instruction addresses as function starts
+    // Each instruction gets its own function for proper PC dispatch
+    let mut func_start_addresses: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+    // Add every instruction address as a function start
     for inst in &instructions {
-        let opcode = &inst.opcode;
-        let base_opcode = opcode.split_whitespace().next().unwrap_or(opcode);
-        let base_opcode = base_opcode
-            .trim_end_matches("eq")
-            .trim_end_matches("ne")
-            .trim_end_matches("cs")
-            .trim_end_matches("cc")
-            .trim_end_matches("hs")
-            .trim_end_matches("lo")
-            .trim_end_matches("mi")
-            .trim_end_matches("pl")
-            .trim_end_matches("vs")
-            .trim_end_matches("vc")
-            .trim_end_matches("hi")
-            .trim_end_matches("ls")
-            .trim_end_matches("ge")
-            .trim_end_matches("lt")
-            .trim_end_matches("gt")
-            .trim_end_matches("le")
-            .trim_end_matches("al");
-
-        match base_opcode {
-            "B" | "BL" => {
-                if inst.operands.len() == 1 {
-                    if let Operand::Immediate(target) = inst.operands[0] {
-                        branch_targets.insert(target as u64);
-                    }
-                }
-            }
-            "BX" => {
-                // BX targets are dynamic (register-based), can't determine statically
-                // Add current instruction + 4 as a potential target
-                branch_targets.insert((inst.address + 4) as u64);
-            }
-            _ => {}
-        }
+        func_start_addresses.insert(inst.address as u64);
     }
 
-    // Add the first instruction address as the entry point
-    if let Some(first) = instructions.first() {
-        branch_targets.insert(first.address as u64);
-    }
+    eprintln!(
+        "  Found {} instruction addresses (one function per instruction)",
+        func_start_addresses.len()
+    );
 
-    eprintln!("  Found {} branch targets", branch_targets.len());
-
-    // PASS 2: Group instructions by function start address
+    // PASS 2: Create ONE function per instruction address
     let mut func_map_entries = Vec::new();
     let mut func_groups: std::collections::BTreeMap<u64, Vec<&gbatopy_disasm::DecodedInstruction>> =
         std::collections::BTreeMap::new();
 
+    // Each instruction gets its own function group
     for inst in &instructions {
-        // Find the nearest branch target <= this instruction's address
-        let mut func_start = inst.address as u64;
-        for &target in &branch_targets {
-            if target <= inst.address as u64 {
-                if target > func_start || func_start == inst.address as u64 {
-                    func_start = target;
-                }
-            }
-        }
+        let func_start = inst.address as u64;
 
+        // Create a single-instruction group
         func_groups
             .entry(func_start)
             .or_insert_with(Vec::new)
             .push(inst);
     }
 
-    eprintln!("  Generated {} functions", func_groups.len());
+    eprintln!(
+        "  Generated {} functions (one per instruction)",
+        func_groups.len()
+    );
 
     // Helper function to generate Python from ARM instruction
 
