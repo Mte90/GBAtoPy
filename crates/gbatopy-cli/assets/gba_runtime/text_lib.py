@@ -167,15 +167,14 @@ def text_color(color: int, index: int, memory=None):
 
     Effect:
         - Scrive il colore 16-bit alla posizione palette[index]
-        - Ogni entry palette è 2 byte (16-bit RGB555)
-        - Indirizzo = 0x05000000 + (index * 2)
+    - Each palette entry is 2 bytes (16-bit RGB555)
+    - Address = 0x05000000 + (index * 2)
 
     Args:
-        color: colore 16-bit RGB555 (0x0000-0xFFFF)
-        index: indice palette (0-255)
-        memory: Optional Memory instance. If None, uses global GBA runtime.
+        color: 16-bit RGB555 color (0x0000-0xFFFF)
+        index: palette index (0-255)        memory: Optional Memory instance. If None, uses global GBA runtime.
     """
-    # Ogni entry palette è 2 byte
+    # Each palette entry is 2 bytes
     palette_offset = index * 2
     palette_addr = 0x05000000 + palette_offset
 
@@ -279,7 +278,7 @@ def text_glyph_data(data: int, vram_ptr: int, memory=None):
         mem.write_u16(current_ptr, pixel_val & 0xFFFF)
         current_ptr += 2
 
-        # Line wrap ogni 8 pixel (4 iterazioni)
+        # Line wrap every 8 pixels (4 iterations)
         if (i + 1) % 4 == 0:
             current_ptr += 232
 
