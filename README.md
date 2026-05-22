@@ -17,11 +17,11 @@ ROM bytes → Disassembly → Python Code Gen → Executable Python
 
 ### Key Components
 
-- **Disassembler** (`crates/gbatopy-disasm/`) - Decodes 56,000+ ARM/Thumb instructions
-- **Code Generator** (`crates/gbatopy-cli/src/cmds/pipeline_cmd.rs`) - ARM/Thumb → Python translation
+- **Disassembler** (`crates/gbatopy-disasm/`) - Decodes ARM/Thumb instructions
+- **Code Generator** (`crates/gbatopy-cli/src/codegen/`) - ARM/Thumb → Python translation (600+ opcodes)
 - **Memory Model** - GBA memory map (0x08000000 ROM, 0x06000000 VRAM, 0x04000000 MMIO)
 - **Game Loop** - pygame-based display and input
-- **PyBoyAdvance Runtime** - Core emulation modules embedded in generated Python (see `assets/gba_runtime/`). **MIT-licensed, attribution required**.
+- **Python Runtime** - Core emulation modules (CPU, PPU, Memory, DMA, Timers, APU) embedded in generated Python (see `crates/gbatopy-cli/assets/gba_runtime/`). Derived from [PyBoyAdvance](https://github.com/williamckha/PyBoyAdvance) (MIT-licensed).
 
 ### Generated Output Structure
 
@@ -39,6 +39,23 @@ def main_entry():
     while True:
         call_func(r15)
 ```
+
+---
+
+## Current Status
+
+| Component | Status |
+|-----------|--------|
+| ARM/Thumb codegen | ✅ Complete (600+ opcodes, zero stubs) |
+| PPU rendering | ✅ Mode 3/4 (100% golden match on stripes.gba), Mode 0 (4BPP) partial |
+| Memory subsystem | ✅ VRAM, Palette, OAM, MMIO with mirrors |
+| IRQ/DMA/Timers | ✅ 4 DMA channels, Timers 0-3, VBlank/HBlank/VCount interrupts |
+| BIOS SWI | ✅ 54 handlers (Sqrt, Div, Halt, CpuSet, etc.) |
+| Keypad input | ✅ KEYINPUT/KEYCNT |
+| Sprite rendering | ✅ OAM + tile fetch + palette lookup |
+| APU audio | ❌ PSG + FIFO infrastructure exists, no sound output |
+| Affine backgrounds | ❌ Mode 1/2 code exists, MMIO wiring broken |
+| Window/Blend/Mosaic | ❌ Register stubs only |
 
 ---
 
@@ -86,9 +103,31 @@ python3 /tmp/test.py --scale=2
 
 ---
 
+## Coverage Statistics
+
+| Metric | Value |
+|--------|-------|
+| Test ROMs | 66 |
+| Transpile success | ✅ 100% (66/66) |
+| Golden match | ✅ stripes.gba (100%) |
+| Zero stubs | ✅ All 66 ROMs |
+| ARM/Thumb codegen | ✅ 600+ opcodes |
+| 54 BIOS handlers | Implemented |
+| VRAM writes | Working (Mode 3/4) |
+| DMA channels | ✅ 4 channels |
+| IRQ handlers | ✅ VBlank/HBlank/VCount |
+
+**Known Gaps:**
+- ❌ APU audio synthesis (no sound output)
+- ❌ Affine backgrounds (Mode 1/2)
+- ❌ Window layers, blend modes, mosaic effects
+- ❌ CPSR flags (conditional branches unreliable)
+
+---
+
 ## Test ROMs
 
-Test ROMs are downloaded automatically via `scripts/setup/download_roms.sh` (**41 ROMs**):
+Test ROMs are downloaded automatically via `scripts/setup/download_roms.sh` (**66 ROMs**):
 
 ```bash
 # First time setup
@@ -139,11 +178,9 @@ cargo run --release -p gbatopy-cli -- pipeline --rom test_roms/roms/arm.gba --ou
 # Check syntax
 python3 -m py_compile /tmp/test.py
 
-# Count stubs (expect 603+)
-grep -c "pass.*not implemented" /tmp/test.py
-
-# Verify not black
-python3 -c "from PIL import Image; img=Image.open('/tmp/test.png'); px=list(img.getdata()); nb=sum(1 for p in px if sum(p)>30); print(f'Non-black: {nb}/38400'); assert nb >= 100"
+# Verify stripes.gba golden match
+python3 scripts/screenshot/compare_screenshots.py test_roms/roms/stripes.gba
+# Expected: 100% pixel match
 ```
 
 ### mGBA Integration
@@ -189,6 +226,6 @@ See [PR #3752](https://github.com/mgba-emu/mgba/pull/3752) for the upstream Lua 
 ## References
 
 - [GBA Hardware Manual](https://gbdev.io/gbafaq/)
-- [GBA Memory Map](docs/ARCHITECTURE_INTERRUPTS.md)
-- [Test ROM Catalog](docs/v3/reference/test-roms.md)
+- [GBA Memory Map](docs/reference/memory-map.md)
+- [Test ROM Catalog](docs/reference/test-roms.md)
 - [mGBA Scripting PR #3752](https://github.com/mgba-emu/mgba/pull/3752)

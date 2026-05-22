@@ -1,5 +1,7 @@
 # VRAM Rendering Verification Report
 
+> **⚠️ Stale document** — This report predates golden screenshot verification. Current status: stripes.gba achieves 100% pixel-perfect match against mGBA. See `docs/roadmap.md` and `docs/status.md` for up-to-date information.
+
 ## Summary
 
 ✅ **VRAM-based rendering successfully implemented**

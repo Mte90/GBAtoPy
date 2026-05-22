@@ -14,7 +14,7 @@ The oracle pipeline runs the ROM inside mGBA with instrumentation scripts. The s
 
 ## 2.3 Oracle Data Collection (Lua Scripts)
 
-All Lua scripts live in `scripts/lua/` and run inside mGBA's scripting console.
+All Lua scripts live in `scripts/screenshot/` and run inside mGBA's scripting console.
 
 ### tracer.lua - Execution Tracer
 

@@ -24,9 +24,9 @@ sudo apt install cmake pkg-config python3-pip liblua5.4-dev libsdl2-dev \
 cargo build --release
 ```
 
-This compiles all 6 crates: `gbatopy-disasm`, `gbatopy-mgba`, `gbatopy-ir`, `gbatopy-types`, `gbatopy-codegen`, `gbatopy-cli`.
+This compiles all workspace crates. The project contains 6 crates (`gbatopy-cli`, `gbatopy-mgba`, `gbatopy-disasm`, `gbatopy-ir`, `gbatopy-types`, `gbatopy-codegen`), of which `gbatopy-cli` and `gbatopy-mgba` are in the Cargo workspace.
 
-### mGBA (for oracle tracing)
+### mGBA (for golden screenshots and oracle tracing)
 
 ```bash
 cd mgba
@@ -100,38 +100,30 @@ python3 game.py --headless --frame 100
 python3 game.py --headless --frame 60 --screenshot output.png
 ```
 
-The output file is self-contained. The only dependency is `pygame`. It loads asset files (`palette.bin`, `tiles.bin`, `sprites.bin`, `tilemap.bin`) from the same directory if they exist.
+The output file is self-contained. The only dependency is `pygame`. ROM data is embedded directly in the generated Python as `ROM_DATA = bytearray([...])`.
 
 ## Test ROMs
 
 ### Download
 
 ```bash
-bash scripts/setup/download_and_organize_roms.sh
+bash scripts/setup/download_roms.sh
 ```
 
 This downloads 18 test suites and organizes them:
-- `test_roms/roms/` — 39 `.gba` files
+- `test_roms/roms/` — 66 `.gba` files
 - `test_roms/sources/` — source code and documentation
 
 Test ROMs are not included in the repository. Use the download script to obtain them.
 
 ## Oracle Tracing
 
-Oracle tracing uses mGBA with Lua scripts to capture execution data:
+Oracle tracing uses mGBA with Lua scripts to capture execution data. Scripts are in `scripts/screenshot/`:
 
 ```bash
-# Manual oracle trace
-mgba/build/sdl/mgba -L scripts/lua/oracle_trace.lua test_roms/roms/arm.gba
+# Capture golden screenshot
+mgba/build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/arm.gba
 ```
-
-Lua scripts in `scripts/lua/`:
-
-| Script | Purpose |
-|--------|---------|
-| `oracle_trace.lua` | Captures register state, memory accesses, execution path |
-| `screenshot.lua` | Captures frames for visual comparison |
-| `test_api.lua` | Tests the extended Lua API surface |
 
 ## Project Layout
 
@@ -149,10 +141,11 @@ GBAtoPy/
 │   ├── gbatopy-types/            # Shared type definitions
 │   └── gbatopy-codegen/          # Python code generation
 ├── scripts/
-│   ├── lua/                      # mGBA Lua scripts
-│   └── setup/                    # Download/organize scripts
+│   ├── screenshot/               # mGBA Lua scripts + compare_screenshots.py
+│   ├── setup/                    # Download scripts
+│   └── verify/                   # Coverage tracker + visual test
 ├── test_roms/
-│   ├── roms/                     # Test .gba files (downloaded)
+│   ├── roms/                     # Test .gba files (66 ROMs, downloaded)
 │   └── sources/                  # Source code per suite
 ├── mgba/                         # mGBA fork (extend-lua branch)
 └── docs/                         # Documentation
@@ -167,7 +160,7 @@ Install gcc: `sudo apt install build-essential`
 Ensure `liblua5.4-dev` is installed and cmake finds it: `cmake .. -DENABLE_LUA=ON -DLUA_INCLUDE_DIR=/usr/include/lua5.4`
 
 **Generated Python shows black screen**
-This is a known issue. The codegen does not yet strip condition code suffixes from instruction mnemonics, producing ~603 `pass` stubs. The PPU also needs fixes to read pixel data from shared memory instead of static arrays. See `docs/status.md` for details.
+Most test ROMs now render correctly — stripes.gba achieves 100% golden screenshot match. If a ROM shows black, it may use unimplemented PPU features (Mode 1/2 affine, window/blend/mosaic). See `docs/status.md` for details.
 
 **`cargo run` says "no such command: pipeline"**
 Make sure you're using `--` to separate cargo args from CLI args: `cargo run --release -p gbatopy-cli -- pipeline --rom ...`

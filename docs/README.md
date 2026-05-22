@@ -12,6 +12,8 @@ Documentation for the GBA ROM-to-Python transpiler.
 
 Per-component design specifications. These describe what each pipeline stage *should* do.
 
+> **⚠️ Note:** Design documents reference old crate names (`pygba-*`). Actual crate names are `gbatopy-*` (e.g. `gbatopy-disasm`, `gbatopy-codegen`). See `Cargo.toml` for current workspace configuration.
+
 | File | Description |
 |------|-------------|
 | [design/disassembler.md](design/disassembler.md) | ARM/Thumb disassembler design |
@@ -34,6 +36,7 @@ Hardware specifications, instruction sets, and test ROM catalogs.
 | [reference/arm-thumb-instructions.md](reference/arm-thumb-instructions.md) | ARM/Thumb instruction set reference |
 | [reference/mgba-lua-api.md](reference/mgba-lua-api.md) | mGBA Lua scripting API |
 | [reference/test-roms.md](reference/test-roms.md) | Test ROM catalog and descriptions |
+| [reference/feature-coverage.md](reference/feature-coverage.md) | Feature coverage matrix |
 | [reference/test-coverage.md](reference/test-coverage.md) | Test ROM coverage matrix |
 
 ## Architecture

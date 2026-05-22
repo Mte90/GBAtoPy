@@ -419,19 +419,19 @@ impl CodeGenerator {
 - [x] Game loop with pygame renders window
 - [x] ARM7TDMI interpreter executes real ARM code
 - [x] Asset extraction script works (LZ77/Huffman/RLE decompression)
-- [x] 164 BIOS handlers implemented
-- [x] All PPU modes 0-5 implemented
+- [x] 54 BIOS handlers implemented
+- [x] PPU Mode 3/4 fully working (stripes.gba 100% golden match), Mode 0 (4BPP) partially working
 - [x] Conditional execution FIXED (branch instructions check CPSR flags)
 
-### Verification Scripts ✅
-- [x] visual_test.py - register/memory comparison
-- [x] audio_test.py - APU headless test (262K samples)
-- [x] input_test.py - keyboard mapping verification
-- [x] frame_regression.py - 500 frames without crash
-- [x] playability_test.py - 300 frames + inputs
+### Verification Scripts
+- [x] `compare_screenshots.py` - mGBA golden vs transpiled pixel comparison
+- [x] `coverage_tracker.py` - instruction codegen coverage tracking
+- [x] `screenshot.lua` - mGBA golden screenshot capture
 
 ### Known Limitations (Updated 2026-04-17)
 - [ ] Test ROMs are minimal - no compressed graphics/audio (need commercial ROMs with LZ77/Huffman/RLE data)
 - [ ] mGBA SDL lacks Lua scripting - can't do programmatic screenshots (use register/memory comparison instead)
-- [ ] Visual rendering not yet verified against mGBA (6 codegen bugs prevent MMIO writes from executing)
-- [ ] Generated Python has 6 critical bugs: ROM_DATA empty, GBA header not skipped, call_func undefined, main_entry duplicate, run_game not called in main(), branch vs call wrong
+- [x] Visual rendering verified against mGBA (stripes.gba 100% golden match)
+- [ ] APU audio synthesis not yet producing sound output
+- [ ] Affine backgrounds (Mode 1/2) not rendered
+- [ ] Window/blend/mosaic effects not rendered

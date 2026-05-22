@@ -14,22 +14,7 @@ ROM (.gba)
        │
        ▼
 ┌──────────────┐
-│   Oracle      │  Trace execution via mGBA, collect register/memory state
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│  IR Lifter   │  Convert instructions to intermediate representation
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ Type Recovery │  Infer types from traces (arrays, structs, pointers)
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│   Codegen    │  Generate Python functions with runtime calls
+│  Codegen     │  Generate Python functions with runtime calls
 └──────┬───────┘
        │
        ▼
@@ -38,16 +23,11 @@ output.py (standalone Python + pygame)
 
 ## Crate Structure
 
-The pipeline is implemented as 6 Rust crates:
+The pipeline is implemented as a single Rust crate:
 
 | Crate | Purpose |
 |-------|---------|
-| `gbatopy-disasm` | Decodes ARM and Thumb instructions from ROM binary |
-| `gbatopy-mgba` | Interfaces with mGBA to trace execution paths |
-| `gbatopy-ir` | Lifts decoded instructions to an intermediate representation |
-| `gbatopy-types` | Shared type definitions used across all pipeline crates |
-| `gbatopy-codegen` | Generates Python code from IR or disassembly |
-| `gbatopy-cli` | CLI driver that orchestrates the pipeline |
+| `gbatopy-cli` | CLI driver with embedded disassembler and codegen |
 
 The workspace is defined in `Cargo.toml` at the project root.
 
@@ -58,13 +38,13 @@ The GBA CPU is an ARM7TDMI running the ARMv4T instruction set. It has two instru
 - **ARM mode** (32-bit instructions) — ~160 unique opcodes
 - **Thumb mode** (16-bit instructions) — ~60 unique opcodes
 
-The CPU switches between modes via `BX` instructions. The disassembler decodes both encodings, and the IR lifter tracks the `CPSR.T` flag for mode switching.
+The CPU switches between modes via `BX` instructions. The disassembler decodes both encodings, and the codegen tracks the `CPSR.T` flag for mode switching.
 
 ARM instructions support **conditional execution** — a 4-bit condition code in the upper bits determines whether the instruction executes based on CPSR flags (EQ, NE, GT, LT, CS, CC, MI, PL, VS, VC, HI, LS, GE, GT, AL).
 
 ## Function Reconstruction
 
-The lifter recognizes ARM calling conventions to reconstruct functions:
+The codegen recognizes ARM calling conventions to reconstruct functions:
 
 - **Prologue**: `PUSH {lr}`, `SUB sp, sp, #N`
 - **Epilogue**: `POP {pc}`, `ADD sp, sp, #N`, `BX lr`
@@ -78,33 +58,27 @@ Generated Python includes an inlined runtime that emulates GBA hardware. The run
 
 | Module | Hardware | Role | Status |
 |--------|----------|------|--------|
-| `memory.py` | Bus | Memory-mapped I/O with HAL side effects | Partial |
-| `ppu.py` | Picture Processing Unit | Background tiles, sprites, scanline rendering | Partial — produces screenshots but graphics not yet correct |
-| `apu.py` | Audio Processing Unit | PSG channels, FIFO, pygame mixer output | Stub — all `return 0` |
-| `dma.py` | DMA Controller | Background memory transfers | Partial — pending flag bug |
-| `bios.py` | BIOS ROM | Software interrupt handlers (SWI) | Partial — 9/43 implemented |
-| `input.py` | Keypad | KEYINPUT register, pygame keyboard mapping | Unverified |
+| `arm7tdmi.py` | CPU | ARM7TDMI core (22K lines) | ✅ Working |
+| `ppu.py` | Picture Processing Unit | Background tiles, sprites, scanline rendering | ✅ Mode 3/4 working, Mode 0 partial |
+| `memory.py` | Bus | Memory-mapped I/O with HAL side effects | ✅ Working |
+| `bios.py` | BIOS ROM | Software interrupt handlers (SWI) | ✅ 54 handlers implemented |
+| `dma.py` | DMA Controller | Background memory transfers | ✅ All 4 channels operational |
+| `timers.py` | Timer | Timer 0-3 with prescaler | ✅ Working |
+| `interrupts.py` | IRQ | VBlank/HBlank/VCount interrupt dispatch | ✅ Working |
+| `input.py` | Keypad | KEYINPUT register, pygame keyboard mapping | ✅ Working |
 
 MMIO writes trigger hardware behavior through the HAL interface — writing to `DISPCNT` configures the PPU, writing to sound registers triggers APU output, DMA register writes initiate transfers.
 
 ## Asset Extraction
 
-ROM data (tiles, palettes, tilemaps, audio samples) is extracted to separate `.bin` files:
+ROM data (tiles, palettes, tilemaps, audio samples) is embedded directly in the generated Python as `ROM_DATA = bytearray([...])`. No separate asset files are needed.
 
-- `palette.bin` — Background palette data
-- `tiles.bin` — 4bpp tile graphics
-- `sprites.bin` — Sprite/OAM tile data
-- `tilemap.bin` — Screen block map data
+## mGBA Verification
 
-The generated Python calls `load_assets()` at startup to read these files. GBA LZ77 compression uses a 24-bit (3-byte little-endian) expanded size field.
+The verification pipeline uses a modified mGBA build with extended Lua scripting (branch `extend-lua`). Lua scripts in `scripts/screenshot/` control mGBA programmatically:
 
-## mGBA Oracle
-
-The oracle uses a modified mGBA build with extended Lua scripting (branch `extend-lua`). Lua scripts in `scripts/lua/` control mGBA programmatically:
-
-- `oracle_trace.lua` — Captures register state, memory accesses, and execution path
 - `screenshot.lua` — Captures frames for visual verification
-- `test_api.lua` — Tests the Lua API surface
+- `compare_screenshots.py` — Compares golden vs transpiled screenshots
 
 The mGBA binary builds at `mgba/build/sdl/mgba`.
 
@@ -112,10 +86,10 @@ The mGBA binary builds at `mgba/build/sdl/mgba`.
 
 Test ROMs are organized in `test_roms/`:
 
-- `test_roms/roms/` — 39 `.gba` files across 18 test suites
+- `test_roms/roms/` — 66 `.gba` files across 18 test suites
 - `test_roms/sources/` — Source code and documentation for each suite
 
-Download script: `bash scripts/setup/download_and_organize_roms.sh`
+Download script: `bash scripts/setup/download_roms.sh`
 
 ## Output
 
@@ -137,23 +111,30 @@ The output is a single `.py` file with all runtime code inlined. The only extern
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Rust pipeline | ✅ Builds | All 6 crates compile with zero warnings |
-| Disassembler | ✅ Partial | Decodes basic ARM/Thumb instructions |
-| Python generation | ✅ Syntactically valid | All 39 test ROMs produce valid Python |
-| Memory map | ✅ Partial | ROM, EWRAM, IWRAM, MMIO routing |
-| Asset extraction | ✅ Partial | Reads palette, tiles, sprites from ROM |
+| Rust pipeline | ✅ Builds | Zero compiler warnings |
+| Disassembler | ✅ Working | ~100% ARM/Thumb coverage |
+| Python generation | ✅ Working | All 66 ROMs produce valid Python |
+| Memory map | ✅ Working | Full GBA memory layout with mirrors |
+| CPU core | ✅ Working | ARM7TDMI with global registers |
+| PPU Mode 3 | ✅ Working | 100% golden screenshot match |
+| PPU Mode 4 | ✅ Working | 8BPP bitmap with palette |
+| PPU Mode 0 | ⚠️ Partial | 4BPP tiles working, text mode needs completion |
+| Sprite rendering | ✅ Working | OAM parsing + tile fetch |
+| BIOS handlers | ✅ Working | 54 SWI handlers implemented |
+| DMA controller | ✅ Working | All 4 channels operational |
+| Timers | ✅ Working | 4 timers with cascade mode |
+| IRQ system | ✅ Working | ISR dispatch, VBlank/HBlank |
+| Input handling | ✅ Working | KEYINPUT/KEYCNT registers |
 
 ### What Doesn't Work Yet
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Condition code stripping | ❌ | 603+ stubs from suffix mismatch |
-| Branch instructions | ❌ | B/BL/BX handlers unimplemented |
-| Thumb codegen | ❌ | ~0% coverage |
-| PPU rendering | ❌ | Screenshots all identical (black/gradient) |
-| APU audio | ❌ | All stub `return 0` |
-| DMA transfers | ❌ | Pending flag bug |
-| Interrupts | ❌ | Only VBlank flag set |
+| APU audio | ❌ Stub | DMA FIFO infrastructure exists, no synthesis |
+| Mode 0 text rendering | ⚠️ Partial | render_text_mode() needs implementation |
+| Affine backgrounds | ❌ Out of scope | Mode 1/2 transforms not implemented |
+| Windows/Blend/Mosaic | ❌ Out of scope | Advanced PPU features |
+| 8BPP tile modes | ❌ Not implemented | Only 4BPP for tiled backgrounds |
 
 ## PyBoyAdvance Attribution
 
