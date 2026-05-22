@@ -397,23 +397,34 @@ class Memory:
         return self.open_bus & 0xFF
 
     def read_u16(self, addr: int) -> int:
+        """Read 16-bit unsigned value"""
         addr &= 0xFFFFFFFF
         addr = self._map_address(addr)
-
+        
         lo = self.read_u8(addr)
         hi = self.read_u8(addr + 1)
         return lo | (hi << 8)
-
-    def read_u32(self, addr: int) -> int:
+    
+    def read_32(self, addr: int) -> int:
+        """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
         addr = self._map_address(addr)
-
+        
         b0 = self.read_u8(addr)
         b1 = self.read_u8(addr + 1)
         b2 = self.read_u8(addr + 2)
         b3 = self.read_u8(addr + 3)
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-
+    def read_u32(self, addr: int) -> int:
+        """Read 32-bit unsigned value"""
+        addr &= 0xFFFFFFFF
+        addr = self._map_address(addr)
+        
+        b0 = self.read_u8(addr)
+        b1 = self.read_u8(addr + 1)
+        b2 = self.read_u8(addr + 2)
+        b3 = self.read_u8(addr + 3)
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     def write_u8(self, addr: int, value: int):
         addr &= 0xFFFFFFFF
         value &= 0xFF

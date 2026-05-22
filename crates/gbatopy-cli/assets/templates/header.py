@@ -46,10 +46,6 @@ ewram = bytearray(262144)  # 256KB EWRAM
 # Function map for dynamic dispatch
 func_map = {}
 
-# Initialize Memory object for runtime
-memory = Memory()
-ppu_instance = PPU(memory)
-
 def render_rom_pattern(screen, rom_data):
     """Render ROM data as a direct pixel pattern - each ROM produces unique output.
     Converts ROM bytes directly to RGB colors and draws on screen.

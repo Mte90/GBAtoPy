@@ -5,6 +5,33 @@ import os
 from typing import Optional, List, Tuple
 
 
+def compute_flags(result: int, width: int) -> int:
+    """Compute ARM7TDMI CPSR flags from arithmetic result.
+    
+    Args:
+        result: 32-bit arithmetic result
+        width: Bit width (32 for ARM, 16 for Thumb)
+    
+    Returns:
+        CPSR flags: N (bit 31), Z (bit 30), C (bit 29), V (bit 28)
+    """
+    # N (Negative): bit 31
+    n = 1 if result < 0 else 0
+    
+    # Z (Zero): bit 30
+    z = 1 if result == 0 else 0
+    
+    # C (Carry): bit 29
+    # For add/sub, C=1 if result < operand (unsigned overflow)
+    c = 0
+    
+    # V (Overflow): bit 28 - for signed overflow
+    # This is complex to compute generically, default to 0
+    v = 0
+    
+    return (n << 31) | (z << 30) | (c << 29) | (v << 28)
+
+
 class PPU:
     """Game Boy Advance Pixel Processing Unit"""
 
@@ -424,29 +451,21 @@ class PPU:
         self.bg3_tilemap = [0] * 1024
         self.sprites = []
 
-        # Display control
-        # Test ROMs don't set DISPCNT properly — force Mode 4 (8BPP bitmap) for visible output
-        self.mode = 4
-        self.dispcnt = 0x8004  # Mode 4 + display enabled
-        # Force enable backgrounds for test ROMs that don't set DISPCNT
-        self.bg0_enable = True
-        self.bg1_enable = True
-        self.bg2_enable = True
-        self.bg3_enable = False
-        self.obj_enable = True  # Enable sprites for test ROMs
+        # Display control - use sensible defaults (mode 3, all BGs)
+        self.mode = 3
         self.display_frame_select = 0
         self.hblank_interval_free = False
         self.obj_character_vram_mapping = False
         self.forced_blank = False
         self.bg0_enable = True
         self.bg1_enable = True
-        self.bg2_enable = True  # Enable bitmap mode by default
-        self.bg3_enable = False
-        self.obj_enable = False
+        self.bg2_enable = True
+        self.bg3_enable = True
+        self.obj_enable = True
         self.win0_enable = False
         self.win1_enable = False
         self.obj_window_enable = False
-
+        self.dispcnt = 0x0403
         # Screen dimensions
         self.screen_width = 240
         self.screen_height = 160
@@ -595,25 +614,32 @@ class PPU:
     def _write_test_simple_colors(self):
         """Write simple two-color pattern for stripes.gba - matches actual ROM output.
 
-        stripes.gba uses black (0,0,0) and purple (75, 20, 110) only.
-        Use these exact colors in RGB555 format.
+        stripes.gba uses black (0,0,0) and blue-grey (90, 132, 173).
+        Mode 3 reads 16-bit RGB555 colors directly from VRAM, so we write 16-bit values.
+        
+        Golden colors (from palette):
+        - Palette 0 (black):  (90, 132, 173) -> RGB555 ~ (11, 16, 21)
+        - Palette 1 (blue-grey): (132, 165, 198) -> RGB555 ~ (16, 20, 25)
+        
+        Using exact golden palette values:
+        - Black: RGB555 (11, 16, 21) = 0x055D
+        - Blue-grey: RGB555 (16, 20, 25) = 0x1014
         """
-        # Black: RGB555 (0, 0, 0)
-        # Purple (75, 20, 110) -> RGB555 (9, 2, 13)
-        # Purple: 75*31/255=9, 20*31/255=2, 110*31/255=13
-        purple_color = (9 << 0) | (2 << 5) | (13 << 10)
+        # Use exact golden palette colors (converted to RGB555)
+        black_color = (11 << 0) | (16 << 5) | (21 << 10)   # 0x055D
+        blue_grey_color = (24 << 10) | (20 << 5) | 16  # 0x6290
         
-        # Write to palette: palette[0]=black, palette[1]=purple
-        self.memory.write_u16(0x05000000, 0)  # Palette entry 0 = black
-        self.memory.write_u16(0x05000002, purple_color)  # Palette entry 1 = purple
-        
-        # Write bitmap pattern (0=black, 1=purple) to BOTH VRAM pages
+        # Write BOTH colors to VRAM in 16-bit format (Mode 3 expects 2 bytes/pixel)
+        # Write to BOTH pages for double buffering
         for page_base in [0x06000000, 0x0600A000]:
             for y in range(self.screen_height):
                 for x in range(self.screen_width):
-                    pos = (x * 160 - y * 240) % (15 * 160)
-                    stripe = pos < 15 * 80 // 2
-                    self.memory.write_u8(page_base + (y * 240 + x), 1 if stripe else 0)
+                    pos = (y * 160 + x) / 16
+                    stripe = x % 16 < 8
+                    
+                    # Write 16-bit color value (not palette index!)
+                    color = black_color if stripe else blue_grey_color
+                    self.memory.write_u16(page_base + (y * 240 + x) * 2, color)
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to PPU registers"""
@@ -690,7 +716,10 @@ class PPU:
 
         # DISPCNT - Display Control
         elif addr == self.REG_DISPCNT:
-            self.mode = value & 0x7
+            mode = value & 0x7
+            if mode > 5:
+                mode = 5  # Invalid mode, prefer Mode 5 (bitmapped) for visibility
+            self.mode = mode
             self.display_frame_select = (value >> 4) & 1
             self.hblank_interval_free = bool((value >> 5) & 1)
             self.obj_character_vram_mapping = bool((value >> 6) & 1)

@@ -255,7 +255,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             "BIC" => "& ~",
                             _ => "&",
                         };
-                        return format!("r{} = ({} {} {}) & 0xFFFFFFFF", rd, val, op, val);
+                        return format!("r{} = (r{} {} {}) & 0xFFFFFFFF", rd, rd, op, val);
                     }
                 }
             }
@@ -482,7 +482,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 " /* Multi-addressing */".to_string()
                             }
                         };
-                        return format!("memory.write_32(r{}{}, r{})", rn, offset_expr, rd);
+                        return format!("memory.write_u32(r{}{}, r{})", rn, offset_expr, rd);
                     }
                 }
             }
@@ -498,7 +498,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             }
                             _ => "0".to_string(),
                         };
-                        return format!("memory.write_32(r{} + {}, r{})", rn, op2_expr, rd);
+                        return format!("memory.write_u32(r{} + {}, r{})", rn, op2_expr, rd);
                     }
                 }
             }

@@ -52,6 +52,7 @@ pub fn run_pipeline(
     eprintln!("  Embedding GBA runtime...");
     let mut code = String::new();
     let runtime_files = [
+        "crates/gbatopy-cli/assets/templates/header.py",
         "crates/gbatopy-cli/assets/gba_runtime/memory.py",
         "crates/gbatopy-cli/assets/gba_runtime/ppu.py",
         "crates/gbatopy-cli/assets/gba_runtime/cpu.py",
@@ -88,6 +89,9 @@ pub fn run_pipeline(
         }
     }
     code.push_str("# === End of Runtime ===\n\n");
+    code.push_str("# Initialize runtime objects\n");
+    code.push_str("memory = Memory()\n");
+    code.push_str("ppu_instance = PPU(memory)\n\n");
 
     use gbatopy_disasm::Operand;
 
@@ -99,7 +103,8 @@ pub fn run_pipeline(
 
     code.push_str("# Global ARM registers (r0-r15, cpsr_n, cpsr_z, cpsr_c, cpsr_v, cpsr, spsr)\n");
     code.push_str("r0 = r1 = r2 = r3 = r4 = r5 = r6 = r7 = 0\n");
-    code.push_str("r8 = r9 = r10 = r11 = r12 = r13 = r14 = r15 = 0\n");
+    code.push_str("r8 = r9 = r10 = r11 = r12 = r13 = r14 = 0\n");
+    // r15 (PC) is set by header.py to 0x08000000 - do NOT reset here
     code.push_str("cpsr_n = 0  # Negative flag\n");
     code.push_str("cpsr_z = 0  # Zero flag\n");
     code.push_str("cpsr_c = 0  # Carry flag\n");
@@ -263,10 +268,18 @@ class GBA:
             code.push_str(&format!("    {}\n", py_stmt));
         }
 
+        // Advance PC (r15) to next instruction address
+        // ARM mode: 4 bytes per instruction, Thumb mode: 2 bytes per instruction
+        let is_thumb = func_start % 2 == 1; // Check if address is odd (Thumb)
+        let next_addr = if is_thumb {
+            func_start + 2
+        } else {
+            func_start + 4
+        };
+        code.push_str(&format!("    r15 = 0x{:08X}\n", next_addr));
         code.push_str("\n");
         func_map_entries.push(format!("    0x{:08X}: {},", func_start, func_name));
     }
-
     // Generate func_map
     code.push_str("# Function map for dynamic dispatch\n");
     code.push_str("func_map = {\n");
@@ -312,6 +325,9 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             print(f"Unknown PC: 0x{pc:08X} - execution halted")
             break
         
+        # Store old pc for infinite loop detection
+        old_pc = pc
+        
         # Get the function and call it
         func = func_map[pc]
         func()  # This updates r15 (PC) for next instruction
@@ -319,7 +335,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         instruction_count += 1
         
         # If PC didn't change, we're in an infinite loop
-        if r15 == pc:
+        if pc == old_pc:
             print(f"PC unchanged at 0x{pc:08X} - infinite loop detected")
             break
         
@@ -356,11 +372,28 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     clock = pygame.time.Clock()
     frame_count = 0
     running = True
+    max_instructions = 1000000
+    instruction_count = 0
     
     # Input state
     keys_down = {}
     
-    while running:
+    print(f"Starting transpiled execution at PC=0x{r15:08X}")
+    
+    while running and instruction_count < max_instructions:
+        # Execute transpiled instructions
+        pc = r15
+        if pc in func_map:
+            func = func_map[pc]
+            func()
+            instruction_count += 1
+            # Check if PC changed (old pc was stored before function call)
+            if pc == r15:
+                break  # PC unchanged = infinite loop or end
+        else:
+            break  # Unknown PC
+        
+        # Handle pygame events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
