@@ -285,6 +285,9 @@ def main_entry(
         # APU audio update
         if not headless and _runtime is not None:
             apu.update()
+            # Fire FIFO empty triggers to refill DMA3 FIFOs
+            _runtime["dma"].fifo_a_empty_fire()
+            _runtime["dma"].fifo_b_empty_fire()
 
         # Advance timers and trigger timer DMA
         if _runtime is not None:

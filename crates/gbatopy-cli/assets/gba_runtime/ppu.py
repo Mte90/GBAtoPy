@@ -432,6 +432,8 @@ class PPU:
     REG_BLDCNT = 0x04000050
     REG_BLDALPHA = 0x04000052
     REG_BLDY = 0x04000054
+    REG_BLDWIN = 0x04000056
+    REG_BLDWIN = 0x04000056  # Window blend settings (bits 0-3=win0_alpha, 4-7=win0_y, 8-11=win1_alpha, 12-15=win1_y)
 
     # Sprite/OBJ registers
     REG_DISPSTAT2 = 0x04000056
@@ -504,6 +506,11 @@ class PPU:
         self.bldalpha_eva = 0
         self.bldalpha_evb = 0
         self.bldy = 0
+        # Window blend configuration (from BLDWIN)
+        self.bldwin_alpha_win0 = 0
+        self.bldwin_y_win0 = 0
+        self.bldwin_alpha_win1 = 0
+        self.bldwin_y_win1 = 0
 
         # Window configuration
         self.win0_left = 0
@@ -968,10 +975,8 @@ class PPU:
                     byte_val = self.memory.read_u8(byte_addr)
 
                     if col % 2 == 0:
-                        # Left pixel (bits 7-4)
                         color_idx = (byte_val >> 4) & 0x0F
                     else:
-                        # Right pixel (bits 3-0)
                         color_idx = byte_val & 0x0F
 
                     palette_indices.append(color_idx)
@@ -1325,14 +1330,17 @@ class PPU:
                             pixel_x = tile_x % 8
                             pixel_y = tile_y % 8
 
-                            palette_indices = self._decode_tile_4bpp(
-                                tile_index, self.bg_char_block[bg]
-                            )
+                            # Check BGxCNT bit 7 for 8BPP mode
+                            if self.bg256[bg]:
+                                palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
+                            else:
+                                palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
                             color_idx = palette_indices[pixel_y * 8 + pixel_x]
-
-                            if color_idx > 0:  # 0 is transparent
-                                color = self._get_palette_color(
-                                    palette_num * 16 + color_idx)
+                            if color_idx > 0:
+                                if self.bg256[bg]:
+                                    color = self._get_palette_color_256(color_idx)
+                                else:
+                                    color = self._get_palette_color(palette_num * 16 + color_idx)
                                 if color != (0, 0, 0):
                                     self.framebuffer[y][x] = color
                 else:
@@ -1360,11 +1368,16 @@ class PPU:
                             palette_indices = self._decode_tile_4bpp(
                                 tile_index, self.bg_char_block[bg]
                             )
+                            if self.bg256[bg]:
+                                palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
+                            else:
+                                palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
                             color_idx = palette_indices[pixel_y * 8 + pixel_x]
-
                             if color_idx > 0:
-                                color = self._get_palette_color(
-                                    palette_num * 16 + color_idx)
+                                if self.bg256[bg]:
+                                    color = self._get_palette_color_256(color_idx)
+                                else:
+                                    color = self._get_palette_color(palette_num * 16 + color_idx)
                                 if color != (0, 0, 0):
                                     self.framebuffer[y][x] = color
                 # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
@@ -1403,29 +1416,37 @@ class PPU:
                         pixel_x = tile_x % 8
                         pixel_y = tile_y % 8
 
-                        palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
+                        if self.bg256[bg]:
+                            palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
+                        else:
+                            palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
                         color_idx = palette_indices[pixel_y * 8 + pixel_x]
-
                         if color_idx > 0:
-                            color = self._get_palette_color(palette_num * 16 + color_idx)
+                            if self.bg256[bg]:
+                                color = self._get_palette_color_256(color_idx)
+                            else:
+                                color = self._get_palette_color(palette_num * 16 + color_idx)
                             if color != (0, 0, 0):
-                              self.framebuffer[y][x] = color
+                                self.framebuffer[y][x] = color
                 # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
 
         if self.obj_enable:
             self._render_sprites()
 
     def _render_mode3(self):
-        """Render Mode 3: 240x160 bitmap mode"""
+        """Render Mode 3: 240x160 bitmap mode with mosaic support"""
         vram_base = 0x06000000
 
         for y in range(self.screen_height):
             for x in range(self.screen_width):
                 layer_enable = self._get_window_layer_enable(x, y)
 
+                # Apply mosaic if enabled (snap to mosaic block)
+                mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
+
                 if True:  # Bitmap modes render regardless of window blend bit
                     # Read 16-bit color from VRAM
-                    offset = (y * 240 + x) * 2
+                    offset = (mosaic_y * 240 + mosaic_x) * 2
                     addr = vram_base + offset
 
                     try:
@@ -1442,7 +1463,7 @@ class PPU:
             self._render_sprites()
 
     def _render_mode4(self):
-        """Render Mode 4: 240x160 8BPP bitmap with double buffering"""
+        """Render Mode 4: 240x160 8BPP bitmap with double buffering and mosaic support"""
         # Mode 4: 8BPP bitmap, each pixel = 1 byte palette index
         # Page 0: 0x06000000 (0x6000 bytes = 240*160)
         # Page 1: 0x0600A000
@@ -1451,8 +1472,11 @@ class PPU:
 
         for y in range(self.screen_height):
             for x in range(self.screen_width):
+                # Apply mosaic if enabled (snap to mosaic block)
+                mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
+
                 # Mode 4: 1 byte per pixel (8-bit palette index)
-                offset = y * 240 + x
+                offset = mosaic_y * 240 + mosaic_x
                 addr = vram_base + offset
 
                 try:
@@ -1520,22 +1544,37 @@ class PPU:
 
     def _apply_blending_to_framebuffer(self):
         blend_mode = (self.bldcnt >> 6) & 0x3
-
+        
         if blend_mode == 1:
             eva = min(self.bldalpha_eva, 16)
             evb = min(self.bldalpha_evb, 16)
             if eva > 0 or evb > 0:
+                # Read backdrop color from BDCNT register (bits 12-15 = BG backdrop, bits 0-3 = OBJ backdrop)
+                bldcnt = self.bldcnt
+                bg_backdrop_idx = (bldcnt >> 12) & 0xF
+                bg_backdrop_r = 31  # Default
+                bg_backdrop_g = 31
+                bg_backdrop_b = 31
+                if 0 <= bg_backdrop_idx < 16:
+                    # Read backdrop color from palette RAM (0x05000000)
+                    try:
+                        backdrop_color_val = self.memory.read_u16(0x05000000 + (bg_backdrop_idx * 2))
+                        bg_backdrop_r = ((backdrop_color_val >> 0) & 0x1F) * 8
+                        bg_backdrop_g = ((backdrop_color_val >> 5) & 0x1F) * 8
+                        bg_backdrop_b = ((backdrop_color_val >> 10) & 0x1F) * 8
+                    except:
+                        pass
+                
                 for y in range(self.screen_height):
                     for x in range(self.screen_width):
                         r, g, b = self.framebuffer[y][x]
-                        bg_r = min(r + 20, 255)
-                        bg_g = min(g + 20, 255)
-                        bg_b = min(b + 20, 255)
+                        bg_r = bg_backdrop_r
+                        bg_g = bg_backdrop_g
+                        bg_b = bg_backdrop_b
                         r = (r * eva + bg_r * evb) // 16
                         g = (g * eva + bg_g * evb) // 16
                         b = (b * eva + bg_b * evb) // 16
                         self.framebuffer[y][x] = (r, g, b)
-        elif blend_mode == 2:
             evy = min(self.bldy, 16)
             factor = evy / 16.0
             for y in range(self.screen_height):

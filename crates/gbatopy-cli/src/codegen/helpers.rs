@@ -54,7 +54,8 @@ pub fn embed_runtime_files() -> String {
                         && !trimmed.starts_with("from gba_runtime.")
                         && !trimmed.starts_with("import gba_runtime")
                 })
-                .map(|line| line.trim_end()).collect::<Vec<_>>()
+                .map(|line| line.trim_end())
+                .collect::<Vec<_>>()
                 .join("\n");
             code.push_str(&filtered);
             code.push_str("\n\n");

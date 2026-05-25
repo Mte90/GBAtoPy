@@ -911,7 +911,11 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rm) = ops[1] {
                         if let Operand::Register(rn) = ops[2] {
-                            let byte = base_opcode == "SWPB";
+                            let byte = if base_opcode == "SWPB" {
+                                "True"
+                            } else {
+                                "False"
+                            };
                             return format!(
                                     "temp = memory.read_u8(r{}) if {} else memory.read_u32(r{}); r{} = temp; memory.write_u8(r{}, r{}) if {} else memory.write_u32(r{}, r{})",
                                     rn, byte, rn, rd, rn, rm, byte, rn, rm

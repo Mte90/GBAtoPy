@@ -5,5 +5,5 @@ pub fn generate_thumb_branch_instruction(ops: &[String]) -> String {
 
 pub fn generate_thumb_blx_instruction(ops: &[String]) -> String {
     // BX Rm - Branch and exchange to Thumb mode
-    format!("r15 = r{} & 0xFFFFFFFE; arm_mode = false;", ops[0])
+    format!("r15 = r{} & 0xFFFFFFFE; arm_mode = False;", ops[0])
 }

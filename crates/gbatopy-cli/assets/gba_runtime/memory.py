@@ -134,7 +134,7 @@ class Memory:
                 self._ppu.write_register(addr, value)
         if 0x04000048 <= addr <= 0x0400004F:
             self._handle_window_write(addr, value)
-        if 0x04000080 <= addr <= 0x0400008E:
+        if 0x04000020 <= addr <= 0x0400003C:
             self._handle_affine_bg_write(addr, value)
         if 0x04000060 <= addr <= 0x0400007F:
             self._handle_sound_write(addr, value)
@@ -155,8 +155,7 @@ class Memory:
         # Window registers (0x04000048-0x0400004F)
         if 0x04000048 <= addr <= 0x0400004F:
             return self._handle_window_read(addr)
-        # Affine BG parameters (0x04000080-0x0400008E) - checked before sound range
-        if 0x04000080 <= addr <= 0x0400008E:
+        if 0x04000020 <= addr <= 0x0400003C:
             return self._handle_affine_bg_read(addr)
         # Sound registers (0x04000060-0x0400008F, exclusive of affine range)
         if 0x04000060 <= addr <= 0x0400008F:
@@ -260,8 +259,9 @@ class Memory:
             self._interrupts.write_ime(value)
 
     def _handle_sound_read(self, addr: int) -> int:
-        if addr == 0x04000084:
-            return 0x80
+        """Read sound register - route to APU."""
+        if self._apu is not None and 0x04000060 <= addr <= 0x040000A5:
+            return self._apu.read_register(addr)
         return 0
 
     def _handle_window_read(self, addr: int) -> int:
@@ -293,9 +293,9 @@ class Memory:
         self._affine_params[param_idx * 2 + 1] = (value >> 8) & 0xFF
 
     def _handle_sound_write(self, addr: int, value: int):
-        offset = addr - MemoryMap.IO_START
-        if 0 <= offset < MemoryMap.IO_SIZE:
-            self.io[offset] = value & 0xFF
+        """Write sound register - route to APU."""
+        if self._apu is not None and 0x04000060 <= addr <= 0x040000A5:
+            self._apu.write_register(addr, value)
 
     def _get_rom_addr(self, addr: int) -> int:
         if addr < MemoryMap.ROM_START or addr > 0x0EFFFFFF:

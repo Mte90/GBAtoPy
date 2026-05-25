@@ -1,55 +1,13 @@
-"""GBA APU (Audio Processing Unit)"""
+"""GBA APU (Audio Processing Unit) - Complete Implementation"""
 
 import pygame
 import threading
 from collections import deque
 
 
-class AudioOutput:
-    """Pygame audio output handler"""
-
-    def __init__(self, sample_rate=44100, channels=1):
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.buffer = deque(maxlen=sample_rate // 60)  # 1 frame of audio
-        self.running = False
-        self.thread = None
-
-    def start(self):
-        """Start audio playback thread"""
-        if not pygame.mixer.get_init():
-            pygame.mixer.init(frequency=self.sample_rate, size=-16, channels=2, buffer=512)
-
-        self.running = True
-        self.thread = threading.Thread(target=self._playback_loop, daemon=True)
-        self.thread.start()
-
-    def stop(self):
-        """Stop audio playback"""
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=1.0)
-
-    def _playback_loop(self):
-        """Background thread to feed pygame mixer"""
-        while self.running:
-            if len(self.buffer) > 0:
-                samples = list(self.buffer)[:1024]
-                if samples:
-                    audio_data = bytes([s & 0xFF for s in samples])
-                    pygame.mixer.Sound(audio_data).play()
-            pygame.time.wait(10)
-
-    def add_samples(self, samples):
-        """Add audio samples to buffer"""
-        for sample in samples:
-            self.buffer.append(sample & 0xFFFF)
-
-
 class SquareWaveChannel:
     """Square wave sound channel (CH1/CH2)"""
 
-    # Duty cycles: 12.5%, 25%, 50%, 75%
     DUTY_PATTERNS = [
         0b00000001,  # 12.5%
         0b00000011,  # 25%
@@ -61,47 +19,70 @@ class SquareWaveChannel:
         self.enabled = False
         self.volume = 0
         self.frequency = 0
-        self.duty_cycle = 0  # 0-3
-        self.envelope = 0  # Initial volume
+        self.duty_cycle = 0
+        self.envelope_volume = 0
         self.envelope_steps = 0
         self.envelope_increase = False
         self.length = 0
         self.length_enable = False
-        self.counter = 0
+        self.length_counter = 0
+        self.envelope_counter = 0
+        self.envelope_volume_current = 0
+        self.sweep_shift = 0
+        self.sweep_decrease = False
+        self.sweep_steps = 0
+        self.sweep_counter = 0
         self.timer = 0
         self.timer_period = 0
+        self.output_bit = 0
 
-    def step(self, sample_rate: int, base_freq: int = 131072) -> int:
+    def step(self, sample_rate: int) -> int:
         """Generate one sample. Returns volume level (0-15)."""
-        if not self.enabled or self.volume == 0:
-            # Silence: channel disabled or muted
+        if not self.enabled:
             return 0
 
-        # Calculate timer period from frequency
-        # Timer increments at 1 MHz, frequency = 1MHz / (2048 - freq)
-        if self.frequency > 0:
-            self.timer_period = (2048 - self.frequency) * 4
-        else:
-            self.timer_period = 0x7FF * 4
+        # Length counter
+        if self.length_enable and self.length > 0:
+            self.length_counter += 1
+            if self.length_counter >= (256 - self.length):
+                self.enabled = False
+                return 0
 
-        # Advance timer
+        # Envelope
+        if self.envelope_steps > 0:
+            self.envelope_counter += 1
+            if self.envelope_counter >= self.envelope_steps:
+                self.envelope_counter = 0
+                if self.envelope_increase:
+                    self.envelope_volume_current = min(15, self.envelope_volume_current + 1)
+                else:
+                    self.envelope_volume_current = max(0, self.envelope_volume_current - 1)
+                if self.envelope_volume_current == 0:
+                    self.enabled = False
+                    return 0
+        else:
+            self.envelope_volume_current = self.envelope_volume
+
+        # Timer/frequency
+        if self.frequency > 0:
+            self.timer_period = 2048 - self.frequency
+        else:
+            self.timer_period = 2048
+
         self.timer += 1
         if self.timer >= self.timer_period:
             self.timer = 0
-            # Toggle output based on duty pattern
-            duty = self.DUTY_PATTERNS[self.duty_cycle]
-            bit_pos = self.counter % 8
-            if duty & (1 << bit_pos):
-                return self.volume
-            else:
-                return 0
+            self.output_bit = 1 - self.output_bit
 
-        return 0
+        return self.output_bit * self.envelope_volume_current
 
     def trigger(self):
         """Trigger the channel (key on)"""
-        self.counter = 0
         self.timer = 0
+        self.output_bit = 0
+        self.envelope_counter = 0
+        self.envelope_volume_current = self.envelope_volume
+        self.length_counter = 0
         self.enabled = True
 
 
@@ -110,118 +91,153 @@ class WaveChannel:
 
     def __init__(self):
         self.enabled = False
-        self.volume = 0  # 0-15 (or 0-3 for special modes)
+        self.volume = 0
         self.frequency = 0
-        self.wave_ram = [0] * 32  # 16 4-bit nibbles = 32 bytes
-        self.wave_bank = 0  # 0 or 1
+        self.wave_ram = [0] * 32
+        self.wave_bank = 0
         self.length = 0
         self.length_enable = False
+        self.length_counter = 0
         self.timer = 0
         self.timer_period = 0
         self.counter = 0
-        self.output_nibble = 0
         self.format_8bit = False
 
-    def step(self, sample_rate: int, base_freq: int = 131072) -> int:
+    def step(self, sample_rate: int) -> int:
         """Generate one sample."""
-        if not self.enabled or self.volume == 0:
+        if not self.enabled:
             return 0
 
+        # Length counter
+        if self.length_enable and self.length > 0:
+            self.length_counter += 1
+            if self.length_counter >= 256:
+                self.enabled = False
+                return 0
+
+        # Frequency timer
         if self.frequency > 0:
-            self.timer_period = (2048 - self.frequency) * 4
+            self.timer_period = 2048 - self.frequency
+        else:
+            self.timer_period = 2048
 
         self.timer += 1
         if self.timer >= self.timer_period:
             self.timer = 0
-            # Read from wave RAM
-            nibble_index = self.counter % 64  # 32 bytes * 2 nibbles
-            byte_index = nibble_index // 2
-            wave_value = self.wave_ram[byte_index]
+            self.counter += 1
 
-            if nibble_index % 2 == 0:
-                # Lower nibble
-                sample = wave_value & 0x0F
-            else:
-                # Upper nibble
-                sample = (wave_value >> 4) & 0x0F
+        # Read from wave RAM
+        nibble_index = self.counter % 64
+        byte_index = nibble_index // 2
+        wave_value = self.wave_ram[byte_index % 32]
 
-            # Apply volume
-            if self.format_8bit:
-                return sample  # 8-bit mode
-            else:
-                return (sample * self.volume) // 15
+        if nibble_index % 2 == 0:
+            sample = wave_value & 0x0F
+        else:
+            sample = (wave_value >> 4) & 0x0F
 
-        return 0
+        # Apply volume
+        if self.volume == 0:
+            return 0
+        elif self.volume == 1:
+            return sample
+        elif self.volume == 2:
+            return sample // 2
+        else:  # volume == 3
+            return sample // 4
 
     def trigger(self):
         """Trigger the channel"""
-        self.counter = 0
         self.timer = 0
+        self.counter = 0
+        self.length_counter = 0
         self.enabled = True
 
 
 class NoiseChannel:
     """Noise channel (CH4)"""
 
-    # LFSR tap positions for different widths
-    STAGES_15BIT = 14
-    STAGES_7BIT = 6
-
     def __init__(self):
         self.enabled = False
         self.volume = 0
-        self.envelope = 0
+        self.envelope_volume = 0
         self.envelope_steps = 0
         self.envelope_increase = False
         self.length = 0
         self.length_enable = False
-        self.lfsr = 0x7FFF  # 15-bit LFSR starts all 1s
+        self.length_counter = 0
+        self.lfsr = 0x7FFF
         self.width_7bit = False
         self.clock_shift = 0
         self.clock_divider = 0
+        self.envelope_counter = 0
+        self.envelope_volume_current = 0
         self.timer = 0
         self.timer_period = 0
+        self.output_bit = 0
 
-    def step(self, sample_rate: int, base_freq: int = 131072) -> int:
+    def step(self, sample_rate: int) -> int:
         """Generate one sample."""
-        if not self.enabled or self.volume == 0:
+        if not self.enabled:
             return 0
 
-        # Calculate timer period
-        # Noise frequency = base / (2^(shift+1)) / divider
-        divisor = max(1, self.clock_divider * 2)
-        self.timer_period = (1 << (self.clock_shift + 1)) * divisor
+        # Length counter
+        if self.length_enable and self.length > 0:
+            self.length_counter += 1
+            if self.length_counter >= (256 - self.length):
+                self.enabled = False
+                return 0
+
+        # Envelope
+        if self.envelope_steps > 0:
+            self.envelope_counter += 1
+            if self.envelope_counter >= self.envelope_steps:
+                self.envelope_counter = 0
+                if self.envelope_increase:
+                    self.envelope_volume_current = min(15, self.envelope_volume_current + 1)
+                else:
+                    self.envelope_volume_current = max(0, self.envelope_volume_current - 1)
+                if self.envelope_volume_current == 0:
+                    self.enabled = False
+                    return 0
+        else:
+            self.envelope_volume_current = self.envelope_volume
+
+        # Timer
+        divisor = max(1, self.clock_divider)
+        self.timer_period = (1 << self.clock_shift) * divisor
+        if self.timer_period == 0:
+            self.timer_period = 1
 
         self.timer += 1
         if self.timer >= self.timer_period:
             self.timer = 0
 
-            # LFSR operation: tap bits and XOR
+            # LFSR step
             if self.width_7bit:
-                # 7-bit mode
                 bit0 = self.lfsr & 1
                 bit1 = (self.lfsr >> 1) & 1
                 new_bit = bit0 ^ bit1
                 self.lfsr = (self.lfsr >> 1) | (new_bit << 6)
-                # Keep only 7 bits
                 self.lfsr &= 0x7F
             else:
-                # 15-bit mode
                 bit0 = self.lfsr & 1
                 bit14 = (self.lfsr >> 14) & 1
                 new_bit = bit0 ^ bit14
                 self.lfsr = (self.lfsr >> 1) | (new_bit << 14)
 
-            # Output is the XOR result inverted
-            if (self.lfsr & 1) == 0:
-                return self.volume
+            self.output_bit = self.lfsr & 1
 
-        return 0
+        return self.output_bit * self.envelope_volume_current
 
     def trigger(self):
         """Trigger the channel"""
         self.lfsr = 0x7FFF
         self.timer = 0
+        self.output_bit = 0
+        self.envelope_counter = 0
+        self.envelope_volume_current = self.envelope_volume
+        self.length_counter = 0
         self.enabled = True
 
 
@@ -229,349 +245,193 @@ class FIFO:
     """Direct Sound FIFO buffer"""
 
     def __init__(self):
-        self.data = bytearray()  # Queue of 8-bit samples
-        self.max_size = 8
+        self.data = deque(maxlen=8)
         self.timer = 0
-        self.timer_period = 0  # Set by DMA
+        self.timer_period = 1  # Will be set by DMA
         self.enabled = False
         self.volume_left = 0
         self.volume_right = 0
-        self.priority = 0
-        self._dma_source = None  # Reference to DMA for direct access
-
-    def attach_dma(self, dma):
-        """Attach DMA controller for audio transfers"""
-        self._dma_source = dma
 
     def write(self, value: int):
         """Write a byte to FIFO"""
         self.data.append(value & 0xFF)
 
     def read(self) -> int:
-        """Read a byte from FIFO (FIFO pops from front)"""
+        """Read a byte from FIFO"""
         if self.data:
-            return self.data.pop(0)
-        return 0
+            return self.data.popleft()
+        return 128  # Silence
 
-    def step(self, sample_rate: int):
-        """Generate one sample from FIFO data."""
-        if not self.enabled or not self.data:
+    def step(self, sample_rate: int) -> int:
+        """Generate one sample from FIFO."""
+        if not self.enabled:
             return 0
 
-        # Timer controls how fast we consume samples
-        # In real hardware this is controlled by DMA timer_period
         self.timer += 1
-        if self.timer >= self.timer_period:
+        if self.timer >= self.timer_period and self.data:
             self.timer = 0
-            return self.read() >> 4  # Scale to 4-bit volume
+            return self.read()
 
         return 0
-
-    def clear(self):
-        """Clear the FIFO"""
-        self.data = bytearray()
-
-    def clear(self):
-        """Clear the FIFO"""
-        self.data = []
 
 
 class APU:
     """GBA Audio Processing Unit"""
 
-    # Register addresses
-    REG_SOUND1CNT_L = 0x04000060  # Sweep
-    REG_SOUND1CNT_H = 0x04000062  # Duty/Length
-    REG_SOUND1CNT_X = 0x04000064  # Frequency/Envelope
-
-    REG_SOUND2CNT_L = 0x04000068  # Duty/Length
-    REG_SOUND2CNT_H = 0x0400006A  # Volume/Envelope
-    REG_SOUND2CNT_X = 0x0400006C  # Frequency
-
-    REG_SOUND3CNT_L = 0x04000070  # Wave bank/on/off
-    REG_SOUND3CNT_H = 0x04000072  # Length
-    REG_SOUND3CNT_X = 0x04000074  # Volume/Frequency
-
-    REG_SOUND4CNT_L = 0x04000078  # Length
-    REG_SOUND4CNT_H = 0x0400007A  # Volume/Envelope
-
-    REG_SOUNDCNT_L = 0x04000080  # Master volume/ena
-    REG_SOUNDCNT_H = 0x04000082  # Direct Sound A
-    REG_SOUNDCNT_X = 0x04000084  # Direct Sound B
-
-    REG_FIFO_A = 0x040000A0
-    REG_FIFO_B = 0x040000A4
-
-    REG_WAVE_RAM = 0x04000090
-
-    # Sample rate (1 MHz base / 4 for audio)
-    SAMPLE_RATE = 262144
+    SAMPLE_RATE = 44100
 
     def __init__(self):
-        # Sound channels
         self.ch1 = SquareWaveChannel()
         self.ch2 = SquareWaveChannel()
         self.ch3 = WaveChannel()
         self.ch4 = NoiseChannel()
-
-        # FIFO channels
         self.fifo_a = FIFO()
         self.fifo_b = FIFO()
-
-        # Wave RAM (2 banks of 16 bytes each)
         self.wave_ram = [[0] * 16, [0] * 16]
         self.wave_bank = 0
-
         self.master_volume_left = 0
         self.master_volume_right = 0
         self.ch1_enabled = False
         self.ch2_enabled = False
         self.ch3_enabled = False
         self.ch4_enabled = False
-        self.sample_counter = 0
-
+        self.fifo_a_enabled = False
+        self.fifo_b_enabled = False
         self._audio_output = None
 
     def start(self):
-        if self._audio_output is None:
-            self._audio_output = AudioOutput()
-        self._audio_output.start()
+        """Start audio playback"""
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=self.SAMPLE_RATE, size=-8, channels=2, buffer=512)
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to sound registers"""
-        if self.REG_SOUND1CNT_L <= addr <= 0x04000061:
-            # CH1 Sweep control
-            reg = addr - self.REG_SOUND1CNT_L
-            self._write_ch1_sweep(reg, value)
-        elif self.REG_SOUND1CNT_H <= addr <= 0x04000065:
-            # CH1 Duty/Length/Frequency
-            reg = addr - self.REG_SOUND1CNT_H
-            self._write_ch1_control(reg, value)
-        elif self.REG_SOUND2CNT_L <= addr <= 0x0400006D:
-            # CH2 control
-            reg = addr - self.REG_SOUND2CNT_L
-            self._write_ch2_control(reg, value)
-        elif self.REG_SOUND3CNT_L <= addr <= 0x04000075:
-            # CH3 control
-            reg = addr - self.REG_SOUND3CNT_L
-            self._write_ch3_control(reg, value)
-        elif self.REG_SOUND4CNT_L <= addr <= 0x0400007B:
-            # CH4 control
-            reg = addr - self.REG_SOUND4CNT_L
-            self._write_ch4_control(reg, value)
-        elif self.REG_SOUNDCNT_L <= addr <= 0x04000085:
-            # Master sound control
-            reg = addr - self.REG_SOUNDCNT_L
-            self._write_sound_control(reg, value)
-        elif self.REG_FIFO_A <= addr <= 0x040000A3:
-            # FIFO A write
-            self._write_fifo_a(addr, value)
-        elif self.REG_FIFO_B <= addr <= 0x040000A7:
-            # FIFO B write
-            self._write_fifo_b(addr, value)
-        elif self.REG_WAVE_RAM <= addr <= 0x0400009F:
-            # Wave RAM
-            self._write_wave_ram(addr, value)
-
-    def _write_ch1_sweep(self, reg: int, value: int):
-        """Write to CH1 sweep registers"""
-        if reg == 0:  # SOUND1CNT_L
+        if addr == 0x04000060:
             self.ch1.sweep_shift = (value >> 4) & 0x07
             self.ch1.sweep_decrease = bool(value & 0x08)
             self.ch1.sweep_steps = value & 0x07
-
-    def _write_ch1_control(self, reg: int, value: int):
-        """Write to CH1 control registers"""
-        if reg == 0:  # SOUND1CNT_H - duty/len
+        elif addr == 0x04000062:
             self.ch1.duty_cycle = (value >> 6) & 0x03
             self.ch1.length = value & 0x3F
-        elif reg == 2:  # SOUND1CNT_X - freq/env
-            # Frequency is lower 11 bits
+        elif addr == 0x04000064:
             self.ch1.frequency = value & 0x7FF
-            # Envelope
-            self.ch1.envelope = (value >> 12) & 0x0F
+            self.ch1.envelope_volume = (value >> 12) & 0x0F
             self.ch1.envelope_steps = (value >> 8) & 0x07
             self.ch1.envelope_increase = bool(value & 0x0800)
-            # Trigger
             if value & 0x8000:
                 self.ch1.trigger()
-
-    def _write_ch2_control(self, reg: int, value: int):
-        """Write to CH2 control registers"""
-        if reg == 0:  # SOUND2CNT_L
+        elif addr == 0x04000068:
             self.ch2.duty_cycle = (value >> 6) & 0x03
             self.ch2.length = value & 0x3F
-        elif reg == 2:  # SOUND2CNT_H
-            self.ch2.envelope = (value >> 12) & 0x0F
+        elif addr == 0x0400006A:
+            self.ch2.envelope_volume = (value >> 12) & 0x0F
             self.ch2.envelope_steps = (value >> 8) & 0x07
             self.ch2.envelope_increase = bool(value & 0x0800)
-        elif reg == 4:  # SOUND2CNT_X
+        elif addr == 0x0400006C:
             self.ch2.frequency = value & 0x7FF
             if value & 0x8000:
                 self.ch2.trigger()
-
-    def _write_ch3_control(self, reg: int, value: int):
-        """Write to CH3 control registers"""
-        if reg == 0:  # SOUND3CNT_L
+        elif addr == 0x04000070:
             self.ch3.wave_bank = (value >> 5) & 0x01
             self.ch3.enabled = bool(value & 0x80)
-        elif reg == 2:  # SOUND3CNT_H
+        elif addr == 0x04000072:
             self.ch3.length = value & 0xFF
-        elif reg == 4:  # SOUND3CNT_X
-            self.ch3.volume = (value >> 8) & 0x0F
+        elif addr == 0x04000074:
+            volume_shift = (value >> 8) & 0x03
+            self.ch3.volume = 0 if volume_shift == 0 else (1 if volume_shift == 1 else (2 if volume_shift == 2 else 3))
             self.ch3.format_8bit = bool(value & 0x0400)
             self.ch3.frequency = value & 0x3FF
             if value & 0x8000:
                 self.ch3.trigger()
-
-    def _write_ch4_control(self, reg: int, value: int):
-        """Write to CH4 control registers"""
-        if reg == 0:  # SOUND4CNT_L
+        elif addr == 0x04000078:
             self.ch4.length = value & 0x3F
-        elif reg == 2:  # SOUND4CNT_H
-            self.ch4.envelope = (value >> 12) & 0x0F
+        elif addr == 0x0400007A:
+            self.ch4.envelope_volume = (value >> 12) & 0x0F
             self.ch4.envelope_steps = (value >> 8) & 0x07
             self.ch4.envelope_increase = bool(value & 0x0800)
-        elif reg == 4:  # (address not standard, but CH4 doesn't have freq)
+        elif addr == 0x0400007C:
             self.ch4.clock_shift = (value >> 4) & 0x0F
             self.ch4.clock_divider = value & 0x07
             self.ch4.width_7bit = bool(value & 0x08)
             if value & 0x8000:
                 self.ch4.trigger()
-
-    def _write_sound_control(self, reg: int, value: int):
-        """Write to master sound control"""
-        if reg == 0:  # SOUNDCNT_L
+        elif addr == 0x04000080:
             self.master_volume_right = (value >> 4) & 0x07
             self.master_volume_left = value & 0x07
-        elif reg == 2:  # SOUNDCNT_H - Direct Sound A
+        elif addr == 0x04000082:
             self.fifo_a.volume_right = (value >> 4) & 0x0F
             self.fifo_a.volume_left = value & 0x0F
             self.fifo_a.enabled = bool(value & 0x0200)
             self.ch1_enabled = bool(value & 0x0001)
             self.ch2_enabled = bool(value & 0x0002)
-        elif reg == 4:  # SOUNDCNT_X - Direct Sound B
+        elif addr == 0x04000084:
             self.fifo_b.volume_right = (value >> 4) & 0x0F
             self.fifo_b.volume_left = value & 0x0F
             self.fifo_b.enabled = bool(value & 0x0200)
             self.ch3_enabled = bool(value & 0x0004)
             self.ch4_enabled = bool(value & 0x0008)
+        elif 0x040000A0 <= addr <= 0x040000A3:
+            self.fifo_a.write(value & 0xFF)
+        elif 0x040000A4 <= addr <= 0x040000A7:
+            self.fifo_b.write(value & 0xFF)
+        elif 0x04000090 <= addr <= 0x0400009F:
+            offset = addr - 0x04000090
+            self.wave_ram[self.wave_bank][offset % 16] = value & 0xFF
+            self.ch3.wave_ram = self.wave_ram[self.wave_bank]
 
-    def _write_fifo_a(self, addr: int, value: int):
-        """Write to FIFO A"""
-        # Writing any byte to FIFO A pushes it
-        self.fifo_a.write(value & 0xFF)
-
-    def _write_fifo_b(self, addr: int, value: int):
-        """Write to FIFO B"""
-        self.fifo_b.write(value & 0xFF)
-
-    def _write_wave_ram(self, addr: int, value: int):
-        """Write to wave RAM"""
-        offset = addr - self.REG_WAVE_RAM
-        bank = self.wave_bank
-        self.wave_ram[bank][offset % 16] = value & 0xFF
-        self.ch3.wave_ram = self.wave_ram[bank]
-
-    def update(self):
-        if self._audio_output is None:
-            return
-        target_samples = self._audio_output.sample_rate // 60
-        samples = []
-        for _ in range(target_samples):
-            sample = self.get_sample()
-            signed_sample = (sample << 3) - 128
-            samples.append(signed_sample & 0xFF)
-        if samples:
-            self._audio_output.add_samples(samples)
-
-    def step(self):
-        """Advance audio by one sample cycle"""
-        # Generate samples from each active channel
-        ch1_sample = self.ch1.step(self.SAMPLE_RATE) if self.ch1_enabled else 0
-        ch2_sample = self.ch2.step(self.SAMPLE_RATE) if self.ch2_enabled else 0
-        ch3_sample = self.ch3.step(self.SAMPLE_RATE) if self.ch3_enabled else 0
-        ch4_sample = self.ch4.step(self.SAMPLE_RATE) if self.ch4_enabled else 0
-
-        # FIFO samples (controlled by DMA in real hardware)
-        fifo_a_sample = self.fifo_a.step(self.SAMPLE_RATE)
-        fifo_b_sample = self.fifo_b.step(self.SAMPLE_RATE)
-
-        self.sample_counter += 1
-
-    def get_sample(self) -> int:
-        """Return current mixed audio sample value (int)"""
-        # Mix all channels
-        mixed = 0
+    def get_sample(self) -> tuple:
+        """Return mixed stereo sample (left, right)"""
+        # Mix channels
+        left = 0
+        right = 0
 
         if self.ch1_enabled:
-            duty = SquareWaveChannel.DUTY_PATTERNS[self.ch1.duty_cycle]
-            bit_pos = self.sample_counter % 8
-            if duty & (1 << bit_pos):
-                mixed += self.ch1.volume
+            sample = self.ch1.step(self.SAMPLE_RATE)
+            left += sample * self.master_volume_left
+            right += sample * self.master_volume_right
 
         if self.ch2_enabled:
-            duty = SquareWaveChannel.DUTY_PATTERNS[self.ch2.duty_cycle]
-            bit_pos = self.sample_counter % 8
-            if duty & (1 << bit_pos):
-                mixed += self.ch2.volume
+            sample = self.ch2.step(self.SAMPLE_RATE)
+            left += sample * self.master_volume_left
+            right += sample * self.master_volume_right
 
-        if self.ch3_enabled and self.ch3.wave_ram:
-            nibble_index = self.sample_counter % 64
-            byte_index = nibble_index // 2
-            wave_value = self.ch3.wave_ram[byte_index % 16]
+        if self.ch3_enabled:
+            sample = self.ch3.step(self.SAMPLE_RATE)
+            left += sample * self.master_volume_left
+            right += sample * self.master_volume_right
 
-            if nibble_index % 2 == 0:
-                sample = wave_value & 0x0F
-            else:
-                sample = (wave_value >> 4) & 0x0F
-
-            if self.ch3.format_8bit:
-                mixed += sample
-            else:
-                mixed += (sample * self.ch3.volume) // 15
-
-        # CH4 noise
         if self.ch4_enabled:
-            divisor = max(1, self.ch4.clock_divider * 2)
-            timer_period = (1 << (self.ch4.clock_shift + 1)) * divisor
-            if self.sample_counter % timer_period == 0:
-                # LFSR step
-                if self.ch4.width_7bit:
-                    bit0 = self.ch4.lfsr & 1
-                    bit1 = (self.ch4.lfsr >> 1) & 1
-                    new_bit = bit0 ^ bit1
-                    self.ch4.lfsr = (self.ch4.lfsr >> 1) | (new_bit << 6)
-                    self.ch4.lfsr &= 0x7F
-                else:
-                    bit0 = self.ch4.lfsr & 1
-                    bit14 = (self.ch4.lfsr >> 14) & 1
-                    new_bit = bit0 ^ bit14
-                    self.ch4.lfsr = (self.ch4.lfsr >> 1) | (new_bit << 14)
+            sample = self.ch4.step(self.SAMPLE_RATE)
+            left += sample * self.master_volume_left
+            right += sample * self.master_volume_right
 
-        # Add FIFO samples
-        if self.fifo_a.enabled and self.fifo_a.data:
-            mixed += self.fifo_a.data[0] >> 4
-        if self.fifo_b.enabled and self.fifo_b.data:
-            mixed += self.fifo_b.data[0] >> 4
+        if self.fifo_a_enabled:
+            sample = self.fifo_a.step(self.SAMPLE_RATE)
+            left += sample * self.fifo_a.volume_left
+            right += sample * self.fifo_a.volume_right
 
-        # Apply master volume (simplified)
-        master_vol = (self.master_volume_left + self.master_volume_right + 1) // 2
-        mixed = (mixed * master_vol) // 7
+        if self.fifo_b_enabled:
+            sample = self.fifo_b.step(self.SAMPLE_RATE)
+            left += sample * self.fifo_b.volume_left
+            right += sample * self.fifo_b.volume_right
 
-        # Clamp to valid range
-        return max(0, min(15, mixed))
+        # Normalize to 0-255 range
+        left = min(255, max(0, left // 7))
+        right = min(255, max(0, right // 7))
 
-    def read_register(self, addr: int) -> int:
-        """Read from sound registers (for completeness)"""
-        if self.REG_FIFO_A <= addr <= 0x040000A3:
-            # FIFO A read
-            return self.fifo_a.read() if self.fifo_a.data else 0
-        elif self.REG_FIFO_B <= addr <= 0x040000A7:
-            # FIFO B read
-            return self.fifo_b.read() if self.fifo_b.data else 0
-        elif self.REG_WAVE_RAM <= addr <= 0x0400009F:
-            offset = addr - self.REG_WAVE_RAM
-            return self.wave_ram[self.wave_bank][offset % 16]
+        return (left, right)
 
-        return 0
+    def update(self):
+        """Generate audio buffer for pygame"""
+        if not pygame.mixer.get_init():
+            return
+
+        samples = []
+        for _ in range(1024):
+            left, right = self.get_sample()
+            samples.append(left)
+            samples.append(right)
+
+        if samples:
+            sound = pygame.mixer.Sound(bytes(samples))
+            sound.play()

@@ -2,6 +2,7 @@ pub mod cpu;
 pub mod helpers;
 pub mod instruction_codegen;
 pub mod memory;
+pub mod patterns;
 pub mod thumb;
 
 #[allow(unused_imports)]
