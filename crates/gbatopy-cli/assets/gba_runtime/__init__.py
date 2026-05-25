@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 
 from .memory import Memory
 from .ppu import PPU
-from .apu import APU, AudioOutput
+from .apu import APU
 from .dma import DMA
 from .timers import Timers
 from .input import Input, KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT

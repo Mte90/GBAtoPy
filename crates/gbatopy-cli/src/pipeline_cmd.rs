@@ -1,7 +1,9 @@
 use crate::codegen::generate_instruction_python;
 #[allow(unused_imports)]
 use crate::ppu::generate_ppu_code;
-use gbatopy_disasm::{operand::ShiftAmount, Disassembler};
+use gbatopy_disasm::{
+    operand::AddressingMode, operand::Operand, operand::ShiftAmount, Disassembler,
+};
 use std::fs;
 use std::path::Path;
 
@@ -112,39 +114,77 @@ pub fn run_pipeline(
     code.push_str("cpsr = 0  # Current Program Status Register\n");
     code.push_str("spsr = 0  # Saved Program Status Register\n\n");
 
-    // PASS 1: Collect ALL instruction addresses as function starts
-    // Each instruction gets its own function for proper PC dispatch
-    let mut func_start_addresses: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // PASS 1: Identify branch target addresses (basic block boundaries)
+    let mut branch_targets: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut branch_addresses: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    // Add every instruction address as a function start
+    // Collect all branch targets and branch instruction addresses
     for inst in &instructions {
-        func_start_addresses.insert(inst.address as u64);
+        let addr = inst.address as u64;
+        let opcode = inst.opcode.as_str();
+
+        // Check if this is a branch instruction
+        if opcode == "B" || opcode == "BL" || opcode == "BX" || opcode == "BLX" {
+            branch_addresses.insert(addr);
+            // Extract target address from operands
+            for op in &inst.operands {
+                if let Operand::Immediate(target) = op {
+                    branch_targets.insert(*target as u64);
+                }
+            }
+        }
     }
+    // First instruction is always a block start
+    branch_targets.insert(0x08000000);
 
     eprintln!(
-        "  Found {} instruction addresses (one function per instruction)",
-        func_start_addresses.len()
+        "  Found {} branch targets, {} branch instructions",
+        branch_targets.len(),
+        branch_addresses.len()
     );
 
-    // PASS 2: Create ONE function per instruction address
-    let mut func_map_entries = Vec::new();
+    // PASS 2: Group instructions into basic blocks
     let mut func_groups: std::collections::BTreeMap<u64, Vec<&gbatopy_disasm::DecodedInstruction>> =
         std::collections::BTreeMap::new();
 
-    // Each instruction gets its own function group
-    for inst in &instructions {
-        let func_start = inst.address as u64;
+    let mut current_block_start: Option<u64> = None;
+    let mut prev_addr: Option<u64> = None;
 
-        // Create a single-instruction group
-        func_groups
-            .entry(func_start)
-            .or_insert_with(Vec::new)
-            .push(inst);
+    for inst in &instructions {
+        let addr = inst.address as u64;
+        let is_thumb = addr % 2 == 1;
+        let instr_size = if is_thumb { 2 } else { 4 };
+        let next_expected = prev_addr.map(|a| a + instr_size);
+
+        // Start new block if:
+        // 1. This is a branch target, OR
+        // 2. Previous instruction was a branch, OR
+        // 3. Gap in addresses (not sequential)
+        let should_start_new_block = branch_targets.contains(&addr)
+            || prev_addr.map_or(true, |pa| {
+                let is_branch = branch_addresses.contains(&pa);
+                let is_sequential = next_expected == Some(addr);
+                is_branch || !is_sequential
+            });
+
+        if should_start_new_block {
+            current_block_start = Some(addr);
+        }
+
+        if let Some(block_start) = current_block_start {
+            func_groups
+                .entry(block_start)
+                .or_insert_with(Vec::new)
+                .push(inst);
+        }
+
+        prev_addr = Some(addr);
     }
 
     eprintln!(
-        "  Generated {} functions (one per instruction)",
-        func_groups.len()
+        "  Generated {} basic blocks (merged from {} instructions)",
+        func_groups.len(),
+        instructions.len()
     );
 
     // Helper function to generate Python from ARM instruction
@@ -253,38 +293,104 @@ class GBA:
     code.push_str("# Initialize Memory object for runtime\n");
     code.push_str("memory = Memory()\n\n");
 
-    // Generate functions for each branch target
+    // Helper: check if instruction writes to r[15]
+    fn writes_r15(inst: &gbatopy_disasm::DecodedInstruction) -> bool {
+        let op = inst.opcode.as_str();
+        // Only actual branch instructions change control flow via r15
+        // (LDR/STR r15 are DATA writes to PC, not control flow changes)
+        matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ")
+    }
+
+    // Helper: check if instruction reads r[15]
+    // Used to decide if PC advance is needed before this instruction
+    fn reads_r15(inst: &gbatopy_disasm::DecodedInstruction) -> bool {
+        let op = inst.opcode.as_str();
+        // Branches implicitly read PC
+        if matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ") {
+            return true;
+        }
+        // Check ALL operands for r15 references
+        for op in &inst.operands {
+            match op {
+                Operand::Register(r) if *r == 15 => return true,
+                Operand::ShiftedRegister { reg: r, .. } if *r == 15 => return true,
+                Operand::MemoryAddress {
+                    base: r, offset, ..
+                } if *r == 15 => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    // Generate functions for each branch target, skip pure NOP blocks
+    let mut non_nop_addrs: Vec<u64> = Vec::new();
+    let mut block_function_code = String::new();
+    let address_list: Vec<u64> = func_groups.keys().copied().collect();
+
     for (&func_start, func_instructions) in &func_groups {
         let func_name = format!("func_{:08X}", func_start);
+        let is_thumb = func_start % 2 == 1;
+        let block_len = func_instructions.len();
+        let instr_size: u64 = if is_thumb { 2 } else { 4 };
 
-        code.push_str(&format!("def {}():\n", func_name));
-        code.push_str(
-            "    global r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15\n",
-        );
-        code.push_str("    global cpsr, spsr\n");
-
-        for inst in func_instructions {
+        // Generate function body into a temp buffer
+        let mut body = String::new();
+        for (idx, inst) in func_instructions.iter().enumerate() {
             let py_stmt = generate_instruction_python(inst);
-            code.push_str(&format!("    {}\n", py_stmt));
+            body.push_str(&format!("    {}\n", py_stmt));
+            let is_last = idx == block_len - 1;
+
+            // Emit PC advance only when needed
+            if !is_last && !writes_r15(inst) {
+                if let Some(next_inst) = func_instructions.get(idx + 1) {
+                    if reads_r15(next_inst) {
+                        let next_addr = inst.address as u64 + instr_size;
+                        body.push_str(&format!("    r[15] = 0x{:08X}\n", next_addr));
+                    }
+                }
+            }
+        }
+        // End of block: always advance PC for dispatch loop
+        let last_addr = func_instructions.last().unwrap().address as u64;
+        if !writes_r15(func_instructions.last().unwrap()) {
+            let end_addr = last_addr + instr_size;
+            body.push_str(&format!("    r[15] = 0x{:08X}\n", end_addr));
         }
 
-        // Advance PC (r15) to next instruction address
-        // ARM mode: 4 bytes per instruction, Thumb mode: 2 bytes per instruction
-        let is_thumb = func_start % 2 == 1; // Check if address is odd (Thumb)
-        let next_addr = if is_thumb {
-            func_start + 2
+        // Check if block is pure NOP (only comments and PC advances)
+        // A NOP block has no real register/memory operations
+        let is_nop = body.lines().all(|l| {
+            let t = l.trim();
+            t.is_empty() || t.starts_with('#') || t.starts_with("r[15] = 0x")
+        });
+
+        if is_nop {
+            // NOP block: skip generating function, will redirect func_map
+            // NOP blocks are implicitly handled by chaining
         } else {
-            func_start + 4
-        };
-        code.push_str(&format!("    r15 = 0x{:08X}\n", next_addr));
-        code.push_str("\n");
-        func_map_entries.push(format!("    0x{:08X}: {},", func_start, func_name));
+            block_function_code.push_str(&format!("\ndef {}():\n", func_name));
+            block_function_code.push_str(&body);
+            non_nop_addrs.push(func_start);
+        }
     }
-    // Generate func_map
-    code.push_str("# Function map for dynamic dispatch\n");
-    code.push_str("func_map = {\n");
-    code.push_str(&func_map_entries.join("\n"));
-    code.push_str("\n}\n\n");
+
+    // Write all block functions
+    code.push_str(&block_function_code);
+
+    // Generate func_map with NOP redirects
+    code.push_str("func_map = {");
+    for &func_start in &address_list {
+        // Find next non-NOP address at or after this address
+        let target = non_nop_addrs.iter().find(|&&a| a >= func_start).copied();
+        if let Some(target_addr) = target {
+            code.push_str(&format!("0x{:08X}:func_{:08X},", func_start, target_addr));
+        } else {
+            // Should not happen for valid ROMs, but keep original as fallback
+            code.push_str(&format!("0x{:08X}:func_{:08X},", func_start, func_start));
+        }
+    }
+    code.push_str("}\n\n");
 
     // Add game loop (from generate_game_loop in pipeline.rs)
     code.push_str(&generate_game_loop());
@@ -303,193 +409,76 @@ class GBA:
 fn generate_game_loop() -> String {
     r#"
 def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):
-    """Execute transpiled GBA code using func_map dispatch"""
-    
-    def ror(value, amount):
-        """Rotate right: (value >> amount) | (value << (32 - amount)) & 0xFFFFFFFF"""
-        amount = amount & 31  # Mask to 0-31
-        return ((value >> amount) | (value << (32 - amount))) & 0xFFFFFFFF
-    
-    frame_count = 0
-    max_instructions = 1000000  # Safety limit
-    instruction_count = 0
-    
-    print(f"Starting transpiled execution at PC=0x{r15:08X}")
-    
-    # Main execution loop
-    while instruction_count < max_instructions:
-        pc = r15
-        
-        # Look up function by address
-        if pc not in func_map:
-            print(f"Unknown PC: 0x{pc:08X} - execution halted")
-            break
-        
-        # Store old pc for infinite loop detection
-        old_pc = pc
-        
-        # Get the function and call it
-        func = func_map[pc]
-        func()  # This updates r15 (PC) for next instruction
-        
-        instruction_count += 1
-        
-        # If PC didn't change, we're in an infinite loop
-        if pc == old_pc:
-            print(f"PC unchanged at 0x{pc:08X} - infinite loop detected")
-            break
-        
-        # Progress reporting every 10000 instructions
-        if instruction_count % 10000 == 0:
-            print(f"Executed {instruction_count} instructions, PC=0x{r15:08X}")
-        
-        # Frame limit check
-        if frame_limit and frame_count >= frame_limit:
-            break
-        
-        # For now, each instruction counts as ~1 frame
-        # Real implementation would count actual frame cycles
-        if instruction_count % 1000 == 0:
-            frame_count += 1
-    
-    print(f"Execution stopped after {instruction_count} instructions")
-    print(f"Final PC: 0x{r15:08X}")
-    
-    return frame_count
+    def ror(v, a):
+        a = a & 31
+        return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
+    fc = 0; mi = 1000000; ic = 0
+    print(f"PC=0x{r[15]:08X}")
+    while ic < mi:
+        pc = r[15]
+        if pc not in func_map: print(f"Unknown PC: 0x{pc:08X}"); break
+        func_map[pc](); ic += 1
+        if r[15] == pc: print(f"Loop at 0x{pc:08X}"); break
+        if ic % 10000 == 0: print(f"{ic} instrs")
+        if frame_limit and fc >= frame_limit: break
+        if ic % 1000 == 0: fc += 1
+    print(f"Done: {ic} instrs")
+    return fc
 
 def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1):
-    """Run transpiled GBA code with pygame display and input"""
-    
     pygame.init()
-    
     if not headless:
         screen = pygame.display.set_mode((240 * scale, 160 * scale))
-        pygame.display.set_caption("GBAtoPy - Transpiled GBA")
+        pygame.display.set_caption("GBAtoPy")
     else:
-        # Create dummy surface for screenshot saving in headless mode
         screen = pygame.Surface((240 * scale, 160 * scale))
-    
     clock = pygame.time.Clock()
-    frame_count = 0
-    running = True
-    max_instructions = 1000000
-    instruction_count = 0
-    
-    # Input state
-    keys_down = {}
-    
-    print(f"Starting transpiled execution at PC=0x{r15:08X}")
-    
-    while running and instruction_count < max_instructions:
-        # Execute transpiled instructions
-        pc = r15
-        if pc in func_map:
-            func = func_map[pc]
-            func()
-            instruction_count += 1
-            # Check if PC changed (old pc was stored before function call)
-            if pc == r15:
-                break  # PC unchanged = infinite loop or end
-        else:
-            break  # Unknown PC
-        
-        # Handle pygame events
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-                elif event.key == pygame.K_UP:
-                    keys_down['UP'] = True
-                elif event.key == pygame.K_DOWN:
-                    keys_down['DOWN'] = True
-                elif event.key == pygame.K_LEFT:
-                    keys_down['LEFT'] = True
-                elif event.key == pygame.K_RIGHT:
-                    keys_down['RIGHT'] = True
-                elif event.key == pygame.K_z:
-                    keys_down['A'] = True
-                elif event.key == pygame.K_x:
-                    keys_down['B'] = True
-                elif event.key == pygame.K_RETURN:
-                    keys_down['START'] = True
-                elif event.key == pygame.K_BACKSPACE:
-                    keys_down['SELECT'] = True
-                elif event.key == pygame.K_a:
-                    keys_down['L'] = True
-                elif event.key == pygame.K_s:
-                    keys_down['R'] = True
-            elif event.type == pygame.KEYUP:
-                if event.key == pygame.K_UP:
-                    keys_down.pop('UP', None)
-                elif event.key == pygame.K_DOWN:
-                    keys_down.pop('DOWN', None)
-                elif event.key == pygame.K_LEFT:
-                    keys_down.pop('LEFT', None)
-                elif event.key == pygame.K_RIGHT:
-                    keys_down.pop('RIGHT', None)
-                elif event.key == pygame.K_z:
-                    keys_down.pop('A', None)
-                elif event.key == pygame.K_x:
-                    keys_down.pop('B', None)
-                elif event.key == pygame.K_RETURN:
-                    keys_down.pop('START', None)
-                elif event.key == pygame.K_BACKSPACE:
-                    keys_down.pop('SELECT', None)
-                elif event.key == pygame.K_a:
-                    keys_down.pop('L', None)
-                elif event.key == pygame.K_s:
-                    keys_down.pop('R', None)
-        
-        # Render PPU framebuffer to screen
-        if screen:
-            ppu_instance = PPU(memory)
-            ppu_instance.render_frame()
-            screen.blit(ppu_instance.get_surface(), (0, 0))
-            if not headless:
-                pygame.display.flip()
-        
-        frame_count += 1
-        clock.tick(60)
-        
-        if frame_limit and frame_count >= frame_limit:
-            break
-    
-    # Save screenshot if requested
+    fc = 0; running = True; mi = 1000000; ic = 0
+    vcount = 0; hcount = 0
+    vblank_irq = False; hblank_irq = False; vcount_irq = False
+    print(f"PC=0x{r[15]:08X}")
+    while running and ic < mi:
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT: running = False
+        pc = r[15]
+        if pc not in func_map: print(f"Unknown: 0x{pc:08X}"); break
+        func_map[pc](); ic += 1
+        if r[15] == pc: print(f"Loop at 0x{pc:08X}"); break
+        # VBlank IRQ dispatch (once per frame when VBlank is enabled)
+        # VBlank occurs at the end of each frame (line 160-227)
+        if fc > 0 and fc % 1 == 0:  # Every frame
+            dispcnt = memory.read_u16(0x04000004)
+            vblank_int_enabled = (dispcnt & 0x08) != 0
+            if vblank_int_enabled:
+                ie = memory.read_u16(0x04000200)
+                if ie & 0x01:  # VBlank IRQ enabled
+                    if (memory.read_u16(0x04000202) & 0x01) == 0:  # Not yet triggered
+                        # Trigger VBlank IRQ
+                        memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
+                        r[15] = memory.read_u32(0x03007FFC)  # Jump to ISR
+        ppu_instance.render_frame()
+        fb = ppu_instance.framebuffer
+        arr = np.array(fb, dtype=np.uint8).transpose(1, 0, 2)
+        pygame.surfarray.blit_array(screen, arr)
+        if not headless: pygame.display.flip()
+        clock.tick(60); fc += 1
+        if frame_limit and fc >= frame_limit: break
     if screenshot_path:
         pygame.image.save(screen, screenshot_path)
-        print(f"Screenshot saved to: {screenshot_path}")
-    
+        print(f"Screenshot: {screenshot_path}")
     pygame.quit()
-    return frame_count
+    return fc
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="GBAtoPy Transpiled GBA")
-    parser.add_argument("--headless", action="store_true", help="Run without display")
-    parser.add_argument("--frame", type=int, default=None, help="Number of frames to run")
-    parser.add_argument("--screenshot", type=str, default=None, help="Screenshot output path")
-    parser.add_argument("--scale", type=int, default=1, help="Display scale factor")
-    parser.add_argument("--benchmark", action="store_true", help="Run benchmark (1000 instructions)")
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--frame", type=int)
+    parser.add_argument("--screenshot", type=str)
+    parser.add_argument("--scale", type=int, default=1)
     args = parser.parse_args()
-    
-    if args.benchmark:
-        import time
-        start = time.time()
-        frames = run_transpiled(headless=True, frame_limit=1000)
-        elapsed = time.time() - start
-        print(f"Benchmark: {frames} frames in {elapsed:.3f}s")
-    else:
-        # Use pygame version for interactive display
-        frames = run_with_pygame(
-            headless=args.headless,
-            frame_limit=args.frame,
-            screenshot_path=args.screenshot,
-            scale=args.scale
-        )
-        print(f"Ran {frames} frames")
+    frames = run_with_pygame(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot, scale=args.scale)
+    print(f"{frames} frames")
 "#
     .to_string()
 }

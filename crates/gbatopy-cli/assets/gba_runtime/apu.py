@@ -304,6 +304,13 @@ class APU:
         if not pygame.mixer.get_init():
             pygame.mixer.init(frequency=self.SAMPLE_RATE, size=-8, channels=2, buffer=512)
 
+    def stop(self):
+        """Stop audio playback"""
+        try:
+            pygame.mixer.stop()
+        except pygame.error:
+            pass
+
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to sound registers"""
         if addr == 0x04000060:

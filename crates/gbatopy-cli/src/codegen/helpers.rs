@@ -14,12 +14,12 @@ pub fn shift_to_python(
     };
 
     match shift_type {
-        gbatopy_disasm::operand::ShiftType::Lsl => format!("r{} << {}", reg, amt),
-        gbatopy_disasm::operand::ShiftType::Lsr => format!("r{} >> {}", reg, amt),
-        gbatopy_disasm::operand::ShiftType::Asr => format!("r{} >> {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Lsl => format!("r[{}] << {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Lsr => format!("r[{}] >> {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Asr => format!("r[{}] >> {}", reg, amt),
         gbatopy_disasm::operand::ShiftType::Ror => {
             format!(
-                "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                "(r[{}] >> {}) | (r[{}] << (32 - {})) & 0xFFFFFFFF",
                 reg, amt, reg, amt
             )
         }

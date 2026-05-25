@@ -32,13 +32,19 @@ def compute_flags(result: int, width: int) -> int:
     return (n << 31) | (z << 30) | (c << 29) | (v << 28)
 
 
+def _c5to8(c: int) -> int:
+    """Convert 5-bit GBA color to 8-bit. Formula: (c << 3) | (c >> 2)"""
+    return (c << 3) | (c >> 2)
+
+
 class PPU:
     """Game Boy Advance Pixel Processing Unit"""
+
 
 # ========================================================================
     # OAM (Object Attribute Memory) - Sprite rendering
     # ========================================================================
-    # OAM at 0x07000000-0x070003FF (1KB, 128 sprites × 8 bytes)
+# OAM at 0x07000000-0x070003FF (1KB, 128 sprites × 8 bytes)
     #
     # Each sprite has 3 attributes (8 bytes total per sprite):
     #   Attribute 0 (offset 0): Y position (bits 0-7), various flags
@@ -254,9 +260,9 @@ class PPU:
                 
                 try:
                     color_val = self.memory.read_u16(palette_addr)
-                    r = ((color_val >> 0) & 0x1F) * 8
-                    g = ((color_val >> 5) & 0x1F) * 8
-                    b = ((color_val >> 10) & 0x1F) * 8
+                    r = _c5to8((color_val >> 0) & 0x1F)
+                    g = _c5to8((color_val >> 5) & 0x1F)
+                    b = _c5to8((color_val >> 10) & 0x1F)
                     
                     # Draw pixel directly to framebuffer
                     self.framebuffer[screen_y][screen_x] = (r, g, b)
@@ -356,9 +362,9 @@ class PPU:
                 
                 try:
                     color_val = self.memory.read_u16(palette_addr)
-                    r = ((color_val >> 0) & 0x1F) * 8
-                    g = ((color_val >> 5) & 0x1F) * 8
-                    b = ((color_val >> 10) & 0x1F) * 8
+                    r = _c5to8((color_val >> 0) & 0x1F)
+                    g = _c5to8((color_val >> 5) & 0x1F)
+                    b = _c5to8((color_val >> 10) & 0x1F)
                     self.framebuffer[screen_y][screen_x] = (r, g, b)
                 except Exception as e:
                     # Error reading palette - skip this pixel
@@ -1042,9 +1048,9 @@ class PPU:
 
         try:
             color_val = self.memory.read_u16(palette_addr)
-            r = ((color_val >> 0) & 0x1F) * 8
-            g = ((color_val >> 5) & 0x1F) * 8
-            b = ((color_val >> 10) & 0x1F) * 8
+            r = _c5to8((color_val >> 0) & 0x1F)
+            g = _c5to8((color_val >> 5) & 0x1F)
+            b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
         except:
             return (255, 255, 255)  # White fallback for debugging
@@ -1452,9 +1458,9 @@ class PPU:
                     try:
                         color_val = self.memory.read_u16(addr)
                         # Convert 15-bit RGB555 to RGB888
-                        r = ((color_val >> 0) & 0x1F) * 8
-                        g = ((color_val >> 5) & 0x1F) * 8
-                        b = ((color_val >> 10) & 0x1F) * 8
+                        r = _c5to8((color_val >> 0) & 0x1F)
+                        g = _c5to8((color_val >> 5) & 0x1F)
+                        b = _c5to8((color_val >> 10) & 0x1F)
                         self.framebuffer[y][x] = (r, g, b)
                     except:
                         self.framebuffer[y][x] = (0, 0, 0)
@@ -1508,30 +1514,33 @@ class PPU:
         try:
             color_val = self.memory.read_u16(palette_addr)
             # Convert RGB555 to RGB888
-            r = ((color_val >> 0) & 0x1F) * 8
-            g = ((color_val >> 5) & 0x1F) * 8
-            b = ((color_val >> 10) & 0x1F) * 8
+            r = _c5to8((color_val >> 0) & 0x1F)
+            g = _c5to8((color_val >> 5) & 0x1F)
+            b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
         except:
             return (0, 0, 0)
 
     def _render_mode5(self):
-        """Render Mode 5: 160x128 bitmap mode"""
+        """Render Mode 5: 160x128 bitmap mode with mosaic support"""
         vram_base = 0x06000000
 
         for y in range(128):
             for x in range(160):
                 layer_enable = self._get_window_layer_enable(x, y)
 
+                # Apply mosaic if enabled (snap to mosaic block)
+                mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
+
                 if True:  # Bitmap Mode 5 renders regardless
-                    offset = (y * 160 + x) * 2
+                    offset = (mosaic_y * 160 + mosaic_x) * 2
                     addr = vram_base + offset
 
                     try:
                         color_val = self.memory.read_u16(addr)
-                        r = ((color_val >> 0) & 0x1F) * 8
-                        g = ((color_val >> 5) & 0x1F) * 8
-                        b = ((color_val >> 10) & 0x1F) * 8
+                        r = _c5to8((color_val >> 0) & 0x1F)
+                        g = _c5to8((color_val >> 5) & 0x1F)
+                        b = _c5to8((color_val >> 10) & 0x1F)
                         self.framebuffer[y][x] = (r, g, b)
                     except:
                         self.framebuffer[y][x] = (0, 0, 0)
@@ -1559,9 +1568,9 @@ class PPU:
                     # Read backdrop color from palette RAM (0x05000000)
                     try:
                         backdrop_color_val = self.memory.read_u16(0x05000000 + (bg_backdrop_idx * 2))
-                        bg_backdrop_r = ((backdrop_color_val >> 0) & 0x1F) * 8
-                        bg_backdrop_g = ((backdrop_color_val >> 5) & 0x1F) * 8
-                        bg_backdrop_b = ((backdrop_color_val >> 10) & 0x1F) * 8
+                        bg_backdrop_r = _c5to8((backdrop_color_val >> 0) & 0x1F)
+                        bg_backdrop_g = _c5to8((backdrop_color_val >> 5) & 0x1F)
+                        bg_backdrop_b = _c5to8((backdrop_color_val >> 10) & 0x1F)
                     except:
                         pass
                 
@@ -1671,9 +1680,9 @@ class PPU:
                     vram_addr = 0x06014000 + (src_y * sprite_width + src_x) * 2
                     try:
                         color_val = self.memory.read_u16(vram_addr)
-                        r = ((color_val >> 0) & 0x1F) * 8
-                        g = ((color_val >> 5) & 0x1F) * 8
-                        b = ((color_val >> 10) & 0x1F) * 8
+                        r = _c5to8((color_val >> 0) & 0x1F)
+                        g = _c5to8((color_val >> 5) & 0x1F)
+                        b = _c5to8((color_val >> 10) & 0x1F)
                         if color_val & 0x8000:
                             colors.append((r, g, b))
                         else:
@@ -1694,9 +1703,9 @@ class PPU:
                 try:
                     color_val = self.memory.read_u16(vram_addr)
                     if color_val & 0x8000:
-                        r = ((color_val >> 0) & 0x1F) * 8
-                        g = ((color_val >> 5) & 0x1F) * 8
-                        b = ((color_val >> 10) & 0x1F) * 8
+                        r = _c5to8((color_val >> 0) & 0x1F)
+                        g = _c5to8((color_val >> 5) & 0x1F)
+                        b = _c5to8((color_val >> 10) & 0x1F)
                         colors.append((r, g, b))
                     else:
                         colors.append(None)
@@ -1854,9 +1863,9 @@ class PPU:
                     palette_addr = 0x05000200 + (palette_num * 32) + (color_idx * 2)
                     palette_val = self.memory.read_u16(palette_addr)
 
-                    r = ((palette_val >> 0) & 0x1F) * 8
-                    g = ((palette_val >> 5) & 0x1F) * 8
-                    b = ((palette_val >> 10) & 0x1F) * 8
+                    r = _c5to8((palette_val >> 0) & 0x1F)
+                    g = _c5to8((palette_val >> 5) & 0x1F)
+                    b = _c5to8((palette_val >> 10) & 0x1F)
 
                     self.framebuffer[y][x] = (r, g, b)
             except Exception:

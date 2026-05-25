@@ -13,7 +13,7 @@ pub fn generate_store_instruction(
             offset,
             writeback,
         } => {
-            let base_reg = format!("r{}", base);
+            let base_reg = format!("r[{}]", base);
             let offset_expr = match offset {
                 AddressingMode::ImmediateOffset(val) => {
                     if *val >= 0 {
@@ -23,7 +23,7 @@ pub fn generate_store_instruction(
                     }
                 }
                 AddressingMode::RegisterOffset(reg) => {
-                    format!(" + r{}", reg)
+                    format!(" + r[{}]", reg)
                 }
                 AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
                     let shift_str = match shift {
@@ -32,13 +32,13 @@ pub fn generate_store_instruction(
                         gbatopy_disasm::ShiftType::Asr => " >> ",
                         _ => " << ",
                     };
-                    format!(" + (r{}{}{})", reg, shift_str, amount)
+                    format!(" + (r[{}]{}{})", reg, shift_str, amount)
                 }
                 _ => " + 0".to_string(),
             };
 
             let addr_expr = format!("{}{}", base_reg, offset_expr);
-            let value_expr = format!("r{}", rd);
+            let value_expr = format!("r[{}]", rd);
             let (size_check, write_method) = if is_byte {
                 ("& 0xFF", "write_u8")
             } else if is_halfword {
@@ -77,7 +77,7 @@ pub fn generate_load_instruction(
             offset,
             writeback,
         } => {
-            let base_reg = format!("r{}", base);
+            let base_reg = format!("r[{}]", base);
             let offset_expr = match offset {
                 AddressingMode::ImmediateOffset(val) => {
                     if *val >= 0 {
@@ -87,7 +87,7 @@ pub fn generate_load_instruction(
                     }
                 }
                 AddressingMode::RegisterOffset(reg) => {
-                    format!(" + r{}", reg)
+                    format!(" + r[{}]", reg)
                 }
                 AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
                     let shift_str = match shift {
@@ -96,7 +96,7 @@ pub fn generate_load_instruction(
                         gbatopy_disasm::ShiftType::Asr => " >> ",
                         _ => " << ",
                     };
-                    format!(" + (r{}{}{})", reg, shift_str, amount)
+                    format!(" + (r[{}]{}{})", reg, shift_str, amount)
                 }
                 _ => " + 0".to_string(),
             };
@@ -111,7 +111,7 @@ pub fn generate_load_instruction(
             };
 
             let mut code = format!(
-                "r{} = self.memory.{}({}, {})",
+                "r[{}] = self.memory.{}({}, {})",
                 rd, read_method, addr_expr, mask
             );
 

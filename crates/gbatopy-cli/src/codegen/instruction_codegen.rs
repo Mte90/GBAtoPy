@@ -12,12 +12,12 @@ fn shift_to_python(
     };
 
     match shift_type {
-        gbatopy_disasm::operand::ShiftType::Lsl => format!("r{} << {}", reg, amt),
-        gbatopy_disasm::operand::ShiftType::Lsr => format!("r{} >> {}", reg, amt),
-        gbatopy_disasm::operand::ShiftType::Asr => format!("r{} >> {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Lsl => format!("r[{}] << {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Lsr => format!("r[{}] >> {}", reg, amt),
+        gbatopy_disasm::operand::ShiftType::Asr => format!("r[{}] >> {}", reg, amt),
         gbatopy_disasm::operand::ShiftType::Ror => {
             format!(
-                "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                "(r[{}] >> {}) | (r[{}] << (32 - {})) & 0xFFFFFFFF",
                 reg, amt, reg, amt
             )
         }
@@ -66,9 +66,9 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
             if ops.len() == 2 {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Immediate(imm) = ops[1] {
-                        return format!("r{} = {}", rd, imm);
+                        return format!("r[{}] = {}", rd, imm);
                     } else if let Operand::Register(rm) = ops[1] {
-                        return format!("r{} = r{}", rd, rm);
+                        return format!("r[{}] = r[{}]", rd, rm);
                     }
                 }
             }
@@ -78,7 +78,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
             if ops.len() == 2 {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Immediate(imm) = ops[1] {
-                        return format!("r{} = (r{} + {}) & 0xFFFFFFFF", rd, rd, imm);
+                        return format!("r[{}] = (r[{}] + {}) & 0xFFFFFFFF", rd, rd, imm);
                     }
                 }
             }
@@ -86,41 +86,41 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         if let Operand::Immediate(imm) = ops[2] {
-                            return format!("r{} = (r{} + {}) & 0xFFFFFFFF", rd, rn, imm);
+                            return format!("r[{}] = (r[{}] + {}) & 0xFFFFFFFF", rd, rn, imm);
                         } else if let Operand::Register(rm) = ops[2] {
-                            return format!("r{} = (r{} + r{}) & 0xFFFFFFFF", rd, rn, rm);
+                            return format!("r[{}] = (r[{}] + r[{}]) & 0xFFFFFFFF", rd, rn, rm);
                         } else if let Operand::ShiftedRegister { reg, shift, amount } = &ops[2] {
                             let shift_expr = match (shift, amount) {
                                 (
                                     gbatopy_disasm::operand::ShiftType::Lsl,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} << {}", reg, n)
+                                    format!("r[{}] << {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Lsr,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} >> {}", reg, n)
+                                    format!("r[{}] >> {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Asr,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} >> {}", reg, n)
+                                    format!("r[{}] >> {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Ror,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
                                     format!(
-                                        "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                        "(r[{}] >> {}) | (r[{}] << (32 - {})) & 0xFFFFFFFF",
                                         reg, n, reg, n
                                     )
                                 }
-                                _ => format!("r{}", reg),
+                                _ => format!("r[{}]", reg),
                             };
-                            return format!("r{} = (r{} + {}) & 0xFFFFFFFF", rd, rn, shift_expr);
+                            return format!("r[{}] = (r[{}] + {}) & 0xFFFFFFFF", rd, rn, shift_expr);
                         }
                     }
                 }
@@ -131,7 +131,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
             if ops.len() == 2 {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Immediate(imm) = ops[1] {
-                        return format!("r{} = (r{} - {}) & 0xFFFFFFFF", rd, rd, imm);
+                        return format!("r[{}] = (r[{}] - {}) & 0xFFFFFFFF", rd, rd, imm);
                     }
                 }
             }
@@ -139,41 +139,41 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         if let Operand::Immediate(imm) = ops[2] {
-                            return format!("r{} = (r{} - {}) & 0xFFFFFFFF", rd, rn, imm);
+                            return format!("r[{}] = (r[{}] - {}) & 0xFFFFFFFF", rd, rn, imm);
                         } else if let Operand::Register(rm) = ops[2] {
-                            return format!("r{} = (r{} - r{}) & 0xFFFFFFFF", rd, rn, rm);
+                            return format!("r[{}] = (r[{}] - r[{}]) & 0xFFFFFFFF", rd, rn, rm);
                         } else if let Operand::ShiftedRegister { reg, shift, amount } = &ops[2] {
                             let shift_expr = match (shift, amount) {
                                 (
                                     gbatopy_disasm::operand::ShiftType::Lsl,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} << {}", reg, n)
+                                    format!("r[{}] << {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Lsr,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} >> {}", reg, n)
+                                    format!("r[{}] >> {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Asr,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} >> {}", reg, n)
+                                    format!("r[{}] >> {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Ror,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
                                     format!(
-                                        "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                        "(r[{}] >> {}) | (r[{}] << (32 - {})) & 0xFFFFFFFF",
                                         reg, n, reg, n
                                     )
                                 }
-                                _ => format!("r{}", reg),
+                                _ => format!("r[{}]", reg),
                             };
-                            return format!("r{} = (r{} - {}) & 0xFFFFFFFF", rd, rn, shift_expr);
+                            return format!("r[{}] = (r[{}] - {}) & 0xFFFFFFFF", rd, rn, shift_expr);
                         }
                     }
                 }
@@ -185,7 +185,10 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         if let Operand::Register(rm) = ops[2] {
-                            return format!("r{} = (r{} + r{} + cpsr_c) & 0xFFFFFFFF", rd, rn, rm);
+                            return format!(
+                                "r[{}] = (r[{}] + r[{}] + cpsr_c) & 0xFFFFFFFF",
+                                rd, rn, rm
+                            );
                         }
                     }
                 }
@@ -198,7 +201,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                     if let Operand::Register(rn) = ops[1] {
                         if let Operand::Register(rm) = ops[2] {
                             return format!(
-                                "r{} = (r{} - r{} + cpsr_c - 1) & 0xFFFFFFFF",
+                                "r[{}] = (r[{}] - r[{}] + cpsr_c - 1) & 0xFFFFFFFF",
                                 rd, rn, rm
                             );
                         }
@@ -213,7 +216,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                     if let Operand::Register(rn) = ops[1] {
                         if let Operand::Register(rm) = ops[2] {
                             return format!(
-                                "r{} = (r{} - r{} - cpsr_c + 1) & 0xFFFFFFFF",
+                                "r[{}] = (r[{}] - r[{}] - cpsr_c + 1) & 0xFFFFFFFF",
                                 rd, rn, rm
                             );
                         }
@@ -226,7 +229,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
             if ops.len() == 2 {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Immediate(imm) = ops[1] {
-                        return format!("r{} = ({imm} - r{}) & 0xFFFFFFFF", rd, rd);
+                        return format!("r[{}] = ({imm} - r[{}]) & 0xFFFFFFFF", rd, rd);
                     }
                 }
             }
@@ -234,9 +237,9 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         if let Operand::Immediate(imm) = ops[2] {
-                            return format!("r{} = ({imm} - r{}) & 0xFFFFFFFF", rd, rn);
+                            return format!("r[{}] = ({imm} - r[{}]) & 0xFFFFFFFF", rd, rn);
                         } else if let Operand::Register(rm) = ops[2] {
-                            return format!("r{} = (r{} - r{}) & 0xFFFFFFFF", rd, rm, rn);
+                            return format!("r[{}] = (r[{}] - r[{}]) & 0xFFFFFFFF", rd, rm, rn);
                         }
                     }
                 }
@@ -255,7 +258,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             "BIC" => "& ~",
                             _ => "&",
                         };
-                        return format!("r{} = (r{} {} {}) & 0xFFFFFFFF", rd, rd, op, val);
+                        return format!("r[{}] = (r[{}] {} {}) & 0xFFFFFFFF", rd, rd, op, val);
                     }
                 }
             }
@@ -264,7 +267,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         let rm_expr = match &ops[2] {
-                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::Register(rm) => format!("r[{}]", rm),
                             Operand::Immediate(val) => val.to_string(),
                             Operand::ShiftedRegister { reg, shift, amount } => {
                                 let shift_expr = match (shift, amount) {
@@ -272,30 +275,30 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                         gbatopy_disasm::operand::ShiftType::Lsl,
                                         gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                     ) => {
-                                        format!("r{} << {}", reg, n)
+                                        format!("r[{}] << {}", reg, n)
                                     }
                                     (
                                         gbatopy_disasm::operand::ShiftType::Lsr,
                                         gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                     ) => {
-                                        format!("r{} >> {}", reg, n)
+                                        format!("r[{}] >> {}", reg, n)
                                     }
                                     (
                                         gbatopy_disasm::operand::ShiftType::Asr,
                                         gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                     ) => {
-                                        format!("r{} >> {}", reg, n)
+                                        format!("r[{}] >> {}", reg, n)
                                     }
                                     (
                                         gbatopy_disasm::operand::ShiftType::Ror,
                                         gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                     ) => {
                                         format!(
-                                            "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                            "(r[{}] >> {}) | (r[{}] << (32 - {})) & 0xFFFFFFFF",
                                             reg, n, reg, n
                                         )
                                     }
-                                    _ => format!("r{}", reg),
+                                    _ => format!("r[{}]", reg),
                                 };
                                 shift_expr
                             }
@@ -308,7 +311,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             "BIC" => "& ~",
                             _ => "&",
                         };
-                        return format!("r{} = (r{} {} {}) & 0xFFFFFFFF", rd, rn, op, rm_expr);
+                        return format!("r[{}] = (r[{}] {} {}) & 0xFFFFFFFF", rd, rn, op, rm_expr);
                     }
                 }
             }
@@ -317,7 +320,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
         "MVN" if ops.len() == 2 => {
             if let Operand::Register(rd) = ops[0] {
                 if let Operand::Register(rm) = ops[1] {
-                    return format!("r{} = (~r{}) & 0xFFFFFFFF", rd, rm);
+                    return format!("r[{}] = (~r[{}]) & 0xFFFFFFFF", rd, rm);
                 }
             }
         }
@@ -330,10 +333,10 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                     if base_opcode == "BL" {
                         // BL: Link register to return address (PC + 4)
                         let pc_next = inst.address + 4;
-                        return format!("r14, r15 = {}, {}", pc_next, target);
+                        return format!("r[14], r[15] = {}, {}", pc_next, target);
                     } else {
                         // B: Unconditional branch
-                        return format!("r15 = {}", target);
+                        return format!("r[15] = {}", target);
                     }
                 }
             }
@@ -343,7 +346,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
             // BX: Branch exchange (branch to address in register)
             if ops.len() == 1 {
                 if let Operand::Register(rn) = ops[0] {
-                    return format!("r15 = {}\n# Branch exchange", rn);
+                    return format!("r[15] = {}\n# Branch exchange", rn);
                 }
             }
             return format!("# BX (parsing failed)");
@@ -355,7 +358,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     // Case 1a: LDR Rd, #imm (pseudo-instruction - load immediate value)
                     if let Operand::Immediate(val) = ops[1] {
-                        return format!("r{} = {}", rd, val);
+                        return format!("r[{}] = {}", rd, val);
                     }
                     // Case 1b: LDR Rd, [Rn, offset]
                     if let Operand::MemoryAddress {
@@ -371,7 +374,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 }
                             }
                             gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
-                                format!(" + r{}", reg)
+                                format!(" + r[{}]", reg)
                             }
                             gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
                                 reg,
@@ -384,27 +387,27 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                     gbatopy_disasm::operand::ShiftType::Asr => " >> 1",
                                     gbatopy_disasm::operand::ShiftType::Ror => " >> 1",
                                 };
-                                format!(" + (r{}{})", reg, shift_op)
+                                format!(" + (r[{}]{})", reg, shift_op)
                             }
                             gbatopy_disasm::operand::AddressingMode::PreIndexed {
                                 base,
                                 offset: _,
                                 writeback: _,
                             } => {
-                                format!(" + r{} /* PreIndexed */", base)
+                                format!(" + r[{}] /* PreIndexed */", base)
                             }
                             gbatopy_disasm::operand::AddressingMode::PostIndexed {
                                 base,
                                 offset: _,
                                 writeback: _,
                             } => {
-                                format!(" + r{} /* PostIndexed */", base)
+                                format!(" + r[{}] /* PostIndexed */", base)
                             }
                             gbatopy_disasm::operand::AddressingMode::Multi { .. } => {
                                 " /* Multi-addressing */".to_string()
                             }
                         };
-                        return format!("r{} = memory.read_32(r{}{})", rd, rn, offset_expr);
+                        return format!("r[{}] = memory.read_32(r[{}]{})", rd, rn, offset_expr);
                     }
                 }
             }
@@ -413,13 +416,13 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         let op2_expr = match &ops[2] {
-                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::Register(rm) => format!("r[{}]", rm),
                             Operand::ShiftedRegister { reg, shift, amount } => {
                                 shift_to_python(*reg, shift, amount)
                             }
                             _ => "0".to_string(),
                         };
-                        return format!("r{} = memory.read_32(r{} + {})", rd, rn, op2_expr);
+                        return format!("r[{}] = memory.read_32(r[{}] + {})", rd, rn, op2_expr);
                     }
                 }
             }
@@ -449,7 +452,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 }
                             }
                             gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
-                                format!(" + r{}", reg)
+                                format!(" + r[{}]", reg)
                             }
                             gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
                                 reg,
@@ -462,27 +465,27 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                     gbatopy_disasm::operand::ShiftType::Asr => " >> 1",
                                     gbatopy_disasm::operand::ShiftType::Ror => " >> 1",
                                 };
-                                format!(" + (r{}{})", reg, shift_op)
+                                format!(" + (r[{}]{})", reg, shift_op)
                             }
                             gbatopy_disasm::operand::AddressingMode::PreIndexed {
                                 base,
                                 offset: _,
                                 writeback: _,
                             } => {
-                                format!(" + r{} /* PreIndexed */", base)
+                                format!(" + r[{}] /* PreIndexed */", base)
                             }
                             gbatopy_disasm::operand::AddressingMode::PostIndexed {
                                 base,
                                 offset: _,
                                 writeback: _,
                             } => {
-                                format!(" + r{} /* PostIndexed */", base)
+                                format!(" + r[{}] /* PostIndexed */", base)
                             }
                             gbatopy_disasm::operand::AddressingMode::Multi { .. } => {
                                 " /* Multi-addressing */".to_string()
                             }
                         };
-                        return format!("memory.write_u32(r{}{}, r{})", rn, offset_expr, rd);
+                        return format!("memory.write_u32(r[{}]{}, r[{}])", rn, offset_expr, rd);
                     }
                 }
             }
@@ -492,13 +495,13 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                     if let Operand::Register(rn) = ops[1] {
                         // Third operand could be Register or ShiftedRegister
                         let op2_expr = match &ops[2] {
-                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::Register(rm) => format!("r[{}]", rm),
                             Operand::ShiftedRegister { reg, shift, amount } => {
                                 shift_to_python(*reg, shift, amount)
                             }
                             _ => "0".to_string(),
                         };
-                        return format!("memory.write_u32(r{} + {}, r{})", rn, op2_expr, rd);
+                        return format!("memory.write_u32(r[{}] + {}, r[{}])", rn, op2_expr, rd);
                     }
                 }
             }
@@ -542,7 +545,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                         return format!("# {} (parsing failed: empty register list)", base_opcode);
                     }
 
-                    let base_reg = format!("r{}", base);
+                    let base_reg = format!("r[{}]", base);
                     let mut code = String::new();
                     let mut addr_expr = base_reg.clone();
 
@@ -569,7 +572,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 current_addr = format!("addr + {}", i * 4);
                             }
                             code.push_str(&format!(
-                                "r{} = memory.read_u32({}); ",
+                                "r[{}] = memory.read_u32({}); ",
                                 reg, current_addr
                             ));
                         } else {
@@ -580,7 +583,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 current_addr = format!("addr + {}", i * 4);
                             }
                             code.push_str(&format!(
-                                "memory.write_u32({}, r{}); ",
+                                "memory.write_u32({}, r[{}]); ",
                                 current_addr, reg
                             ));
                         }
@@ -627,7 +630,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             _ => 0,
                         };
                         return format!(
-                            "memory.write_u8(r{} + {}, r{} & 0xFF)",
+                            "memory.write_u8(r[{}] + {}, r[{}] & 0xFF)",
                             rn, offset_val, rd
                         );
                     }
@@ -638,12 +641,12 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rt) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         let offset_expr = match &ops[2] {
-                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::Register(rm) => format!("r[{}]", rm),
                             Operand::Immediate(val) => val.to_string(),
                             _ => "0".to_string(),
                         };
                         return format!(
-                            "memory.write_u8(r{} + {}, r{} & 0xFF)",
+                            "memory.write_u8(r[{}] + {}, r[{}] & 0xFF)",
                             rn, offset_expr, rt
                         );
                     }
@@ -663,7 +666,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             _ => 0,
                         };
                         return format!(
-                            "r{} = memory.read_u8(r{} + {}) & 0xFF",
+                            "r[{}] = memory.read_u8(r[{}] + {}) & 0xFF",
                             rd, rn, offset_val
                         );
                     }
@@ -674,12 +677,12 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rt) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         let offset_expr = match &ops[2] {
-                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::Register(rm) => format!("r[{}]", rm),
                             Operand::Immediate(val) => val.to_string(),
                             _ => "0".to_string(),
                         };
                         return format!(
-                            "r{} = memory.read_u8(r{} + {}) & 0xFF",
+                            "r[{}] = memory.read_u8(r[{}] + {}) & 0xFF",
                             rt, rn, offset_expr
                         );
                     }
@@ -699,7 +702,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             _ => 0,
                         };
                         return format!(
-                            "memory.write_u16(r{} + {}, r{} & 0xFFFF)",
+                            "memory.write_u16(r[{}] + {}, r[{}] & 0xFFFF)",
                             rn, offset_val, rd
                         );
                     }
@@ -724,7 +727,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 }
                             }
                             gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
-                                format!(" + r{}", reg)
+                                format!(" + r[{}]", reg)
                             }
                             gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
                                 reg,
@@ -737,21 +740,21 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                     gbatopy_disasm::operand::ShiftType::Asr => " >> 1",
                                     gbatopy_disasm::operand::ShiftType::Ror => " >> 1",
                                 };
-                                format!(" + (r{}{})", reg, shift_op)
+                                format!(" + (r[{}]{})", reg, shift_op)
                             }
                             gbatopy_disasm::operand::AddressingMode::PreIndexed {
                                 base,
                                 offset: _,
                                 writeback: _,
                             } => {
-                                format!(" + r{} /* PreIndexed */", base)
+                                format!(" + r[{}] /* PreIndexed */", base)
                             }
                             gbatopy_disasm::operand::AddressingMode::PostIndexed {
                                 base,
                                 offset: _,
                                 writeback: _,
                             } => {
-                                format!(" + r{} /* PostIndexed */", base)
+                                format!(" + r[{}] /* PostIndexed */", base)
                             }
                             _ => {
                                 eprintln!("WARNING: LDRH unhandled offset type: {:?}", offset);
@@ -759,7 +762,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             }
                         };
                         return format!(
-                            "r{} = memory.read_16(r{}{}) & 0xFFFF",
+                            "r[{}] = memory.read_16(r[{}]{}) & 0xFFFF",
                             rd, rn, offset_expr
                         );
                     }
@@ -770,14 +773,14 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rn) = ops[1] {
                         let op2_expr = match &ops[2] {
-                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::Register(rm) => format!("r[{}]", rm),
                             Operand::ShiftedRegister { reg, shift, amount } => {
                                 shift_to_python(*reg, shift, amount)
                             }
                             _ => "0".to_string(),
                         };
                         return format!(
-                            "r{} = memory.read_16(r{} + {}) & 0xFFFF",
+                            "r[{}] = memory.read_16(r[{}] + {}) & 0xFFFF",
                             rd, rn, op2_expr
                         );
                     }
@@ -808,11 +811,14 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 }
                             }
                             gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
-                                format!(" + r{}", reg)
+                                format!(" + r[{}]", reg)
                             }
                             _ => String::new(),
                         };
-                        return format!("r{} = memory.read_s8(r{}{}) & 0xFF", rd, rn, offset_expr);
+                        return format!(
+                            "r[{}] = memory.read_s8(r[{}]{}) & 0xFF",
+                            rd, rn, offset_expr
+                        );
                     }
                 }
             }
@@ -835,12 +841,12 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 }
                             }
                             gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
-                                format!(" + r{}", reg)
+                                format!(" + r[{}]", reg)
                             }
                             _ => String::new(),
                         };
                         return format!(
-                            "r{} = memory.read_s16(r{}{}) & 0xFFFF",
+                            "r[{}] = memory.read_s16(r[{}]{}) & 0xFFFF",
                             rd, rn, offset_expr
                         );
                     }
@@ -855,25 +861,25 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if ops.len() >= 3 {
                     if let Operand::Register(rd) = ops[0] {
                         let rm = if let Operand::Register(rm) = ops[1] {
-                            format!("r{}", rm)
+                            format!("r[{}]", rm)
                         } else {
                             "0".to_string()
                         };
                         let rs = if let Operand::Register(rs) = ops[2] {
-                            format!("r{}", rs)
+                            format!("r[{}]", rs)
                         } else {
                             "0".to_string()
                         };
                         let acc = if base_opcode == "MLA" && ops.len() >= 4 {
                             if let Operand::Register(acc) = ops[3] {
-                                format!("r{}", acc)
+                                format!("r[{}]", acc)
                             } else {
                                 "0".to_string()
                             }
                         } else {
                             "0".to_string()
                         };
-                        return format!("r{} = ({} * {} + {}) & 0xFFFFFFFF", rd, rm, rs, acc);
+                        return format!("r[{}] = ({} * {} + {}) & 0xFFFFFFFF", rd, rm, rs, acc);
                     }
                 }
             }
@@ -883,18 +889,18 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rlo) = ops[0] {
                     if let Operand::Register(rhi) = ops[1] {
                         let rm = if let Operand::Register(rm) = ops[2] {
-                            format!("r{}", rm)
+                            format!("r[{}]", rm)
                         } else {
                             "0".to_string()
                         };
                         let rs = if let Operand::Register(rs) = ops[3] {
-                            format!("r{}", rs)
+                            format!("r[{}]", rs)
                         } else {
                             "0".to_string()
                         };
                         let signed = base_opcode == "SMULL";
                         return format!(
-                            "result = ({}) * ({}); r{} = result & 0xFFFFFFFF; r{} = (result >> 32) & 0xFFFFFFFF",
+                            "result = ({}) * ({}); r[{}] = result & 0xFFFFFFFF; r[{}] = (result >> 32) & 0xFFFFFFFF",
                             rm, rs, rlo, rhi
                         );
                     }
@@ -917,7 +923,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 "False"
                             };
                             return format!(
-                                    "temp = memory.read_u8(r{}) if {} else memory.read_u32(r{}); r{} = temp; memory.write_u8(r{}, r{}) if {} else memory.write_u32(r{}, r{})",
+                                    "temp = memory.read_u8(r[{}]) if {} else memory.read_u32(r[{}]); r[{}] = temp; memory.write_u8(r[{}], r[{}]) if {} else memory.write_u32(r[{}], r[{}])",
                                     rn, byte, rn, rd, rn, rm, byte, rn, rm
                                 );
                         }
@@ -930,7 +936,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
             // MRS Rd, CPSR/SPSR
             if ops.len() >= 2 {
                 if let Operand::Register(rd) = ops[0] {
-                    return format!("r{} = cpsr", rd);
+                    return format!("r[{}] = cpsr", rd);
                 }
             }
             return format!("# MRS parsing failed");
@@ -940,7 +946,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
             if ops.len() >= 2 {
                 let operand = match &ops[1] {
                     Operand::Immediate(val) => val.to_string(),
-                    Operand::Register(rm) => format!("r{}", rm),
+                    Operand::Register(rm) => format!("r[{}]", rm),
                     _ => "0".to_string(),
                 };
                 return format!("cpsr = {}", operand);
@@ -953,7 +959,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::Register(rm) = ops[1] {
                         return format!(
-                            "r{} = (32 - (r{}).bit_length()) if r{} != 0 else 32",
+                            "r[{}] = (32 - (r[{}]).bit_length()) if r[{}] != 0 else 32",
                             rd, rm, rm
                         );
                     }
@@ -970,13 +976,13 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                     if let Operand::Register(rn) = ops[1] {
                         let op2 = match &ops[2] {
                             Operand::Immediate(val) => val.to_string(),
-                            Operand::Register(rm) => format!("r{}", rm),
+                            Operand::Register(rm) => format!("r[{}]", rm),
                             Operand::ShiftedRegister { reg, shift, amount } => {
                                 shift_to_python(*reg, shift, amount)
                             }
                             _ => "0".to_string(),
                         };
-                        (format!("r{}", rn), op2)
+                        (format!("r[{}]", rn), op2)
                     } else {
                         ("0".to_string(), "0".to_string())
                     }
@@ -984,14 +990,14 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                     // 2 operands: CMP Rn, Operand2 (Thumb or simplified ARM)
                     // ops[0] = Rn, ops[1] = Operand2
                     let rn = if let Operand::Register(rn) = ops[0] {
-                        format!("r{}", rn)
+                        format!("r[{}]", rn)
                     } else {
                         "0".to_string()
                     };
                     let op2 = if let Operand::Immediate(val) = ops[1] {
                         val.to_string()
                     } else if let Operand::Register(rm) = ops[1] {
-                        format!("r{}", rm)
+                        format!("r[{}]", rm)
                     } else {
                         "0".to_string()
                     };
@@ -1012,14 +1018,14 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rn) = ops[1] {
                     let op2_expr = match &ops[2] {
                         Operand::Immediate(val) => val.to_string(),
-                        Operand::Register(rm) => format!("r{}", rm),
+                        Operand::Register(rm) => format!("r[{}]", rm),
                         Operand::ShiftedRegister { reg, shift, amount } => {
                             shift_to_python(*reg, shift, amount)
                         }
                         _ => "0".to_string(),
                     };
                     return format!(
-                        "result = r{} + {}; flags = compute_flags(result, 32)",
+                        "result = r[{}] + {}; flags = compute_flags(result, 32)",
                         rn, op2_expr
                     );
                 }
@@ -1029,44 +1035,44 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rn) = ops[0] {
                     let op2_expr = match &ops[1] {
                         Operand::Immediate(val) => val.to_string(),
-                        Operand::Register(rm) => format!("r{}", rm),
+                        Operand::Register(rm) => format!("r[{}]", rm),
                         Operand::ShiftedRegister { reg, shift, amount } => {
                             let shift_expr = match (shift, amount) {
                                 (
                                     gbatopy_disasm::operand::ShiftType::Lsl,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} << {}", reg, n)
+                                    format!("r[{}] << {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Lsr,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} >> {}", reg, n)
+                                    format!("r[{}] >> {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Asr,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} >> {}", reg, n)
+                                    format!("r[{}] >> {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Ror,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
                                     format!(
-                                        "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                        "(r[{}] >> {}) | (r[{}] << (32 - {})) & 0xFFFFFFFF",
                                         reg, n, reg, n
                                     )
                                 }
-                                _ => format!("r{}", reg),
+                                _ => format!("r[{}]", reg),
                             };
                             shift_expr
                         }
                         _ => "0".to_string(),
                     };
                     return format!(
-                        "result = r{} + {}; flags = compute_flags(result, 32)",
+                        "result = r[{}] + {}; flags = compute_flags(result, 32)",
                         rn, op2_expr
                     );
                 }
@@ -1078,44 +1084,44 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rn) = ops[1] {
                     let op2_expr = match &ops[2] {
                         Operand::Immediate(val) => val.to_string(),
-                        Operand::Register(rm) => format!("r{}", rm),
+                        Operand::Register(rm) => format!("r[{}]", rm),
                         Operand::ShiftedRegister { reg, shift, amount } => {
                             let shift_expr = match (shift, amount) {
                                 (
                                     gbatopy_disasm::operand::ShiftType::Lsl,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} << {}", reg, n)
+                                    format!("r[{}] << {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Lsr,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} >> {}", reg, n)
+                                    format!("r[{}] >> {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Asr,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
-                                    format!("r{} >> {}", reg, n)
+                                    format!("r[{}] >> {}", reg, n)
                                 }
                                 (
                                     gbatopy_disasm::operand::ShiftType::Ror,
                                     gbatopy_disasm::operand::ShiftAmount::Immediate(n),
                                 ) => {
                                     format!(
-                                        "(r{} >> {}) | (r{} << (32 - {})) & 0xFFFFFFFF",
+                                        "(r[{}] >> {}) | (r[{}] << (32 - {})) & 0xFFFFFFFF",
                                         reg, n, reg, n
                                     )
                                 }
-                                _ => format!("r{}", reg),
+                                _ => format!("r[{}]", reg),
                             };
                             shift_expr
                         }
                         _ => "0".to_string(),
                     };
                     return format!(
-                        "result = r{} & {}; flags = compute_flags(result, 32)",
+                        "result = r[{}] & {}; flags = compute_flags(result, 32)",
                         rn, op2_expr
                     );
                 }
@@ -1125,14 +1131,14 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rn) = ops[0] {
                     let op2_expr = match &ops[1] {
                         Operand::Immediate(val) => val.to_string(),
-                        Operand::Register(rm) => format!("r{}", rm),
+                        Operand::Register(rm) => format!("r[{}]", rm),
                         Operand::ShiftedRegister { reg, shift, amount } => {
                             shift_to_python(*reg, shift, amount)
                         }
                         _ => "0".to_string(),
                     };
                     return format!(
-                        "result = r{} & {}; flags = compute_flags(result, 32)",
+                        "result = r[{}] & {}; flags = compute_flags(result, 32)",
                         rn, op2_expr
                     );
                 }
@@ -1144,14 +1150,14 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rn) = ops[1] {
                     let op2_expr = match &ops[2] {
                         Operand::Immediate(val) => val.to_string(),
-                        Operand::Register(rm) => format!("r{}", rm),
+                        Operand::Register(rm) => format!("r[{}]", rm),
                         Operand::ShiftedRegister { reg, shift, amount } => {
                             shift_to_python(*reg, shift, amount)
                         }
                         _ => "0".to_string(),
                     };
                     return format!(
-                        "result = r{} ^ {}; flags = compute_flags(result, 32)",
+                        "result = r[{}] ^ {}; flags = compute_flags(result, 32)",
                         rn, op2_expr
                     );
                 }
@@ -1161,14 +1167,14 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                 if let Operand::Register(rn) = ops[0] {
                     let op2_expr = match &ops[1] {
                         Operand::Immediate(val) => val.to_string(),
-                        Operand::Register(rm) => format!("r{}", rm),
+                        Operand::Register(rm) => format!("r[{}]", rm),
                         Operand::ShiftedRegister { reg, shift, amount } => {
                             shift_to_python(*reg, shift, amount)
                         }
                         _ => "0".to_string(),
                     };
                     return format!(
-                        "result = r{} ^ {}; flags = compute_flags(result, 32)",
+                        "result = r[{}] ^ {}; flags = compute_flags(result, 32)",
                         rn, op2_expr
                     );
                 }
