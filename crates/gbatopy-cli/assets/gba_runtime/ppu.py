@@ -559,7 +559,6 @@ class PPU:
         # Test ROMs don't write graphics - they are CPU instruction tests.
         # Write a gradient to VRAM so the rendering pipeline produces visible output
         # and we can verify screenshots are non-black.
-        self._write_test_simple_colors()
 
     def get_surface(self) -> "pygame.Surface":
         """Convert framebuffer to pygame Surface for screenshot"""
@@ -623,36 +622,6 @@ class PPU:
                     # Scale x, y to 0-255 range
                     p = ((x * 255 // 240) + (y * 255 // 160)) & 0xFF
                     self.memory.write_u8(page_base + (y * 240 + x), p)
-
-    def _write_test_simple_colors(self):
-        """Write simple two-color pattern for stripes.gba - matches actual ROM output.
-
-        stripes.gba uses black (0,0,0) and blue-grey (90, 132, 173).
-        Mode 3 reads 16-bit RGB555 colors directly from VRAM, so we write 16-bit values.
-        
-        Golden colors (from palette):
-        - Palette 0 (black):  (90, 132, 173) -> RGB555 ~ (11, 16, 21)
-        - Palette 1 (blue-grey): (132, 165, 198) -> RGB555 ~ (16, 20, 25)
-        
-        Using exact golden palette values:
-        - Black: RGB555 (11, 16, 21) = 0x055D
-        - Blue-grey: RGB555 (16, 20, 25) = 0x1014
-        """
-        # Use exact golden palette colors (converted to RGB555)
-        black_color = (11 << 0) | (16 << 5) | (21 << 10)   # 0x055D
-        blue_grey_color = (24 << 10) | (20 << 5) | 16  # 0x6290
-        
-        # Write BOTH colors to VRAM in 16-bit format (Mode 3 expects 2 bytes/pixel)
-        # Write to BOTH pages for double buffering
-        for page_base in [0x06000000, 0x0600A000]:
-            for y in range(self.screen_height):
-                for x in range(self.screen_width):
-                    pos = (y * 160 + x) / 16
-                    stripe = x % 16 < 8
-                    
-                    # Write 16-bit color value (not palette index!)
-                    color = black_color if stripe else blue_grey_color
-                    self.memory.write_u16(page_base + (y * 240 + x) * 2, color)
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to PPU registers"""

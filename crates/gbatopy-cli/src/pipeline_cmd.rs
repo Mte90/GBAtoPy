@@ -93,7 +93,8 @@ pub fn run_pipeline(
     code.push_str("# === End of Runtime ===\n\n");
     code.push_str("# Initialize runtime objects\n");
     code.push_str("memory = Memory()\n");
-    code.push_str("ppu_instance = PPU(memory)\n\n");
+    code.push_str("ppu_instance = PPU(memory)\n");
+    code.push_str("apu_instance = APU()\n\n");
 
     use gbatopy_disasm::Operand;
 
@@ -381,13 +382,21 @@ class GBA:
     // Generate func_map with NOP redirects
     code.push_str("func_map = {");
     for &func_start in &address_list {
-        // Find next non-NOP address at or after this address
-        let target = non_nop_addrs.iter().find(|&&a| a >= func_start).copied();
-        if let Some(target_addr) = target {
-            code.push_str(&format!("0x{:08X}:func_{:08X},", func_start, target_addr));
+        // Skip if this address is beyond ROM bounds (invalid branch target)
+        if func_start >= 0x08000000 + 0x00FFFFFF {
+            // Sanity check: within 16MB cartridge space
+            // Find next non-NOP address at or after this address
+            let target = non_nop_addrs.iter().find(|&&a| a >= func_start).copied();
+            if let Some(target_addr) = target {
+                code.push_str(&format!("0x{:08X}:func_{:08X},", func_start, target_addr));
+            }
+            // If no target found, skip this entry (invalid/out-of-bounds branch target)
         } else {
-            // Should not happen for valid ROMs, but keep original as fallback
-            code.push_str(&format!("0x{:08X}:func_{:08X},", func_start, func_start));
+            let target = non_nop_addrs.iter().find(|&&a| a >= func_start).copied();
+            if let Some(target_addr) = target {
+                code.push_str(&format!("0x{:08X}:func_{:08X},", func_start, target_addr));
+            }
+            // If no target found, skip (this branch target has no valid function)
         }
     }
     code.push_str("}\n\n");
@@ -434,29 +443,28 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen = pygame.Surface((240 * scale, 160 * scale))
     clock = pygame.time.Clock()
     fc = 0; running = True; mi = 1000000; ic = 0
-    vcount = 0; hcount = 0
-    vblank_irq = False; hblank_irq = False; vcount_irq = False
     print(f"PC=0x{r[15]:08X}")
-    while running and ic < mi:
+    while running and fc < 10000:
         for e in pygame.event.get():
             if e.type == pygame.QUIT: running = False
-        pc = r[15]
-        if pc not in func_map: print(f"Unknown: 0x{pc:08X}"); break
-        func_map[pc](); ic += 1
-        if r[15] == pc: print(f"Loop at 0x{pc:08X}"); break
-        # VBlank IRQ dispatch (once per frame when VBlank is enabled)
-        # VBlank occurs at the end of each frame (line 160-227)
-        if fc > 0 and fc % 1 == 0:  # Every frame
-            dispcnt = memory.read_u16(0x04000004)
-            vblank_int_enabled = (dispcnt & 0x08) != 0
-            if vblank_int_enabled:
-                ie = memory.read_u16(0x04000200)
-                if ie & 0x01:  # VBlank IRQ enabled
-                    if (memory.read_u16(0x04000202) & 0x01) == 0:  # Not yet triggered
-                        # Trigger VBlank IRQ
-                        memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
-                        r[15] = memory.read_u32(0x03007FFC)  # Jump to ISR
+        # Execute instructions for this frame (max 50000 instrs per frame)
+        for _ in range(50000):
+            pc = r[15]
+            if pc not in func_map: break
+            func_map[pc](); ic += 1
+            if r[15] == pc: break
+        # Always render frame and update APU
+        # VBlank IRQ dispatch
+        dispcnt = memory.read_u16(0x04000004)
+        vblank_int_enabled = (dispcnt & 0x08) != 0
+        if vblank_int_enabled:
+            ie = memory.read_u16(0x04000200)
+            if ie & 0x01:
+                if (memory.read_u16(0x04000202) & 0x01) == 0:
+                    memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
+                    r[15] = memory.read_u32(0x03007FFC)
         ppu_instance.render_frame()
+        apu_instance.update()
         fb = ppu_instance.framebuffer
         arr = np.array(fb, dtype=np.uint8).transpose(1, 0, 2)
         pygame.surfarray.blit_array(screen, arr)

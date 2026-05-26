@@ -70,9 +70,7 @@ class PPU:
         # Mode 4 double buffering page select
         self.display_frame_select = 0
         
-# Test ROMs don't write graphics - they are CPU instruction tests.
-# Write a simple two-color pattern (black + purple) for stripes.gba
-        self._write_test_simple_colors()
+
     def _parse_tilemaps(self):
         """Parse tilemap metadata from DISPCNT and BGxCNT"""
         # Extract BG0 mode (lower 4 bits of BG0CNT)
@@ -321,36 +319,6 @@ class PPU:
             return (r, g, b)
         except:
             return (0, 0, 0)
-
-    def _write_test_simple_colors(self):
-        """Write simple two-color pattern for stripes.gba - matches actual ROM output.
-
-        stripes.gba uses black (0,0,0) and purple (75, 20, 110) only.
-        Convert to RGB555 format:
-        - Black: RGB555 (0, 0, 0) = 0
-        - Purple (75, 20, 110) -> RGB555 (9, 2, 13) = 13 << 10 | 2 << 5 | 9 = 13269
-        
-        stripes.gba writes to:
-        - Palette: palette[0]=black, palette[1]=purple
-        - VRAM: bitmap where 1=purple stripe, 0=black background
-        """
-        # Purple RGB555 calculation
-        # Original: (75, 20, 110) -> scale by 31/255 -> (9, 2, 13)
-        purple555 = (13 << 10) | (2 << 5) | 9  # = 13269
-        
-        # Write palette: palette[0]=black, palette[1]=purple
-        self.memory.write_16(0x05000000, 0)  # Black
-        self.memory.write_16(0x05000002, purple555)  # Purple
-        
-        # Write bitmap pattern (0=black, 1=purple) to BOTH VRAM pages
-        # Stripe goes from approximately (0,0) to (11, 159)
-        for page_base in [0x06000000, 0x0600A000]:
-            for y in range(160):
-                for x in range(240):
-                    # Create diagonal stripe using equation
-                    # Black stripe where y is approximately x * (159/11)
-                    stripe = ((y * 11 - x * 159) % 240 == 0)
-                    self.memory.write_8(page_base + (y * 240 + x), 1 if stripe else 0)
 
     def _render_mode3_bitmap(self):
         """Render bitmap Mode 3 (320x160, scaled to 240x160)

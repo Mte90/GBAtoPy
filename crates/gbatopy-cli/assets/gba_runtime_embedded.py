@@ -5401,7 +5401,7 @@ __all__ = ["GameError", "GBARuntimeError", "InvalidRom", "InvalidROMError", "Inv
 """Text library - Replicazione di text.asm per test ROM
 
 Queste funzioni replicano il comportamento di text.asm per permettere
-alle test ROM (hello.gba, shades.gba, stripes.gba) di funzionare.
+alle test ROM di funzionare.
 
 Source: test_roms/gba-tests-master/lib/text.asm
 """

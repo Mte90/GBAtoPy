@@ -1,5 +1,10 @@
 use gbatopy_disasm::{operand::ShiftAmount, DecodedInstruction, Operand};
 
+/// Check if address is in VRAM range (0x06000000-0x06017FFF)
+fn is_vram_address(addr: u32) -> bool {
+    addr >= 0x06000000 && addr <= 0x06017FFF
+}
+
 /// Convert ARM shift operator to Python operator
 fn shift_to_python(
     reg: u8,
@@ -120,7 +125,10 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 }
                                 _ => format!("r[{}]", reg),
                             };
-                            return format!("r[{}] = (r[{}] + {}) & 0xFFFFFFFF", rd, rn, shift_expr);
+                            return format!(
+                                "r[{}] = (r[{}] + {}) & 0xFFFFFFFF",
+                                rd, rn, shift_expr
+                            );
                         }
                     }
                 }
@@ -173,7 +181,10 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 }
                                 _ => format!("r[{}]", reg),
                             };
-                            return format!("r[{}] = (r[{}] - {}) & 0xFFFFFFFF", rd, rn, shift_expr);
+                            return format!(
+                                "r[{}] = (r[{}] - {}) & 0xFFFFFFFF",
+                                rd, rn, shift_expr
+                            );
                         }
                     }
                 }
@@ -485,7 +496,10 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 " /* Multi-addressing */".to_string()
                             }
                         };
-                        return format!("memory.write_u32(r[{}]{}, r[{}])", rn, offset_expr, rd);
+                        return format!(
+                            "addr = r[{}]\n    if 0x06000000 <= addr <= 0x06017FFF:\n        print(f'DEBUG: VRAM write at 0x{{addr:08X}} value=0x{{r[{}] :08X}}')\n    memory.write_u32(addr, r[{}])",
+                            rn, rd, rd
+                        );
                     }
                 }
             }
@@ -501,7 +515,10 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             }
                             _ => "0".to_string(),
                         };
-                        return format!("memory.write_u32(r[{}] + {}, r[{}])", rn, op2_expr, rd);
+                        return format!(
+                            "addr = r[{}] + {}\n    if 0x06000000 <= addr <= 0x06017FFF:\n        print(f'DEBUG: VRAM write at 0x{{addr:08X}} value=0x{{r[{}] :08X}}')\n    memory.write_u32(addr, r[{}])",
+                            rn, op2_expr, rd, rd
+                        );
                     }
                 }
             }

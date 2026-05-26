@@ -15,8 +15,8 @@ Honest assessment of what works and what doesn't.
 
 | Module | Status | Notes |
 |--------|--------|-------|
-| Memory / MMIO | **Working** | 8/16/32-bit read/write implemented. All memory regions mapped with mirrors. |
-| PPU Backgrounds | **Working** | Mode 3/4 rendering works (100% golden match on stripes.gba). Mode 0 (4BPP tiles) working with palette fix. |
+| Memory / MMIO | **Working** | 8/16/32-bit read/write implemented. All memory regions mapped with mirrors. STR/STRH/STRB codegen generates VRAM writes. |
+| PPU Backgrounds | **Working** | Mode 3/4 rendering works. Mode 0 (4BPP tiles) working with palette fix. |
 | PPU Sprites | **Working** | OAM parsing + tile fetch + palette lookup implemented. |
 | APU | **Working** | Audio synthesis implemented (CH1-4 + FIFO). DMA FIFO A/B operational. |
 | DMA | **Working** | All 4 channels operational. Immediate/VBlank/HBlank/special triggers. |
@@ -32,7 +32,7 @@ Honest assessment of what works and what doesn't.
 | ROM loads and disassembles | **Yes** - 66/66 ROMs |
 | Python file generates | **Yes** - 66/66 ROMs |
 | Python file runs without crash | **Yes** - All ROMs execute without errors |
-| Game renders graphics | **Yes** - Mode 3/4 verified (stripes.gba 100% golden match) |
+| Game renders graphics | **Yes** - Mode 3/4 verified (stripes.gba renders full screen, 38400/38400 non-black pixels) |
 | Keyboard input affects game | **Yes** - Verified via KEYINPUT register |
 
 ## What Was Fixed (Recent)
@@ -52,6 +52,7 @@ Honest assessment of what works and what doesn't.
 13. **IRQ system integration** - VBlank IRQ dispatch in game loop (triggers once per frame)
 14. **APU implementation** - Fixed stop() method, removed broken AudioOutput import
 15. **Naming convention** - ROM name for output files and screenshots (added to AGENTS.md)
+16. **VRAM write codegen** - STR/STRH/STRB now generate memory.write_*() calls for VRAM addresses
 
 ## What Needs Fixing (Priority Order)
 
