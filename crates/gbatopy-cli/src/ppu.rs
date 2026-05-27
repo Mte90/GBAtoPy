@@ -78,14 +78,7 @@ class PPU:
         # Extract BG0 size (lower 4 bits of BG0CNT + 4)
         bg0_size = (self.bg0cnt2 >> 0) & 0xF
         
-        # Force Mode 4 if DISPCNT is 0 (test ROMs don't set DISPCNT)
-        # This is a workaround for test ROMs that don't enable display
-        if self.dispcnt == 0:
-            print("DISPCNT is 0, forcing Mode 4 for testing")
-            self.dispcnt = 0x8004  # Mode 4 + Display Enable
-        
-        print(f"BG0 Mode: {bg0_mode}, Size: {bg0_size}")
-        print(f"DISPCNT: 0x{self.dispcnt:08X}")
+
         
     def _get_palette_color(self, palette_idx):
         """Convert 16-bit palette index to RGB"""

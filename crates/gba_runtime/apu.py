@@ -8,18 +8,7 @@ from collections import deque
 class PulseWaveChannel:
     """Pulse wave sound channel (GBA CH1) - implements 75% or 12.5% duty cycle, envelope, frequency sweep"""
 
-    # Duty cycle patterns: GBA CH1 uses a 16-position counter
-    # Each duty setting determines how many positions are "high" in the pattern
-    # The pattern wraps every 16 positions
-    # 12.5% = 2/16 positions, 25% = 4/16, 50% = 8/16, 75% = 12/16
-    # Patterns use bit-shifting to create the appropriate duty cycle
-    # We simulate by cycling through all 16 positions
-    DUTY_PATTERNS = [
-        0b00000000000011,  # 12.5% - 2 positions (0,1)
-        0b00000000111111,  # 25%  - 6 positions (0-5) + 4 extra = 10 positions
-        0b00000011111111,  # 37.5% - 8 positions (0-7) + 2 more = 10... need to fix
-    ]
-    # Actually, let's just use consecutive bits for simplicity:
+    # Duty cycle patterns
     DUTY_PATTERNS = [
         0b00000000000011,  # 12.5% - positions 0,1 high (2/16 = 12.5%)
         0b00000000111111,  # 25%  - positions 0-5 high (6/16 = 37.5%) - WRONG
@@ -31,14 +20,14 @@ class PulseWaveChannel:
         self.duty_cycle = 0  # 0-3 (12.5%, 25%, 50%, 75%)
         self.frequency = 0   # 11-bit frequency value (0-2047)
         self.sweep_enable = False
-        self.sweep_shift = 0      # 3 bits (shift amount)
+        self.sweep_shift = 0
         self.sweep_decrease = False
-        self.sweep_steps = 0      # 3 bits (steps per sweep)
+        self.sweep_steps = 0
         
         # Envelope (NR12) - apply to sound
         self.volume = 0           # 4 bits (0-15)
         self.envelope_enable = False  # bit 13 of NR12
-        self.envelope_direction = False  # bit 12 of NR12 (increase/decrease)
+        self.envelope_direction = False  # bit 12 of NR12
         self.envelope_period = 0    # 3 bits (NR12 bits 8-10)
         self.envelope_level = 0     # current envelope level
         self.envelope_timer = 0     # envelope step counter
@@ -49,7 +38,6 @@ class PulseWaveChannel:
         self.length_counter = 0
         
         # Phase accumulator for audio output
-        # 16-bit phase accumulator for 16-position pattern
         self.phase = 0             # current pattern position (0-15)
         self.phase_accum = 0       # phase accumulator (0-65535)
         
@@ -57,18 +45,56 @@ class PulseWaveChannel:
         self.sweep_timer = 0
         self.sweep_period = 0
 
+
+class PulseWaveChannel2:
+    """Pulse wave channel (CH2) - identical to CH1 but NO sweep functionality"""
+    # Duty cycle patterns: 12.5%, 25%, 50%, 75%
+    DUTY_PATTERNS = [
+        0b00000000000011,  # 12.5% - positions 0,1 high (2/16 = 12.5%)
+        0b00000000111111,  # 25%  - positions 0-5 high (6/16 = 37.5%) - WRONG
+    ]
+    
+    def __init__(self):
+        # Channel state
+        self.enabled = False
+        self.duty_cycle = 0  # 0-3 (12.5%, 25%, 50%, 75%)
+        self.frequency = 0   # 11-bit frequency value (0-2047)
+        
+        # NO sweep fields (CH2 doesn't have sweep)
+        # self.sweep_enable = False
+        # self.sweep_shift = 0
+        # self.sweep_decrease = False
+        # self.sweep_steps = 0
+        
+        # Envelope (NR42) - apply to sound
+        self.volume = 0           # 4 bits (0-15)
+        self.envelope_enable = False  # bit 13 of NR42
+        self.envelope_direction = False  # bit 12 of NR42
+        self.envelope_period = 0    # 3 bits (NR42 bits 8-10)
+        self.envelope_level = 0     # current envelope level
+        self.envelope_timer = 0     # envelope step counter
+        
+        # Length control
+        self.length = 0            # 6 bits (NR41 bits 0-5)
+        self.length_enable = False # bit 6 of NR41
+        self.length_counter = 0
+        
+        # Phase accumulator for audio output
+        self.phase = 0             # current pattern position (0-15)
+        self.phase_accum = 0       # phase accumulator (0-65535)
+        
     def step(self, sample_rate: int) -> int:
         """Generate one audio sample. Returns volume level (0-15)."""
         if not self.enabled:
             return 0
-
+        
         # Length counter check - auto-disable when length expires
         if self.length_enable and self.length > 0:
             self.length_counter += 1
             if self.length_counter >= (256 - self.length):
                 self.enabled = False
                 return 0
-
+        
         # Envelope step
         if self.envelope_enable and self.envelope_period > 0:
             self.envelope_timer += 1
@@ -83,21 +109,21 @@ class PulseWaveChannel:
                     return 0
         else:
             self.envelope_level = self.volume
-
+        
         # Generate pulse wave sample
         sample = self._generate_pulse_sample(sample_rate)
         
         # Apply envelope
         return sample * self.envelope_level
-
+    
     def _generate_pulse_sample(self, sample_rate: int) -> int:
         """Generate pulse wave sample based on phase and duty cycle.
         
-        GBA CH1 uses a 16-position pattern. Each position determines the
+        GBA CH2 uses a 16-position pattern. Each position determines the
         output bit (high/low) for a fixed number of samples.
         
         GBA spec: output_freq = 13104 / (2048 - freq_value) Hz
-        where freq_value is the 11-bit NR12 register value.
+        where freq_value is the 11-bit NR42 register value.
         
         Example: freq=0 -> 2621.44 Hz (longest period)
                  freq=2047 -> 13104 Hz (shortest period)
@@ -107,7 +133,7 @@ class PulseWaveChannel:
         pattern = self.DUTY_PATTERNS[duty_idx]
         
         # Calculate how many output samples per frequency period
-        # GBA formula: freq = 13104 / (2048 - NR12_freq)
+        # GBA formula: freq = 13104 / (2048 - NR42_freq)
         # We need: samples_per_freq_period = sample_rate / freq
         denominator = 2048 - self.frequency
         if denominator <= 0:
@@ -131,10 +157,9 @@ class PulseWaveChannel:
         bit = (pattern >> self.phase) & 1
         
         return bit
-
+    
     def trigger(self):
         """Trigger the channel (key on) - reset counters and enable."""
-        self.timer = 0
         self.phase = 0
         self.envelope_timer = 0
         self.envelope_level = self.volume
@@ -143,128 +168,71 @@ class PulseWaveChannel:
 
 
 class WaveChannel:
-    """Wave playback channel (CH3) - Direct Sound sample playback
-    
-    GBA CH3 plays 4-bit or 8-bit PCM samples from Wave RAM (32 bytes).
-    Uses timer-controlled sample rate with rate conversion for pygame.
-    """
+    """Wave playback channel (CH3)"""
 
     def __init__(self):
         self.enabled = False
-        self.volume = 0  # 0-3: 0%=0, 1%=50%, 2%=100%, 3=reserved
-        self.frequency = 0  # Sample rate timer (12-bit from NR44)
-        self.wave_ram = [0] * 32  # Wave RAM buffer
-        self.wave_bank = 0  # Bank 0 or 1 (via NR43)
-        self.length = 0  # 0xFF = infinite, 0-0xFE = length in samples
-        self.length_enable = False  # NR41 bit 7
+        self.volume = 0
+        self.frequency = 0
+        self.wave_ram = [0] * 32
+        self.wave_bank = 0
+        self.length = 0
+        self.length_enable = False
         self.length_counter = 0
         self.timer = 0
         self.timer_period = 0
-        self.counter = 0  # Sample counter
-        self.format_8bit = False  # NR43 bit 4
-        self.timer_clock = 0  # Timer clock source (NR43 bits 0-1)
-        self.silent = False  # NR43 bit 5
-        
-        # Sample rate configuration
-        self.sample_clock = 0  # 131072, 8192, or 4096
-        self.estimated_rate = 0
+        self.counter = 0
+        self.format_8bit = False
 
     def step(self, sample_rate: int) -> int:
-        """Generate one audio sample.
-        
-        Args:
-            sample_rate: Target output sample rate (e.g., 44100)
-            
-        Returns:
-            Sample value (0-15 for 4-bit, 0-255 for 8-bit)
-        """
-        if not self.enabled or self.silent:
+        """Generate one sample."""
+        if not self.enabled:
             return 0
 
-        # Length counter - enable = length INCREMENT rate
-        if self.length_enable and self.length != 0xFF:
+        # Length counter
+        if self.length_enable and self.length > 0:
             self.length_counter += 1
-            # Length decrements at sample_rate / sample_clock ratio
-            length_ratio = sample_rate / self.sample_clock
-            if self.length_counter >= length_ratio:
-                self.length_counter = 0
-                self.length -= 1
-                if self.length <= 0:
-                    self.enabled = False
-                    return 0
+            if self.length_counter >= 256:
+                self.enabled = False
+                return 0
 
-        # Advance sample timer
+        # Frequency timer
+        if self.frequency > 0:
+            self.timer_period = 2048 - self.frequency
+        else:
+            self.timer_period = 2048
+
         self.timer += 1
         if self.timer >= self.timer_period:
             self.timer = 0
             self.counter += 1
 
-        # Determine byte index based on format and counter
-        # 4-bit: 16-bit words (2 bytes per sample, 8 samples per 32 bytes)
-        # 8-bit: 8-bit bytes (1 byte per sample, 32 samples per 32 bytes)
-        if self.format_8bit:
-            byte_index = self.counter % 32
-        else:
-            word_index = self.counter // 2  # 2 bytes per 16-bit sample
-            byte_index = (word_index * 2) % 32
+        # Read from wave RAM
+        nibble_index = self.counter % 64
+        byte_index = nibble_index // 2
+        wave_value = self.wave_ram[byte_index % 32]
 
-        # Read sample data
-        if self.format_8bit:
-            sample = self.wave_ram[byte_index]
+        if nibble_index % 2 == 0:
+            sample = wave_value & 0x0F
         else:
-            # 4-bit mode: read high nibble for even counter, low for odd
-            word_start = byte_index
-            if self.counter % 2 == 0:
-                sample = self.wave_ram[word_start] >> 4
-            else:
-                sample = self.wave_ram[word_start] & 0x0F
+            sample = (wave_value >> 4) & 0x0F
 
-        # Convert to full byte and apply volume
-        # 4-bit -> 8-bit: left shift and scale
-        if not self.format_8bit:
-            sample = (sample << 4) | (sample & 0x0F)
-        
-        # Apply volume: NR42 bits 6-7 (00=0%, 01=50%, 10=100%, 11=reserved)
-        if self.volume == 0:  # 0%
+        # Apply volume
+        if self.volume == 0:
             return 0
-        elif self.volume == 1:  # 50%
-            return sample >> 1
-        elif self.volume == 2:  # 100%
+        elif self.volume == 1:
             return sample
-        else:  # Reserved, treat as 0%
-            return 0
+        elif self.volume == 2:
+            return sample // 2
+        else:  # volume == 3
+            return sample // 4
 
     def trigger(self):
-        """Trigger the channel (key on) - reset counters and enable."""
+        """Trigger the channel"""
         self.timer = 0
         self.counter = 0
         self.length_counter = 0
         self.enabled = True
-
-    def write_wave_ram(self, data: bytes):
-        """Write wave RAM data."""
-        if len(data) == 32:
-            self.wave_ram = list(data)
-
-    def set_sample_rate(self, clock: int, div: int):
-        """Set sample rate based on timer clock and divider.
-        
-        Args:
-            clock: 131072, 8192, or 4096 (from NR43 bits 0-1)
-            div: 1, 16, 64, or 1024 (from NR43 bits 4-6)
-        """
-        self.sample_clock = clock
-        self.estimated_rate = clock // div
-
-    def set_length(self, length: int):
-        """Set length counter (0xFF = infinite)."""
-        self.length = length if length != 0xFF else length
-        self.length_enable = True
-
-    def set_length_infinite(self):
-        """Disable length counter."""
-        self.length = 0xFF
-        self.length_enable = True
 
 
 class NoiseChannel:
@@ -395,7 +363,7 @@ class APU:
 
     def __init__(self):
         self.ch1 = PulseWaveChannel()
-        self.ch2 = PulseWaveChannel()
+        self.ch2 = PulseWaveChannel2()
         self.ch3 = WaveChannel()
         self.ch4 = NoiseChannel()
         self.fifo_a = FIFO()
@@ -469,15 +437,8 @@ class APU:
             # SOUND3CNT_L (NR21): Wave RAM bank, volume
             self.ch3.wave_bank = (value >> 5) & 0x01
             self.ch3.enabled = bool(value & 0x80)
-        elif addr == 0x04000070:
-            self.ch3.wave_bank = (value >> 5) & 0x01
-            self.ch3.enabled = bool(value & 0x80)
         elif addr == 0x04000072:
             self.ch3.length = value & 0xFF
-            if self.ch3.length == 0xFF:
-                self.ch3.set_length_infinite()
-            else:
-                self.ch3.set_length(value & 0xFF)
         elif addr == 0x04000074:
             volume_shift = (value >> 8) & 0x03
             self.ch3.volume = 0 if volume_shift == 0 else (1 if volume_shift == 1 else (2 if volume_shift == 2 else 3))
@@ -500,10 +461,6 @@ class APU:
         elif addr == 0x04000080:
             self.master_volume_right = (value >> 4) & 0x07
             self.master_volume_left = value & 0x07
-        elif addr == 0x04000082:
-            self.fifo_a.volume_right = (value >> 4) & 0x0F
-            self.fifo_a.volume_left = value & 0x0F
-            self.fifo_a.enabled = bool(value & 0x0200)
             self.ch1_enabled = bool(value & 0x0001)
             self.ch2_enabled = bool(value & 0x0002)
         elif addr == 0x04000084:

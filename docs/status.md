@@ -44,7 +44,7 @@ Honest assessment of what works and what doesn't.
 5. **DISPCNT defaults** - Test ROMs render with sensible defaults (mode 3, all BGs enabled)
 6. **Italian comments** - All runtime comments translated to English
 7. **ORR/BIC/EOR/AND 2-operand** - Fixed immediate handling in codegen
-8. **Golden screenshot pipeline** - stripes.gba achieves 100% match on all frames
+8. **Golden screenshot pipeline** - stripes.gba renders full screen; golden comparison pipeline in place (match rate still being verified)
 9. **Code size optimization** - Basic block merging + register array = 52-80% reduction (arm.gba: 27K→8K, stripes.gba: 27K→5K)
 10. **PC advance elision** - Skip r[15] = next_addr when next instruction doesn't read r[15]
 11. **Palette 5→8 bit conversion** - Fixed formula: (c << 3) | (c >> 2) instead of c * 8

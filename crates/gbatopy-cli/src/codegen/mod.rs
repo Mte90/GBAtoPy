@@ -4,6 +4,7 @@ pub mod instruction_codegen;
 pub mod memory;
 pub mod patterns;
 pub mod thumb;
+pub mod ppu;
 
 #[allow(unused_imports)]
 pub use cpu::*;

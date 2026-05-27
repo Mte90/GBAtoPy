@@ -1,4 +1,5 @@
 use crate::codegen::generate_instruction_python;
+use crate::codegen::ppu::mode1::generate_mode1_rendering;
 #[allow(unused_imports)]
 use crate::ppu::generate_ppu_code;
 use gbatopy_disasm::{
@@ -95,6 +96,9 @@ pub fn run_pipeline(
     code.push_str("memory = Memory()\n");
     code.push_str("ppu_instance = PPU(memory)\n");
     code.push_str("apu_instance = APU()\n\n");
+
+    code.push_str(&generate_mode1_rendering());
+    code.push_str("\n");
 
     use gbatopy_disasm::Operand;
 
@@ -463,7 +467,6 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 if (memory.read_u16(0x04000202) & 0x01) == 0:
                     memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
                     r[15] = memory.read_u32(0x03007FFC)
-        ppu_instance.render_frame()
         apu_instance.update()
         fb = ppu_instance.framebuffer
         arr = np.array(fb, dtype=np.uint8).transpose(1, 0, 2)
