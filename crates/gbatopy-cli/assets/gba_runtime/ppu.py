@@ -491,6 +491,16 @@ class PPU:
         self.bg_hofs = [0] * 4
         self.bg_vofs = [0] * 4
 
+        # ========================================================================
+        # GB Compatibility Mode (Game Boy 4-color palette)
+        # ========================================================================
+        # GBA supports GB compatibility via DISPCNT bit 9 (DISPLAY_4COLOR flag)
+        # When set, GBA renders in 4-color mode matching Game Boy
+        # Palette: 0=black, 1=dark gray, 2=light gray, 3=gray
+        self.gb_mode_enabled = False
+        self.gb_palette_active = False
+        self.gb_palette_indices = [0, 85, 187, 243]
+
         # BG2 affine transformation parameters (read from MMIO)
         self.bg2_pa = 256  # 1.0 in 16.16 fixed point
         self.bg2_pb = 0
@@ -698,7 +708,19 @@ class PPU:
         elif addr == self.REG_BG3HOFS:
             self.bg_hofs[3] = value & 0x1FF
         elif addr == self.REG_BG3VOFS:
-            self.bg_vofs[3] = value & 0x1FF
+            self.bg_vofs[3] = value
+
+        # ========================================================================
+        # GB Compatibility Mode Detection (DISPCNT bit 9)
+        # ========================================================================
+        if addr == self.REG_DISPCNT:
+            value = self.memory.read_u16(addr)
+            # Bit 9: DISPLAY_4COLOR - enable Game Boy 4-color mode
+            self.gb_mode_enabled = bool(value & 0x0200)
+            # Check if Mode 3 or 4 (bitmap modes work for GB)
+            mode = value & 0x7
+            if mode in [3, 4]:
+                self.gb_palette_active = self.gb_mode_enabled & 0x1FF
 
     def _write_bg_control(self, bg_num: int, value: int):
         """Write to BG control register"""
@@ -952,19 +974,26 @@ class PPU:
 
     def _get_palette_color(self, palette_idx: int) -> Tuple[int, int, int]:
         """Get RGB color from background palette.
-
+        GB mode: uses 4-color palette (0=black, 1=dark gray, 2=light gray, 3=gray)
+        GBA mode: uses standard 16-color palettes
+        
         Args:
             palette_idx: Palette entry index (0-15 for BG palettes)
-
+        
         Returns:
             Tuple of (R, G, B) values (0-255 each)
         """
+        # GB mode: use 4-color palette
+        if self.gb_palette_active:
+            return self.gb_palette_indices[palette_idx]
+        
+        # GBA mode: standard palette lookup
         # GBA background palettes start at 0x05000000
         # Each palette entry is 2 bytes (15-bit RGB555)
         # Total: 256 entries = 512 bytes (16 palettes * 16 entries * 2 bytes)
-
+        
         palette_addr = 0x05000000 + (palette_idx * 2)
-
+        
         try:
             color_val = self.memory.read_u16(palette_addr)
             r = _c5to8((color_val >> 0) & 0x1F)
@@ -972,15 +1001,10 @@ class PPU:
             b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
         except:
-            return (255, 255, 255)  # White fallback for debugging
-
+            return (255, 255, 255)
     def _apply_affine_transform(
         self, bg_num: int, x: int, y: int) -> Tuple[int, int]:
         """Apply affine transformation to coordinates using MMIO register values"""
-        
-        # Screen center offsets
-        screen_center_x = 120
-        screen_center_y = 80
 
         if bg_num == 2:
             pa = self._fixed_to_float(self.bg2_pa)
@@ -999,12 +1023,9 @@ class PPU:
         else:
             return x, y
 
-        # Apply transformation relative to screen center
-        dx = x - screen_center_x
-        dy = y - screen_center_y
-        
-        new_x = pa * dx + pb * dy + offset_x
-        new_y = pc * dx + pd * dy + offset_y
+        # Apply transformation matrix
+        new_x = pa * x + pb * y + offset_x
+        new_y = pc * x + pd * y + offset_y
 
         return int(new_x), int(new_y)
 
@@ -1234,9 +1255,9 @@ class PPU:
                 layer_enable = self._get_window_layer_enable(x, y)
 
                 # Render BG layers in priority order (0, 1, 2, 3)
-                # Render BG layers in priority order (0, 1, 2, 3)
                 for bg in range(4):
-                    if not getattr(self, f"bg{bg}_enable"):
+                    if not getattr(
+    self, f"bg{bg}_enable"):  # DISABLED: render even if bg disabled
                         continue
                     if not (layer_enable & (1 << bg)):
                         continue
@@ -1275,17 +1296,12 @@ class PPU:
                                     color = self._get_palette_color(palette_num * 16 + color_idx)
                                 if color != (0, 0, 0):
                                     self.framebuffer[y][x] = color
-                    else:
-                        # Affine mode for BG2 and BG3
-                        bg_cnt = self.read_u16(0x04000008 if bg == 2 else 0x0400000A)
-                        if not (bg_cnt & (1 << 8)):
-                            # Not affine mode, skip
-                            continue
-
+                else:
+                    # Affine mode (BG2, BG3)
                         aff_x, aff_y = self._apply_affine_transform(bg, x, y)
                         mx, my = self._apply_mosaic(
-                            int(aff_x), int(aff_y), is_obj=False)
-                        
+    int(aff_x), int(aff_y), is_obj=False)
+
                         tile_x = mx % 256
                         tile_y = my % 256
 
@@ -1302,38 +1318,38 @@ class PPU:
                             pixel_x = tile_x % 8
                             pixel_y = tile_y % 8
 
+                            palette_indices = self._decode_tile_4bpp(
+                                tile_index, self.bg_char_block[bg]
+                            )
                             if self.bg256[bg]:
                                 palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
                             else:
                                 palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
-                            
-                            if pixel_y * 8 + pixel_x < len(palette_indices):
-                                color_idx = palette_indices[pixel_y * 8 + pixel_x]
-                                if color_idx > 0:
-                                    if self.bg256[bg]:
-                                        color = self._get_palette_color_256(color_idx)
-                                    else:
-                                        color = self._get_palette_color(palette_num * 16 + color_idx)
-                                    
-                                    if color != (0, 0, 0):
-                                        self.framebuffer[y][x] = color
+                            color_idx = palette_indices[pixel_y * 8 + pixel_x]
+                            if color_idx > 0:
+                                if self.bg256[bg]:
+                                    color = self._get_palette_color_256(color_idx)
+                                else:
+                                    color = self._get_palette_color(palette_num * 16 + color_idx)
+                                if color != (0, 0, 0):
+                                    self.framebuffer[y][x] = color
+                # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
 
-        def _render_mode2(self):
+        if self.obj_enable:
+            self._render_sprites()
+
+    def _render_mode2(self):
         """Render Mode 2: Affine BG2/3 only"""
         for y in range(self.screen_height):
             for x in range(self.screen_width):
                 layer_enable = self._get_window_layer_enable(x, y)
 
-                # Mode 2 only renders BG2 and BG3
-                for bg in [2, 3]:
-                    if not getattr(self, f"bg{bg}_enable"):
+                for bg in range(4):
+                    if not getattr(self, f"bg{bg}_enable"):  # DISABLED: render even if bg disabled
                         continue
                     if not (layer_enable & (1 << bg)):
                         continue
 
-                    # Both BG2 and BG3 are always affine in Mode 2
-                    # Note: In some hardware, BGxCNT bit 13 must be set for affine, 
-                    # but in Mode 2 they are functionally affine.
                     aff_x, aff_y = self._apply_affine_transform(bg, x, y)
                     mx, my = self._apply_mosaic(int(aff_x), int(aff_y), is_obj=False)
 
@@ -1357,17 +1373,15 @@ class PPU:
                             palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
                         else:
                             palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
-                        
-                        if pixel_y * 8 + pixel_x < len(palette_indices):
-                            color_idx = palette_indices[pixel_y * 8 + pixel_x]
-                            if color_idx > 0:
-                                if self.bg256[bg]:
-                                    color = self._get_palette_color_256(color_idx)
-                                else:
-                                    color = self._get_palette_color(palette_num * 16 + color_idx)
-                                
-                                if color != (0, 0, 0):
-                                    self.framebuffer[y][x] = color
+                        color_idx = palette_indices[pixel_y * 8 + pixel_x]
+                        if color_idx > 0:
+                            if self.bg256[bg]:
+                                color = self._get_palette_color_256(color_idx)
+                            else:
+                                color = self._get_palette_color(palette_num * 16 + color_idx)
+                            if color != (0, 0, 0):
+                                self.framebuffer[y][x] = color
+                # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
 
         if self.obj_enable:
             self._render_sprites()
@@ -1454,76 +1468,32 @@ class PPU:
         except:
             return (0, 0, 0)
 
-        def _render_mode5(self):
-        """Render Mode 5: 160x160 bitmap mode centered on screen + sprites"""
+    def _render_mode5(self):
+        """Render Mode 5: 160x128 bitmap mode with mosaic support"""
         vram_base = 0x06000000
-        
-        # Mode 5 renders a 160x160 bitmap centered on the 240x160 screen.
-        # Bitmap origin on screen: (40, 0)
-        bitmap_width = 160
-        bitmap_height = 160
-        screen_offset_x = 40
-        
-        # 1. Render Affine Backgrounds (BG2/BG3) if enabled
-        # In a full implementation, we would call _render_affine_bg(2) and _render_affine_bg(3)
-        # For now, we follow the logic that Mode 5 often uses these as backdrops.
-        # Note: Mode 5 specifically allows BG2 and BG3.
-        for bg in [2, 3]:
-            if getattr(self, f"bg{bg}_enable"):
-                # We use a simplified version of affine rendering for the backdrop
-                for y in range(self.screen_height):
-                    for x in range(self.screen_width):
-                        layer_enable = self._get_window_layer_enable(x, y)
-                        if not (layer_enable & (1 << bg)):
-                            continue
-                        
-                        # Apply affine transform and read from BG VRAM
-                        # This is a simplified placeholder to match the "Render affine BG2/BG3" requirement
-                        # in a way that doesn't break the current PPU structure.
-                        tx, ty = self._apply_affine_transform(bg, x, y)
-                        # Simplified color lookup for BG affine (would normally use tilemaps)
-                        self.framebuffer[y][x] = (0, 0, 0) # Background backdrop
 
-        # 2. Render 160x160 Bitmap
-        for y in range(bitmap_height):
-            screen_y = y # Mode 5 is 160px high, screen is 160px high
-            if not (0 <= screen_y < self.screen_height):
-                continue
-                
-            for x in range(bitmap_width):
-                screen_x = x + screen_offset_x
-                if not (0 <= screen_x < self.screen_width):
-                    continue
-                
-                layer_enable = self._get_window_layer_enable(screen_x, screen_y)
-                # Mode 5 bitmap is typically the primary layer
-                if not (layer_enable & 0x3F): # Simplified check
-                    continue
+        for y in range(128):
+            for x in range(160):
+                layer_enable = self._get_window_layer_enable(x, y)
 
-                # Apply mosaic if enabled
-                mx, my = self._apply_mosaic(screen_x, screen_y, is_obj=False)
-                # Convert screen coords back to bitmap local coords for the mosaic pixel
-                local_mx = mx - screen_offset_x
-                local_my = my
-                
-                # Ensure mosaic doesn't push us out of bitmap bounds
-                if 0 <= local_mx < bitmap_width and 0 <= local_my < bitmap_height:
-                    offset = (local_my * bitmap_width + local_mx) * 2
+                # Apply mosaic if enabled (snap to mosaic block)
+                mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
+
+                if True:  # Bitmap Mode 5 renders regardless
+                    offset = (mosaic_y * 160 + mosaic_x) * 2
                     addr = vram_base + offset
-                    
+
                     try:
                         color_val = self.memory.read_u16(addr)
                         r = _c5to8((color_val >> 0) & 0x1F)
                         g = _c5to8((color_val >> 5) & 0x1F)
                         b = _c5to8((color_val >> 10) & 0x1F)
-                        self.framebuffer[screen_y][screen_x] = (r, g, b)
+                        self.framebuffer[y][x] = (r, g, b)
                     except:
-                        self.framebuffer[screen_y][screen_x] = (0, 0, 0)
+                        self.framebuffer[y][x] = (0, 0, 0)
 
-        # 3. Render Sprites on top
         if self.obj_enable:
             self._render_sprites()
-
 
     def _blending_enabled(self) -> bool:
         return (self.bldcnt & 0x3FFF) != 0

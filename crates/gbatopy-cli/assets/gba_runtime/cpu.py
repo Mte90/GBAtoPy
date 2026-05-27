@@ -526,6 +526,39 @@ class CPU:
             },
         }
 
+    def dump_state(self) -> dict:
+        return {
+            "registers": list(self.registers),
+            "flag_n": self.flag_n,
+            "flag_z": self.flag_z,
+            "flag_c": self.flag_c,
+            "flag_v": self.flag_v,
+            "thumb_mode": self.thumb_mode,
+            "cycle_count": self.cycle_count,
+            "instruction_cycles": self.instruction_cycles,
+        }
+
+    def load_state(self, state: dict) -> None:
+        regs = state.get("registers", [0] * 16)
+        for i in range(16):
+            if i < len(regs):
+                self.registers[i] = regs[i]
+
+        if "flag_n" in state:
+            self.flag_n = bool(state["flag_n"])
+        if "flag_z" in state:
+            self.flag_z = bool(state["flag_z"])
+        if "flag_c" in state:
+            self.flag_c = bool(state["flag_c"])
+        if "flag_v" in state:
+            self.flag_v = bool(state["flag_v"])
+        if "thumb_mode" in state:
+            self.thumb_mode = bool(state["thumb_mode"])
+        if "cycle_count" in state:
+            self.cycle_count = int(state["cycle_count"])
+        if "instruction_cycles" in state:
+            self.instruction_cycles = int(state["instruction_cycles"])
+
     def save_register_dump(self, dump: dict, filename: str = None) -> str:
         """
         Save register dump to JSON file.

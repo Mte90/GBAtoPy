@@ -16,6 +16,7 @@ DMA3_TRIGGER_VBLANK = 0x01000000
 DMA3_TRIGGER_HBLANK = 0x02000000
 DMA3_TRIGGER_FIFO_A = 0x03000000
 DMA3_TRIGGER_FIFO_B = 0x04000000
+DMA3_TRIGGER_FIFO_C = 0x05000000  # FIFO C mode for DMA3 only
 
 DMA_SRC_INCREMENT = 0x00000000
 DMA_SRC_DECREMENT = 0x00100000
@@ -111,6 +112,11 @@ class DMAChannel:
             return False
         return self.get_dma3_trigger_bits() == DMA3_TRIGGER_FIFO_B
 
+    def is_fifo_c_trigger(self) -> bool:
+        if self.channel_id != 3:
+            return False
+        return self.get_dma3_trigger_bits() == DMA3_TRIGGER_FIFO_C
+
     def get_src_increment(self) -> int:
         """Get source increment mode (bits 21-20)"""
         return (self.control >> 20) & 0x3
@@ -162,6 +168,16 @@ class DMA:
     FIFO_A_ADDR = 0x040000A0
     FIFO_B_ADDR = 0x040000A4
     
+    # DMA3 FIFO A and B buffers (32-bit each for audio streaming)
+    # FIFO A for CH3 (Wave channel), FIFO B for CH4 (Noise channel)
+    _fifo_a_data: bytearray = bytearray(4)  # 32-bit = 4 bytes
+    _fifo_b_data: bytearray = bytearray(4)
+    _fifo_a_valid: int = 0  # Valid bit for FIFO A (triggers when cleared)
+    _fifo_b_valid: int = 0  # Valid bit for FIFO B (triggers when cleared)
+    
+    # FIFO C buffer (32 bytes, 4 x 8-byte entries for DMA3)
+    # Used for serial transfer mode (FIFO C) - stores 32-byte blocks
+    
     def __init__(self):
         self.mem = None  # Set by attach_memory
         self._interrupts = None
@@ -183,6 +199,119 @@ class DMA:
     def attach_apu(self, apu):
         """Attach APU for FIFO trigger support"""
         self._apu = apu
+    
+    # DMA3 FIFO A and B management
+    
+    def _fifo_a_refill(self, channel: DMAChannel):
+        """Refill FIFO A buffer from source memory when FIFO empty"""
+        if channel.channel_id != 3:
+            return
+        if self._apu is None:
+            return
+        
+        if self._fifo_a_valid:
+            # FIFO A already has data, don't refill
+            return
+        
+        ch = self.channels[3]
+        if not ch.enabled or ch.busy:
+            return
+        
+        # Refill FIFO A from source address with 32-bit data
+        # GBA DMA3 FIFO A reads 32-bit values from source memory
+        src_addr = ch.src_addr
+        
+        try:
+            # Read 32-bit value from source
+            value = self.mem.read_u32(src_addr)
+            # Store as little-endian bytes in FIFO buffer
+            self._fifo_a_data[0] = value & 0xFF
+            self._fifo_a_data[1] = (value >> 8) & 0xFF
+            self._fifo_a_data[2] = (value >> 16) & 0xFF
+            self._fifo_a_data[3] = (value >> 24) & 0xFF
+            self._fifo_a_valid = 0  # Clear valid bit to signal data ready
+        except Exception:
+            pass
+    
+    def _fifo_b_refill(self, channel: DMAChannel):
+        """Refill FIFO B buffer from source memory when FIFO empty"""
+        if channel.channel_id != 3:
+            return
+        if self._apu is None:
+            return
+        
+        if self._fifo_b_valid:
+            # FIFO B already has data, don't refill
+            return
+        
+        ch = self.channels[3]
+        if not ch.enabled or ch.busy:
+            return
+        
+        # Refill FIFO B from source address with 32-bit data
+        src_addr = ch.src_addr
+        
+        try:
+            # Read 32-bit value from source
+            value = self.mem.read_u32(src_addr)
+            # Store as little-endian bytes in FIFO buffer
+            self._fifo_b_data[0] = value & 0xFF
+            self._fifo_b_data[1] = (value >> 8) & 0xFF
+            self._fifo_b_data[2] = (value >> 16) & 0xFF
+            self._fifo_b_data[3] = (value >> 24) & 0xFF
+            self._fifo_b_valid = 0  # Clear valid bit to signal data ready
+        except Exception:
+            pass
+    
+    # FIFO empty trigger detection
+    
+    def fifo_a_empty(self) -> bool:
+        """Check if FIFO A is empty (valid bit set = empty)"""
+        return bool(self._fifo_a_valid)
+    
+    def fifo_b_empty(self) -> bool:
+        """Check if FIFO B is empty (valid bit set = empty)"""
+        return bool(self._fifo_b_valid)
+    
+    def _fifo_a_write(self, value: int):
+        """Write a 32-bit value to FIFO A"""
+        if self._fifo_a_valid:
+            return  # FIFO already has valid data
+        try:
+            self._fifo_a_data[0] = value & 0xFF
+            self._fifo_a_data[1] = (value >> 8) & 0xFF
+            self._fifo_a_data[2] = (value >> 16) & 0xFF
+            self._fifo_a_data[3] = (value >> 24) & 0xFF
+            self._fifo_a_valid = 0
+        except Exception:
+            pass
+    
+    def _fifo_b_write(self, value: int):
+        """Write a 32-bit value to FIFO B"""
+        if self._fifo_b_valid:
+            return  # FIFO already has valid data
+        try:
+            self._fifo_b_data[0] = value & 0xFF
+            self._fifo_b_data[1] = (value >> 8) & 0xFF
+            self._fifo_b_data[2] = (value >> 16) & 0xFF
+            self._fifo_b_data[3] = (value >> 24) & 0xFF
+            self._fifo_b_valid = 0
+        except Exception:
+            pass
+    
+    def _fifo_a_read(self) -> int:
+        """Read 32-bit value from FIFO A, set valid bit if empty"""
+        if not self._fifo_a_valid:
+            self._fifo_a_valid = 1  # Mark as empty to trigger refill
+            return 0xFFFFFFFF
+        return 0
+    
+    def _fifo_b_read(self) -> int:
+        """Read 32-bit value from FIFO B, set valid bit if empty"""
+        if not self._fifo_b_valid:
+            self._fifo_b_valid = 1  # Mark as empty to trigger refill
+            return 0xFFFFFFFF
+        return 0
 
     def fifo_a_is_empty(self) -> bool:
         """Check if FIFO A is empty (trigger condition)"""
@@ -247,17 +376,16 @@ class DMA:
         """Execute DMA transfer for a channel"""
         if ch.busy:
             return
-
+        
         ch.busy = True
-
+        
         src_inc = ch.get_src_increment()
         dst_inc = ch.get_dst_increment()
         count = ch.get_count_value()
         transfer_size = ch.get_transfer_size()
-
+        
         src = ch.src_addr
         dst = ch.dst_addr
-
         # Perform the actual memory transfer
         for _ in range(count):
             if transfer_size == 4:
@@ -306,16 +434,27 @@ class DMA:
         """Process DMA step (called every frame for immediate DMA)"""
         for ch in self.channels:
             ch.read_from_memory()
-
+            
             if not ch.enabled or ch.busy:
                 continue
-
+            
             # Handle immediate DMA (should have already fired, but check pending)
             if ch.is_immediate():
                 if ch.pending:
                     ch.pending = False
                     self._do_transfer(ch)
-
+            
+            # DMA3 FIFO handling for audio streaming
+            if ch.channel_id == 3 and self._apu is not None:
+                # Check FIFO A empty trigger
+                if ch.is_fifo_a_trigger() and ch.pending:
+                    if self._fifo_a_empty():
+                        self._fifo_a_refill(ch)
+                
+                # Check FIFO B empty trigger
+                if ch.is_fifo_b_trigger() and ch.pending:
+                    if self._fifo_b_empty():
+                        self._fifo_b_refill(ch)
     def vblank_fire(self):
         """Process VBlank-triggered DMA transfers"""
         for ch in self.channels:
@@ -410,7 +549,6 @@ class DMA:
                 fifo_addr += 1
         
         ch.busy = False
-    
     def fifo_a_step(self):
         """Step FIFO A - processes audio samples from DMA"""
         if not self._apu:
@@ -425,26 +563,184 @@ class DMA:
         """Process FIFO A empty trigger for DMA3"""
         for ch in self.channels:
             ch.read_from_memory()
-
+            
             if not ch.enabled or ch.busy:
                 continue
-
+            
             if ch.is_fifo_a_trigger() and ch.pending:
+                # Refill FIFO A if empty before transfer
+                if self._fifo_a_empty():
+                    self._fifo_a_refill(ch)
                 self._do_transfer(ch)
                 ch.pending = False
-
+    
     def fifo_b_empty_fire(self):
         """Process FIFO B empty trigger for DMA3"""
         for ch in self.channels:
             ch.read_from_memory()
-
+            
             if not ch.enabled or ch.busy:
                 continue
-
+            
             if ch.is_fifo_b_trigger() and ch.pending:
+                # Refill FIFO B if empty before transfer
+                if self._fifo_b_empty():
+                    self._fifo_b_refill(ch)
                 self._do_transfer(ch)
                 ch.pending = False
-
+    
+    def fifo_c_empty_fire(self):
+        """Process FIFO C empty trigger for DMA3 (serial transfer mode)
+        
+        FIFO C is unique to DMA3 and used for serial data transfer.
+        Trigger fires when the serial shift register becomes empty.
+        Transfers 8 bytes at a time (4 bytes x 2 for 16-bit serial data).
+        """
+        for ch in self.channels:
+            ch.read_from_memory()
+            
+            if not ch.enabled or ch.busy:
+                continue
+            
+            if ch.is_fifo_c_trigger() and ch.pending:
+                self._fifo_c_transfer(ch)
+                ch.pending = False
+    def _fifo_c_transfer(self, ch: DMAChannel):
+        """Execute FIFO C transfer for DMA3 serial mode (FIFO A/B -> APU)
+        
+        FIFO C behavior:
+        - 32-byte buffer (4 x 8-byte entries)
+        - Transfer trigger: serial shift register empty
+        - 8 bytes transferred at a time (16-bit x 4)
+        - Source is typically fixed ROM address
+        - Destination address increments/decrements
+        - Supports repeat mode for continuous streaming
+        
+        Serial mode uses 16-bit transfers where each 16-bit value
+        is split into 2 bytes for serial data stream.
+        
+        For audio: FIFO A feeds CH3 (Wave channel), FIFO B feeds CH4 (Noise channel)
+        """
+        if ch.channel_id != 3:
+            return
+        
+        src_inc = ch.get_src_increment()
+        dst_inc = ch.get_dst_increment()
+        repeat = ch.is_repeat()
+        transfer_16bit = not ch.is_32bit()
+        
+        # Determine which FIFO to use based on trigger type
+        if ch.is_fifo_a_trigger():
+            fifo = self._apu.fifo_a if self._apu else None
+            fifo_refill = self._fifo_a_refill
+        else:  # FIFO B trigger
+            fifo = self._apu.fifo_b if self._apu else None
+            fifo_refill = self._fifo_b_refill
+        
+        if fifo is None:
+            return
+        
+        # Refill FIFO if empty before transfer
+        if fifo_refill(ch):
+            return
+        
+        # Get number of 32-bit transfers from count (or default to 1)
+        total_transfers = ch.get_count_value()
+        if total_transfers == 0:
+            total_transfers = 1
+        
+        for i in range(total_transfers):
+            if not ch.enabled or ch.busy:
+                break
+            
+            # Read 32-bit value from FIFO and write to APU channel
+            fifo_value = 0xFFFFFFFF
+            if not self._fifo_a_empty():  # FIFO A has data
+                # Extract 32-bit value from FIFO A buffer
+                fifo_value = (
+                    self._fifo_a_data[0] | (
+                        self._fifo_a_data[1] << 8 | (
+                            self._fifo_a_data[2] << 16 | (
+                                self._fifo_a_data[3] << 24
+                            )
+                        )
+                    )
+                )
+                # Clear FIFO A to trigger refill
+                self._fifo_a_valid = 1
+            
+            if fifo_value != 0xFFFFFFFF:
+                # Convert 32-bit to 16-bit for APU (high 16 bits)
+                sample = (fifo_value >> 16) & 0xFFFF
+                if fifo:
+                    fifo.write(sample & 0xFF)
+            
+            ch.dst_addr += 4
+        
+        # Handle repeat mode
+        if repeat:
+            ch.count = ch.get_count_value()
+            ch.write_to_memory()
+    
+    def _fifo_a_refill(self, channel: DMAChannel):
+        """Refill FIFO A buffer from source memory when FIFO empty"""
+        if channel.channel_id != 3:
+            return
+        if self._apu is None:
+            return
+        
+        if self._fifo_a_valid:
+            # FIFO A already has data, don't refill
+            return
+        
+        ch = self.channels[3]
+        if not ch.enabled or ch.busy:
+            return
+        
+        # Refill FIFO A from source address with 32-bit data
+        src_addr = ch.src_addr
+        
+        try:
+            # Read 32-bit value from source
+            value = self.mem.read_u32(src_addr)
+            # Store as little-endian bytes in FIFO buffer
+            self._fifo_a_data[0] = value & 0xFF
+            self._fifo_a_data[1] = (value >> 8) & 0xFF
+            self._fifo_a_data[2] = (value >> 16) & 0xFF
+            self._fifo_a_data[3] = (value >> 24) & 0xFF
+            self._fifo_a_valid = 0  # Clear valid bit to signal data ready
+        except Exception:
+            pass
+    
+    def _fifo_b_refill(self, channel: DMAChannel):
+        """Refill FIFO B buffer from source memory when FIFO empty"""
+        if channel.channel_id != 3:
+            return
+        if self._apu is None:
+            return
+        
+        if self._fifo_b_valid:
+            # FIFO B already has data, don't refill
+            return
+        
+        ch = self.channels[3]
+        if not ch.enabled or ch.busy:
+            return
+        
+        # Refill FIFO B from source address with 32-bit data
+        src_addr = ch.src_addr
+        
+        try:
+            # Read 32-bit value from source
+            value = self.mem.read_u32(src_addr)
+            # Store as little-endian bytes in FIFO buffer
+            self._fifo_b_data[0] = value & 0xFF
+            self._fifo_b_data[1] = (value >> 8) & 0xFF
+            self._fifo_b_data[2] = (value >> 16) & 0xFF
+            self._fifo_b_data[3] = (value >> 24) & 0xFF
+            self._fifo_b_valid = 0  # Clear valid bit to signal data ready
+        except Exception:
+            pass    
     def _fifo_dma_write(self, channel: int, fifo_addr: int):
         """DMA write to FIFO A/B for audio data (16-bit to 8-bit scaling)"""
         if channel < 0 or channel > 2:

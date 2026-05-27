@@ -35,19 +35,33 @@ import wave
 import io
 
 # Sound register addresses
-SOUND1_CNT_L = 0x04000060  # Sweep
-SOUND1_CNT_H = 0x04000064  # Volume, envelope
-SOUND1_CNT_X = 0x04000068  # Frequency, control
+# CH1 (Pulse Wave)
+SOUND1_CNT_L = 0x04000060  # Sweep (NR10)
+SOUND1_CNT_H = 0x04000062  # Duty, length (NR11)
+SOUND1_CNT_X = 0x04000064  # Freq, envelope (NR12)
 
-SOUND2_CNT_L = 0x0400006C
-SOUND2_CNT_H = 0x04000070
+# CH2 (Pulse Wave)
+SOUND2_CNT_L = 0x04000068  # Duty, length (NR11)
+SOUND2_CNT_H = 0x0400006A  # Freq, envelope (NR12)
 
-SOUND3_CNT_L = 0x04000074
-SOUND3_CNT_H = 0x04000078
-SOUND3_CNT_X = 0x0400007C
+# CH3 (Wave Playback)
+SOUND3_CNT_L = 0x04000070  # Wave bank, volume (NR21)
+SOUND3_CNT_H = 0x04000072  # Length (NR22)
+SOUND3_CNT_X = 0x04000074  # Freq, format (NR23)
 
-SOUND4_CNT_L = 0x04000080
-SOUND4_CNT_H = 0x04000084
+# CH4 (Noise Generator)
+SOUND4_CNT_L = 0x04000078  # Length (NR41)
+SOUND4_CNT_H = 0x0400007A  # Envelope (NR42)
+SOUND4_CNT_X = 0x0400007C  # Frequency, control (NR43)
+SOUND4_CNT_X = 0x0400007E  # IRQ control (NR44)
+
+# Master and FIFO
+SOUND_CNT_L = 0x04000080  # Master volume, FIFO volume (SOUNDCNT_L)
+SOUND_CNT_H = 0x04000082  # Channel enable, FIFO enable (SOUNDCNT_H)
+SOUND_CNT_X = 0x04000084  # Master enable (SOUNDCNT_X)
+
+# Wave RAM
+WAVE_RAM = 0x04000090  # 16 bytes per bank
 
 SOUND_CNT_L = 0x04000080  # Master volume
 SOUND_CNT_H = 0x04000082  # Channel enable

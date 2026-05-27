@@ -1,3 +1,4 @@
+mod asset_extractor;
 mod benchmark;
 mod cmds;
 mod codegen;

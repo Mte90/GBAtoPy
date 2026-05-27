@@ -5,6 +5,7 @@ pub mod memory;
 pub mod patterns;
 pub mod thumb;
 pub mod ppu;
+pub mod sram;
 
 #[allow(unused_imports)]
 pub use cpu::*;

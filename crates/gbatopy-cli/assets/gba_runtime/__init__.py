@@ -14,6 +14,7 @@ from .interrupts import InterruptController
 from .exceptions import GBARuntimeError, InvalidROMError
 from .arm7tdmi import ARM7TDMI
 from .arm7tdmi import ISRHandler
+from .timing import initialize_timing, get_calibrator
 
 from .text_lib import text_init, text_color, m_vsync, text_glyph_data, text_glyph, text_char, GLYPHS
 from .screenshot import auto_capture_screenshot, get_capture_output_path
@@ -185,6 +186,10 @@ def main_entry(
     ppu = _runtime["ppu"]
     apu = _runtime["apu"]
     input = _runtime["input"]
+    
+    # Initialize timing calibration
+    print("[Timing] Initializing timing calibration...")
+    initialize_timing()
 
     # STEP 4: Start APU audio (if not headless)
     if not headless:

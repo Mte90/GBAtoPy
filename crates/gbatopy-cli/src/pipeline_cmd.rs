@@ -1,3 +1,4 @@
+use crate::asset_extractor::extract_assets;
 use crate::codegen::generate_instruction_python;
 use crate::codegen::ppu::mode1::generate_mode1_rendering;
 #[allow(unused_imports)]
@@ -47,7 +48,14 @@ pub fn run_pipeline(
     eprintln!("  Disassembled {} instructions", instructions.len());
 
     eprintln!("Step 2: Asset Extraction");
-    eprintln!("  (Asset extraction skipped - not implemented yet)");
+    let assets = extract_assets(&rom);
+    eprintln!(
+        "  Extracted {} colors, {} tiles, {} tilemap entries, {} wave bytes",
+        assets.palette_data.len() / 2,
+        assets.tile_data.len() / 32,
+        assets.tilemap_data.len() / 2,
+        assets.wave_data.len()
+    );
 
     eprintln!("Step 3: Python Code Generation (direct from disassembly)");
 
@@ -208,6 +216,75 @@ pub fn run_pipeline(
     }
     code.push_str("\n])\n\n");
 
+    // Embed wave data (audio samples)
+    code.push_str("# Wave data for APU CH3\n");
+    code.push_str("WAVE_DATA = bytearray([\n");
+    for (i, &byte) in assets.wave_data.iter().enumerate() {
+        if i > 0 {
+            code.push_str(", ");
+        }
+        if i % 16 == 0 {
+            code.push_str("\n    ");
+        }
+        code.push_str(&format!("0x{:02X}", byte));
+    }
+    code.push_str("\n])\n\n");
+
+    // Embed sample metadata (start_addr, length, format)
+    code.push_str("# Sample metadata: (start_addr, length, format)\n");
+    code.push_str("SAMPLES = [\n");
+    for (i, &(addr, len, fmt)) in assets.samples.iter().enumerate() {
+        code.push_str(&format!("    (0x{:08X}, {}, {}),\n", addr, len, fmt));
+    }
+    code.push_str("]\n\n");
+
+    // Generate sample playback function
+    code.push_str("# Sample playback helper\n");
+    code.push_str("def play_sample(addr):\n");
+    code.push_str("    \"\"\"Play audio sample starting at given address in ROM_DATA\n");
+    code.push_str("    Args: addr - address in ROM_DATA where sample starts\n");
+    code.push_str("    \"\"\"\n");
+    code.push_str("    if not SAMPLES: return\n");
+    code.push_str("    for sample_addr, length, fmt in SAMPLES:\n");
+    code.push_str("        if sample_addr == addr:\n");
+    code.push_str("            # Extract sample data from ROM\n");
+    code.push_str("            sample_bytes = ROM_DATA[sample_addr:sample_addr + length]\n");
+    code.push_str("            # Convert 4-bit samples to 8-bit audio\n");
+    code.push_str("            if fmt == 0:  # 4-bit format\n");
+    code.push_str("                audio = bytearray()\n");
+    code.push_str("                for i in range(0, length, 2):\n");
+    code.push_str("                    if i + 1 < length:\n");
+    code.push_str("                        lo, hi = sample_bytes[i], sample_bytes[i+1]\n");
+    code.push_str("                        combined = (lo & 0x0F) | ((hi & 0x0F) << 4)\n");
+    code.push_str("                        audio.extend([combined, combined >> 4])\n");
+    code.push_str("            else:  # 8-bit format\n");
+    code.push_str("                audio = sample_bytes\n");
+    code.push_str("            # Generate audio stream (repeat sample)\n");
+    code.push_str("            sample_rate = 32768\n");
+    code.push_str("            duration = 0.1\n");
+    code.push_str("            num_samples = int(sample_rate * duration)\n");
+    code.push_str("            if audio:\n");
+    code.push_str("                repeat_len = num_samples // len(audio)\n");
+    code.push_str("                audio_stream = bytearray()\n");
+    code.push_str("                for _ in range(repeat_len):\n");
+    code.push_str("                    audio_stream.extend(audio)\n");
+    code.push_str("                import array\n");
+    code.push_str("                # Convert to signed 16-bit stereo\n");
+    code.push_str("                samples = array.array('h')\n");
+    code.push_str("                for b in audio_stream:\n");
+    code.push_str("                    samples.append(int((b - 128) / 127.0 * 32767))\n");
+    code.push_str("                    samples.append(int((b - 128) / 127.0 * 32767))\n");
+    code.push_str("                # Play via pygame\n");
+    code.push_str("                import pygame\n");
+    code.push_str("                try:\n");
+    code.push_str("                    sound = pygame.mixer.Sound(buffer=samples)\n");
+    code.push_str("                    channel = pygame.mixer.Channel(2)\n");
+    code.push_str("                    channel.play(sound)\n");
+    code.push_str("                except:\n");
+    code.push_str("                    pass\n");
+    code.push_str("            break\n");
+    code.push_str("\n");
+
     // Embed GBA memory class (Python version)
     code.push_str(
         r#"# GBA Memory Map Implementation
@@ -267,6 +344,15 @@ class GBA:
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
 
     def write_8(self, addr, value):
+        # Handle MMIO DMA control writes (detect FIFO C mode for DMA3)
+        if 0x040000EC <= addr <= 0x040000EC:
+            # DMA3 control register - check for FIFO C mode
+            offset = addr - 0x04000000
+            dma3_control = self.mmio.get(offset, 0)
+            if dma3_control & 0x05000000:  # FIFO C trigger (bit 16)
+                # Trigger FIFO C transfer for DMA3
+                pass  # Handler in dma.py processes this
+        
         if 0x02000000 <= addr <= 0x0203FFFF:
             offset = addr - 0x02000000
             if offset < len(self.ewram): self.ewram[offset] = value
