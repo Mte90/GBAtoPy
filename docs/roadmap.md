@@ -155,7 +155,15 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - Direct Sound A/B (FIFO → PCM)
 - Mixing and volume control
 
-### Phase 3: Polish (1-2 days)
+### Phase 3: Automated Testing (2-3 days)
+- Extend `visual_test.py` with hw-test golden images (5 PPU ROMs)
+- Add `--dump-memory` flag to Python runtime for eWRAM access
+- Build FuzzARM eWRAM parser (50,000 CPU instruction tests)
+- Build screen pass/fail detector for gba-tests-master ROMs
+- Create unified test runner
+- See [testing-framework.md](testing-framework.md) for full plan
+
+### Phase 4: Polish (1-2 days)
 - Window layers (optional)
 - Alpha blending (optional)
 - Documentation updates

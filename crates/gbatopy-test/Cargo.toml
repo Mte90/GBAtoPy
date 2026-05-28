@@ -1,0 +1,25 @@
+[package]
+name = "gbatopy-test"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gbatopy-test"
+path = "src/main.rs"
+
+[dependencies]
+gbatopy-cli = { path = "../gbatopy-cli" }
+gbatopy-mgba = { path = "../gbatopy-mgba" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
+anyhow = { workspace = true }
+image = "0.25"
+duct = "0.13"
+rayon = { workspace = true }
+quick-junit = "0.5"
+byteorder = "1.5"
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+chrono = "0.4"

@@ -88,6 +88,16 @@ class Memory:
                 (self.iwram[offset + 2] << 16) | 
                 (self.iwram[offset + 3] << 24))
 
+    def dump_region(self, region: str) -> bytes:
+        if region == "ewram":
+            return bytes(self.ewram)
+        elif region == "iwram":
+            return bytes(self.iwram)
+        elif region == "vram":
+            return bytes(self.vram)
+        else:
+            raise ValueError(f"Unknown memory region: {region}. Expected 'ewram', 'iwram', or 'vram'.")
+
     def attach_ppu(self, ppu):        self._ppu = ppu
 
     def attach_dma(self, dma):

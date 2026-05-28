@@ -39,8 +39,11 @@ Hardware specifications, instruction sets, and test ROM catalogs.
 | [reference/feature-coverage.md](reference/feature-coverage.md) | Feature coverage matrix |
 | [reference/test-coverage.md](reference/test-coverage.md) | Test ROM coverage matrix |
 
-## Architecture
+## Testing
 
+- **[testing-framework.md](testing-framework.md)** — Automated testing strategy, test ROM classification, implementation plan
+
+## Architecture
 
 
 ## Roadmap

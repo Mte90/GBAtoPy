@@ -82,7 +82,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     print(f"Done: {ic} instrs")
     return fc
 
-def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1):
+def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None):
     pygame.init()
     if not headless:
         screen = pygame.display.set_mode((240 * scale, 160 * scale))
@@ -142,6 +142,20 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         if frame_limit and fc >= frame_limit:
             break
     
+    if dump_memory:
+        region_name = dump_region or "ewram"
+        if region_name == "ewram":
+            dump_data = bytes(ewram)
+        elif region_name == "iwram":
+            dump_data = bytes(iwram)
+        elif region_name == "vram":
+            dump_data = bytes(vram)
+        else:
+            dump_data = bytes(ewram)
+        with open(dump_memory, "wb") as f:
+            f.write(dump_data)
+        print(f"Memory dump: {dump_memory} ({len(dump_data)} bytes)")
+
     if screenshot_path:
         pygame.image.save(screen, screenshot_path)
         print(f"Screenshot: {screenshot_path}")
@@ -156,6 +170,8 @@ if __name__ == "__main__":
     parser.add_argument("--frame", type=int)
     parser.add_argument("--screenshot", type=str)
     parser.add_argument("--scale", type=int, default=1)
+    parser.add_argument("--dump-memory", type=str)
+    parser.add_argument("--dump-region", type=str, choices=["ewram", "iwram", "vram"])
     args = parser.parse_args()
     
     frames = run_with_pygame(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot, scale=args.scale)

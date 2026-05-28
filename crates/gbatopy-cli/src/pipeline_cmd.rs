@@ -523,7 +523,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     print(f"Done: {ic} instrs")
     return fc
 
-def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1):
+def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None):
     pygame.init()
     if not headless:
         screen = pygame.display.set_mode((240 * scale, 160 * scale))

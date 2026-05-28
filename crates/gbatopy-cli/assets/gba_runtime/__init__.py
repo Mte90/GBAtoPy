@@ -147,7 +147,7 @@ def load_assets():
 
 
 def main_entry(
-    rom_path: str, frames: int = 60, headless: bool = False, screenshot_path: Optional[str] = None
+    rom_path: str, frames: int = 60, headless: bool = False, screenshot_path: Optional[str] = None, dump_memory: Optional[str] = None
 ):
     """Main entry point for running a GBA ROM in Python.
 
@@ -156,6 +156,7 @@ def main_entry(
         frames: Number of frames to run (default: 60)
         headless: Run without display (default: False)
         screenshot_path: Path to save screenshot at end (optional)
+        dump_memory: Memory region to dump ("ewram", "iwram", "vram", or "all"). If provided, dumps after running and exits without pygame cleanup.
     """
     global _runtime, _screen, _running
 
@@ -338,6 +339,44 @@ def main_entry(
     if screenshot_path and _screen is not None:
         pygame.image.save(_screen, screenshot_path)
         print(f"Screenshot saved to: {screenshot_path}")
+
+    # Dump memory if requested
+    if dump_memory and _runtime is not None:
+        memory = _runtime["memory"]
+        print(f"\n=== Dumping memory region: {dump_memory} ===")
+        
+        if dump_memory == "ewram":
+            data = memory.dump_region("ewram")
+            output_path = "/tmp/ewram_dump.bin"
+        elif dump_memory == "iwram":
+            data = memory.dump_region("iwram")
+            output_path = "/tmp/iwram_dump.bin"
+        elif dump_memory == "vram":
+            data = memory.dump_region("vram")
+            output_path = "/tmp/vram_dump.bin"
+        elif dump_memory == "all":
+            # Dump all writable memory regions
+            ewram_data = memory.dump_region("ewram")
+            iwram_data = memory.dump_region("iwram")
+            vram_data = memory.dump_region("vram")
+            with open("/tmp/ewram_dump.bin", "wb") as f:
+                f.write(ewram_data)
+            with open("/tmp/iwram_dump.bin", "wb") as f:
+                f.write(iwram_data)
+            with open("/tmp/vram_dump.bin", "wb") as f:
+                f.write(vram_data)
+            print(f"  EWRAM: {len(ewram_data)} bytes -> /tmp/ewram_dump.bin")
+            print(f"  IWRAM: {len(iwram_data)} bytes -> /tmp/iwram_dump.bin")
+            print(f"  VRAM:  {len(vram_data)} bytes -> /tmp/vram_dump.bin")
+            output_path = None  # Already written
+        else:
+            print(f"  ERROR: Unknown region '{dump_memory}'. Use: ewram, iwram, vram, all")
+            output_path = None
+        
+        if output_path:
+            with open(output_path, "wb") as f:
+                f.write(data)
+            print(f"  Dumped {len(data)} bytes to {output_path}")
 
     # Cleanup
     if not headless:
