@@ -42,7 +42,7 @@ impl Reporter {
         
         let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites");
         xml.push_str(&format!(" timestamp=\"{}\" name=\"gbatopy-test\">", Utc::now().to_rfc3339()));
-        xml.push_str("\n");
+        xml.push('\n');
         
         xml.push_str(&format!("  <testsuite name=\"gbatopy-test\" tests=\"{}\" failures=\"{}\" errors=\"{}\" skipped=\"{}\" time=\"{}\">\n",
             results.len(), failures, errors, skipped,

@@ -33,7 +33,7 @@ impl TestRunner {
         // Create artifacts dir for this test
         std::fs::create_dir_all(&artifacts_dir).ok();
 
-        let result = verifier.verify(entry, &artifacts_dir);
+        let result = verifier.verify(entry, &artifacts_dir, &self.config);
         log::info!(
             "[{}] {} - {:?}",
             match result.status {

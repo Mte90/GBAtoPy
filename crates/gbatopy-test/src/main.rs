@@ -67,9 +67,8 @@ fn main() {
 
     let runner = TestRunner::from_config(config.clone());
 
-    // Load entries from config
-    let test_entries: Vec<TestEntry> = toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
-    let entries = test_entries;
+    // Get test entries from config
+    let entries = config.tests.clone();
 
     // Apply filters. Use filter if provided, test_type filter if provided, otherwise all entries
     let filtered_entries: Vec<TestEntry> = if let Some(ref filter) = args.filter {

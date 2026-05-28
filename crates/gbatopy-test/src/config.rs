@@ -6,6 +6,8 @@ pub struct TestConfig {
     pub roms_dir: PathBuf,
     pub output_dir: PathBuf,
     pub parallel: usize,
+    #[serde(default, alias = "test")]
+    pub tests: Vec<TestEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

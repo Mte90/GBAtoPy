@@ -7,12 +7,15 @@ use std::time::Instant;
 pub struct SmokeVerifier;
 
 impl Verifier for SmokeVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path) -> TestResult {
+    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
 
         log::info!("[Smoke] Transpiling {}...", entry.rom_path.display());
+
+        // Resolve the full ROM path
+        let rom_path = config.roms_dir.join(&entry.rom_path);
 
         // Step 1: Run transpiler
         let output_path = artifacts_dir.join("output.py");
@@ -24,12 +27,11 @@ impl Verifier for SmokeVerifier {
             "--",
             "pipeline",
             "--rom",
-            entry.rom_path.to_string_lossy().as_ref(),
+            rom_path.to_string_lossy().as_ref(),
             "--output",
             output_path.to_string_lossy().as_ref()
         )
-        .stdout_null()
-        .stderr_null()
+        .dir(".") // Run from project root
         .run();
 
         if let Err(e) = transpile_result {

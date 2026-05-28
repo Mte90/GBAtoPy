@@ -8,14 +8,14 @@ use std::time::Instant;
 pub struct EwramDumpVerifier;
 
 impl Verifier for EwramDumpVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path) -> TestResult {
+    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
 
         log::info!("[eWRAM Dump] Testing {}...", test_name);
 
-        let rom_path = entry.rom_path.to_string_lossy().to_string();
+        let rom_path = config.roms_dir.join(&entry.rom_path).to_string_lossy().to_string();
         let rom_stem = entry.rom_path
             .file_stem()
             .unwrap_or_default()
@@ -146,6 +146,7 @@ fn transpile_rom(rom_path: &str, output: &Path) -> Result<(), Box<dyn std::error
     let bin = "target/debug/gbatopy-cli";
     
     cmd!(bin, "pipeline", "--rom", rom_path, "--output", output.to_string_lossy().as_ref())
+        .dir(".")
         .run()?;
     
     if !output.exists() {
@@ -168,6 +169,7 @@ fn run_with_dump(py_file: &Path, dump_path: &Path, frames: u32) -> Result<(), Bo
         &dump_arg
     )
     .env("SDL_VIDEODRIVER", "dummy")
+    .dir(".")
     .run()?;
     
     if !dump_path.exists() {

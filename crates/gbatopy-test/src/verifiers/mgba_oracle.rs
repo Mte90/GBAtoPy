@@ -9,14 +9,16 @@ use duct::cmd;
 pub struct ScreenshotMgbaVerifier;
 
 impl Verifier for ScreenshotMgbaVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path) -> TestResult {
+    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
 
         log::info!("[mGBA Oracle] Testing {}...", test_name);
 
-        let rom_path = entry.rom_path.to_string_lossy().to_string();
+        // Resolve the full ROM path
+        let rom_path = config.roms_dir.join(&entry.rom_path);
+        let rom_path_str = rom_path.to_string_lossy().to_string();
         let rom_stem = entry.rom_path
             .file_stem()
             .unwrap_or_default()
@@ -54,7 +56,7 @@ impl Verifier for ScreenshotMgbaVerifier {
         }
 
         // Step 3: Run mGBA to capture golden screenshot
-        if let Err(e) = run_mgba_capture(&mgba_path, &rom_path, &lua_script) {
+        if let Err(e) = run_mgba_capture(&mgba_path, &rom_path_str, &lua_script) {
             return TestResult {
                 name: test_name.clone(),
                 test_type: test_type_str.clone(),
@@ -67,7 +69,7 @@ impl Verifier for ScreenshotMgbaVerifier {
         log::info!("[mGBA Oracle] Golden screenshot captured for {}", test_name);
 
         // Step 4: Transpile ROM
-        if let Err(e) = transpile_rom(&rom_path, &transpiled_py) {
+        if let Err(e) = transpile_rom(&rom_path_str, &transpiled_py) {
             return TestResult {
                 name: test_name.clone(),
                 test_type: test_type_str.clone(),
@@ -201,6 +203,7 @@ fn run_mgba_capture(mgba_path: &Path, rom_path: &str, lua_script: &Path) -> Resu
         lua_script.to_string_lossy().as_ref(),
         rom_path
     )
+    .dir(".")
     .run()?;
     Ok(())
 }
@@ -209,6 +212,7 @@ fn transpile_rom(rom_path: &str, output: &Path) -> Result<(), Box<dyn std::error
     let bin = "target/debug/gbatopy-cli";
     
     cmd!(bin, "pipeline", "--rom", rom_path, "--output", output.to_string_lossy().as_ref())
+        .dir(".")
         .run()?;
     
     if !output.exists() {
@@ -230,6 +234,7 @@ fn capture_transpiled_screenshot(py_file: &Path, screenshot_path: &Path, frames:
         &screenshot_arg
     )
     .env("SDL_VIDEODRIVER", "dummy")
+    .dir(".")
     .run()?;
     
     if !screenshot_path.exists() {

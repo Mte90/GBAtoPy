@@ -8,14 +8,16 @@ use duct::cmd;
 pub struct ScreenshotGoldenVerifier;
 
 impl Verifier for ScreenshotGoldenVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path) -> TestResult {
+    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
 
         log::info!("[ScreenshotGolden] Testing {}...", test_name);
 
-        let rom_path = entry.rom_path.to_string_lossy().to_string();
+        // Resolve the full ROM path
+        let rom_path = config.roms_dir.join(&entry.rom_path);
+        let rom_path_str = rom_path.to_string_lossy().to_string();
         let rom_stem = entry.rom_path
             .file_stem()
             .unwrap_or_default()
@@ -29,7 +31,7 @@ impl Verifier for ScreenshotGoldenVerifier {
             rom_stem
         ));
 
-        if let Err(e) = self.transpile(&rom_path, &transpiled_py) {
+        if let Err(e) = self.transpile(&rom_path_str, &transpiled_py) {
             return TestResult {
                 name: test_name.clone(),
                 test_type: test_type_str.clone(),
@@ -123,6 +125,7 @@ impl ScreenshotGoldenVerifier {
         let bin = "target/debug/gbatopy-cli";
         
         cmd!(bin, "pipeline", "--rom", rom_path, "--output", output.to_string_lossy().as_ref())
+            .dir(".")
             .run()?;
         
         if !output.exists() {
@@ -149,6 +152,7 @@ impl ScreenshotGoldenVerifier {
             &screenshot_arg
         )
         .env("SDL_VIDEODRIVER", "dummy")
+        .dir(".")
         .run()?;
         
         if !screenshot_path.exists() {

@@ -19,6 +19,36 @@ pub struct TestResult {
 }
 
 impl TestResult {
+    pub fn pass(name: &str, test_type: &str, message: &str, duration: Duration) -> Self {
+        Self {
+            name: name.to_string(),
+            test_type: test_type.to_string(),
+            status: TestStatus::Pass,
+            message: message.to_string(),
+            duration,
+        }
+    }
+
+    pub fn fail(name: &str, test_type: &str, message: &str, duration: Duration) -> Self {
+        Self {
+            name: name.to_string(),
+            test_type: test_type.to_string(),
+            status: TestStatus::Fail,
+            message: message.to_string(),
+            duration,
+        }
+    }
+
+    pub fn skip(name: &str, test_type: &str, message: &str, duration: Duration) -> Self {
+        Self {
+            name: name.to_string(),
+            test_type: test_type.to_string(),
+            status: TestStatus::Skipped,
+            message: message.to_string(),
+            duration,
+        }
+    }
+
     pub fn error(name: &str, test_type: &str, message: &str, duration: Duration) -> Self {
         Self {
             name: name.to_string(),
@@ -27,6 +57,14 @@ impl TestResult {
             message: message.to_string(),
             duration,
         }
+    }
+
+    pub fn is_pass(&self) -> bool {
+        self.status == TestStatus::Pass
+    }
+
+    pub fn is_fail(&self) -> bool {
+        matches!(self.status, TestStatus::Fail | TestStatus::Error)
     }
 }
 

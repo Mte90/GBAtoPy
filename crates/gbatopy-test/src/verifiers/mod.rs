@@ -3,7 +3,7 @@ use crate::types::TestResult;
 use std::path::Path;
 
 pub trait Verifier: Send + Sync {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path) -> TestResult;
+    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult;
     fn name(&self) -> &'static str;
 }
 

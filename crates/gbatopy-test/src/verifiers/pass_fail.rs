@@ -7,14 +7,14 @@ use std::time::Instant;
 pub struct PassFailScreenVerifier;
 
 impl Verifier for PassFailScreenVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path) -> TestResult {
+    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
 
         log::info!("[Pass/Fail Screen] Testing {}...", test_name);
 
-        let rom_path = entry.rom_path.to_string_lossy().to_string();
+        let rom_path = config.roms_dir.join(&entry.rom_path).to_string_lossy().to_string();
         let rom_stem = entry.rom_path
             .file_stem()
             .unwrap_or_default()
@@ -109,6 +109,7 @@ fn transpile_rom(rom_path: &str, output: &Path) -> Result<(), Box<dyn std::error
     let bin = "target/debug/gbatopy-cli";
     
     cmd!(bin, "pipeline", "--rom", rom_path, "--output", output.to_string_lossy().as_ref())
+        .dir(".")
         .run()?;
     
     if !output.exists() {
@@ -131,6 +132,7 @@ fn capture_screenshot(py_file: &Path, screenshot_path: &Path, frames: u32) -> Re
         &screenshot_arg
     )
     .env("SDL_VIDEODRIVER", "dummy")
+    .dir(".")
     .run()?;
     
     if !screenshot_path.exists() {
@@ -188,6 +190,7 @@ pub fn analyze_screenshot(path: &Path) -> Result<ScreenAnalysis, Box<dyn std::er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_verifier_name() {
