@@ -1,6 +1,5 @@
 use crate::asset_extractor::extract_assets;
 use crate::codegen::generate_instruction_python;
-use crate::codegen::ppu::mode1::generate_mode1_rendering;
 #[allow(unused_imports)]
 use crate::ppu::generate_ppu_code;
 use gbatopy_disasm::{
@@ -105,7 +104,7 @@ pub fn run_pipeline(
     code.push_str("ppu_instance = PPU(memory)\n");
     code.push_str("apu_instance = APU()\n\n");
 
-    code.push_str(&generate_mode1_rendering());
+    // PPU mode is read from DISPCNT register at runtime, not hardcoded
     code.push_str("\n");
 
     use gbatopy_disasm::Operand;
@@ -543,20 +542,20 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             if pc not in func_map: break
             func_map[pc](); ic += 1
             if r[15] == pc: break
-        # Always render frame and update APU
+        # Render frame and update APU
+        ppu_instance.render_frame()
         # VBlank IRQ dispatch
-        dispcnt = memory.read_u16(0x04000004)
-        vblank_int_enabled = (dispcnt & 0x08) != 0
-        if vblank_int_enabled:
+        dispstat = memory.read_u16(0x04000004)
+        vblank_flag = (dispstat & 0x01) != 0
+        if vblank_flag:
             ie = memory.read_u16(0x04000200)
-            if ie & 0x01:
-                if (memory.read_u16(0x04000202) & 0x01) == 0:
-                    memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
-                    r[15] = memory.read_u32(0x03007FFC)
+            ime = memory.read_u16(0x04000208)
+            if ie & 0x01 and ime & 0x01:
+                memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
+                r[15] = memory.read_u32(0x03007FFC)
         apu_instance.update()
-        fb = ppu_instance.framebuffer
-        arr = np.array(fb, dtype=np.uint8).transpose(1, 0, 2)
-        pygame.surfarray.blit_array(screen, arr)
+        surf = ppu_instance.get_surface()
+        screen.blit(pygame.transform.scale(surf, (240 * scale, 160 * scale)), (0, 0))
         if not headless: pygame.display.flip()
         clock.tick(60); fc += 1
         if frame_limit and fc >= frame_limit: break

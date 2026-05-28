@@ -1388,7 +1388,7 @@ class PPU:
 
     def _render_mode3(self):
         """Render Mode 3: 240x160 bitmap mode with mosaic support"""
-        vram_base = 0x06000000
+        vram_base = 0x06004000
 
         for y in range(self.screen_height):
             for x in range(self.screen_width):
