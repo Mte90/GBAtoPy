@@ -1,0 +1,348 @@
+# GBAtoPy Test Configuration
+# Contains all 68 test ROMs with classification
+
+# Base paths
+roms_dir = "test_roms/roms"
+output_dir = "test-reports"
+parallel = 4
+
+# Test entries
+[[test]]
+name = "stripes"
+rom_path = "stripes.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "hello"
+rom_path = "hello.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "hello_world"
+rom_path = "hello_world.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "helloWorld"
+rom_path = "helloWorld.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "bgpd"
+rom_path = "bgpd.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "bgx"
+rom_path = "bgx.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "armwrestler"
+rom_path = "armwrestler.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "armwrestler-gba-fixed"
+rom_path = "armwrestler-gba-fixed.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "basic-timing"
+rom_path = "basic-timing.gba"
+test_type = "AssertionText"
+
+[[test]]
+name = "burst-into-tears"
+rom_path = "burst-into-tears.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "cancel-irq-ie"
+rom_path = "cancel-irq-ie.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "cancel-irq-if"
+rom_path = "cancel-irq-if.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "cancel-irq-ime"
+rom_path = "cancel-irq-ime.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "cond_invalid"
+rom_path = "cond_invalid.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "dispcnt-latch"
+rom_path = "dispcnt-latch.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "dma_priority"
+rom_path = "dma_priority.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "enhancedcontrolchecker"
+rom_path = "enhancedcontrolchecker.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "exact-timing"
+rom_path = "exact-timing.gba"
+test_type = "AssertionText"
+
+[[test]]
+name = "force-nseq-access"
+rom_path = "force-nseq-access.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "FuzzARM"
+rom_path = "FuzzARM.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "greenswap"
+rom_path = "greenswap.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "haltcnt"
+rom_path = "haltcnt.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "helloAudio"
+rom_path = "helloAudio.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "if_ack"
+rom_path = "if_ack.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "irq-delay"
+rom_path = "irq-delay.gba"
+test_type = "AssertionText"
+
+[[test]]
+name = "irq_delay"
+rom_path = "irq_delay.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "isr"
+rom_path = "isr.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "joypad"
+rom_path = "joypad.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "latch"
+rom_path = "latch.gba"
+test_type = "AssertionText"
+
+[[test]]
+name = "line_timing"
+rom_path = "line_timing.gba"
+test_type = "AssertionText"
+
+[[test]]
+name = "lyc_midline"
+rom_path = "lyc_midline.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "memory"
+rom_path = "memory.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "mode2"
+rom_path = "mode2.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "mode3"
+rom_path = "mode3.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "mode4"
+rom_path = "mode4.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "nes"
+rom_path = "nes.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "none"
+rom_path = "none.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "pcmxx"
+rom_path = "pcmxx.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "ram-access-timing"
+rom_path = "ram-access-timing.gba"
+test_type = "AssertionText"
+
+[[test]]
+name = "rates"
+rom_path = "rates.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "redline"
+rom_path = "redline.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "reload"
+rom_path = "reload.gba"
+test_type = "AssertionText"
+
+[[test]]
+name = "retAddr"
+rom_path = "retAddr.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "rtc-demo"
+rom_path = "rtc-demo.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "shades"
+rom_path = "shades.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "song"
+rom_path = "song.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "sprite-hmosaic"
+rom_path = "sprite-hmosaic.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "sram"
+rom_path = "sram.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "sram-test"
+rom_path = "sram-test.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "sram_test"
+rom_path = "sram_test.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "start-delay"
+rom_path = "start-delay.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "start-stop"
+rom_path = "start-stop.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "status-irq-dma"
+rom_path = "status-irq-dma.gba"
+test_type = "AssertionText"
+
+[[test]]
+name = "test"
+rom_path = "test.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "THUMB_Any"
+rom_path = "THUMB_Any.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "THUMB_DataProcessing"
+rom_path = "THUMB_DataProcessing.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "thumb"
+rom_path = "thumb.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "timer_change"
+rom_path = "timer_change.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "unsafe"
+rom_path = "unsafe.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "vram-mirror"
+rom_path = "vram-mirror.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "window_midframe"
+rom_path = "window_midframe.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "ARM_Any"
+rom_path = "ARM_Any.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "ARM_DataProcessing"
+rom_path = "ARM_DataProcessing.gba"
+test_type = "Smoke"
+
+[[test]]
+name = "arm"
+rom_path = "arm.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "bios"
+rom_path = "bios.gba"
+test_type = "PassFailScreen"
+
+[[test]]
+name = "flash128"
+rom_path = "flash128.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "flash64"
+rom_path = "flash64.gba"
+test_type = "ScreenshotGolden"
+
+[[test]]
+name = "128kb-boundary"
+rom_path = "128kb-boundary.gba"
+test_type = "Smoke"

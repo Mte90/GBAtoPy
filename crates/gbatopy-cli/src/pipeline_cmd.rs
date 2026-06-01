@@ -380,8 +380,13 @@ class GBA:
 "#,
     );
 
-    code.push_str("# Initialize Memory object for runtime\n");
-    code.push_str("memory = Memory()\n\n");
+    // Memory is already initialized in runtime section (line ~6022)
+    // Don't create duplicate - the runtime memory is shared with PPU
+    // Just reference the existing memory object
+    code.push_str("vram = memory.vram\n");
+    code.push_str("palette_ram = memory.palette\n");
+    code.push_str("oam = memory.oam\n");
+    code.push_str("ewram = memory.ewram\n\n");
 
     // Helper: check if instruction writes to r[15]
     fn writes_r15(inst: &gbatopy_disasm::DecodedInstruction) -> bool {
@@ -460,6 +465,7 @@ class GBA:
             // NOP blocks are implicitly handled by chaining
         } else {
             block_function_code.push_str(&format!("\ndef {}():\n", func_name));
+            block_function_code.push_str("    global vram, palette_ram, oam, ewram, ROM_DATA\n");
             block_function_code.push_str(&body);
             non_nop_addrs.push(func_start);
         }
@@ -537,7 +543,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         for e in pygame.event.get():
             if e.type == pygame.QUIT: running = False
         # Execute instructions for this frame (max 50000 instrs per frame)
-        for _ in range(50000):
+        for _ in range(200000):
             pc = r[15]
             if pc not in func_map: break
             func_map[pc](); ic += 1

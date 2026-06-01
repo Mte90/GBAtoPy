@@ -93,6 +93,13 @@ impl ArmDecoder {
         let bits_27_26 = (word >> 26) & 0x3;
         let bit_25 = (word >> 25) & 0x1;
 
+        // Check for branch instructions FIRST (bits 27-25 take precedence)
+        // B/BL: bits 27-25 = 101
+        let bits_27_25 = (word >> 25) & 0x7;
+        if bits_27_25 == 0b101 {
+            return self.decode_branch(word, address);
+        }
+
         let (base_name, operands, is_thumb) = match (bits_27_26, bit_25) {
             (0b00, _) => self.decode_data_processing(word, address), // Bits 27-26 = 00
             (0b01, _) => self.decode_load_store(word, address),      // Bits 27-26 = 01

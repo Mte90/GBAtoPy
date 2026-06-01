@@ -8,7 +8,7 @@ from .ppu import PPU
 from .apu import APU
 from .dma import DMA
 from .timers import Timers
-from .input import Input, KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT
+from .input import KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, GBA_KEYS, KEYBOARD_MAP
 from .rom import ROM
 from .interrupts import InterruptController
 from .exceptions import GBARuntimeError, InvalidROMError
@@ -93,6 +93,8 @@ def create_runtime():
     memory.setup_isr_handler(isr_handler)
 
     cpu = ARM7TDMI(memory)
+    bios = BIOS(memory)
+    cpu.bios = bios
 
     return {
         "cpu": cpu,
@@ -211,6 +213,13 @@ def main_entry(
     generated = importlib.util.module_from_spec(spec)
     sys.modules["generated_rom"] = generated
     spec.loader.exec_module(generated)
+
+    # Connect generated code to runtime memory (CRITICAL - VRAM/Palette must be shared)
+    generated.vram = memory.vram
+    generated.palette_ram = memory.palette
+    generated.oam = memory.oam
+    generated.ewram = memory.ewram
+    generated.ROM_DATA = memory.rom_data if hasattr(memory, 'rom_data') else bytearray()
 
     # Check if func_map exists and call entry point
     if hasattr(generated, "func_map") and 0x08000000 in generated.func_map:

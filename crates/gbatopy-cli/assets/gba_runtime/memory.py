@@ -45,6 +45,8 @@ class Memory:
         self.ewram = bytearray(MemoryMap.EWRAM_SIZE)
         self.iwram = bytearray(MemoryMap.IWRAM_SIZE)
         self.io = bytearray(MemoryMap.IO_SIZE)
+        # GBA hardware default: DISPCNT = 0x80 (display enabled, Mode 0)
+        self.io[0] = 0x80
         self.palette = bytearray(MemoryMap.PALETTE_SIZE)
         self.vram = bytearray(MemoryMap.VRAM_SIZE)
         self.oam = bytearray(MemoryMap.OAM_SIZE)

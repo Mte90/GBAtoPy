@@ -22,9 +22,8 @@ cpsr_z = 0
 cpsr_c = 0
 cpsr_v = 0
 
-# Memory
 ROM_DATA = bytearray([])
-vram = bytearray(98304)  # 96KB VRAM
-palette_ram = bytearray(1024)  # 1KB palette
-oam = bytearray(1024)  # 1KB OAM
-ewram = bytearray(262144)  # 256KB EWRAM
+vram = None
+palette_ram = None
+oam = None
+ewram = None

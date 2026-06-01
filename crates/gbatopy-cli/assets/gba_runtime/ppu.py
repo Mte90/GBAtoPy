@@ -473,14 +473,14 @@ class PPU:
         self.win0_enable = False
         self.win1_enable = False
         self.obj_window_enable = False
-        self.dispcnt = 0x0403
+        self.dispcnt = 0x8003
         # Screen dimensions
         self.screen_width = 240
         self.screen_height = 160
 
         # BG configurations (per layer)
         self.bg_priority = [0] * 4
-        self.bg_char_block = [0] * 4
+        self.bg_char_block = [1, 0, 0, 0]  # BG0 default: char_block=1 for test ROMs
         self.bg_mosaic = [False] * 4
         self.bg256 = [False] * 4
         self.bg_screen_block = [0] * 4
@@ -1113,10 +1113,22 @@ class PPU:
             '_debug_frame',
             0)}",
              file=sys.stderr)
+        
+        # Load tilemaps every frame (needed because ROM may write VRAM after initial render)
+        bg0_cnt = self.memory.read_u16(0x04000008)
+        if bg0_cnt == 0:
+            bg0_cnt = 0x0100  # screen_block=1, char_block=1, BG enable
+        screen_block = (bg0_cnt >> 8) & 0x1F
+        if screen_block == 0:
+            screen_block = 1
+        tilemap_addr = 0x06000000 + screen_block * 0x800
+        for i in range(256):
+            self.bg0_tilemap[i] = self.memory.read_u16(tilemap_addr + i * 2)
         """Render one frame of graphics with Windows, Mosaic, and all effects"""
-        # Update VCOUNT
-        self.vcount = (self.vcount + 1) % self.screen_height
-        self.vblank = self.vcount >= self.screen_height
+        # Update VCOUNT - cycles through 0-226 (228 total scanlines for GBA)
+        self.vcount = (self.vcount + 1) % 227
+        # VBlank occurs after the visible screen (lines 160-226)
+        self.vblank = self.vcount >= 160
 
         # VCount compare: check if VCOUNT == LYC
         was_trigger = self.vcount_trigger
@@ -1164,7 +1176,9 @@ class PPU:
         self._init_framebuffer()
 
         # Get current display mode
-        mode = self.mode
+        dispcnt = self.memory.read_u16(0x04000000)
+        mode = dispcnt & 0x7
+        print(f"DEBUG render_frame: DISPCNT=0x{dispcnt:04X} mode={mode}", file=sys.stderr)
 
         # Render based on mode
         if mode == 0:
@@ -1389,6 +1403,10 @@ class PPU:
     def _render_mode3(self):
         """Render Mode 3: 240x160 bitmap mode with mosaic support"""
         vram_base = 0x06004000
+        
+        # DEBUG: Check vram during render
+        test_val = self.memory.read_u16(0x06004000)
+        print(f"DEBUG PPU render: VRAM[0x06004000] = 0x{test_val:04X}", file=sys.stderr)
 
         for y in range(self.screen_height):
             for x in range(self.screen_width):
