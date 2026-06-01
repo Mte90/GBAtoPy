@@ -1,254 +1,322 @@
 # Automated Testing Framework
 
-This document describes the testing strategy for GBAtoPy, based on analysis of the 68 test ROMs and their expected output formats.
+This document describes GBAtoPy's test infrastructure. The old Python scripts have been replaced with a unified Rust-based test framework.
 
 ---
 
-## Testing Strategies
+## Overview
 
-The GBA emulation community uses four verification methods. GBAtoPy should support all four.
+GBAtoPy uses a Rust test framework (`crates/gbatopy-test/`) that provides:
 
-### 1. Screenshot Comparison (PPU Rendering)
-
-Compare transpiled Python output against known-correct reference images.
-
-**Golden reference ROMs** (hw-test provides `expected.png`):
-
-| ROM | Tests | Reference |
-|-----|-------|-----------|
-| greenswap.gba | Green swap register | `test_roms/sources/hw-test/ppu/greenswap/expected.png` |
-| bgx.gba | BG2/BG3 affine transform latching | `test_roms/sources/hw-test/ppu/bgx/expected.png` |
-| bgpd.gba | BG2PD/BG3PD latching timing | `test_roms/sources/hw-test/ppu/bgpd/expected.png` |
-| sprite-hmosaic.gba | Sprite horizontal mosaic | `test_roms/sources/hw-test/ppu/sprite-hmosaic/expected.png` |
-| dispcnt-latch.gba | DISPCNT latching mid-frame | `test_roms/sources/hw-test/ppu/dispcnt-latch/expected.png` |
-
-**mGBA oracle ROMs** (capture golden from mGBA, then compare):
-
-| ROM | Tests |
-|-----|-------|
-| stripes.gba | Mode 0 tile rendering with diagonal stripes |
-| shades.gba | Mode 0 palette gradient |
-| hello.gba | Mode 0 text rendering |
-| helloWorld.gba | Mode 0 text rendering |
-| hello_world.gba | Mode 0 text rendering |
-
-**How it works**: Transpile ROM → run with `--headless --frame=N --screenshot` → compare pixel-by-pixel against reference. Tolerance of ±10 per channel handles minor rendering differences.
-
-**Existing tool**: `scripts/verify/visual_test.py`
+- Parallel test execution via rayon
+- Configurable per-ROM testing via `test-config.toml`
+- 6 verification strategies
+- Multiple report formats (Console, JSON, JUnit XML)
 
 ---
 
-### 2. eWRAM Dump Parsing (CPU Correctness)
+## Test Framework Architecture
 
-FuzzARM ROMs dump structured test results to eWRAM at `0x02000000`.
+### Components
 
-**ROMs**: `ARM_Any.gba`, `ARM_DataProcessing.gba`, `THUMB_Any.gba`, `THUMB_DataProcessing.gba`, `FuzzARM.gba`
+| Component | Location | Description |
+|-----------|----------|-------------|
+| **Test Runner** | `crates/gbatopy-test/src/runner.rs` | Parallel execution engine |
+| **Configuration** | `test-config.toml` | Per-ROM test settings |
+| **Verifiers** | `crates/gbatopy-test/src/verifiers/` | 6 verification strategies |
+| **Reporter** | `crates/gbatopy-test/src/report.rs` | Console/JSON/JUnit output |
 
-Each ROM contains 10,000 randomized instruction tests. When a test fails, it writes a 16-word record to eWRAM:
+### Verifier Types
+
+| Verifier | Description |
+|----------|-------------|
+| `smoke` | Transpile ROM + Python syntax validation |
+| `screenshot_golden` | Compare transpiled output against expected.png |
+| `mgba_oracle` | Compare against mGBA reference screenshots |
+| `ewram_dump` | Parse FuzzARM eWRAM dumps for CPU correctness |
+| `pass_fail` | Detect blank screens vs numbered pass/fail indicators |
+| `assertion_text` | Parse assertion error messages from ROM output |
+
+---
+
+## Configuration
+
+Tests are configured in `test-config.toml`:
+
+```toml
+# Base paths
+roms_dir = "test_roms/roms"
+output_dir = "test-reports"
+parallel = 4
+
+# Per-ROM configuration
+[[test]]
+name = "stripes"
+rom_path = "stripes.gba"
+test_type = "screenshot_golden"
+frames = 60
+tolerance = 10
+
+[[test]]
+name = "arm"
+rom_path = "arm.gba"
+test_type = "pass_fail"
+frames = 60
+
+[[test]]
+name = "FuzzARM"
+rom_path = "ARM_Any.gba"
+test_type = "ewram_dump"
+frames = 600
+```
+
+### Config Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique test name |
+| `rom_path` | string | Relative path to ROM file |
+| `test_type` | enum | Verifier type: smoke, screenshot_golden, mgba_oracle, ewram_dump, pass_fail, assertion_text |
+| `frames` | integer | Number of frames to run (default: 60) |
+| `tolerance` | integer | Pixel tolerance for screenshot comparison (default: 10) |
+
+---
+
+## Running Tests
+
+### Full Test Suite
+
+```bash
+cargo run -p gbatopy-test -- --config test-config.toml
+```
+
+### Filter by ROM Name
+
+```bash
+cargo run -p gbatopy-test -- --config test-config.toml --filter stripes
+```
+
+### Custom Config
+
+```bash
+cargo run -p gbatopy-test -- --config /path/to/custom.toml
+```
+
+---
+
+## Test Output
+
+### Console Output
+
+```
+=== GBAtoPy Test Suite ===
+Config: test-config.toml
+ROMs: 68
+Parallel workers: 4
+
+[1/68] stripes ........... PASS (smoke)
+[2/68] hello ............. PASS (screenshot_golden) 98.5% match
+[3/68] arm ............... PASS (pass_fail)
+[4/68] FuzzARM ........... PASS (ewram_dump) 0 failures / 10000 tests
+...
+
+=== Summary ===
+Passed:  65
+Failed:  3
+Errors:  0
+Pass rate: 95.6%
+```
+
+### JSON Report
+
+```bash
+cat test-reports/results.json
+```
+
+```json
+[
+  {
+    "name": "stripes",
+    "test_type": "smoke",
+    "status": "pass",
+    "duration_ms": 5234
+  },
+  ...
+]
+```
+
+### JUnit XML
+
+```bash
+cat test-reports/results-junit.xml
+```
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="gbatopy-test" tests="68" failures="3" time="234.567">
+  <testcase name="stripes" classname="smoke" time="5.234"/>
+  ...
+</testsuite>
+```
+
+---
+
+## Verification Strategies
+
+### 1. Smoke Test
+
+The simplest verifier: transpile ROM and verify Python syntax is valid.
+
+```bash
+cargo run -p gbatopy-cli -- pipeline --rom test_roms/roms/stripes.gba --output /tmp/stripes.py
+python3 -m py_compile /tmp/stripes.py
+```
+
+### 2. Screenshot Golden
+
+Compare transpiled output against known-correct reference images.
+
+**Requirements**: ROM must have `expected.png` in the output directory.
+
+```python
+# Compare with tolerance
+def compare_screenshots(actual, expected, tolerance=10):
+    diff = 0
+    for a, e in zip(actual, expected):
+        if any(abs(ac - ec) > tolerance for ac, ec in zip(a, e)):
+            diff += 1
+    return diff / len(actual) * 100
+```
+
+### 3. mGBA Oracle
+
+Compare transpiled output against mGBA reference screenshots.
+
+```bash
+# Capture golden from mGBA
+./mgba/build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/stripes.gba
+
+# Compare
+# (handled by screenshot_golden verifier)
+```
+
+### 4. eWRAM Dump
+
+Parse FuzzARM eWRAM dumps to verify CPU correctness.
+
+**Format**: Each failure record is 64 bytes at eWRAM address 0x02000000:
 
 ```
 Offset  Size   Content
 0x00    1 word ['AAAA' or 'TTTT'] — ARM or THUMB mode
-0x04    2 words [opcode + shift] — e.g. "tst lsl     " (12 chars padded)
-0x0C    1 word [reserved]
-
+0x04    2 words [opcode + shift] — e.g. "tst lsl     "
 0x10    1 word [initial r0]
 0x14    1 word [initial r1]
 0x18    1 word [initial r2]
 0x1C    1 word [initial CPSR]
-
 0x20    1 word [actual r3]
 0x24    1 word [actual r4]
-0x28    1 word [0x00000000]
 0x2C    1 word [actual CPSR]
-
 0x30    1 word [expected r3]
 0x34    1 word [expected r4]
-0x38    1 word [0x00000000]
 0x3C    1 word [expected CPSR]
 ```
 
-When all tests pass, the ROM displays a green screen (Mode 4) and stops.
+### 5. Pass/Fail Screen
 
-**Verification approach**: 
-1. Transpile → run with `--headless --frame=N`
-2. Dump eWRAM from runtime memory
-3. Parse records at `0x02000000`
-4. No failure records = PASS
-5. Failure records present = report opcode, got vs expected
+Detect blank/green screens (pass) vs numbered failures (fail).
 
-**Total coverage**: 50,000 instruction tests (5 ROMs × 10,000 each).
-
-**Requires**: Adding `--dump-memory` flag to the Python runtime to expose eWRAM after execution.
-
----
-
-### 3. Pass/Fail Screen Detection (Test ROM Display)
-
-Most gba-tests-master ROMs display results on screen in BG Mode 4.
-
-**How it works** (from gba-tests-master README):
-> "Each ROM contains multiple tests. Either all of them pass or the number of the first failed one is displayed on the screen."
-
-- Screen is blank/green → all tests passed
-- Screen shows a number → that test number failed
-
-**ROMs using this pattern**:
-
-| ROM | Category | Tests |
-|-----|----------|-------|
-| arm.gba | CPU | ARM instruction set (flags, conditions, shifts, branches, PSR transfer) |
-| thumb.gba | CPU | Thumb instruction set (arithmetic, logical, shifts, branches, memory) |
-| bios.gba | BIOS | SWI handlers (Div, Sqrt, CpuSet, LZ77, Huffman, RLE) |
-| memory.gba | Memory | RAM read/write, mirroring, wait states |
-| unsafe.gba | CPU | Edge case instructions |
-| armwrestler.gba | CPU | ARM7DI load-store, multiply, SWP |
-| armwrestler-gba-fixed.gba | CPU | Fixed load-store tests |
-| cond_invalid.gba | CPU | Conditional flag behavior |
-| retAddr.gba | CPU | Return address handling (BL, BX, POP pc) |
-| dma_priority.gba | DMA | DMA priority handling |
-| isr.gba | IRQ | Interrupt service routines |
-| if_ack.gba | IRQ | Interrupt flag acknowledgment |
-| irq_delay.gba | IRQ | IRQ delay timing |
-| joypad.gba | Keypad | Key interrupt handling |
-| line_timing.gba | PPU | Scanline timing |
-| lyc_midline.gba | PPU | LY=LYC coincidence mid-frame |
-| window_midframe.gba | PPU | Window rendering mid-frame |
-
-**Verification approach**: Screenshot at frame 60 → check if screen is blank (PASS) or contains a number (FAIL). Simple pixel analysis can detect non-blank screens.
-
----
-
-### 4. Assertion Output Parsing (hw-test C Tests)
-
-hw-test ROMs written in C use explicit assertion functions:
-
-```c
-test_expect("HBLANK=0", 144, hblank_0);       // Exact match
-test_expect_hex("M0 10000h", 0xABAD1DEA, val); // Hex match
-test_expect_range("name", lo, hi, actual);       // Range match
+```python
+def detect_pass_fail(screenshot):
+    # Check if screen is blank/green (PASS)
+    # vs contains a number (FAIL)
+    non_blank_pixels = count_non_blank(screenshot)
+    if non_blank_pixels < 100:
+        return "pass"
+    # Otherwise, try OCR or pattern match for number
+    return "fail"
 ```
 
-They print "PASS" or "FAIL" text on screen.
+### 6. Assertion Text
 
-**ROMs**: `status-irq-dma.gba`, `vram-mirror.gba`, `burst-into-tears.gba`, `force-nseq-access.gba`, `latch.gba`, `start-stop.gba`, `reload.gba`, `128kb-boundary.gba`, `haltcnt.gba`, `timer_change.gba`
+Parse assertion messages from hw-test ROMs.
 
-**Verification approach**: Screenshot → pixel pattern matching for "PASS"/"FAIL" text.
+```python
+def parse_assertion(screenshot):
+    # Pixel pattern matching for "PASS" or "FAIL" text
+    # Extract assertion message if present
+    pass
+```
 
 ---
 
-## ROM Classification by Test Strategy
+## ROM Classification
 
 | Strategy | ROMs | Count |
 |----------|------|-------|
-| Screenshot (golden) | greenswap, bgx, bgpd, sprite-hmosaic, dispcnt-latch | 5 |
-| Screenshot (mGBA oracle) | stripes, shades, hello, helloWorld, hello_world | 5 |
-| Pass/fail screen | arm, thumb, bios, memory, unsafe, armwrestler, armwrestler-gba-fixed, cond_invalid, retAddr, dma_priority, isr, if_ack, irq_delay, joypad, line_timing, lyc_midline, window_midframe | 17 |
-| eWRAM dump | ARM_Any, ARM_DataProcessing, THUMB_Any, THUMB_DataProcessing, FuzzARM | 5 |
-| Assertion text | status-irq-dma, vram-mirror, burst-into-tears, force-nseq-access, latch, start-stop, reload, 128kb-boundary, haltcnt, timer_change | 10 |
-| Smoke only | nes, enhancedcontrolchecker, redline, rtc-demo, helloAudio, test, song, rates, pcmxx, basic-timing, exact-timing, start-delay, sram, flash64, flash128, none, mode2, mode3, mode4, ram-access-timing, cancel-irq-ie, cancel-irq-if, cancel-irq-ime | 23 |
+| screenshot_golden | greenswap, bgx, bgpd, sprite-hmosaic, dispcnt-latch | 5 |
+| mgba_oracle | stripes, shades, hello, helloWorld, hello_world | 5 |
+| pass_fail | arm, thumb, bios, memory, unsafe, armwrestler, cond_invalid, retAddr, dma_priority, isr, if_ack, irq_delay, joypad, line_timing, lyc_midline, window_midframe | 16 |
+| ewram_dump | ARM_Any, ARM_DataProcessing, THUMB_Any, THUMB_DataProcessing, FuzzARM | 5 |
+| assertion_text | status-irq-dma, vram-mirror, burst-into-tears, force-nseq-access, latch, start-stop, reload, 128kb-boundary, haltcnt, timer_change | 10 |
+| smoke | nes, enhancedcontrolchecker, redline, rtc-demo, helloAudio, test, song, rates, pcmxx, basic-timing, exact-timing, start-delay, sram, flash64, flash128, none, mode2, mode3, mode4, ram-access-timing, cancel-irq-ie, cancel-irq-if, cancel-irq-ime | 23 |
 
-**Note**: Some ROMs fit multiple strategies. FuzzARM ROMs also display results in Mode 4 (visual) in addition to eWRAM dumps.
-
----
-
-## Existing Test Infrastructure
-
-### Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `scripts/verify/visual_test.py` | Automated screenshot comparison (8 ROMs, 4 frames each) |
-| `scripts/verify_all_roms.py` | Batch transpile + syntax check for all 68 ROMs |
-| `scripts/verify/coverage_tracker.py` | Feature coverage analysis of transpiled Python |
-| `scripts/screenshot/compare_screenshots.py` | Single ROM mGBA golden vs transpiled comparison |
-| `scripts/screenshot/screenshot.lua` | mGBA Lua script for golden screenshot capture |
-
-### Pytest Suite
-
-`crates/gbatopy-cli/tests/python/` — 12 test files:
-
-- `test_cpu.py` — CPU registers, CPSR flags, all 16 condition codes, thumb mode
-- `test_ppu.py` — PPU creation, register writes, framebuffer, render_frame
-- `test_dma.py` — DMA controller
-- `test_apu.py` — Audio processing unit
-- `test_timers.py` — Timer hardware
-- `test_interrupts.py` — IRQ system
-- `test_memory.py` — Memory mapping
-- `test_mmio.py` — MMIO register handlers
-- `test_input.py` — Keypad input
-- `test_exceptions.py` — Exception handling
-- `test_rom.py` — ROM loading
-
-### Rust Tests
-
-- `crates/gbatopy-disasm/tests/test_halfword_load_store.rs` — ARM LDRH/STRH/LDRSB/LDRSH
-- `crates/gbatopy-disasm/tests/test_mul_mla.rs` — ARM MUL/MLA
-- `crates/gbatopy-cli/src/codegen/patterns.rs` — 5 codegen unit tests
+**Total**: 68 ROMs
 
 ---
 
-## Proposed Test Levels
+## Legacy Scripts (Deprecated)
 
-### Level 1: Transpile Smoke Test
+The following Python scripts have been **removed** in favor of the Rust test framework:
 
-For every ROM: transpile → syntax check → runs without crash.
+- ❌ `scripts/verify/visual_test.py` — Replaced by `gbatopy-test` smoke + screenshot verifiers
+- ❌ `scripts/verify_all_roms.py` — Replaced by `gbatopy-test` with parallel execution
+- ❌ `scripts/screenshot/compare_screenshots.py` — Replaced by `gbatopy-test` screenshot verifier
+- ❌ `scripts/screenshot/screenshot.lua` — Still used for capturing mGBA golden screenshots
 
-```bash
-cargo run -p gbatopy-cli -- pipeline --rom $ROM --output /tmp/test.py
-python3 -m py_compile /tmp/test.py
-SDL_VIDEODRIVER=dummy python3 /tmp/test.py --headless --frame=1
+The following script remains for reference:
+
+- ✅ `scripts/verify/coverage_tracker.py` — Feature coverage analysis (not part of CI)
+
+---
+
+## Adding New Tests
+
+1. Add entry to `test-config.toml`:
+
+```toml
+[[test]]
+name = "my-rom"
+rom_path = "my-rom.gba"
+test_type = "smoke"  # or screenshot_golden, pass_fail, etc.
+frames = 60
 ```
 
-Extension: detect stubs (`pass`, `return 0`, `NotImplementedError`) in generated code.
+2. For screenshot tests, add `expected.png` to `test-reports/my-rom/`
 
-### Level 2: Visual Regression Test
-
-Two sub-suites:
-
-**Suite A** (no mGBA needed — uses hw-test golden images):
-- greenswap, bgx, bgpd, sprite-hmosaic, dispcnt-latch
-- Compare transpiled output against `expected.png`
-
-**Suite B** (mGBA oracle):
-- stripes, shades, hello, helloWorld, hello_world
-- Capture golden from mGBA → transpile → compare
-
-### Level 3: CPU Correctness Test
-
-FuzzARM eWRAM dump verification:
+3. Run tests:
 
 ```bash
-# Transpile FuzzARM ROM
-cargo run -p gbatopy-cli -- pipeline --rom test_roms/roms/ARM_Any.gba --output /tmp/arm_any.py
-
-# Run with memory dump
-python3 /tmp/arm_any.py --headless --frame=600 --dump-memory /tmp/ewram.bin
-
-# Parse eWRAM dump for failure records
-python3 scripts/verify/fuzzarm_parser.py /tmp/ewram.bin
-```
-
-Requires adding `--dump-memory` to the Python runtime.
-
-### Level 4: Pass/Fail Screen Detection
-
-For gba-tests-master ROMs: screenshot at frame 60 → detect blank screen (PASS) or test number (FAIL).
-
-```bash
-cargo run -p gbatopy-cli -- pipeline --rom test_roms/roms/arm.gba --output /tmp/arm.py
-SDL_VIDEODRIVER=dummy python3 /tmp/arm.py --headless --frame=60 --screenshot /tmp/arm_result.png
-python3 scripts/verify/screen_check.py /tmp/arm_result.png
-# Output: PASS (blank screen) or FAIL: test #42 (number detected)
+cargo run -p gbatopy-test -- --config test-config.toml --filter my-rom
 ```
 
 ---
 
-## Implementation Priority
+## CI Integration
 
-1. **Extend `visual_test.py`** with hw-test golden images (Suite A)
-2. **Add `--dump-memory` flag** to Python runtime
-3. **Build FuzzARM eWRAM parser** (`scripts/verify/fuzzarm_parser.py`)
-4. **Build screen pass/fail detector** (`scripts/verify/screen_check.py`)
-5. **Create unified test runner** that orchestrates all levels
-6. **Add GitHub Actions CI** with the unified runner
+Run tests in CI:
+
+```bash
+# Build
+cargo build --release
+
+# Run test suite
+cargo run -p gbatopy-test -- --config test-config.toml
+
+# Check results
+if [ -f test-reports/results.json ]; then
+    echo "Tests completed"
+fi
+```
+
+JUnit XML output can be consumed by GitHub Actions, Jenkins, etc.

@@ -1,6 +1,6 @@
 # GBAtoPy Roadmap — Project Status
 
-> **Last updated**: 2026-05-22
+> **Last updated**: 2026-06-01
 > **Current state**: 66 ROMs transpile successfully. PPU Mode 3/4 verified working with 100% golden screenshot match. 54 BIOS handlers implemented. DMA/Timer/IRQ infrastructure exists.
 > **Blockers**: 
 > - APU audio synthesis not implemented
@@ -203,3 +203,38 @@ The Python runtime modules are derived from [PyBoyAdvance](https://github.com/wi
 ## 10. License
 
 MIT License — See LICENSE file
+
+## 11. Test Framework (NEW - June 2026)
+
+GBAtoPy includes a Rust-based automated test framework in `crates/gbatopy-test/`:
+
+### Components
+
+- **Test Runner**: Parallel execution via rayon (configurable workers)
+- **Configuration**: Per-ROM settings in `test-config.toml` (68 entries)
+- **Verifiers**: 6 verification strategies
+
+| Verifier | Description |
+|----------|-------------|
+| `smoke` | Transpile + Python syntax validation |
+| `screenshot_golden` | Pixel-by-pixel comparison against expected.png |
+| `mgba_oracle` | Compare against mGBA reference screenshots |
+| `ewram_dump` | Parse FuzzARM eWRAM dumps for CPU correctness |
+| `pass_fail` | Detect blank screens vs numbered pass/fail indicators |
+| `assertion_text` | Parse assertion error messages from ROM output |
+
+### Running Tests
+
+```bash
+# Full test suite (all 68 ROMs)
+cargo run -p gbatopy-test -- --config test-config.toml
+
+# Filter by ROM name
+cargo run -p gbatopy-test -- --config test-config.toml --filter stripes
+```
+
+### Reports
+
+- **Console**: Color-coded pass/fail output
+- **JSON**: `test-reports/results.json`
+- **JUnit XML**: `test-reports/results-junit.xml`

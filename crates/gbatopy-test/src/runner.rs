@@ -83,6 +83,7 @@ mod tests {
             roms_dir: PathBuf::from("test_roms/roms"),
             output_dir: PathBuf::from("artifacts"),
             parallel: 4,
+            tests: vec![],
         };
         let entry = TestEntry {
             name: "stripes".to_string(),
@@ -100,6 +101,7 @@ mod tests {
             roms_dir: PathBuf::from("test_roms/roms"),
             output_dir: PathBuf::from("artifacts"),
             parallel: 4,
+            tests: vec![],
         };
         let runner = TestRunner::from_config(config);
         let entries = vec![

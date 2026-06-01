@@ -22,6 +22,7 @@ ROM bytes → Disassembly → Python Code Gen → Executable Python
 - **Memory Model** - GBA memory map (0x08000000 ROM, 0x06000000 VRAM, 0x04000000 MMIO)
 - **Game Loop** - pygame-based display and input
 - **Python Runtime** - Core emulation modules (CPU, PPU, Memory, DMA, Timers, APU) embedded in generated Python (see `crates/gbatopy-cli/assets/gba_runtime/`). Derived from [PyBoyAdvance](https://github.com/williamckha/PyBoyAdvance) (MIT-licensed).
+- **Test Framework** (`crates/gbatopy-test/`) - Rust-based automated test infrastructure with parallel execution, 6 verifier types (smoke, screenshot_golden, mgba_oracle, ewram_dump, pass_fail, assertion_text), and configurable per-ROM testing via `test-config.toml`.
 
 ### Generated Output Structure
 
@@ -157,6 +158,12 @@ cargo build --workspace
 # Rust unit tests
 cargo test --workspace
 
+# Rust test framework (gbatopy-test) - runs all 68 ROMs
+cargo run -p gbatopy-test -- --config test-config.toml
+
+# Subset of tests (filter by name)
+cargo run -p gbatopy-test -- --config test-config.toml --filter stripes
+
 # Python tests (inside gba_runtime module)
 python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/ -v
 
@@ -168,6 +175,28 @@ for rom in test_roms/roms/*.gba; do
   echo "✓ $(basename "$rom")"
 done
 ```
+
+### Run Test Framework
+
+The `gbatopy-test` crate provides automated testing with multiple verification strategies:
+
+```bash
+# Full test suite (all 68 ROMs)
+cargo run -p gbatopy-test -- --config test-config.toml
+
+# Run specific verifier types
+# smoke: Transpile + syntax check
+# screenshot_golden: Compare against expected.png
+# mgba_oracle: Compare against mGBA reference
+# ewram_dump: Parse FuzzARM eWRAM dumps
+# pass_fail: Detect blank/failed screens
+# assertion_text: Parse assertion messages from ROM output
+```
+
+Reports are generated in multiple formats:
+- Console: Color-coded pass/fail output
+- JSON: `test-reports/results.json`
+- JUnit XML: `test-reports/results-junit.xml`
 
 ### Verify Generated Python
 

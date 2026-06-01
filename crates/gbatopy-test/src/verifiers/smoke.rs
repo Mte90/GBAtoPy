@@ -16,9 +16,13 @@ impl Verifier for SmokeVerifier {
 
         // Resolve the full ROM path
         let rom_path = config.roms_dir.join(&entry.rom_path);
+        log::debug!("[Smoke] ROM path resolved to: {}", rom_path.display());
 
         // Step 1: Run transpiler
         let output_path = artifacts_dir.join("output.py");
+        let rom_path_str = rom_path.to_string_lossy().to_string();
+        let output_path_str = output_path.to_string_lossy().to_string();
+        
         let transpile_result = duct::cmd!(
             "cargo",
             "run",
@@ -27,9 +31,9 @@ impl Verifier for SmokeVerifier {
             "--",
             "pipeline",
             "--rom",
-            rom_path.to_string_lossy().as_ref(),
+            &rom_path_str,
             "--output",
-            output_path.to_string_lossy().as_ref()
+            &output_path_str
         )
         .dir(".") // Run from project root
         .run();
