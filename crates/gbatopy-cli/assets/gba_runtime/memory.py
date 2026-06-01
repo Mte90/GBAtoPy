@@ -48,6 +48,13 @@ class Memory:
         # GBA hardware default: DISPCNT = 0x80 (display enabled, Mode 0)
         self.io[0] = 0x80
         self.palette = bytearray(MemoryMap.PALETTE_SIZE)
+        for i in range(256):
+            r = (i * 7) % 32
+            g = (i * 11) % 32
+            b = (i * 13) % 32
+            c = (r << 10) | (g << 5) | b
+            self.palette[i*2] = c & 0xFF
+            self.palette[i*2+1] = (c >> 8) & 0xFF
         self.vram = bytearray(MemoryMap.VRAM_SIZE)
         self.oam = bytearray(MemoryMap.OAM_SIZE)
         self.sram = bytearray(MemoryMap.SRAM_SIZE)
@@ -78,10 +85,10 @@ class Memory:
     def setup_isr_handler(self, handler):
         self._isr_handler = handler
         isr_addr = id(handler)
-        self.iwram[0x7FFC - 0x03000000] = isr_addr & 0xFF
-        self.iwram[0x7FFD - 0x03000000] = (isr_addr >> 8) & 0xFF
-        self.iwram[0x7FFE - 0x03000000] = (isr_addr >> 16) & 0xFF
-        self.iwram[0x7FFF - 0x03000000] = (isr_addr >> 24) & 0xFF
+        self.iwram[32764] = isr_addr & 0xFF
+        self.iwram[32765] = (isr_addr >> 8) & 0xFF
+        self.iwram[32766] = (isr_addr >> 16) & 0xFF
+        self.iwram[32767] = (isr_addr >> 24) & 0xFF
 
     def get_isr_address(self) -> int:
         offset = 0x7FFC - 0x03000000
@@ -615,6 +622,9 @@ class Memory:
         addr &= 0xFFFFFFFF
         value &= 0xFFFF
         addr = self._map_address(addr)
+
+        if 0x05000000 <= addr < 0x05000400:
+            print(f"DEBUG: Palette write at {addr:#x} = {value:#x}")
 
         # Handle affine parameters directly to avoid split across two addresses
         # Affine params are at even offsets: 0x80, 0x82, 0x84, 0x86, 0x88, 0x8A, 0x8C, 0x8E

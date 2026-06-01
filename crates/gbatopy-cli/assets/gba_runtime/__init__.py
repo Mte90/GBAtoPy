@@ -8,12 +8,13 @@ from .ppu import PPU
 from .apu import APU
 from .dma import DMA
 from .timers import Timers
-from .input import KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, GBA_KEYS, KEYBOARD_MAP
+from .input import KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, GBA_KEYS, KEYBOARD_MAP, Input
 from .rom import ROM
 from .interrupts import InterruptController
 from .exceptions import GBARuntimeError, InvalidROMError
 from .arm7tdmi import ARM7TDMI
 from .arm7tdmi import ISRHandler
+from .bios import BIOS
 from .timing import initialize_timing, get_calibrator
 
 from .text_lib import text_init, text_color, m_vsync, text_glyph_data, text_glyph, text_char, GLYPHS

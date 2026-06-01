@@ -188,7 +188,7 @@ class DMA:
             DMAChannel(2, None),
             DMAChannel(3, None),
         ]
-        self._setup_mmio()
+        # _setup_mmio() is called after attach_memory() to avoid None reference
 
     def attach_memory(self, mem):
         """Attach memory for DMA transfers"""
@@ -337,7 +337,7 @@ class DMA:
         # Each DMA channel has a control register that triggers the transfer
         for i in range(4):
             dma_ctrl_addr = 0x040000B0 + (i * 8)
-            self.memory.set_write_handler(
+            self.mem.set_write_handler(
                 dma_ctrl_addr,
                 lambda addr, value, channel=i: self._dma_control_handler(channel, addr, value)
             )
