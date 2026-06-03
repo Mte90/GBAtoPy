@@ -45,16 +45,7 @@ class Memory:
         self.ewram = bytearray(MemoryMap.EWRAM_SIZE)
         self.iwram = bytearray(MemoryMap.IWRAM_SIZE)
         self.io = bytearray(MemoryMap.IO_SIZE)
-        # GBA hardware default: DISPCNT = 0x80 (display enabled, Mode 0)
-        self.io[0] = 0x80
         self.palette = bytearray(MemoryMap.PALETTE_SIZE)
-        for i in range(256):
-            r = (i * 7) % 32
-            g = (i * 11) % 32
-            b = (i * 13) % 32
-            c = (r << 10) | (g << 5) | b
-            self.palette[i*2] = c & 0xFF
-            self.palette[i*2+1] = (c >> 8) & 0xFF
         self.vram = bytearray(MemoryMap.VRAM_SIZE)
         self.oam = bytearray(MemoryMap.OAM_SIZE)
         self.sram = bytearray(MemoryMap.SRAM_SIZE)
@@ -68,6 +59,9 @@ class Memory:
 
         self._mmio_write_handlers: dict[int, Callable[[int, int], None]] = {}
         self._mmio_read_handlers: dict[int, Callable[[int], int]] = {}
+        # GBA hardware default: DISPCNT = 0x80 (display enabled)
+        self.io[0x00] = 0x80
+        self.io[0x01] = 0x00
 
         self._ppu: Optional[object] = None
         self._dma: Optional[object] = None
@@ -85,10 +79,10 @@ class Memory:
     def setup_isr_handler(self, handler):
         self._isr_handler = handler
         isr_addr = id(handler)
-        self.iwram[32764] = isr_addr & 0xFF
-        self.iwram[32765] = (isr_addr >> 8) & 0xFF
-        self.iwram[32766] = (isr_addr >> 16) & 0xFF
-        self.iwram[32767] = (isr_addr >> 24) & 0xFF
+        self.iwram[0x7FFC - 0x03000000] = isr_addr & 0xFF
+        self.iwram[0x7FFD - 0x03000000] = (isr_addr >> 8) & 0xFF
+        self.iwram[0x7FFE - 0x03000000] = (isr_addr >> 16) & 0xFF
+        self.iwram[0x7FFF - 0x03000000] = (isr_addr >> 24) & 0xFF
 
     def get_isr_address(self) -> int:
         offset = 0x7FFC - 0x03000000
@@ -96,16 +90,6 @@ class Memory:
                 (self.iwram[offset + 1] << 8) | 
                 (self.iwram[offset + 2] << 16) | 
                 (self.iwram[offset + 3] << 24))
-
-    def dump_region(self, region: str) -> bytes:
-        if region == "ewram":
-            return bytes(self.ewram)
-        elif region == "iwram":
-            return bytes(self.iwram)
-        elif region == "vram":
-            return bytes(self.vram)
-        else:
-            raise ValueError(f"Unknown memory region: {region}. Expected 'ewram', 'iwram', or 'vram'.")
 
     def attach_ppu(self, ppu):        self._ppu = ppu
 
@@ -123,121 +107,6 @@ class Memory:
 
     def attach_interrupts(self, irq):
         self._interrupts = irq
-
-    def dump_state(self) -> dict:
-        dump = {
-            "bios": list(self.bios),
-            "ewram": list(self.ewram),
-            "iwram": list(self.iwram),
-            "palette": list(self.palette),
-            "vram": list(self.vram),
-            "oam": list(self.oam),
-            "sram": list(self.sram),
-            "affine_params": list(self._affine_params),
-            "open_bus": self.open_bus,
-            "rom": list(self.rom) if self.rom else None,
-            "rom_size": self.rom_size,
-            "io": list(self.io),
-            "isr_address": id(self._isr_handler) if self._isr_handler else 0,
-        }
-
-        return dump
-
-    def load_state(self, state: dict) -> None:
-        if "bios" in state:
-            if isinstance(state["bios"], list):
-                self.bios = bytearray(state["bios"])
-
-        if "ewram" in state:
-            if isinstance(state["ewram"], list):
-                self.ewram = bytearray(state["ewram"])
-
-        if "iwram" in state:
-            if isinstance(state["iwram"], list):
-                self.iwram = bytearray(state["iwram"])
-
-        if "palette" in state:
-            if isinstance(state["palette"], list):
-                self.palette = bytearray(state["palette"])
-
-        if "vram" in state:
-            if isinstance(state["vram"], list):
-                self.vram = bytearray(state["vram"])
-
-        if "oam" in state:
-            if isinstance(state["oam"], list):
-                self.oam = bytearray(state["oam"])
-
-        if "sram" in state:
-            if isinstance(state["sram"], list):
-                self.sram = bytearray(state["sram"])
-
-        if "affine_params" in state:
-            if isinstance(state["affine_params"], list):
-                self._affine_params = bytearray(state["affine_params"])
-
-        if "open_bus" in state:
-            self.open_bus = int(state["open_bus"])
-
-        if "rom" in state and state["rom"] is not None:
-            if isinstance(state["rom"], list):
-                self.rom = bytearray(state["rom"])
-            else:
-                self.rom = None
-
-        if "rom_size" in state:
-            self.rom_size = int(state["rom_size"])
-
-        if "io" in state and isinstance(state["io"], list):
-            self.io = bytearray(state["io"])
-
-
-        if "bios" in state:
-            if isinstance(state["bios"], list):
-                self.bios = bytearray(state["bios"])
-
-        if "ewram" in state:
-            if isinstance(state["ewram"], list):
-                self.ewram = bytearray(state["ewram"])
-
-        if "iwram" in state:
-            if isinstance(state["iwram"], list):
-                self.iwram = bytearray(state["iwram"])
-
-        if "palette" in state:
-            if isinstance(state["palette"], list):
-                self.palette = bytearray(state["palette"])
-
-        if "vram" in state:
-            if isinstance(state["vram"], list):
-                self.vram = bytearray(state["vram"])
-
-        if "oam" in state:
-            if isinstance(state["oam"], list):
-                self.oam = bytearray(state["oam"])
-
-        if "sram" in state:
-            if isinstance(state["sram"], list):
-                self.sram = bytearray(state["sram"])
-
-        if "affine_params" in state:
-            if isinstance(state["affine_params"], list):
-                self._affine_params = bytearray(state["affine_params"])
-
-        if "open_bus" in state:
-            self.open_bus = int(state["open_bus"])
-
-        if "rom" in state and state["rom"] is not None:
-            if isinstance(state["rom"], list):
-                self.rom = bytearray(state["rom"])
-            else:
-                self.rom = None
-
-        if "rom_size" in state:
-            self.rom_size = int(state["rom_size"])
-
-        if "io" in state and isinstance(state["io"], list):
-            self.io = bytearray(state["io"])
 
     def register_mmio_write(self, offset: int, handler: Callable[[int, int], None]):
         if 0 <= offset < MemoryMap.IO_SIZE:
@@ -623,9 +492,6 @@ class Memory:
         value &= 0xFFFF
         addr = self._map_address(addr)
 
-        if 0x05000000 <= addr < 0x05000400:
-            print(f"DEBUG: Palette write at {addr:#x} = {value:#x}")
-
         # Handle affine parameters directly to avoid split across two addresses
         # Affine params are at even offsets: 0x80, 0x82, 0x84, 0x86, 0x88, 0x8A, 0x8C, 0x8E
         # Each is 16-bit, so we write both bytes to the dedicated storage
@@ -864,252 +730,3 @@ class MemoryDump:
                 f.write("\nNo differences found.\n")
 
         return filepath
-
-
-class RAMEditor:
-    """RAM editor scaffold for reading, writing, and displaying memory regions."""
-
-    def __init__(self, memory: "Memory"):
-        self.memory = memory
-        self.current_addr = 0x02000000  # Start at EWRAM
-        self.current_view_size = 32  # Bytes per row
-        self.search_pattern: Optional[bytes] = None
-        self.hex_display_width = 16  # Characters per byte (4 hex chars + 1 space)
-
-    def read_u8(self, addr: int) -> int:
-        """Read single byte at address."""
-        return self.memory.read_u8(addr)
-
-    def read_u16(self, addr: int) -> int:
-        """Read 16-bit value (little-endian) at address."""
-        return self.memory.read_u16(addr)
-
-    def read_u32(self, addr: int) -> int:
-        """Read 32-bit value (little-endian) at address."""
-        return self.memory.read_u32(addr)
-
-    def write_u8(self, addr: int, value: int) -> bool:
-        """Write single byte at address. Returns True on success."""
-        try:
-            self.memory.write_u8(addr, value & 0xFF)
-            return True
-        except Exception:
-            return False
-
-    def write_u16(self, addr: int, value: int) -> bool:
-        """Write 16-bit value (little-endian) at address. Returns True on success."""
-        try:
-            self.memory.write_u16(addr, value & 0xFFFF)
-            return True
-        except Exception:
-            return False
-
-    def write_u32(self, addr: int, value: int) -> bool:
-        """Write 32-bit value (little-endian) at address. Returns True on success."""
-        try:
-            self.memory.write_u32(addr, value & 0xFFFFFFFF)
-            return True
-        except Exception:
-            return False
-
-    def write_bytes(self, addr: int, data: bytes) -> bool:
-        """Write multiple bytes starting at address. Returns True on success."""
-        try:
-            for i, byte in enumerate(data):
-                self.memory.write_u8(addr + i, byte)
-            return True
-        except Exception:
-            return False
-
-    def read_region(self, addr: int, size: int) -> bytearray:
-        """Read a region of bytes from memory. Returns bytearray of length 'size'."""
-        result = bytearray(size)
-        for i in range(size):
-            result[i] = self.memory.read_u8(addr + i)
-        return result
-
-    def write_region(self, addr: int, data: bytearray) -> bool:
-        """Write a region of bytes to memory. Returns True on success."""
-        if len(data) != 0:
-            return self.write_bytes(addr, bytes(data))
-        return True
-
-    def search_memory(self, addr: int, size: int, pattern: bytes) -> list[tuple[int, int]]:
-        """Search for a pattern in memory. Returns list of (offset, byte_count) tuples."""
-        results = []
-        psize = len(pattern)
-        if psize == 0 or size < psize:
-            return results
-
-        i = 0
-        while i <= size - psize:
-            match = True
-            for j in range(psize):
-                if self.memory.read_u8(addr + i + j) != pattern[j]:
-                    match = False
-                    break
-            if match:
-                results.append((i, psize))
-                i += psize  # Move past match to find next
-            else:
-                i += 1
-        return results
-
-    def get_memory_map(self) -> dict:
-        """Return available memory regions with their size and start address."""
-        return {
-            "bios": (MemoryMap.BIOS_START, MemoryMap.BIOS_SIZE),
-            "ewram": (MemoryMap.EWRAM_START, MemoryMap.EWRAM_SIZE),
-            "iwram": (MemoryMap.IWRAM_START, MemoryMap.IWRAM_SIZE),
-            "palette": (MemoryMap.PALETTE_START, MemoryMap.PALETTE_SIZE),
-            "vram": (MemoryMap.VRAM_START, MemoryMap.VRAM_SIZE),
-            "oam": (MemoryMap.OAM_START, MemoryMap.OAM_SIZE),
-            "sram": (MemoryMap.SRAM_START, MemoryMap.SRAM_SIZE),
-        }
-
-    def goto_address(self, addr: int) -> None:
-        """Move current view to address."""
-        self.current_addr = addr
-
-    def find_and_goto(self, pattern: bytes) -> Optional[int]:
-        """Find pattern from current address and move cursor there. Returns address or None."""
-        region_name, region_size = self._get_current_region()
-        if region_size == 0:
-            return None
-
-        results = self.search_memory(self.current_addr, region_size, pattern)
-        if results:
-            offset = results[0][0]
-            self.goto_address(self.current_addr + offset)
-            return self.current_addr
-        return None
-
-    def _get_current_region(self) -> tuple[str, int]:
-        """Determine current memory region based on address. Returns (name, size)."""
-        regions = self.get_memory_map()
-        for name, (start, size) in regions.items():
-            if start <= self.current_addr < start + size:
-                return name, size
-        return "unknown", 0
-
-    def display_region(self, region_name: str = None, count: int = 16) -> str:
-        """Display memory region as hex dump. Returns formatted string."""
-        regions = self.get_memory_map()
-
-        if region_name is None:
-            addr = self.current_addr
-            region_name, size = self._get_current_region()
-        else:
-            addr, size = regions[region_name]
-
-        if size == 0 or count == 0:
-            return f"{region_name.upper()}: No data available"
-
-        lines = []
-        lines.append(f"\n{'='*60}")
-        lines.append(f"{region_name.upper()} (0x{addr:08X}, {size:,} bytes, showing {count} bytes from 0x{addr:08X})")
-        lines.append(f"{'='*60}")
-
-        display_count = min(count, size)
-        for offset in range(0, display_count, self.current_view_size):
-            start = addr + offset
-            end = min(start + self.current_view_size, size)
-            line_addr = f"0x{start:08X}"
-            hex_str = ""
-            ascii_str = ""
-
-            for i in range(start, end):
-                byte_val = self.memory.read_u8(i)
-                hex_str += f"{byte_val:02X} "
-                char = chr(byte_val) if 32 <= byte_val < 127 else "."
-                ascii_str += char
-
-            lines.append(f"{line_addr:<12} {hex_str:<{self.hex_display_width * self.current_view_size + 12}} |{ascii_str}|")
-
-        lines.append(f"{'='*60}\n")
-        return "\n".join(lines)
-
-    def display_current(self, count: int = 16) -> str:
-        """Display memory at current address. Same as display_region but uses cursor."""
-        region_name, size = self._get_current_region()
-        return self.display_region(region_name, count)
-
-    def compare_regions(self, region1: str, addr1: int, region2: str, addr2: int, count: int = 64) -> dict:
-        """Compare two memory regions. Returns dict with match percentage and differences."""
-        if region1 not in self.get_memory_map() or region2 not in self.get_memory_map():
-            return {"error": "Invalid region name", "valid_regions": list(self.get_memory_map().keys())}
-
-        data1 = self.read_region(addr1, count)
-        data2 = self.read_region(addr2, count)
-
-        if len(data1) != len(data2) or len(data1) == 0:
-            return {
-                "error": "Size mismatch or empty data",
-                "region1": {"addr": addr1, "size": len(data1)},
-                "region2": {"addr": addr2, "size": len(data2)},
-            }
-
-        matches = sum(1 for b1, b2 in zip(data1, data2) if b1 == b2)
-        total = len(data1)
-        match_pct = (matches / total) * 100
-
-        differences = []
-        for i, (b1, b2) in enumerate(zip(data1, data2)):
-            if b1 != b2:
-                differences.append((addr1 + i, b1, b2))
-
-        return {
-            "region1": {"name": region1, "addr": addr1, "count": count},
-            "region2": {"name": region2, "addr": addr2, "count": count},
-            "total_bytes": total,
-            "matches": matches,
-            "mismatches": len(differences),
-            "match_percentage": round(match_pct, 2),
-            "differences": differences[:100],  # Limit to first 100 differences
-        }
-
-
-
-# ============================================================================
-# USAGE EXAMPLES
-# ============================================================================
-# To use the RAM editor in your generated game:
-#
-# from memory import Memory, RAMEditor
-#
-# # Create memory instance
-# memory = Memory()
-# memory.load_rom("path/to/rom.gba")  # Optional: load ROM data
-#
-# # Create RAM editor
-# editor = RAMEditor(memory)
-#
-# # Read memory values
-# byte_val = editor.read_u8(0x02000000)       # Read 8-bit value
-# short_val = editor.read_u16(0x02000000)     # Read 16-bit value  
-# long_val = editor.read_u32(0x02000000)      # Read 32-bit value
-#
-# # Write memory values
-# editor.write_u8(0x03000100, 0xAB)           # Write 8-bit
-# editor.write_u16(0x03000110, 0x1234)        # Write 16-bit
-# editor.write_u32(0x03000120, 0xDEADBEEF)    # Write 32-bit
-#
-# # Display memory region (hex dump format)
-# print(editor.display_region("ewram", 64))   # Show 64 bytes of EWRAM
-#
-# # Search for a pattern in memory
-# pattern = bytes([0x4E, 0xB9])  # Example pattern
-# editor.find_and_goto(pattern)   # Jump to first occurrence
-#
-# # Compare two memory regions
-# result = editor.compare_regions("ewram", 0x02000000, "vram", 0x06000000, 128)
-# print(f"Match: {result['match_percentage']}%")
-#
-# # Write a block of data
-# editor.write_region(0x03000200, bytearray([0x11, 0x22, 0x33, 0x44]))
-#
-# # Navigate between memory regions
-# editor.goto_address(0x06000000)            # Move to VRAM
-# region_name, size = editor._get_current_region()
-# print(f"Current region: {region_name}")
-

@@ -8,14 +8,12 @@ from .ppu import PPU
 from .apu import APU
 from .dma import DMA
 from .timers import Timers
-from .input import KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, GBA_KEYS, KEYBOARD_MAP, Input
+from .input import Input, KEY_A, KEY_B, KEY_START, KEY_SELECT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT
 from .rom import ROM
 from .interrupts import InterruptController
 from .exceptions import GBARuntimeError, InvalidROMError
 from .arm7tdmi import ARM7TDMI
 from .arm7tdmi import ISRHandler
-from .bios import BIOS
-from .timing import initialize_timing, get_calibrator
 
 from .text_lib import text_init, text_color, m_vsync, text_glyph_data, text_glyph, text_char, GLYPHS
 from .screenshot import auto_capture_screenshot, get_capture_output_path
@@ -94,8 +92,6 @@ def create_runtime():
     memory.setup_isr_handler(isr_handler)
 
     cpu = ARM7TDMI(memory)
-    bios = BIOS(memory)
-    cpu.bios = bios
 
     return {
         "cpu": cpu,
@@ -150,7 +146,7 @@ def load_assets():
 
 
 def main_entry(
-    rom_path: str, frames: int = 60, headless: bool = False, screenshot_path: Optional[str] = None, dump_memory: Optional[str] = None
+    rom_path: str, frames: int = 60, headless: bool = False, screenshot_path: Optional[str] = None
 ):
     """Main entry point for running a GBA ROM in Python.
 
@@ -159,7 +155,6 @@ def main_entry(
         frames: Number of frames to run (default: 60)
         headless: Run without display (default: False)
         screenshot_path: Path to save screenshot at end (optional)
-        dump_memory: Memory region to dump ("ewram", "iwram", "vram", or "all"). If provided, dumps after running and exits without pygame cleanup.
     """
     global _runtime, _screen, _running
 
@@ -190,10 +185,6 @@ def main_entry(
     ppu = _runtime["ppu"]
     apu = _runtime["apu"]
     input = _runtime["input"]
-    
-    # Initialize timing calibration
-    print("[Timing] Initializing timing calibration...")
-    initialize_timing()
 
     # STEP 4: Start APU audio (if not headless)
     if not headless:
@@ -214,13 +205,6 @@ def main_entry(
     generated = importlib.util.module_from_spec(spec)
     sys.modules["generated_rom"] = generated
     spec.loader.exec_module(generated)
-
-    # Connect generated code to runtime memory (CRITICAL - VRAM/Palette must be shared)
-    generated.vram = memory.vram
-    generated.palette_ram = memory.palette
-    generated.oam = memory.oam
-    generated.ewram = memory.ewram
-    generated.ROM_DATA = memory.rom_data if hasattr(memory, 'rom_data') else bytearray()
 
     # Check if func_map exists and call entry point
     if hasattr(generated, "func_map") and 0x08000000 in generated.func_map:
@@ -349,44 +333,6 @@ def main_entry(
     if screenshot_path and _screen is not None:
         pygame.image.save(_screen, screenshot_path)
         print(f"Screenshot saved to: {screenshot_path}")
-
-    # Dump memory if requested
-    if dump_memory and _runtime is not None:
-        memory = _runtime["memory"]
-        print(f"\n=== Dumping memory region: {dump_memory} ===")
-        
-        if dump_memory == "ewram":
-            data = memory.dump_region("ewram")
-            output_path = "/tmp/ewram_dump.bin"
-        elif dump_memory == "iwram":
-            data = memory.dump_region("iwram")
-            output_path = "/tmp/iwram_dump.bin"
-        elif dump_memory == "vram":
-            data = memory.dump_region("vram")
-            output_path = "/tmp/vram_dump.bin"
-        elif dump_memory == "all":
-            # Dump all writable memory regions
-            ewram_data = memory.dump_region("ewram")
-            iwram_data = memory.dump_region("iwram")
-            vram_data = memory.dump_region("vram")
-            with open("/tmp/ewram_dump.bin", "wb") as f:
-                f.write(ewram_data)
-            with open("/tmp/iwram_dump.bin", "wb") as f:
-                f.write(iwram_data)
-            with open("/tmp/vram_dump.bin", "wb") as f:
-                f.write(vram_data)
-            print(f"  EWRAM: {len(ewram_data)} bytes -> /tmp/ewram_dump.bin")
-            print(f"  IWRAM: {len(iwram_data)} bytes -> /tmp/iwram_dump.bin")
-            print(f"  VRAM:  {len(vram_data)} bytes -> /tmp/vram_dump.bin")
-            output_path = None  # Already written
-        else:
-            print(f"  ERROR: Unknown region '{dump_memory}'. Use: ewram, iwram, vram, all")
-            output_path = None
-        
-        if output_path:
-            with open(output_path, "wb") as f:
-                f.write(data)
-            print(f"  Dumped {len(data)} bytes to {output_path}")
 
     # Cleanup
     if not headless:

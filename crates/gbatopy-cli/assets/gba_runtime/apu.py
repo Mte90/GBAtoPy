@@ -298,7 +298,6 @@ class APU:
         self.fifo_a_enabled = False
         self.fifo_b_enabled = False
         self._audio_output = None
-        self.channel = None  # pygame Channel for continuous audio
 
     def start(self):
         """Start audio playback"""
@@ -430,44 +429,16 @@ class APU:
         return (left, right)
 
     def update(self):
-        """Generate audio buffer for pygame - use double-buffer to prevent clicks"""
+        """Generate audio buffer for pygame"""
         if not pygame.mixer.get_init():
             return
 
-        # Generate 2048 samples (enough for ~46ms at 44100Hz)
         samples = []
-        for _ in range(2048):
+        for _ in range(1024):
             left, right = self.get_sample()
             samples.append(left)
             samples.append(right)
 
-        if not samples:
-            return
-
-        # Use two channels with alternating buffers for seamless playback
-        if not hasattr(self, '_sound_buffers'):
-            # Double-buffer: two channels alternating
-            self._sound_buffers = [None, None]
-            self._current_buffer = 0
-            try:
-                self._channel1 = pygame.mixer.Channel(0) if pygame.mixer.get_num_channels() > 0 else None
-                self._channel2 = pygame.mixer.Channel(1) if pygame.mixer.get_num_channels() > 1 else None
-            except pygame.error:
-                self._channel1 = None
-                self._channel2 = None
-
-        # Create new sound buffer
-        new_sound = pygame.mixer.Sound(bytes(samples))
-
-        # Alternate between two channels
-        if self._current_buffer == 0:
-            self._sound_buffers[0] = new_sound
-            if self._channel1 and not self._channel1.get_busy():
-                self._channel1.play(new_sound)
-        else:
-            self._sound_buffers[1] = new_sound
-            if self._channel2 and not self._channel2.get_busy():
-                self._channel2.play(new_sound)
-
-        # Toggle buffer
-        self._current_buffer = 1 - self._current_buffer
+        if samples:
+            sound = pygame.mixer.Sound(bytes(samples))
+            sound.play()

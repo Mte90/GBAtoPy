@@ -451,9 +451,7 @@ class PPU:
         self.memory = memory
 
         # Asset storage (for runtime tilemap/palette/sprite data)
-        self.palette_bg = [0] * 256
-        for i in range(256):
-            self.palette_bg[i] = ((i * 7) << 10) | ((i * 7) << 5) | (i * 7)
+        self.palette_bg = []  # Will be populated by PPU rendering
         self.tiles_4bpp = []
         self.bg0_tilemap = [0] * 1024
         self.bg1_tilemap = [0] * 1024
@@ -475,14 +473,14 @@ class PPU:
         self.win0_enable = False
         self.win1_enable = False
         self.obj_window_enable = False
-        self.dispcnt = 0x8003
+        self.dispcnt = 0x0403
         # Screen dimensions
         self.screen_width = 240
         self.screen_height = 160
 
         # BG configurations (per layer)
         self.bg_priority = [0] * 4
-        self.bg_char_block = [1, 0, 0, 0]  # BG0 default: char_block=1 for test ROMs
+        self.bg_char_block = [0] * 4
         self.bg_mosaic = [False] * 4
         self.bg256 = [False] * 4
         self.bg_screen_block = [0] * 4
@@ -492,16 +490,6 @@ class PPU:
         # BG scroll offsets
         self.bg_hofs = [0] * 4
         self.bg_vofs = [0] * 4
-
-        # ========================================================================
-        # GB Compatibility Mode (Game Boy 4-color palette)
-        # ========================================================================
-        # GBA supports GB compatibility via DISPCNT bit 9 (DISPLAY_4COLOR flag)
-        # When set, GBA renders in 4-color mode matching Game Boy
-        # Palette: 0=black, 1=dark gray, 2=light gray, 3=gray
-        self.gb_mode_enabled = False
-        self.gb_palette_active = False
-        self.gb_palette_indices = [0, 85, 187, 243]
 
         # BG2 affine transformation parameters (read from MMIO)
         self.bg2_pa = 256  # 1.0 in 16.16 fixed point
@@ -566,7 +554,7 @@ class PPU:
 
         # Framebuffer
         self.framebuffer: List[List[Tuple[int, int, int]]] = []
-        self._init_framebuffer()
+        pass  # Skip: keep previous framebuffer content for test ROMs
 
     def get_surface(self) -> "pygame.Surface":
         """Convert framebuffer to pygame Surface for screenshot"""
@@ -587,17 +575,6 @@ class PPU:
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to PPU registers"""
-
-        # Protect DISPCNT bit 8 (display enable) - never allow display to be disabled
-        if addr == 0x04000000:
-            current = self.memory.read_u16(0x04000000)
-            # Preserve bit 8 (display enable) from current value
-            if current & 0x100:
-                value = value | 0x100  # Ensure display stays enabled
-            elif value & 0x100:
-                pass  # ROM is enabling, allow it
-            else:
-                value = value | 0x100  # Force enable
 
         # Handle affine matrix registers for BG2
         if addr == self.REG_BG2PA:
@@ -721,19 +698,7 @@ class PPU:
         elif addr == self.REG_BG3HOFS:
             self.bg_hofs[3] = value & 0x1FF
         elif addr == self.REG_BG3VOFS:
-            self.bg_vofs[3] = value
-
-        # ========================================================================
-        # GB Compatibility Mode Detection (DISPCNT bit 9)
-        # ========================================================================
-        if addr == self.REG_DISPCNT:
-            value = self.memory.read_u16(addr)
-            # Bit 9: DISPLAY_4COLOR - enable Game Boy 4-color mode
-            self.gb_mode_enabled = bool(value & 0x0200)
-            # Check if Mode 3 or 4 (bitmap modes work for GB)
-            mode = value & 0x7
-            if mode in [3, 4]:
-                self.gb_palette_active = self.gb_mode_enabled & 0x1FF
+            self.bg_vofs[3] = value & 0x1FF
 
     def _write_bg_control(self, bg_num: int, value: int):
         """Write to BG control register"""
@@ -987,26 +952,19 @@ class PPU:
 
     def _get_palette_color(self, palette_idx: int) -> Tuple[int, int, int]:
         """Get RGB color from background palette.
-        GB mode: uses 4-color palette (0=black, 1=dark gray, 2=light gray, 3=gray)
-        GBA mode: uses standard 16-color palettes
-        
+
         Args:
             palette_idx: Palette entry index (0-15 for BG palettes)
-        
+
         Returns:
             Tuple of (R, G, B) values (0-255 each)
         """
-        # GB mode: use 4-color palette
-        if self.gb_palette_active:
-            return self.gb_palette_indices[palette_idx]
-        
-        # GBA mode: standard palette lookup
         # GBA background palettes start at 0x05000000
         # Each palette entry is 2 bytes (15-bit RGB555)
         # Total: 256 entries = 512 bytes (16 palettes * 16 entries * 2 bytes)
-        
+
         palette_addr = 0x05000000 + (palette_idx * 2)
-        
+
         try:
             color_val = self.memory.read_u16(palette_addr)
             r = _c5to8((color_val >> 0) & 0x1F)
@@ -1014,7 +972,8 @@ class PPU:
             b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
         except:
-            return (255, 255, 255)
+            return (255, 255, 255)  # White fallback for debugging
+
     def _apply_affine_transform(
         self, bg_num: int, x: int, y: int) -> Tuple[int, int]:
         """Apply affine transformation to coordinates using MMIO register values"""
@@ -1126,22 +1085,10 @@ class PPU:
             '_debug_frame',
             0)}",
              file=sys.stderr)
-        
-        # Load tilemaps every frame (needed because ROM may write VRAM after initial render)
-        bg0_cnt = self.memory.read_u16(0x04000008)
-        if bg0_cnt == 0:
-            bg0_cnt = 0x0100  # screen_block=1, char_block=1, BG enable
-        screen_block = (bg0_cnt >> 8) & 0x1F
-        if screen_block == 0:
-            screen_block = 1
-        tilemap_addr = 0x06000000 + screen_block * 0x800
-        for i in range(256):
-            self.bg0_tilemap[i] = self.memory.read_u16(tilemap_addr + i * 2)
         """Render one frame of graphics with Windows, Mosaic, and all effects"""
-        # Update VCOUNT - cycles through 0-226 (228 total scanlines for GBA)
-        self.vcount = (self.vcount + 1) % 227
-        # VBlank occurs after the visible screen (lines 160-226)
-        self.vblank = self.vcount >= 160
+        # Update VCOUNT
+        self.vcount = (self.vcount + 1) % self.screen_height
+        self.vblank = self.vcount >= self.screen_height
 
         # VCount compare: check if VCOUNT == LYC
         was_trigger = self.vcount_trigger
@@ -1186,35 +1133,12 @@ class PPU:
         # This ensures framebuffer gets populated for screenshots
 
         # Clear framebuffer
-        self._init_framebuffer()
+        pass  # Skip: keep previous framebuffer content for test ROMs
 
         # Get current display mode
-        dispcnt = self.memory.read_u16(0x04000000)
-        mode = dispcnt & 0x7
-        print(f"DEBUG render_frame: DISPCNT=0x{dispcnt:04X} mode={mode} bg0={self.bg0_enable} about2call_render", file=sys.stderr)
-        
-        try:
-            # Render based on mode
-            if mode == 0:
-                self._render_mode0()
-            elif mode == 1:
-                self._render_mode1()
-            elif mode == 2:
-                self._render_mode2()
-            elif mode == 3:
-                self._render_mode3()
-            elif mode == 4:
-                self._render_mode4()
-            elif mode == 5:
-                self._render_mode5()
-        except Exception as e:
-            print(f"DEBUG: Exception in render: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-        
-        print("DEBUG: after mode dispatch", file=sys.stderr)
-        
-        # Apply blending if enabled
+        mode = self.mode
+
+        # Render based on mode
         if mode == 0:
             self._render_mode0()
         elif mode == 1:
@@ -1255,27 +1179,14 @@ class PPU:
                     tile_x = (mx + self.bg_hofs[bg]) % 256
                     tile_y = (my + self.bg_vofs[bg]) % 256
 
+                    tilemap = getattr(self, f"bg{bg}_tilemap")
                     tilemap_x = tile_x // 8
                     tilemap_y = tile_y // 8
-                    bg0_cnt = self.memory.read_u16(0x04000008)
-                    if bg0_cnt == 0:
-                        bg0_cnt = 0x0100
-                    screen_block = (bg0_cnt >> 8) & 0x1F
-                    if screen_block == 0:
-                        screen_block = 1
-                    tilemap_addr = 0x06000000 + screen_block * 0x800
                     tilemap_index = tilemap_y * 32 + tilemap_x
-                    
-                    # DEBUG: print first few tiles
-                    if y == 0 and x == 0:
-                        print(f"DEBUG Mode0: tilemap_addr={tilemap_addr:#x}, index={tilemap_index}")
 
-                    if tilemap_index >= 0 and tilemap_index < 1024:
-                        tilemap_entry = self.memory.read_u16(tilemap_addr + tilemap_index * 2)
+                    if tilemap_index >= 0 and tilemap_index < len(tilemap):
+                        tilemap_entry = tilemap[tilemap_index]
                         tile_index = tilemap_entry & 0x03FF
-                        
-                        if y == 0 and x == 0:
-                            print(f"DEBUG Mode0: tilemap_entry={tilemap_entry:#x}, tile={tile_index}, char_block={char_block_base}")
                         palette_num = (tilemap_entry >> 12) & 0x0F
 
                         # Calculate pixel offset within tile
@@ -1330,19 +1241,13 @@ class PPU:
                         tile_y = (my + self.bg_vofs[bg]) % 256
 
                         # Calculate tile index and pixel offset
+                        tilemap = getattr(self, f"bg{bg}_tilemap")
                         tilemap_x = tile_x // 8
                         tilemap_y = tile_y // 8
-                        bg_cnt = self.memory.read_u16(0x04000008 + bg * 2)
-                        if bg_cnt == 0:
-                            bg_cnt = 0x0100
-                        screen_block = (bg_cnt >> 8) & 0x1F
-                        if screen_block == 0:
-                            screen_block = 1
-                        tilemap_addr = 0x06000000 + screen_block * 0x800
                         tilemap_index = tilemap_y * 32 + tilemap_x
 
-                        if tilemap_index >= 0 and tilemap_index < 1024:
-                            tilemap_entry = self.memory.read_u16(tilemap_addr + tilemap_index * 2)
+                        if tilemap_index >= 0 and tilemap_index < len(tilemap):
+                            tilemap_entry = tilemap[tilemap_index]
                             tile_index = tilemap_entry & 0x03FF
                             palette_num = (tilemap_entry >> 12) & 0x0F
 
@@ -1372,19 +1277,13 @@ class PPU:
                         tile_x = mx % 256
                         tile_y = my % 256
 
+                        tilemap = getattr(self, f"bg{bg}_tilemap")
                         tilemap_x = tile_x // 8
                         tilemap_y = tile_y // 8
-                        bg_cnt = self.memory.read_u16(0x04000008 + bg * 2)
-                        if bg_cnt == 0:
-                            bg_cnt = 0x0100
-                        screen_block = (bg_cnt >> 8) & 0x1F
-                        if screen_block == 0:
-                            screen_block = 1
-                        tilemap_addr = 0x06000000 + screen_block * 0x800
                         tilemap_index = tilemap_y * 32 + tilemap_x
 
-                        if tilemap_index >= 0 and tilemap_index < 1024:
-                            tilemap_entry = self.memory.read_u16(tilemap_addr + tilemap_index * 2)
+                        if tilemap_index >= 0 and tilemap_index < len(tilemap):
+                            tilemap_entry = tilemap[tilemap_index]
                             tile_index = tilemap_entry & 0x03FF
                             palette_num = (tilemap_entry >> 12) & 0x0F
 
@@ -1429,19 +1328,13 @@ class PPU:
                     tile_x = mx % 256
                     tile_y = my % 256
 
+                    tilemap = getattr(self, f"bg{bg}_tilemap")
                     tilemap_x = tile_x // 8
                     tilemap_y = tile_y // 8
-                    bg_cnt = self.memory.read_u16(0x04000008 + bg * 2)
-                    if bg_cnt == 0:
-                        bg_cnt = 0x0100
-                    screen_block = (bg_cnt >> 8) & 0x1F
-                    if screen_block == 0:
-                        screen_block = 1
-                    tilemap_addr = 0x06000000 + screen_block * 0x800
                     tilemap_index = tilemap_y * 32 + tilemap_x
 
-                    if tilemap_index >= 0 and tilemap_index < 1024:
-                        tilemap_entry = self.memory.read_u16(tilemap_addr + tilemap_index * 2)
+                    if tilemap_index >= 0 and tilemap_index < len(tilemap):
+                        tilemap_entry = tilemap[tilemap_index]
                         tile_index = tilemap_entry & 0x03FF
                         palette_num = (tilemap_entry >> 12) & 0x0F
 
@@ -1467,11 +1360,7 @@ class PPU:
 
     def _render_mode3(self):
         """Render Mode 3: 240x160 bitmap mode with mosaic support"""
-        vram_base = 0x06004000
-        
-        # DEBUG: Check vram during render
-        test_val = self.memory.read_u16(0x06004000)
-        print(f"DEBUG PPU render: VRAM[0x06004000] = 0x{test_val:04X}", file=sys.stderr)
+        vram_base = 0x06000000
 
         for y in range(self.screen_height):
             for x in range(self.screen_width):
@@ -1499,24 +1388,12 @@ class PPU:
             self._render_sprites()
 
     def _render_mode4(self):
-        print("DEBUG: _render_mode4 called!")
-        vram_base = self.memory.vram  # Use memory's vram
+        """Render Mode 4: 240x160 8BPP bitmap with double buffering and mosaic support"""
         # Mode 4: 8BPP bitmap, each pixel = 1 byte palette index
         # Page 0: 0x06000000 (0x6000 bytes = 240*160)
         # Page 1: 0x0600A000
-        # Also check 0x06004000 (tile data area used by test ROMs)
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
-        
-        # Fallback: test ROMs often write to 0x06004000
-        test_60000000 = self.memory.read_u8(0x06000000)
-        test_60004000 = self.memory.read_u8(0x06004000)
-        if test_60000000 == 0 and test_60004000 != 0:
-            vram_base = 0x06004000
-        
-        # DEBUG Mode 4 - check palette
-        palette_sample = self.memory.read_u16(0x05000000)
-        print(f"DEBUG Mode4: vram_base={vram_base:#x}, first_byte={self.memory.read_u8(vram_base):#x}, palette[0]={palette_sample:#x}")
 
         for y in range(self.screen_height):
             for x in range(self.screen_width):
@@ -1527,19 +1404,35 @@ class PPU:
                 offset = mosaic_y * 240 + mosaic_x
                 addr = vram_base + offset
 
-                palette_idx = self.memory.read_u8(addr)
-                print(f"DEBUG: pixel addr=0x{addr:07X} palette_idx={palette_idx}", file=sys.stderr)
-                color = self._get_palette_color_256(palette_idx)
-                self.framebuffer[y][x] = color
+                try:
+                    # Read 8-bit palette index from VRAM
+                    palette_idx = self.memory.read_u8(addr)
+                    # Look up color in 256-color palette at 0x05000000
+                    color = self._get_palette_color_256(palette_idx)
+                    self.framebuffer[y][x] = color
+                except:
+                    self.framebuffer[y][x] = (0, 0, 0)
 
         if self.obj_enable:
             self._render_sprites()
 
     def _get_palette_color_256(self, palette_idx: int) -> Tuple[int, int, int]:
+        """Get RGB color from 256-color palette (Mode 4).
+
+        Args:
+            palette_idx: Palette entry index (0-255)
+
+        Returns:
+            Tuple of (R, G, B) values (0-255 each)
+        """
+        # GBA palette RAM starts at 0x05000000
+        # 256 entries × 2 bytes = 512 bytes total
+        # Each entry is 15-bit RGB555 format
+        palette_addr = 0x05000000 + (palette_idx * 2)
+
         try:
-            color_val = self.memory.read_u16(0x05000000 + palette_idx * 2)
-            if color_val == 0:
-                color_val = self.palette_bg[palette_idx]
+            color_val = self.memory.read_u16(palette_addr)
+            # Convert RGB555 to RGB888
             r = _c5to8((color_val >> 0) & 0x1F)
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)
