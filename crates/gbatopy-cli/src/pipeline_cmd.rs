@@ -229,6 +229,42 @@ pub fn run_pipeline(
     }
     code.push_str("\n])\n\n");
 
+    // Embed tilemap data (16-bit values)
+    code.push_str("# Tilemap data for backgrounds\n");
+    code.push_str("bg0_tilemap = [\n");
+    for chunk in assets.tilemap_data.chunks(2) {
+        if chunk.len() == 2 {
+            let value = u16::from_le_bytes([chunk[0], chunk[1]]);
+            code.push_str(&format!("    0x{:04X},\n", value));
+        }
+    }
+    code.push_str("]\n\n");
+
+    // Embed tile data (raw bytes)
+    code.push_str("# Tile data for backgrounds\n");
+    code.push_str("tile_data = bytearray([\n");
+    for (i, &byte) in assets.tile_data.iter().enumerate() {
+        if i > 0 {
+            code.push_str(", ");
+        }
+        if i % 16 == 0 {
+            code.push_str("\n    ");
+        }
+        code.push_str(&format!("0x{:02X}", byte));
+    }
+    code.push_str("\n])\n\n");
+
+    // Embed palette data (16-bit RGB555 values)
+    code.push_str("# Palette data for backgrounds and sprites\n");
+    code.push_str("palette_data = [\n");
+    for chunk in assets.palette_data.chunks(2) {
+        if chunk.len() == 2 {
+            let value = u16::from_le_bytes([chunk[0], chunk[1]]);
+            code.push_str(&format!("    0x{:04X},\n", value));
+        }
+    }
+    code.push_str("]\n\n");
+
     // Embed sample metadata (start_addr, length, format)
     code.push_str("# Sample metadata: (start_addr, length, format)\n");
     code.push_str("SAMPLES = [\n");
@@ -236,6 +272,37 @@ pub fn run_pipeline(
         code.push_str(&format!("    (0x{:08X}, {}, {}),\n", addr, len, fmt));
     }
     code.push_str("]\n\n");
+
+    // Copy extracted tilemap to VRAM (BG0 tilemap at 0x06000000 and 0x06008000)
+    code.push_str("if bg0_tilemap:\n");
+    code.push_str("    for i, v in enumerate(bg0_tilemap[:1024]):\n");
+    code.push_str("        if i * 2 < len(memory.vram):\n");
+    code.push_str("            memory.vram[i * 2] = v & 0xFF\n");
+    code.push_str("            memory.vram[i * 2 + 1] = (v >> 8) & 0xFF\n");
+    code.push_str("        if 0x8000 + i * 2 < len(memory.vram):\n");
+    code.push_str("            memory.vram[0x8000 + i * 2] = v & 0xFF\n");
+    code.push_str("            memory.vram[0x8000 + i * 2 + 1] = (v >> 8) & 0xFF\n");
+    code.push_str("    ppu_instance.bg0_tilemap = bg0_tilemap[:1024]\n");
+    
+    // Copy extracted tile data to VRAM (multiple possible offsets)
+    code.push_str("if tile_data:\n");
+    code.push_str("    for i, b in enumerate(tile_data):\n");
+    code.push_str("        if 0x4000 + i < len(memory.vram):\n");
+    code.push_str("            memory.vram[0x4000 + i] = b\n");
+    code.push_str("        if 0x6000 + i < len(memory.vram):\n");
+    code.push_str("            memory.vram[0x6000 + i] = b\n");
+    code.push_str("        if 0x10000 + i < len(memory.vram):\n");
+    code.push_str("            memory.vram[0x10000 + i] = b\n");
+    code.push_str("    ppu_instance.tiles_4bpp = list(tile_data)\n");
+    
+    // Copy extracted palette to Palette RAM (0x05000000)
+    code.push_str("if palette_data:\n");
+    code.push_str("    for i, c in enumerate(palette_data[:256]):\n");
+    code.push_str("        if i * 2 < len(memory.palette):\n");
+    code.push_str("            memory.palette[i * 2] = c & 0xFF\n");
+    code.push_str("            memory.palette[i * 2 + 1] = (c >> 8) & 0xFF\n");
+    code.push_str("    ppu_instance.palette_bg = [((c & 0x1F) * 8, ((c >> 5) & 0x1F) * 8, ((c >> 10) & 0x1F) * 8) for c in palette_data]\n");
+    code.push_str("\n");
 
     // Generate sample playback function
     code.push_str("# Sample playback helper\n");

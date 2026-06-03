@@ -298,6 +298,10 @@ class APU:
         self.fifo_a_enabled = False
         self.fifo_b_enabled = False
         self._audio_output = None
+        self._sound_buffer_a = None
+        self._sound_buffer_b = None
+        self._current_buffer = 'a'
+        self._channel = None
 
     def start(self):
         """Start audio playback"""
@@ -429,16 +433,16 @@ class APU:
         return (left, right)
 
     def update(self):
-        """Generate audio buffer for pygame"""
         if not pygame.mixer.get_init():
             return
-
         samples = []
         for _ in range(1024):
             left, right = self.get_sample()
             samples.append(left)
             samples.append(right)
-
-        if samples:
-            sound = pygame.mixer.Sound(bytes(samples))
-            sound.play()
+        if not samples:
+            return
+        sample_bytes = bytes(samples)
+        if self._sound_buffer_a is None:
+            self._sound_buffer_a = pygame.mixer.Sound(buffer=sample_bytes)
+            self._channel = self._sound_buffer_a.play(-1)

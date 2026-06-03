@@ -79,10 +79,10 @@ class Memory:
     def setup_isr_handler(self, handler):
         self._isr_handler = handler
         isr_addr = id(handler)
-        self.iwram[0x7FFC - 0x03000000] = isr_addr & 0xFF
-        self.iwram[0x7FFD - 0x03000000] = (isr_addr >> 8) & 0xFF
-        self.iwram[0x7FFE - 0x03000000] = (isr_addr >> 16) & 0xFF
-        self.iwram[0x7FFF - 0x03000000] = (isr_addr >> 24) & 0xFF
+        self.iwram[0x7FFC] = isr_addr & 0xFF
+        self.iwram[0x7FFD] = (isr_addr >> 8) & 0xFF
+        self.iwram[0x7FFE] = (isr_addr >> 16) & 0xFF
+        self.iwram[0x7FFF] = (isr_addr >> 24) & 0xFF
 
     def get_isr_address(self) -> int:
         offset = 0x7FFC - 0x03000000

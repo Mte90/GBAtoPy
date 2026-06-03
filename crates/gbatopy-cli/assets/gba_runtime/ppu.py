@@ -451,7 +451,7 @@ class PPU:
         self.memory = memory
 
         # Asset storage (for runtime tilemap/palette/sprite data)
-        self.palette_bg = []  # Will be populated by PPU rendering
+        self.palette_bg = []
         self.tiles_4bpp = []
         self.bg0_tilemap = [0] * 1024
         self.bg1_tilemap = [0] * 1024
@@ -554,7 +554,7 @@ class PPU:
 
         # Framebuffer
         self.framebuffer: List[List[Tuple[int, int, int]]] = []
-        pass  # Skip: keep previous framebuffer content for test ROMs
+        self._init_framebuffer()
 
     def get_surface(self) -> "pygame.Surface":
         """Convert framebuffer to pygame Surface for screenshot"""
@@ -1133,7 +1133,7 @@ class PPU:
         # This ensures framebuffer gets populated for screenshots
 
         # Clear framebuffer
-        pass  # Skip: keep previous framebuffer content for test ROMs
+        self._init_framebuffer()
 
         # Get current display mode
         mode = self.mode
@@ -1157,17 +1157,17 @@ class PPU:
             self._apply_blending_to_framebuffer()
 
     def _render_mode0(self):
-        """Render Mode 0: Text backgrounds (BG0-3)"""
-        # Render each background layer in priority order
+        """Render Mode 0: Text backgrounds (BG0-3) with priority-based compositing"""
         for y in range(self.screen_height):
             for x in range(self.screen_width):
                 # Check window enable
                 layer_enable = self._get_window_layer_enable(x, y)
 
-                # Render BG layers (simplified - would need tile lookup)
+                # Collect candidate pixels from all backgrounds
+                candidates = []  # (priority, color) - lower priority number = higher priority
+
                 for bg in range(4):
-                    if not getattr(
-    self, f"bg{bg}_enable"):  # DISABLED: render even if bg disabled
+                    if not getattr(self, f"bg{bg}_enable"):
                         continue
                     if not (layer_enable & (1 << bg)):
                         continue
@@ -1199,7 +1199,7 @@ class PPU:
                         bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
                         bg_cnt = self.memory.read_u16(bg_cnt_addr)
                         bpp_mode = (bg_cnt >> 2) & 0x03  # Bits 2-3: 00=4BPP, 01=8BPP
-                        
+
                         if bpp_mode == 1:  # 8BPP mode
                             palette_indices = self._decode_tile_8bpp(tile_index, char_block_base)
                         else:  # 4BPP mode
@@ -1213,8 +1213,16 @@ class PPU:
 
                             # Get color from palette using _get_palette_color
                             color = self._get_palette_color(color_idx)
-                            if color != (0, 0, 0):
-                              self.framebuffer[y][x] = color
+                            # Only add non-transparent pixels (color_idx != 0)
+                            if color_idx != 0:
+                                # Get priority from BGxCNT (bits 0-1)
+                                priority = bg_cnt & 0x03
+                                candidates.append((priority, color))
+
+                # Render highest priority non-transparent pixel
+                if candidates:
+                    candidates.sort(key=lambda c: c[0])
+                    self.framebuffer[y][x] = candidates[0][1]
 
         # Render sprites from OAM at 0x07000000 AFTER all BG layers
         if self.obj_enable:

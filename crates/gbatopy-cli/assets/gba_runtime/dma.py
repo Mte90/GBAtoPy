@@ -172,7 +172,7 @@ class DMA:
             DMAChannel(2, None),
             DMAChannel(3, None),
         ]
-        self._setup_mmio()
+        # self._setup_mmio() - called after memory is attached
 
     def attach_memory(self, mem):
         """Attach memory for DMA transfers"""
