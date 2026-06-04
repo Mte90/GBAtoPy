@@ -624,7 +624,17 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             ie = memory.read_u16(0x04000200)
             ime = memory.read_u16(0x04000208)
             if ie & 0x01 and ime & 0x01:
-                memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
+                # Clear the IF flag (write 1 to clear) and jump to ISR
+                memory.write_u16(0x04000202, 0x01)
+                r[15] = memory.read_u32(0x03007FFC)
+        # HBlank IRQ dispatch
+        hblank_flag = (dispstat & 0x02) != 0
+        if hblank_flag:
+            ie = memory.read_u16(0x04000200)
+            ime = memory.read_u16(0x04000208)
+            if ie & 0x02 and ime & 0x01:
+                # Clear the HBlank IF flag and jump to ISR
+                memory.write_u16(0x04000202, 0x02)
                 r[15] = memory.read_u32(0x03007FFC)
         apu_instance.update()
         surf = ppu_instance.get_surface()
@@ -645,8 +655,10 @@ if __name__ == "__main__":
     parser.add_argument("--frame", type=int)
     parser.add_argument("--screenshot", type=str)
     parser.add_argument("--scale", type=int, default=1)
+    parser.add_argument("--dump-memory", type=str)
+    parser.add_argument("--dump-region", type=str, choices=["ewram", "iwram", "vram"])
     args = parser.parse_args()
-    frames = run_with_pygame(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot, scale=args.scale)
+    frames = run_with_pygame(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot, scale=args.scale, dump_memory=args.dump_memory, dump_region=args.dump_region)
     print(f"{frames} frames")
 "#
     .to_string()

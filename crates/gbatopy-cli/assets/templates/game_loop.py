@@ -174,5 +174,5 @@ if __name__ == "__main__":
     parser.add_argument("--dump-region", type=str, choices=["ewram", "iwram", "vram"])
     args = parser.parse_args()
     
-    frames = run_with_pygame(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot, scale=args.scale)
+    frames = run_with_pygame(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot, scale=args.scale, dump_memory=args.dump_memory, dump_region=args.dump_region)
     print(f"{frames} frames")

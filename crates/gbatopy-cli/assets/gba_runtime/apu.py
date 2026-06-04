@@ -302,6 +302,8 @@ class APU:
         self._sound_buffer_b = None
         self._current_buffer = 'a'
         self._channel = None
+        self._audio_channel = None  # Dedicated channel for continuous playback
+        self._buffer_queue = deque(maxlen=4)  # Queue buffers for seamless playback
 
     def start(self):
         """Start audio playback"""
@@ -436,6 +438,11 @@ class APU:
         if not pygame.mixer.get_init():
             return
 
+        if not (self.ch1_enabled or self.ch2_enabled or
+                self.ch3_enabled or self.ch4_enabled or
+                self.fifo_a_enabled or self.fifo_b_enabled):
+            return
+
         BUFFER_SIZE = 1024
         samples = []
         for _ in range(BUFFER_SIZE):
@@ -448,20 +455,17 @@ class APU:
 
         sample_bytes = bytes(samples)
 
-        if self._current_buffer == 'a':
-            if self._sound_buffer_b is None:
-                if self._sound_buffer_a is None:
-                    self._sound_buffer_a = pygame.mixer.Sound(buffer=sample_bytes)
-                    self._channel = self._sound_buffer_a.play(-1)
-                self._sound_buffer_b = pygame.mixer.Sound(buffer=sample_bytes)
-                self._channel_b = self._sound_buffer_b.play()
-            else:
-                if not self._sound_buffer_b.get_busy():
-                    self._sound_buffer_b = pygame.mixer.Sound(buffer=sample_bytes)
-                    self._channel_b = self._sound_buffer_b.play()
-                self._current_buffer = 'b'
-        else:
-            if self._sound_buffer_a is None or not self._sound_buffer_a.get_busy():
-                self._sound_buffer_a = pygame.mixer.Sound(buffer=sample_bytes)
-                self._channel_a = self._sound_buffer_a.play()
-            self._current_buffer = 'a'
+        if self._audio_channel is None:
+            try:
+                self._audio_channel = pygame.mixer.Channel(0)
+            except pygame.error:
+                return
+
+        try:
+            sound = pygame.mixer.Sound(buffer=sample_bytes)
+            if self._audio_channel.get_queue():
+                self._audio_channel.queue(sound)
+            elif not self._audio_channel.get_busy():
+                self._audio_channel.play(sound)
+        except pygame.error:
+            pass

@@ -967,6 +967,14 @@ class PPU:
 
         try:
             color_val = self.memory.read_u16(palette_addr)
+            
+            # If palette RAM is uninitialized (all zeros), generate default grayscale
+            # This handles ROMs that don't explicitly initialize palette RAM
+            if color_val == 0 and palette_idx > 0:
+                # Generate grayscale gradient: index 1 = dark, index 15 = bright
+                intensity = min(255, (palette_idx * 17))
+                return (intensity, intensity, intensity)
+            
             r = _c5to8((color_val >> 0) & 0x1F)
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)
@@ -1425,22 +1433,17 @@ class PPU:
             self._render_sprites()
 
     def _get_palette_color_256(self, palette_idx: int) -> Tuple[int, int, int]:
-        """Get RGB color from 256-color palette (Mode 4).
-
-        Args:
-            palette_idx: Palette entry index (0-255)
-
-        Returns:
-            Tuple of (R, G, B) values (0-255 each)
-        """
-        # GBA palette RAM starts at 0x05000000
-        # 256 entries × 2 bytes = 512 bytes total
-        # Each entry is 15-bit RGB555 format
+        """Get RGB color from 256-color palette (Mode 4)."""
         palette_addr = 0x05000000 + (palette_idx * 2)
 
         try:
             color_val = self.memory.read_u16(palette_addr)
-            # Convert RGB555 to RGB888
+            
+            # If palette RAM is uninitialized (all zeros), generate default grayscale
+            if color_val == 0:
+                intensity = palette_idx
+                return (intensity, intensity, intensity)
+            
             r = _c5to8((color_val >> 0) & 0x1F)
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)
@@ -1529,6 +1532,17 @@ class PPU:
                     r = int(r * (1 - factor))
                     g = int(g * (1 - factor))
                     b = int(b * (1 - factor))
+                    self.framebuffer[y][x] = (r, g, b)
+        elif blend_mode == 2:
+            # Brightness increase: (src * (16 - Evy)) / 16
+            evy = min(self.bldy, 16)
+            factor = evy / 16.0
+            for y in range(self.screen_height):
+                for x in range(self.screen_width):
+                    r, g, b = self.framebuffer[y][x]
+                    r = int(r * (1.0 - factor))
+                    g = int(g * (1.0 - factor))
+                    b = int(b * (1.0 - factor))
                     self.framebuffer[y][x] = (r, g, b)
 
     def save_screenshot(self, path: str):

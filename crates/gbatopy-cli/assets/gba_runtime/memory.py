@@ -217,7 +217,12 @@ class Memory:
             self._dma.channels[channel].count = value
         elif reg_offset == 12:
             self._dma.channels[channel].control = value
+            was_enabled = self._dma.channels[channel].enabled
             self._dma.channels[channel].enabled = (value & 0x80000000) != 0
+            # Trigger immediate DMA transfer when enabled
+            if self._dma.channels[channel].enabled and not was_enabled:
+                if self._dma.channels[channel].is_immediate():
+                    self._dma.start_transfer(channel)
 
     def _handle_timer_write(self, addr: int, value: int):
         base = 0x04000100

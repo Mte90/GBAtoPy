@@ -714,18 +714,40 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                         base: rn, offset, ..
                     } = &ops[1]
                     {
-                        let offset_val = match offset {
-                            gbatopy_disasm::operand::AddressingMode::ImmediateOffset(val) => *val,
-                            _ => 0,
+                        let offset_expr = match offset {
+                            gbatopy_disasm::operand::AddressingMode::ImmediateOffset(val) => {
+                                if *val == 0 {
+                                    String::new()
+                                } else {
+                                    format!(" + {}", val)
+                                }
+                            }
+                            gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                                format!(" + r[{}]", reg)
+                            }
+                            gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { .. } => {
+                                "# STRH scaled register offset not implemented".to_string()
+                            }
+                            gbatopy_disasm::operand::AddressingMode::PreIndexed { .. }
+                            | gbatopy_disasm::operand::AddressingMode::PostIndexed { .. }
+                            | gbatopy_disasm::operand::AddressingMode::Multi { .. } => {
+                                "# STRH addressing mode not implemented".to_string()
+                            }
                         };
+                        if offset_expr.starts_with('#') {
+                            return offset_expr;
+                        }
                         return format!(
-                            "memory.write_u16(r[{}] + {}, r[{}] & 0xFFFF)",
-                            rn, offset_val, rd
+                            "memory.write_u16(r[{}]{}{}, r[{}] & 0xFFFF)",
+                            rn, 
+                            if offset_expr.is_empty() { "" } else { " + " },
+                            offset_expr.trim_start_matches(" + "),
+                            rd
                         );
                     }
                 }
             }
-            return format!("# STRH (parsing failed)");
+            return format!("# STRH (parsing failed): {} operands", ops.len());
         }
         "LDRH" => {
             // Case 1: 2 operands - LDRH Rd, [Rn, offset]

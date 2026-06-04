@@ -53,6 +53,9 @@ Honest assessment of what works and what doesn't.
 14. **APU implementation** - Fixed stop() method, removed broken AudioOutput import
 15. **Naming convention** - ROM name for output files and screenshots (added to AGENTS.md)
 16. **VRAM write codegen** - STR/STRH/STRB now generate memory.write_*() calls for VRAM addresses
+17. **IRQ IF flag clear bug** - Fixed VBlank IRQ dispatch to clear IF flag (was setting instead of clearing)
+18. **HBlank IRQ dispatch** - Added HBlank interrupt trigger in game loop
+19. **DMA transfer trigger** - DMA now triggers immediately when control register enable bit is set
 
 ## What Needs Fixing (Priority Order)
 
