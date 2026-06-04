@@ -435,14 +435,33 @@ class APU:
     def update(self):
         if not pygame.mixer.get_init():
             return
+
+        BUFFER_SIZE = 1024
         samples = []
-        for _ in range(1024):
+        for _ in range(BUFFER_SIZE):
             left, right = self.get_sample()
             samples.append(left)
             samples.append(right)
+
         if not samples:
             return
+
         sample_bytes = bytes(samples)
-        if self._sound_buffer_a is None:
-            self._sound_buffer_a = pygame.mixer.Sound(buffer=sample_bytes)
-            self._channel = self._sound_buffer_a.play(-1)
+
+        if self._current_buffer == 'a':
+            if self._sound_buffer_b is None:
+                if self._sound_buffer_a is None:
+                    self._sound_buffer_a = pygame.mixer.Sound(buffer=sample_bytes)
+                    self._channel = self._sound_buffer_a.play(-1)
+                self._sound_buffer_b = pygame.mixer.Sound(buffer=sample_bytes)
+                self._channel_b = self._sound_buffer_b.play()
+            else:
+                if not self._sound_buffer_b.get_busy():
+                    self._sound_buffer_b = pygame.mixer.Sound(buffer=sample_bytes)
+                    self._channel_b = self._sound_buffer_b.play()
+                self._current_buffer = 'b'
+        else:
+            if self._sound_buffer_a is None or not self._sound_buffer_a.get_busy():
+                self._sound_buffer_a = pygame.mixer.Sound(buffer=sample_bytes)
+                self._channel_a = self._sound_buffer_a.play()
+            self._current_buffer = 'a'
