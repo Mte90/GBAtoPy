@@ -173,7 +173,7 @@ impl Disassembler {
                     if address + 4 > rom_data.len() as u32 + base_address {
                         break;
                     }
-                    let offset = (address - base_address) as usize;
+                    let offset = (address - 0x08000000) as usize;
                     let word = u32::from_le_bytes([
                         rom_data[offset],
                         rom_data[offset + 1],
@@ -188,7 +188,7 @@ impl Disassembler {
                     if address + 2 > rom_data.len() as u32 + base_address {
                         break;
                     }
-                    let offset = (address - base_address) as usize;
+                    let offset = (address - 0x08000000) as usize;
                     let halfword = u16::from_le_bytes([rom_data[offset], rom_data[offset + 1]]);
 
                     let (opcode, operands, sets_flags) =
@@ -199,7 +199,7 @@ impl Disassembler {
 
             let condition = match mode {
                 ArmMode::Arm => {
-                    let offset = (address - base_address) as usize;
+                    let offset = (address - 0x08000000) as usize;
                     if offset + 4 <= rom_data.len() {
                         let word = u32::from_le_bytes([
                             rom_data[offset],
@@ -217,7 +217,7 @@ impl Disassembler {
 
             let raw = match mode {
                 ArmMode::Arm => {
-                    let offset = (address - base_address) as usize;
+                    let offset = (address - 0x08000000) as usize;
                     if offset + 4 <= rom_data.len() {
                         u32::from_le_bytes([
                             rom_data[offset],
@@ -230,7 +230,7 @@ impl Disassembler {
                     }
                 }
                 ArmMode::Thumb => {
-                    let offset = (address - base_address) as usize;
+                    let offset = (address - 0x08000000) as usize;
                     if offset + 2 <= rom_data.len() {
                         u16::from_le_bytes([rom_data[offset], rom_data[offset + 1]]) as u32
                     } else {
@@ -283,7 +283,7 @@ impl Disassembler {
                 continue;
             }
 
-            let offset = (address - base_address) as usize;
+            let offset = (address - 0x08000000) as usize;
             if offset + 4 > rom_data.len() {
                 break;
             }

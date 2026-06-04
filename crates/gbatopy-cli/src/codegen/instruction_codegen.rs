@@ -708,14 +708,17 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
             return format!("# LDRB (parsing failed)");
         }
         "STRH" => {
+            eprintln!("DEBUG STRH: ops.len()={}, ops={:?}", ops.len(), ops);
             if ops.len() == 2 {
                 if let Operand::Register(rd) = ops[0] {
                     if let Operand::MemoryAddress {
                         base: rn, offset, ..
                     } = &ops[1]
                     {
+                        eprintln!("DEBUG STRH: matched! rd={}, rn={}", rd, rn);
                         let offset_expr = match offset {
                             gbatopy_disasm::operand::AddressingMode::ImmediateOffset(val) => {
+                                eprintln!("DEBUG STRH: ImmediateOffset({})", val);
                                 if *val == 0 {
                                     String::new()
                                 } else {
@@ -723,29 +726,40 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                                 }
                             }
                             gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                                eprintln!("DEBUG STRH: RegisterOffset({})", reg);
                                 format!(" + r[{}]", reg)
                             }
                             gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { .. } => {
+                                eprintln!("DEBUG STRH: ScaledRegisterOffset");
                                 "# STRH scaled register offset not implemented".to_string()
                             }
                             gbatopy_disasm::operand::AddressingMode::PreIndexed { .. }
                             | gbatopy_disasm::operand::AddressingMode::PostIndexed { .. }
                             | gbatopy_disasm::operand::AddressingMode::Multi { .. } => {
+                                eprintln!("DEBUG STRH: Pre/Post/Multi indexed");
                                 "# STRH addressing mode not implemented".to_string()
                             }
                         };
                         if offset_expr.starts_with('#') {
                             return offset_expr;
                         }
-                        return format!(
+                        let result = format!(
                             "memory.write_u16(r[{}]{}{}, r[{}] & 0xFFFF)",
                             rn, 
                             if offset_expr.is_empty() { "" } else { " + " },
                             offset_expr.trim_start_matches(" + "),
                             rd
                         );
+                        eprintln!("DEBUG STRH: generated {}", result);
+                        return result;
+                    } else {
+                        eprintln!("DEBUG STRH: ops[1] is not MemoryAddress, it's {:?}", ops[1]);
                     }
+                } else {
+                    eprintln!("DEBUG STRH: ops[0] is not Register, it's {:?}", ops[0]);
                 }
+            } else {
+                eprintln!("DEBUG STRH: ops.len()={}, expected 2", ops.len());
             }
             return format!("# STRH (parsing failed): {} operands", ops.len());
         }

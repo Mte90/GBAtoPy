@@ -43,7 +43,7 @@ pub fn run_pipeline(
 
     eprintln!("Step 1: Disassembly");
     let mut disasm = Disassembler::new();
-    let instructions = disasm.disassemble(&rom, 0x08000000);
+    let instructions = disasm.disassemble(&rom, 0x08000000 + 0xC0); // Skip GBA header (0xC0 bytes)
     eprintln!("  Disassembled {} instructions", instructions.len());
 
     eprintln!("Step 2: Asset Extraction");
