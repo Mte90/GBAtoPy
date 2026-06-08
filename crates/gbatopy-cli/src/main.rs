@@ -46,6 +46,18 @@ enum Commands {
         assets_dir: PathBuf,
         #[arg(long, default_value = "false")]
         use_ir: bool,
+        #[arg(long, default_value = "false")]
+        minify: bool,
+        #[arg(long, default_value = "false")]
+        no_audio: bool,
+        #[arg(long, default_value = "false")]
+        no_irq: bool,
+        #[arg(long, default_value = "false")]
+        no_timers: bool,
+        #[arg(long, default_value = "false")]
+        no_dma: bool,
+        #[arg(long, default_value = "false")]
+        no_numba: bool,
     },
     Pipeline {
         #[arg(short, long)]
@@ -56,6 +68,20 @@ enum Commands {
         assets_dir: PathBuf,
         #[arg(long, default_value = "false")]
         use_ir: bool,
+        #[arg(long, default_value = "false")]
+        profile: bool,
+        #[arg(long, default_value = "false")]
+        minify: bool,
+        #[arg(long, default_value = "false")]
+        no_audio: bool,
+        #[arg(long, default_value = "false")]
+        no_irq: bool,
+        #[arg(long, default_value = "false")]
+        no_timers: bool,
+        #[arg(long, default_value = "false")]
+        no_dma: bool,
+        #[arg(long, default_value = "false")]
+        no_numba: bool,
     },
     Test {
         #[arg(short, long)]
@@ -130,12 +156,27 @@ fn main() {
             output,
             assets_dir,
             use_ir,
+            minify,
+            no_audio,
+            no_irq,
+            no_timers,
+            no_dma,
+            no_numba,
         } => {
+            let feature_flags = Some(pipeline_cmd::FeatureFlags {
+                audio: !no_audio,
+                irq: !no_irq,
+                timers: !no_timers,
+                dma: !no_dma,
+                numba: !no_numba,
+            });
             if let Err(e) = pipeline_cmd::run_pipeline(
                 input.to_str().unwrap_or(""),
                 output.to_str().unwrap_or(""),
                 &assets_dir,
                 use_ir,
+                feature_flags,
+                minify,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
@@ -146,12 +187,28 @@ fn main() {
             output,
             assets_dir,
             use_ir,
+            profile: _,
+            minify,
+            no_audio,
+            no_irq,
+            no_timers,
+            no_dma,
+            no_numba,
         } => {
+            let feature_flags = Some(pipeline_cmd::FeatureFlags {
+                audio: !no_audio,
+                irq: !no_irq,
+                timers: !no_timers,
+                dma: !no_dma,
+                numba: !no_numba,
+            });
             if let Err(e) = pipeline_cmd::run_pipeline(
                 rom.to_str().unwrap_or(""),
                 output.to_str().unwrap_or(""),
                 &assets_dir,
                 use_ir,
+                feature_flags,
+                minify,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

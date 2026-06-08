@@ -2,6 +2,91 @@
 
 from typing import Optional, Callable, List, Tuple
 
+try:
+    import numba
+    from numba import njit
+    _HAS_NUMBA = True
+except ImportError:
+    numba = None
+    # Create a no-op decorator when numba is not available
+    def njit(*args, **kwargs):
+        """No-op decorator when numba is not available."""
+        def decorator(func):
+            return func
+        # Handle @njit() with no arguments
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
+        return decorator
+    _HAS_NUMBA = False
+
+_NUMBA_ENABLED = True
+
+
+def jit_compile(func):
+    """Decorator to optionally compile functions with numba for 10x speedup."""
+    if not _HAS_NUMBA or not _NUMBA_ENABLED:
+        return func
+    try:
+        return njit(func)
+    except Exception as e:
+        print(f"  Warning: JIT compilation failed for {func.__name__}: {e}")
+        return func
+
+
+def set_numba_enabled(enabled: bool):
+    global _NUMBA_ENABLED
+    if not _HAS_NUMBA and enabled:
+        print("  Warning: numba not installed, JIT compilation unavailable")
+    _NUMBA_ENABLED = enabled and _HAS_NUMBA
+
+
+def is_numba_available() -> bool:
+    return _HAS_NUMBA
+
+
+@jit_compile
+def _check_condition_fast(cond: int, n: int, z: int, c: int, v: int) -> bool:
+    if cond == 0xE or cond == 0xF:
+        return True
+    if cond == 0x0:
+        return z == 1
+    if cond == 1:
+        return z == 0
+    if cond == 0x2:
+        return c == 1
+    if cond == 0x3:
+        return c == 0
+    if cond == 0x4:
+        return n == 1
+    if cond == 0x5:
+        return n == 0
+    if cond == 0x6:
+        return v == 1
+    if cond == 0x7:
+        return v == 0
+    if cond == 0x8:
+        return c == 1 and z == 0
+    if cond == 0x9:
+        return c == 0 or z == 1
+    if cond == 0xA:
+        return n == v
+    if cond == 0xB:
+        return n != v
+    if cond == 0xC:
+        return z == 0 and n == v
+    if cond == 0xD:
+        return z == 1 or n != v
+    return True
+
+
+@jit_compile
+def _update_flags_fast(result: int, carry: int, overflow: int) -> int:
+    n = (result >> 31) & 1
+    z = 1 if result == 0 else 0
+    c = carry & 1
+    v = overflow & 1
+    return (n << 31) | (z << 30) | (c << 29) | (v << 28)
+
 
 class ARM7TDMI:
     """ARM7TDMI CPU interpreter with full instruction execution."""
@@ -97,6 +182,7 @@ class ARM7TDMI:
         self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         return self.cpsr
 
+    @jit_compile
     def check_condition(self, cond: int) -> bool:
         if cond == 0xE or cond == 0xF:
             return True
@@ -131,23 +217,25 @@ class ARM7TDMI:
             return z or n != v
         return True
 
+    @jit_compile
     def read_register(self, reg: int) -> int:
         return self.registers[reg & 0xF]
 
+    @jit_compile
     def write_register(self, reg: int, value: int):
         value &= 0xFFFFFFFF
         self.registers[reg & 0xF] = value
         if (reg & 0xF) == 15:
             self.registers[15] = value & (0xFFFFFFFE if self.thumb_mode else 0xFFFFFFFC)
 
+    @jit_compile
     def step(self) -> int:
-        """Execute one instruction. Returns number of cycles."""
         if self.thumb_mode:
             return self.step_thumb()
         return self.step_arm()
 
+    @jit_compile
     def step_arm(self) -> int:
-        """Execute one ARM instruction."""
         pc = self.pc
         if pc >= 0x08000000:
             pc = (pc - 0x08000000) + len(self.memory.rom)
@@ -161,8 +249,8 @@ class ARM7TDMI:
 
         return self.execute_arm(instr)
 
+    @jit_compile
     def step_thumb(self) -> int:
-        """Execute one Thumb instruction."""
         pc = self.pc
         if pc >= 0x08000000:
             pc = (pc - 0x08000000) + len(self.memory.rom)
@@ -170,43 +258,37 @@ class ARM7TDMI:
         instr = self.memory.read_u16(pc)
         return self.execute_thumb(instr)
 
+    @jit_compile
     def execute_arm(self, instr: int) -> int:
-        """Execute ARM instruction. Returns cycles."""
         opcode = (instr >> 21) & 0xF
         rn = (instr >> 16) & 0xF
         rd = (instr >> 12) & 0xF
         rm = instr & 0xF
 
-        # Data processing
         if (instr & 0xC0000000) == 0 and (instr & 0x08000000) == 0:
             return self.exec_data_processing(instr)
 
-        # LDR/STR
         if (instr & 0xC000000) == 0x4000000:
             return self.exec_load_store(instr)
 
-        # B/BL
         if (instr & 0xE000000) == 0xA000000:
             return self.exec_branch(instr)
 
-        # BX
         if (instr & 0xFFFFFF0) == 0x12FFF10:
             return self.exec_bx(instr)
 
-        # LDM/STM
         if (instr & 0xE000000) == 0x8000000:
             return self.exec_block_transfer(instr)
 
-        # MUL
         if (instr & 0xFC000F0) == 0x0:
             return self.exec_mul(instr)
 
-        # SWI
         if (instr & 0xF000000) == 0xF000000:
             return self.exec_swi(instr)
 
         return 1
 
+    @jit_compile
     def exec_data_processing(self, instr: int) -> int:
         """Execute ARM data processing instruction."""
         opcode = (instr >> 21) & 0xF
@@ -311,11 +393,10 @@ class ARM7TDMI:
 
         return 1
 
+    @jit_compile
     def exec_load_store(self, instr: int) -> int:
-        """Execute LDR/STR instruction."""
         is_load = (instr >> 20) & 1
         is_byte = (instr >> 22) & 1
-        is_pre = (instr >> 24) & 1
         is_up = (instr >> 23) & 1
         rn = (instr >> 16) & 0xF
         rd = (instr >> 12) & 0xF
@@ -339,6 +420,7 @@ class ARM7TDMI:
 
         return 2
 
+    @jit_compile
     def exec_branch(self, instr: int) -> int:
         """Execute B/BL instruction."""
         is_link = (instr >> 24) & 1
@@ -393,8 +475,8 @@ class ARM7TDMI:
 
         return 2 + (reg_list.bit_count() * 2)
 
+    @jit_compile
     def exec_mul(self, instr: int) -> int:
-        """Execute MUL instruction."""
         rm = instr & 0xF
         rs = (instr >> 8) & 0xF
         rd = (instr >> 16) & 0xF

@@ -170,10 +170,13 @@ impl Disassembler {
 
             let (opcode, operands, sets_flags, width) = match mode {
                 ArmMode::Arm => {
-                    if address + 4 > rom_data.len() as u32 + base_address {
+                    if address + 4 > base_address + rom_data.len() as u32 {
                         break;
                     }
-                    let offset = (address - 0x08000000) as usize;
+                    let offset = (address - base_address) as usize;
+                    if offset + 4 > rom_data.len() {
+                        break;
+                    }
                     let word = u32::from_le_bytes([
                         rom_data[offset],
                         rom_data[offset + 1],
@@ -185,10 +188,13 @@ impl Disassembler {
                     (opcode, operands, sets_flags, 4)
                 }
                 ArmMode::Thumb => {
-                    if address + 2 > rom_data.len() as u32 + base_address {
+                    if address + 2 > base_address + rom_data.len() as u32 {
                         break;
                     }
-                    let offset = (address - 0x08000000) as usize;
+                    let offset = (address - base_address) as usize;
+                    if offset + 2 > rom_data.len() {
+                        break;
+                    }
                     let halfword = u16::from_le_bytes([rom_data[offset], rom_data[offset + 1]]);
 
                     let (opcode, operands, sets_flags) =

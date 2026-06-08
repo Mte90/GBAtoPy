@@ -38,6 +38,13 @@ class InterruptController:
         self.ime_reg = 0x0000
         # Handlers stored by interrupt source bit position
         self._handlers = {}
+        # Optimized: pre-compute enabled interrupt mask
+        self._enabled_mask = 0
+        # Batch processing: collect pending interrupts
+        self._pending_batch = []
+        # IRQ check frequency (every N calls)
+        self._irq_check_counter = 0
+        self._irq_check_interval = 1  # Check every frame (can be increased for performance)
 
     def register_handler(self, irq_id: int, callback):
         """Register a callback for a specific interrupt source.
@@ -108,6 +115,8 @@ class InterruptController:
             val: 16-bit value to write
         """
         self.ie_reg = val & 0xFFFF
+        # Optimized: pre-compute enabled interrupt mask
+        self._enabled_mask = self.ie_reg if self.ime_reg & 0x0001 else 0
 
     def write_if(self, val: int):
         """Write to IF (Interrupt Flags) register.
@@ -127,6 +136,8 @@ class InterruptController:
             val: 16-bit value (only bit 0 is significant)
         """
         self.ime_reg = val & 0x0001
+        # Optimized: update enabled mask
+        self._enabled_mask = self.ie_reg if self.ime_reg & 0x0001 else 0
 
     def read_ie(self) -> int:
         """Read IE register."""
@@ -145,8 +156,33 @@ class InterruptController:
         return self.if_reg & self.ie_reg
 
     def has_pending_interrupt(self) -> bool:
-        """Check if any enabled interrupt is pending."""
-        return (self.ime_reg & 0x0001) and (self.if_reg & self.ie_reg) != 0
+        """Check if any enabled interrupt is pending (optimized with bitfield)."""
+        # Optimized: single bitwise operation instead of multiple checks
+        return (self.if_reg & self._enabled_mask) != 0
+    
+    def process_pending_interrupts(self) -> int:
+        """Process all pending interrupts in batch. Returns count of interrupts processed.
+        
+        This is an optimized method that processes all pending interrupts at once
+        instead of checking one by one.
+        """
+        if not (self.ime_reg & 0x0001):
+            return 0
+        
+        # Get pending and enabled interrupts as a bitmask
+        pending = self.if_reg & self.ie_reg
+        if pending == 0:
+            return 0
+        
+        count = 0
+        # Process each pending interrupt
+        for irq_id in range(14):
+            if pending & (1 << irq_id):
+                if irq_id in self._handlers:
+                    self._handlers[irq_id]()
+                    count += 1
+        
+        return count
 
     def clear_if(self):
         """Clear all interrupt flags."""

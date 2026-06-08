@@ -2,6 +2,19 @@ import time
 import pygame
 import numpy as np
 
+# Feature Flags (set by codegen based on ROM analysis)
+_HAS_AUDIO = True
+_HAS_IRQ = True
+_HAS_RTC = True
+_HAS_TIMER = True
+_HAS_DMA = True
+_HAS_SPRITE = True
+_HAS_AFFINE_BG = True
+_HAS_BITMAP_MODE = True
+_HAS_SRAM = True
+
+from apu import APU
+
 # JIT Compilation Support
 try:
     import numba
@@ -84,6 +97,8 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
 
 def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None):
     pygame.init()
+    apu = APU()
+    apu.start()
     if not headless:
         screen = pygame.display.set_mode((240 * scale, 160 * scale))
         pygame.display.set_caption("GBAtoPy")
@@ -132,7 +147,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             _render_ref(screen, ROM_DATA)
 
         pygame.display.flip()
-
+        apu.update()
         _clock_tick = clock.tick(60)
         _cal_delay = calibrated_delay
         _sleep = time.sleep

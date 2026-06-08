@@ -347,13 +347,12 @@ pub fn generate_mrs_instruction(ops: &[String]) -> String {
     // MRS Rd, CPSR/SPSR (Move Status Register to general register)
     let rd = ops[0].clone();
     let status_reg = ops[1].clone(); // "cpsr" or "spsr"
-    let code = format!("if {} == \"cpsr\":\n    r[{}] = (cpsr_n << 31) | (cpsr_z << 30) | (cpsr_c << 29) | (cpsr_v << 28)\nelse:\n    r[{}] = 0  // SPSR not fully implemented yet", status_reg, rd, rd);
+    let code = format!("if {} == \"cpsr\":\n    r[{}] = (cpsr_n << 31) | (cpsr_z << 30) | (cpsr_c << 29) | (cpsr_v << 28)\nelse:\n    r[{}] = (spsr_n << 31) | (spsr_z << 30) | (spsr_c << 29) | (spsr_v << 28)", status_reg, rd, rd);
     code
 }
 
 pub fn generate_msr_instruction(ops: &[String]) -> String {
-    // MSR CPSR/SPSR, Operand (Move general register to Status Register)
-    let status_reg = ops[0].clone(); // "cpsr" or "spsr"
+    let status_reg = ops[0].clone();
     let op = ops[1].clone();
     let mut code = String::new();
     if status_reg == "cpsr" {
@@ -363,7 +362,11 @@ pub fn generate_msr_instruction(ops: &[String]) -> String {
         code.push_str("cpsr_c = 1 if (_msr_val & 0x20000000) != 0 else 0\n");
         code.push_str("cpsr_v = 1 if (_msr_val & 0x10000000) != 0 else 0\n");
     } else {
-        code.push_str("// SPSR write not fully implemented\n");
+        code.push_str(&format!("_msr_val = {}\n", op));
+        code.push_str("spsr_n = 1 if (_msr_val & 0x80000000) != 0 else 0\n");
+        code.push_str("spsr_z = 1 if (_msr_val & 0x40000000) != 0 else 0\n");
+        code.push_str("spsr_c = 1 if (_msr_val & 0x20000000) != 0 else 0\n");
+        code.push_str("spsr_v = 1 if (_msr_val & 0x10000000) != 0 else 0\n");
     }
     code
 }

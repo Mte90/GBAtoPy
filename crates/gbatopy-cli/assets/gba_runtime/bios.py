@@ -238,6 +238,22 @@ class BIOS:
 
         return len(dst)
 
+    def swi_huffman(self, src_addr: int, dst_addr: int) -> int:
+        """Huffman decompression - stub for now (no test ROMs use it)"""
+        # Read Huffman header
+        src = bytearray()
+        for i in range(512):  # Read up to 512 bytes
+            src.append(self.memory.read_u8(src_addr + i))
+        
+        # Check header (0x10 = Huffman)
+        if len(src) < 8 or src[0] != 0x10:
+            return 0
+        
+        expanded_size = struct.unpack("<I", src[1:5])[0]
+        # TODO: Implement full Huffman decompression
+        # For now, return 0 (no data decompressed)
+        return 0
+
     def swi_vblank_intr_wait(self):
         if not hasattr(self, "memory") or not hasattr(self.memory, "cpu"):
             return

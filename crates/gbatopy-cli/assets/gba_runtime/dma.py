@@ -244,7 +244,7 @@ class DMA:
         self._do_transfer(ch)
 
     def _do_transfer(self, ch: DMAChannel):
-        """Execute DMA transfer for a channel"""
+        """Execute DMA transfer for a channel with optimized bulk transfers"""
         if ch.busy:
             return
 
@@ -258,18 +258,63 @@ class DMA:
         src = ch.src_addr
         dst = ch.dst_addr
 
+        # Check if we can use optimized bulk transfer (fixed increment, no FIFO)
+        is_bulk_32 = (transfer_size == 4 and 
+                      src_inc == 4 and dst_inc == 4 and
+                      dst != DMA.FIFO_A_ADDR and dst != DMA.FIFO_B_ADDR)
+        is_bulk_16 = (transfer_size == 2 and 
+                      src_inc == 2 and dst_inc == 2 and
+                      dst != DMA.FIFO_A_ADDR and dst != DMA.FIFO_B_ADDR)
+
         # Perform the actual memory transfer
-        for _ in range(count):
-            if transfer_size == 4:
-                value = self.mem.read_u32(src)
-                self.mem.write_u32(dst, value)
-                src += 4
-                dst += 4
-            else:  # 16-bit
-                value = self.mem.read_u16(src)
-                self.mem.write_u16(dst, value)
-                src += 2
-                dst += 2
+        if is_bulk_32:
+            # Optimized 32-bit bulk transfer using slice assignment
+            total_bytes = count * 4
+            src_data = self.mem.read_bytes(src, total_bytes)
+            self.mem.write_bytes(dst, src_data)
+            src += total_bytes
+            dst += total_bytes
+        elif is_bulk_16:
+            # Optimized 16-bit bulk transfer using slice assignment
+            total_bytes = count * 2
+            src_data = self.mem.read_bytes(src, total_bytes)
+            self.mem.write_bytes(dst, src_data)
+            src += total_bytes
+            dst += total_bytes
+        else:
+            # Fallback to per-element transfer for FIFO or variable increment
+            for _ in range(count):
+                if transfer_size == 4:
+                    value = self.mem.read_u32(src)
+                    # Handle FIFO destinations specially
+                    if dst == DMA.FIFO_A_ADDR and self._apu:
+                        self._apu.fifo_a.write(value & 0xFF)
+                        if count > 1:
+                            self._apu.fifo_a.write((value >> 8) & 0xFF)
+                            self._apu.fifo_a.write((value >> 16) & 0xFF)
+                            self._apu.fifo_a.write((value >> 24) & 0xFF)
+                    elif dst == DMA.FIFO_B_ADDR and self._apu:
+                        self._apu.fifo_b.write(value & 0xFF)
+                        if count > 1:
+                            self._apu.fifo_b.write((value >> 8) & 0xFF)
+                            self._apu.fifo_b.write((value >> 16) & 0xFF)
+                            self._apu.fifo_b.write((value >> 24) & 0xFF)
+                    else:
+                        self.mem.write_u32(dst, value)
+                    src += 4
+                    dst += 4
+                else:  # 16-bit
+                    value = self.mem.read_u16(src)
+                    if dst == DMA.FIFO_A_ADDR and self._apu:
+                        self._apu.fifo_a.write(value & 0xFF)
+                        self._apu.fifo_a.write((value >> 8) & 0xFF)
+                    elif dst == DMA.FIFO_B_ADDR and self._apu:
+                        self._apu.fifo_b.write(value & 0xFF)
+                        self._apu.fifo_b.write((value >> 8) & 0xFF)
+                    else:
+                        self.mem.write_u16(dst, value)
+                    src += 2
+                    dst += 2
 
         # Update addresses based on increment mode
         ch.src_addr = self._adjust_address(ch.src_addr, src_inc, count * transfer_size)

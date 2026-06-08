@@ -4,6 +4,201 @@ import struct
 import os
 from typing import Optional, List, Tuple
 
+# Numba JIT compilation support
+try:
+    import numba
+    from numba import njit, prange
+    _HAS_NUMBA = True
+except ImportError:
+    numba = None
+    njit = None
+    prange = None
+    _HAS_NUMBA = False
+
+_NUMBA_ENABLED = True
+_NUMBA_PPU_ENABLED = False  # Separate flag for PPU JIT
+
+
+def jit_compile(func):
+    """Decorator to JIT-compile a function with numba when available."""
+    if not _HAS_NUMBA or not _NUMBA_ENABLED:
+        return func
+    try:
+        return njit(func)
+    except Exception as e:
+        print(f"  Warning: JIT compilation failed for {func.__name__}: {e}")
+        return func
+
+
+def jit_compile_ppu(func):
+    """Decorator to JIT-compile PPU functions with numba when enabled."""
+    if not _HAS_NUMBA or not _NUMBA_PPU_ENABLED:
+        return func
+    try:
+        return njit(func, parallel=True)
+    except Exception as e:
+        print(f"  Warning: PPU JIT compilation failed for {func.__name__}: {e}")
+        return func
+
+
+def set_numba_enabled(enabled: bool):
+    """Enable or disable all numba JIT compilation."""
+    global _NUMBA_ENABLED
+    if not _HAS_NUMBA and enabled:
+        print("  Warning: numba not installed, JIT compilation unavailable")
+    _NUMBA_ENABLED = enabled and _HAS_NUMBA
+
+
+def set_numba_ppu_enabled(enabled: bool):
+    """Enable or disable PPU-specific numba JIT compilation."""
+    global _NUMBA_PPU_ENABLED
+    if not _HAS_NUMBA and enabled:
+        print("  Warning: numba not installed, PPU JIT compilation unavailable")
+    _NUMBA_PPU_ENABLED = enabled and _HAS_NUMBA
+
+
+def is_numba_available() -> bool:
+    """Check if numba is available."""
+    return _HAS_NUMBA
+
+
+def is_numba_ppu_enabled() -> bool:
+    """Check if PPU JIT is enabled."""
+    return _NUMBA_PPU_ENABLED and _HAS_NUMBA
+
+
+@jit_compile
+def _c5to8_jit(c):
+    if not isinstance(c, int):
+        c = int(c)
+    val = c & 0x1F
+    return ((val << 3) | (val >> 2)) & 0xFF
+
+
+@jit_compile
+def _read_color_jit(vram_data, addr):
+    if addr >= 0 and addr + 1 < len(vram_data):
+        return int(vram_data[addr] | (vram_data[addr + 1] << 8))
+    return 0
+
+
+@jit_compile
+def _read_palette_jit(palette_data, addr):
+    if addr >= 0 and addr + 1 < len(palette_data):
+        return int(palette_data[addr] | (palette_data[addr + 1] << 8))
+    return 0
+
+
+@jit_compile
+def _convert_color_jit(color_val):
+    r = int((color_val >> 0) & 0x1F)
+    g = int((color_val >> 5) & 0x1F)
+    b = int((color_val >> 10) & 0x1F)
+    r8 = int((r << 3) | (r >> 2))
+    g8 = int((g << 3) | (g >> 2))
+    b8 = int((b << 3) | (b >> 2))
+    return int(0xFF000000 | (b8 << 16) | (g8 << 8) | r8)
+
+
+@jit_compile
+def _decode_tile_4bpp_jit(vram_data, tile_offset):
+    result = [0] * 64
+    for row in range(8):
+        for col in range(8):
+            byte_offset = row * 4 + (col // 2)
+            addr = tile_offset + byte_offset
+            if addr >= 0 and addr < len(vram_data):
+                byte_val = vram_data[addr]
+                if col % 2 == 0:
+                    color_idx = int((byte_val >> 4) & 0x0F)
+                else:
+                    color_idx = int(byte_val & 0x0F)
+                result[row * 8 + col] = color_idx
+            else:
+                result[row * 8 + col] = 0
+    return result
+
+
+@jit_compile
+def _decode_tile_8bpp_jit(vram_data, tile_offset):
+    result = [0] * 64
+    for row in range(8):
+        for col in range(8):
+            addr = tile_offset + (row * 8) + col
+            if addr >= 0 and addr < len(vram_data):
+                result[row * 8 + col] = int(vram_data[addr])
+            else:
+                result[row * 8 + col] = 0
+    return result
+
+
+# ========================================================================
+# Numba JIT-compiled rendering helpers (cache=True for performance)
+# ========================================================================
+
+@jit_compile
+def _get_palette_color_jit(palette_data, palette_idx):
+    addr = palette_idx * 2
+    if addr + 1 >= len(palette_data):
+        return (0, 0, 0)
+
+    color_val = palette_data[addr] | (palette_data[addr + 1] << 8)
+
+    if color_val == 0 and palette_idx > 0:
+        intensity = min(255, (palette_idx * 17))
+        return (intensity, intensity, intensity)
+
+    r = int((color_val >> 0) & 0x1F)
+    g = int((color_val >> 5) & 0x1F)
+    b = int((color_val >> 10) & 0x1F)
+    r8 = int((r << 3) | (r >> 2))
+    g8 = int((g << 3) | (g >> 2))
+    b8 = int((b << 3) | (b >> 2))
+    return (r8, g8, b8)
+
+
+@jit_compile
+def _get_palette_color_256_jit(palette_data, color_idx):
+    addr = color_idx * 2
+    if addr + 1 >= len(palette_data):
+        return (0, 0, 0)
+
+    color_val = palette_data[addr] | (palette_data[addr + 1] << 8)
+
+    if color_val == 0 and color_idx > 0:
+        intensity = min(255, (color_idx * 17))
+        return (intensity, intensity, intensity)
+
+    r = int((color_val >> 0) & 0x1F)
+    g = int((color_val >> 5) & 0x1F)
+    b = int((color_val >> 10) & 0x1F)
+    r8 = int((r << 3) | (r >> 2))
+    g8 = int((g << 3) | (g >> 2))
+    b8 = int((b << 3) | (b >> 2))
+    return (r8, g8, b8)
+
+
+def _get_vram_bytes(memory, start: int, size: int) -> bytes:
+    """Extract VRAM bytes for JIT functions."""
+    data = bytearray(size)
+    for i in range(size):
+        try:
+            data[i] = memory.read_u8(start + i)
+        except:
+            data[i] = 0
+    return bytes(data)
+
+
+def _get_palette_bytes(memory, start: int = 0x05000000, size: int = 512) -> bytes:
+    """Extract palette RAM bytes for JIT functions."""
+    data = bytearray(size)
+    for i in range(size):
+        try:
+            data[i] = memory.read_u8(start + i)
+        except:
+            data[i] = 0
+    return bytes(data)
+
 
 def compute_flags(result: int, width: int) -> int:
     """Compute ARM7TDMI CPSR flags from arithmetic result.
@@ -474,6 +669,14 @@ class PPU:
         self.win1_enable = False
         self.obj_window_enable = False
         self.dispcnt = 0x0403
+        
+        # Numba JIT control for PPU
+        self.numba_ppu_enabled = is_numba_ppu_enabled()
+        
+        # Cache for VRAM/palette data (updated each frame for JIT)
+        self._vram_cache = None
+        self._palette_cache = None
+        
         # Screen dimensions
         self.screen_width = 240
         self.screen_height = 160
@@ -572,6 +775,63 @@ class PPU:
         self.framebuffer = [
             [(0, 0, 0) for _ in range(self.screen_width)] for _ in range(self.screen_height)
         ]
+
+    def _get_vram_data(self) -> bytes:
+        """Get VRAM data as bytes for JIT functions."""
+        vram_start = 0x06000000
+        vram_end = 0x06018000
+        try:
+            return bytes(self.memory.read_range(vram_start, vram_end - vram_start))
+        except:
+            return b'\x00' * (vram_end - vram_start)
+
+    def _get_palette_data(self) -> bytes:
+        """Get palette RAM data as bytes for JIT functions."""
+        palette_start = 0x05000000
+        palette_end = 0x05000400
+        try:
+            return bytes(self.memory.read_range(palette_start, palette_end - palette_start))
+        except:
+            return b'\x00' * (palette_end - palette_start)
+
+    def _decode_tile_4bpp_jit_wrapper(self, tile_index: int, char_block_base: int) -> List[int]:
+        """JIT-accelerated 4BPP tile decoding."""
+        vram_data = self._get_vram_data()
+        char_block = char_block_base * 0x4000
+        tile_offset = tile_index * 32
+        return _decode_tile_4bpp_jit(vram_data, char_block + tile_offset)
+
+    def _decode_tile_8bpp_jit_wrapper(self, tile_index: int, char_block_base: int) -> List[int]:
+        """JIT-accelerated 8BPP tile decoding."""
+        vram_data = self._get_vram_data()
+        char_block = char_block_base * 0x4000
+        tile_offset = tile_index * 64
+        return _decode_tile_8bpp_jit(vram_data, char_block + tile_offset)
+
+    def _get_palette_color_jit(self, palette_idx: int) -> Tuple[int, int, int]:
+        """JIT-accelerated palette color lookup."""
+        palette_data = self._get_palette_data()
+        addr = palette_idx * 2
+        color_val = _read_palette_jit(palette_data, addr)
+        if color_val == 0 and palette_idx > 0:
+            intensity = min(255, palette_idx * 17)
+            return (intensity, intensity, intensity)
+        r = _c5to8_jit((color_val >> 0) & 0x1F)
+        g = _c5to8_jit((color_val >> 5) & 0x1F)
+        b = _c5to8_jit((color_val >> 10) & 0x1F)
+        return (r, g, b)
+
+    def _get_palette_color_256_jit(self, palette_idx: int) -> Tuple[int, int, int]:
+        """JIT-accelerated 256-color palette lookup."""
+        palette_data = self._get_palette_data()
+        addr = palette_idx * 2
+        color_val = _read_palette_jit(palette_data, addr)
+        if color_val == 0:
+            return (palette_idx, palette_idx, palette_idx)
+        r = _c5to8_jit((color_val >> 0) & 0x1F)
+        g = _c5to8_jit((color_val >> 5) & 0x1F)
+        b = _c5to8_jit((color_val >> 10) & 0x1F)
+        return (r, g, b)
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to PPU registers"""
@@ -1209,9 +1469,15 @@ class PPU:
                         bpp_mode = (bg_cnt >> 2) & 0x03  # Bits 2-3: 00=4BPP, 01=8BPP
 
                         if bpp_mode == 1:  # 8BPP mode
-                            palette_indices = self._decode_tile_8bpp(tile_index, char_block_base)
+                            if is_numba_ppu_enabled():
+                                palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base)
+                            else:
+                                palette_indices = self._decode_tile_8bpp(tile_index, char_block_base)
                         else:  # 4BPP mode
-                            palette_indices = self._decode_tile_4bpp(tile_index, char_block_base)
+                            if is_numba_ppu_enabled():
+                                palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base)
+                            else:
+                                palette_indices = self._decode_tile_4bpp(tile_index, char_block_base)
 
                         # Calculate linear index in 8x8 tile
                         pixel_index = pixel_y * 8 + pixel_x
@@ -1219,8 +1485,11 @@ class PPU:
                         if pixel_index < len(palette_indices):
                             color_idx = palette_indices[pixel_index]
 
-                            # Get color from palette using _get_palette_color
-                            color = self._get_palette_color(color_idx)
+                            # Get color from palette using JIT-accelerated lookup
+                            if is_numba_ppu_enabled():
+                                color = self._get_palette_color_jit(color_idx)
+                            else:
+                                color = self._get_palette_color(color_idx)
                             # Only add non-transparent pixels (color_idx != 0)
                             if color_idx != 0:
                                 # Get priority from BGxCNT (bits 0-1)
@@ -1378,21 +1647,25 @@ class PPU:
         """Render Mode 3: 240x160 bitmap mode with mosaic support"""
         vram_base = 0x06000000
 
-        for y in range(self.screen_height):
-            for x in range(self.screen_width):
-                layer_enable = self._get_window_layer_enable(x, y)
-
-                # Apply mosaic if enabled (snap to mosaic block)
-                mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
-
-                if True:  # Bitmap modes render regardless of window blend bit
-                    # Read 16-bit color from VRAM
+        if is_numba_ppu_enabled():
+            vram_data = self._get_vram_data()
+            for y in range(self.screen_height):
+                for x in range(self.screen_width):
+                    mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
+                    offset = (mosaic_y * 240 + mosaic_x) * 2
+                    color_val = _read_color_jit(vram_data, vram_base + offset)
+                    r = _c5to8_jit((color_val >> 0) & 0x1F)
+                    g = _c5to8_jit((color_val >> 5) & 0x1F)
+                    b = _c5to8_jit((color_val >> 10) & 0x1F)
+                    self.framebuffer[y][x] = (r, g, b)
+        else:
+            for y in range(self.screen_height):
+                for x in range(self.screen_width):
+                    mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
                     offset = (mosaic_y * 240 + mosaic_x) * 2
                     addr = vram_base + offset
-
                     try:
                         color_val = self.memory.read_u16(addr)
-                        # Convert 15-bit RGB555 to RGB888
                         r = _c5to8((color_val >> 0) & 0x1F)
                         g = _c5to8((color_val >> 5) & 0x1F)
                         b = _c5to8((color_val >> 10) & 0x1F)
@@ -1421,10 +1694,11 @@ class PPU:
                 addr = vram_base + offset
 
                 try:
-                    # Read 8-bit palette index from VRAM
                     palette_idx = self.memory.read_u8(addr)
-                    # Look up color in 256-color palette at 0x05000000
-                    color = self._get_palette_color_256(palette_idx)
+                    if is_numba_ppu_enabled():
+                        color = self._get_palette_color_256_jit(palette_idx)
+                    else:
+                        color = self._get_palette_color_256(palette_idx)
                     self.framebuffer[y][x] = color
                 except:
                     self.framebuffer[y][x] = (0, 0, 0)
@@ -1534,15 +1808,15 @@ class PPU:
                     b = int(b * (1 - factor))
                     self.framebuffer[y][x] = (r, g, b)
         elif blend_mode == 2:
-            # Brightness increase: (src * (16 - Evy)) / 16
+            # Brightness increase: src * (1 + Evy/16)
             evy = min(self.bldy, 16)
             factor = evy / 16.0
             for y in range(self.screen_height):
                 for x in range(self.screen_width):
                     r, g, b = self.framebuffer[y][x]
-                    r = int(r * (1.0 - factor))
-                    g = int(g * (1.0 - factor))
-                    b = int(b * (1.0 - factor))
+                    r = min(int(r * (1.0 + factor)), 255)
+                    g = min(int(g * (1.0 + factor)), 255)
+                    b = min(int(b * (1.0 + factor)), 255)
                     self.framebuffer[y][x] = (r, g, b)
 
     def save_screenshot(self, path: str):

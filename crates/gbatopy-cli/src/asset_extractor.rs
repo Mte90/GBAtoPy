@@ -165,14 +165,11 @@ pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
         }
 
         let sample_data = &rom_data[sample_addr..sample_addr + max_samples];
-        let mut detected = false;
-
         // Check if this looks like valid sample data (some non-zero bytes)
         let non_zero = sample_data.iter().filter(|&&b| b != 0).count();
         if non_zero > 0 && non_zero < max_samples {
             // Heuristic: sample bank starting point
             assets.samples.push((sample_addr as u32, max_samples, 0)); // format: 0 = 4-bit, 1 = 8-bit
-            detected = true;
             break;
         }
     }

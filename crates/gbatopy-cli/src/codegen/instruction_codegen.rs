@@ -1,9 +1,7 @@
 use gbatopy_disasm::{operand::ShiftAmount, DecodedInstruction, Operand};
 
-/// Check if address is in VRAM range (0x06000000-0x06017FFF)
-fn is_vram_address(addr: u32) -> bool {
-    addr >= 0x06000000 && addr <= 0x06017FFF
-}
+// Legacy helper - removed to eliminate dead_code warning
+// fn is_vram_address(addr: u32) -> bool { addr >= 0x06000000 && addr <= 0x06017FFF }
 
 /// Convert ARM shift operator to Python operator
 fn shift_to_python(
@@ -454,7 +452,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                         base: rn, offset, ..
                     } = &ops[1]
                     {
-                        let offset_expr = match offset {
+                        let _offset_expr = match offset {
                             gbatopy_disasm::operand::AddressingMode::ImmediateOffset(val) => {
                                 if *val == 0 {
                                     String::new()
@@ -497,8 +495,8 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             }
                         };
                         return format!(
-                            "addr = r[{}]\n    if 0x06000000 <= addr <= 0x06017FFF:\n        print(f'DEBUG: VRAM write at 0x{{addr:08X}} value=0x{{r[{}] :08X}}')\n    memory.write_u32(addr, r[{}])",
-                            rn, rd, rd
+                            "addr = r[{}]\nmemory.write_u32(addr, r[{}])",
+                            rn, rd
                         );
                     }
                 }
@@ -516,8 +514,8 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             _ => "0".to_string(),
                         };
                         return format!(
-                            "addr = r[{}] + {}\n    if 0x06000000 <= addr <= 0x06017FFF:\n        print(f'DEBUG: VRAM write at 0x{{addr:08X}} value=0x{{r[{}] :08X}}')\n    memory.write_u32(addr, r[{}])",
-                            rn, op2_expr, rd, rd
+                            "addr = r[{}] + {}\nmemory.write_u32(addr, r[{}])",
+                            rn, op2_expr, rd
                         );
                     }
                 }
@@ -545,9 +543,9 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
 
             // Extract memory address info
             if let Operand::MemoryAddress {
-                base: rn,
+                base: _rn,
                 offset: addr_mode,
-                writeback,
+                writeback: _writeback,
             } = &ops[0]
             {
                 // Check if this is a Multi addressing mode (LDM/STM)
@@ -815,7 +813,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             }
                         };
                         return format!(
-                            "r[{}] = memory.read_16(r[{}]{}) & 0xFFFF",
+                            "r[{}] = memory.read_u16(r[{}]{}) & 0xFFFF",
                             rd, rn, offset_expr
                         );
                     }
@@ -833,7 +831,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             _ => "0".to_string(),
                         };
                         return format!(
-                            "r[{}] = memory.read_16(r[{}] + {}) & 0xFFFF",
+                            "r[{}] = memory.read_u16(r[{}] + {}) & 0xFFFF",
                             rd, rn, op2_expr
                         );
                     }
@@ -951,7 +949,8 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                         } else {
                             "0".to_string()
                         };
-                        let signed = base_opcode == "SMULL";
+                        // signed kept for future use - suppress warning
+                        let _signed = base_opcode == "SMULL";
                         return format!(
                             "result = ({}) * ({}); r[{}] = result & 0xFFFFFFFF; r[{}] = (result >> 32) & 0xFFFFFFFF",
                             rm, rs, rlo, rhi

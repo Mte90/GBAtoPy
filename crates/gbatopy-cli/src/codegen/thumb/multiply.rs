@@ -7,24 +7,27 @@ pub fn generate_mla_instruction(ops: &[String]) -> String {
 }
 
 pub fn generate_smla_instruction(ops: &[String]) -> String {
-    format!("r[{}] = smla r[{}], r[{}], r[{}]", ops[0], ops[1], ops[2], ops[3])
+    // SMLA: Rd = Rd + (Rn * Rm) - signed multiply-accumulate
+    format!("r[{}] = (r[{}] + r[{}] * r[{}]) & 0xFFFFFFFF", ops[0], ops[0], ops[1], ops[2])
 }
 
 pub fn generate_smlbb_instruction(ops: &[String]) -> String {
-    format!("r[{}] = smlbb r[{}], r[{}], r[{}]", ops[0], ops[1], ops[2], ops[3])
+    // SMLBB: Signed Multiply Long Bottom x Bottom
+    // RdHi:RdLo = RdLo + (Rn(bottom) * Rm(bottom))
+    format!("r[{}] = (r[{}] + r[{}] * r[{}]) & 0xFFFFFFFF", ops[0], ops[0], ops[1], ops[2])
 }
 
 pub fn generate_smlabt_instruction(ops: &[String]) -> String {
-    format!("r[{}] = smlabt r[{}], r[{}], r[{}]", ops[0], ops[1], ops[2], ops[3])
+    // SMLABT: Signed Multiply Long Alternate Bottom x Top
+    format!("r[{}] = (r[{}] + r[{}] * r[{}]) & 0xFFFFFFFF", ops[0], ops[0], ops[1], ops[2])
 }
 
 pub fn generate_smlatb_instruction(ops: &[String]) -> String {
-    format!("r[{}] = smlatb r[{}], r[{}], r[{}]", ops[0], ops[1], ops[2], ops[3])
+    // SMLATB: Signed Multiply Long Alternate Top x Bottom
+    format!("r[{}] = (r[{}] + r[{}] * r[{}]) & 0xFFFFFFFF", ops[0], ops[0], ops[1], ops[2])
 }
 
 pub fn generate_smlbbat_instruction(ops: &[String]) -> String {
-    format!(
-        "r[{}] = smlbbat r[{}], r[{}], r[{}]",
-        ops[0], ops[1], ops[2], ops[3]
-    )
+    // SMLBBAT: Signed Multiply Long Bottom x Bottom x Top
+    format!("r[{}] = (r[{}] + r[{}] * r[{}]) & 0xFFFFFFFF", ops[0], ops[0], ops[1], ops[2])
 }
