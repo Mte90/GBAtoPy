@@ -1,7 +1,9 @@
 use gbatopy_disasm::{operand::ShiftAmount, DecodedInstruction, Operand};
 
-// Legacy helper - removed to eliminate dead_code warning
-// fn is_vram_address(addr: u32) -> bool { addr >= 0x06000000 && addr <= 0x06017FFF }
+/// Check if address is in VRAM range (0x06000000-0x06017FFF)
+fn is_vram_address(addr: u32) -> bool {
+    addr >= 0x06000000 && addr <= 0x06017FFF
+}
 
 /// Convert ARM shift operator to Python operator
 fn shift_to_python(
@@ -452,7 +454,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                         base: rn, offset, ..
                     } = &ops[1]
                     {
-                        let _offset_expr = match offset {
+                        let offset_expr = match offset {
                             gbatopy_disasm::operand::AddressingMode::ImmediateOffset(val) => {
                                 if *val == 0 {
                                     String::new()
@@ -543,9 +545,9 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
 
             // Extract memory address info
             if let Operand::MemoryAddress {
-                base: _rn,
+                base: rn,
                 offset: addr_mode,
-                writeback: _writeback,
+                writeback,
             } = &ops[0]
             {
                 // Check if this is a Multi addressing mode (LDM/STM)
@@ -813,7 +815,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             }
                         };
                         return format!(
-                            "r[{}] = memory.read_u16(r[{}]{}) & 0xFFFF",
+                            "r[{}] = memory.read_16(r[{}]{}) & 0xFFFF",
                             rd, rn, offset_expr
                         );
                     }
@@ -831,7 +833,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             _ => "0".to_string(),
                         };
                         return format!(
-                            "r[{}] = memory.read_u16(r[{}] + {}) & 0xFFFF",
+                            "r[{}] = memory.read_16(r[{}] + {}) & 0xFFFF",
                             rd, rn, op2_expr
                         );
                     }
@@ -949,8 +951,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                         } else {
                             "0".to_string()
                         };
-                        // signed kept for future use - suppress warning
-                        let _signed = base_opcode == "SMULL";
+                        let signed = base_opcode == "SMULL";
                         return format!(
                             "result = ({}) * ({}); r[{}] = result & 0xFFFFFFFF; r[{}] = (result >> 32) & 0xFFFFFFFF",
                             rm, rs, rlo, rhi

@@ -1,2 +1,3 @@
-// Mode 1 rendering is now handled in ppu.py template, not generated separately
-// This file kept for reference but functions removed to eliminate dead_code warnings
+pub fn generate_mode1_rendering() -> String {
+    "ppu_instance.mode = 1\n".to_string()
+}

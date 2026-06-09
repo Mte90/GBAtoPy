@@ -70,7 +70,6 @@ class Memory:
         self._timers: Optional[object] = None
         self._input: Optional[object] = None
         self._interrupts: Optional[object] = None
-        self._serial: Optional[object] = None
 
         self.bios[0x00] = 0xEA
         self.bios[0x01] = 0x00
@@ -109,9 +108,6 @@ class Memory:
 
     def attach_interrupts(self, irq):
         self._interrupts = irq
-
-    def attach_serial(self, serial):
-        self._serial = serial
 
     def register_mmio_write(self, offset: int, handler: Callable[[int, int], None]):
         if 0 <= offset < MemoryMap.IO_SIZE:
@@ -158,9 +154,6 @@ class Memory:
         if 0x04000200 <= addr <= 0x04000208:
             if self._interrupts:
                 self._handle_interrupt_write(addr, value)
-        if 0x04000120 <= addr <= 0x0400012F:
-            if self._serial:
-                self._serial.write_register(addr, value)
 
     def _dispatch_hal_read(self, addr: int) -> Optional[int]:
         # Window registers (0x04000048-0x0400004F)
@@ -193,17 +186,6 @@ class Memory:
         if addr == 0x04000133:
             offset = addr - MemoryMap.IO_START
             return self.io[offset]
-        if 0x04000120 <= addr <= 0x0400012F:
-            if self._serial:
-                return self._serial.read_register(addr)
-        if 0x04000200 <= addr <= 0x04000208:
-            if self._interrupts:
-                if addr == 0x04000200:
-                    return self._interrupts.read_ie()
-                elif addr == 0x04000204:
-                    return self._interrupts.read_if()
-                elif addr == 0x04000208:
-                    return self._interrupts.read_ime()
         return None
 
     def _handle_dma_read(self, addr: int) -> int:
@@ -546,20 +528,6 @@ class Memory:
         if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
             self._dispatch_hal_write(addr, value)
 
-    def read_bytes(self, addr: int, length: int) -> bytes:
-        """Read multiple bytes from memory (optimized for bulk transfers)"""
-        addr &= 0xFFFFFFFF
-        result = bytearray(length)
-        for i in range(length):
-            result[i] = self.read_u8(addr + i)
-        return bytes(result)
-
-    def write_bytes(self, addr: int, data: bytes):
-        """Write multiple bytes to memory (optimized for bulk transfers)"""
-        addr &= 0xFFFFFFFF
-        for i, byte in enumerate(data):
-            self.write_u8(addr + i, byte)
-
     def load_rom(self, path: str):
         with open(path, "rb") as f:
             rom_data = f.read()
@@ -768,33 +736,3 @@ class MemoryDump:
                 f.write("\nNo differences found.\n")
 
         return filepath
-
-
-def load_assets(memory: 'Memory'):
-    """Load pre-extracted assets into memory if available."""
-    # Check if assets were embedded in the generated file
-    import sys
-    generated_module = sys.modules.get('__main__')
-    
-    if hasattr(generated_module, 'PALETTE_BG'):
-        palette_data = getattr(generated_module, 'PALETTE_BG')
-        memory.palette[:len(palette_data)] = _array.array('B', palette_data)
-        print(f"  Loaded {len(palette_data)} bytes of palette data")
-    
-    if hasattr(generated_module, 'TILES_4BPP'):
-        tiles_data = getattr(generated_module, 'TILES_4BPP')
-        # Write tiles to VRAM (first 64KB of VRAM for tiles)
-        vram_offset = 0
-        for i, byte in enumerate(tiles_data):
-            if vram_offset + i < len(memory.vram):
-                memory.vram[vram_offset + i] = byte
-        print(f"  Loaded {len(tiles_data)} bytes of tile data")
-    
-    if hasattr(generated_module, 'TILEMAP_BG0'):
-        tilemap_data = getattr(generated_module, 'TILEMAP_BG0')
-        # Write tilemap to VRAM (BG0 tilemap at 0x1800 offset in VRAM)
-        vram_offset = 0x1800  # BG0 tilemap location
-        for i, byte in enumerate(tilemap_data):
-            if vram_offset + i < len(memory.vram):
-                memory.vram[vram_offset + i] = byte
-        print(f"  Loaded {len(tilemap_data)} bytes of tilemap data")

@@ -1808,15 +1808,15 @@ class PPU:
                     b = int(b * (1 - factor))
                     self.framebuffer[y][x] = (r, g, b)
         elif blend_mode == 2:
-            # Brightness increase: src * (1 + Evy/16)
+            # Brightness increase: (src * (16 - Evy)) / 16
             evy = min(self.bldy, 16)
             factor = evy / 16.0
             for y in range(self.screen_height):
                 for x in range(self.screen_width):
                     r, g, b = self.framebuffer[y][x]
-                    r = min(int(r * (1.0 + factor)), 255)
-                    g = min(int(g * (1.0 + factor)), 255)
-                    b = min(int(b * (1.0 + factor)), 255)
+                    r = int(r * (1.0 - factor))
+                    g = int(g * (1.0 - factor))
+                    b = int(b * (1.0 - factor))
                     self.framebuffer[y][x] = (r, g, b)
 
     def save_screenshot(self, path: str):

@@ -119,7 +119,7 @@ impl FeatureFlags {
 
 /// Convert ARM shift operator to Python operator
 /// Returns the full expression like "r5 << 2" or "(r5 >> 2) | (r5 << 30) & 0xFFFFFFFF"
-fn _shift_to_python(
+fn shift_to_python(
     reg: u8,
     shift_type: &gbatopy_disasm::operand::ShiftType,
     amount: &ShiftAmount,
@@ -149,7 +149,6 @@ pub fn run_pipeline(
     _use_ir: bool,
     feature_flags: Option<FeatureFlags>,
     minify: bool,
-    _external_assets: bool,
 ) -> Result<(), String> {
     let rom = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
@@ -166,11 +165,6 @@ pub fn run_pipeline(
     eprintln!(
         "  Features: audio={}, irq={}, timers={}, dma={}",
         flags.audio, flags.irq, flags.timers, flags.dma
-    );
-    
-    // Save checkpoint after disassembly
-    _save_findings(output_path, "Disassembly",
-        &format!("total={}, code={}", instructions.len(), instructions.len())
     );
 
     eprintln!("Step 2: Asset Extraction");
@@ -360,11 +354,6 @@ pub fn run_pipeline(
         func_groups.len(),
         instructions.len()
     );
-    
-    // Save checkpoint after code generation
-    _save_findings(output_path, "Code Generation",
-        &format!("basic_blocks={}, instructions={}", func_groups.len(), instructions.len())
-    );
 
     // Helper function to generate Python from ARM instruction
 
@@ -435,7 +424,7 @@ pub fn run_pipeline(
     // Embed sample metadata (start_addr, length, format)
     code.push_str("# Sample metadata: (start_addr, length, format)\n");
     code.push_str("SAMPLES = [\n");
-    for (_i, &(addr, len, fmt)) in assets.samples.iter().enumerate() {
+    for (i, &(addr, len, fmt)) in assets.samples.iter().enumerate() {
         code.push_str(&format!("    (0x{:08X}, {}, {}),\n", addr, len, fmt));
     }
     code.push_str("]\n\n");
@@ -848,18 +837,3 @@ if __name__ == "__main__":
     .to_string()
 }
 // Force rebuild ven 1 mag 2026, 13:30:36, CEST
-
-
-// Helper to save checkpoint findings
-fn _save_findings(output_path: &str, section: &str, content: &str) {
-    let findings_path = format!("{}.findings", output_path);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&findings_path)
-    {
-        use std::io::Write;
-        let _ = writeln!(file, "\n=== {} ===", section);
-        let _ = writeln!(file, "{}", content);
-    }
-}

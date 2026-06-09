@@ -22,7 +22,7 @@ cpsr_z = 0
 cpsr_c = 0
 cpsr_v = 0
 
-# ROM_DATA will be populated by the transpiler (Base64 or bytearray)
+ROM_DATA = bytearray([])
 vram = None
 palette_ram = None
 oam = None

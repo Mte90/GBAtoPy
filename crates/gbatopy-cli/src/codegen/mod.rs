@@ -10,7 +10,7 @@ pub mod sram;
 #[allow(unused_imports)]
 pub use cpu::*;
 #[allow(unused_imports)]
-// No exports from helpers - all functions removed to eliminate dead_code warnings
+pub use helpers::{embed_runtime_files, shift_to_python};
 #[allow(unused_imports)]
 pub use instruction_codegen::generate_instruction_python;
 #[allow(unused_imports)]

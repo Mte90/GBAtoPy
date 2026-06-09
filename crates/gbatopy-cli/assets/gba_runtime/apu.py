@@ -316,46 +316,15 @@ class APU:
         self._buffer_queue = deque(maxlen=4)  # Queue buffers for seamless playback
 
     def start(self):
-        """Start audio playback with dedicated streaming thread"""
-        try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.init(
-                    frequency=self.SAMPLE_RATE,
-                    size=-16,  # Signed 16-bit
-                    channels=2,
-                    buffer=2048
-                )
-            elif pygame.mixer.get_init() != (self.SAMPLE_RATE, -16, 2, 2048):
-                pygame.mixer.quit()
-                pygame.mixer.init(
-                    frequency=self.SAMPLE_RATE,
-                    size=-16,
-                    channels=2,
-                    buffer=2048
-                )
-        except pygame.error as e:
-            print(f"  Warning: pygame.mixer init failed: {e}")
-            return
-        
-        # Start continuous audio streaming thread
-        self._running = True
-        self._audio_thread = threading.Thread(target=self._audio_stream_loop, daemon=True)
-        self._audio_thread.start()
-        
-        # Create a dedicated channel for continuous playback
-        try:
-            self._audio_channel = pygame.mixer.Channel(0)
-        except Exception:
-            self._audio_channel = None
+        """Start audio playback"""
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=self.SAMPLE_RATE, size=-8, channels=2, buffer=512)
 
     def stop(self):
         """Stop audio playback"""
-        self._running = False
         try:
-            if hasattr(self, '_audio_thread'):
-                self._audio_thread.join(timeout=0.5)
             pygame.mixer.stop()
-        except (pygame.error, AttributeError):
+        except pygame.error:
             pass
 
     def write_register(self, addr: int, value: int):
@@ -475,35 +444,39 @@ class APU:
 
         return (left, right)
 
-    def _audio_stream_loop(self):
-        """Dedicated thread for continuous audio streaming with double-buffering"""
-        BUFFER_SIZE = 1024  # Smaller buffers for lower latency
-        
-        while self._running:
-            # Generate audio buffer
-            samples = array.array('h')  # Signed 16-bit samples
-            for _ in range(BUFFER_SIZE):
-                left, right = self.get_sample()
-                # Convert to signed 16-bit (-32768 to 32767)
-                # Scale to avoid clipping
-                left_sample = int((left - 128) * 200)
-                right_sample = int((right - 128) * 200)
-                samples.append(left_sample)
-                samples.append(right_sample)
-            
-            if len(samples) >= BUFFER_SIZE * 2 and self._audio_channel:
-                try:
-                    sound = pygame.mixer.Sound(buffer=samples.tobytes())
-                    sound.play()
-                    # Non-blocking: don't wait, just queue the next buffer
-                    # pygame.mixer.Channel handles queuing automatically
-                except pygame.error:
-                    pass  # Silently ignore mixer errors
-            else:
-                # No audio enabled, wait to prevent CPU spinning
-                pygame.time.wait(5)
-    
     def update(self):
-        """Legacy update method - deprecated, use streaming thread instead"""
-        # No longer needed - audio streams continuously from dedicated thread
-        pass
+        if not pygame.mixer.get_init():
+            return
+
+        if not (self.ch1_enabled or self.ch2_enabled or
+                self.ch3_enabled or self.ch4_enabled or
+                self.fifo_a_enabled or self.fifo_b_enabled):
+            return
+
+        BUFFER_SIZE = 1024
+        # Use array for better memory efficiency
+        samples = array.array('B')  # Unsigned byte array
+        for _ in range(BUFFER_SIZE):
+            left, right = self.get_sample()
+            samples.append(left)
+            samples.append(right)
+
+        if len(samples) == 0:
+            return
+
+        sample_bytes = samples.tobytes()
+
+        if self._audio_channel is None:
+            try:
+                self._audio_channel = pygame.mixer.Channel(0)
+            except pygame.error:
+                return
+
+        try:
+            sound = pygame.mixer.Sound(buffer=sample_bytes)
+            if self._audio_channel.get_queue():
+                self._audio_channel.queue(sound)
+            elif not self._audio_channel.get_busy():
+                self._audio_channel.play(sound)
+        except pygame.error:
+            pass

@@ -49,8 +49,6 @@ enum Commands {
         #[arg(long, default_value = "false")]
         minify: bool,
         #[arg(long, default_value = "false")]
-        external_assets: bool,
-        #[arg(long, default_value = "false")]
         no_audio: bool,
         #[arg(long, default_value = "false")]
         no_irq: bool,
@@ -74,10 +72,6 @@ enum Commands {
         profile: bool,
         #[arg(long, default_value = "false")]
         minify: bool,
-        #[arg(long, default_value = "false")]
-        strip_features: bool,
-        #[arg(long, default_value = "false")]
-        external_assets: bool,
         #[arg(long, default_value = "false")]
         no_audio: bool,
         #[arg(long, default_value = "false")]
@@ -168,7 +162,6 @@ fn main() {
             no_timers,
             no_dma,
             no_numba,
-            external_assets,
         } => {
             let feature_flags = Some(pipeline_cmd::FeatureFlags {
                 audio: !no_audio,
@@ -184,7 +177,6 @@ fn main() {
                 use_ir,
                 feature_flags,
                 minify,
-                external_assets,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
@@ -201,19 +193,15 @@ fn main() {
             no_irq,
             no_timers,
             no_dma,
-            no_numba, strip_features, external_assets,
+            no_numba,
         } => {
-            let feature_flags = if strip_features {
-                None  // Auto-detect features
-            } else {
-                Some(pipeline_cmd::FeatureFlags {
-                    audio: !no_audio,
-                    irq: !no_irq,
-                    timers: !no_timers,
-                    dma: !no_dma,
-                    numba: !no_numba,
-                })
-            };
+            let feature_flags = Some(pipeline_cmd::FeatureFlags {
+                audio: !no_audio,
+                irq: !no_irq,
+                timers: !no_timers,
+                dma: !no_dma,
+                numba: !no_numba,
+            });
             if let Err(e) = pipeline_cmd::run_pipeline(
                 rom.to_str().unwrap_or(""),
                 output.to_str().unwrap_or(""),
@@ -221,7 +209,6 @@ fn main() {
                 use_ir,
                 feature_flags,
                 minify,
-                external_assets,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
