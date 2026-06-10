@@ -17,6 +17,14 @@ pub struct DataDetectionStats {
     pub data_instructions_marked: usize,
     pub ldr_str_only_regions: usize,
     pub ldr_str_only_marked: usize,
+    pub sequential_load_regions: usize,
+    pub sequential_load_marked: usize,
+    pub constant_table_regions: usize,
+    pub constant_table_marked: usize,
+    pub repetitive_pattern_regions: usize,
+    pub repetitive_pattern_marked: usize,
+    pub high_unknown_ratio_regions: usize,
+    pub high_unknown_ratio_marked: usize,
 }
 
 /// Result of multi-pass static function discovery
@@ -152,6 +160,284 @@ impl Disassembler {
                 }
 
                 stats.ldr_str_only_marked += j - data_start;
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+
+        stats
+    }
+
+    /// Detect sequential load regions (common in data tables)
+    /// Looks for patterns like: LDR r0, [r1, #0], LDR r0, [r1, #4], LDR r0, [r1, #8], etc.
+    pub fn mark_sequential_load_regions(
+        &mut self,
+        instructions: &mut [DecodedInstruction],
+    ) -> DataDetectionStats {
+        let mut stats = DataDetectionStats::default();
+
+        if instructions.is_empty() {
+            return stats;
+        }
+
+        let window_size = 8;
+        let mut i = 0;
+        while i < instructions.len() {
+            // Skip if already marked as data
+            if instructions[i].is_data {
+                i += 1;
+                continue;
+            }
+
+            let end = (i + window_size).min(instructions.len());
+            let window = &instructions[i..end];
+
+            // Check if all instructions in window are sequential LDR with incrementing offsets
+            let is_sequential_load = window.len() >= 4
+                && window.iter().all(|inst| {
+                    inst.opcode.starts_with("LDR")
+                        && matches!(inst.operands.get(1), Some(crate::Operand::MemoryAddress { offset: crate::AddressingMode::ImmediateOffset(off), .. }) if *off >= 0)
+                });
+
+            if is_sequential_load {
+                stats.sequential_load_regions += 1;
+                let data_start = i;
+                let mut j = i;
+
+                // Extend the region as long as we see sequential loads
+                while j < instructions.len() {
+                    let inst = &instructions[j];
+                    if !inst.opcode.starts_with("LDR") {
+                        break;
+                    }
+
+                    // Check if it's a sequential load (offset increases by 4 each time)
+                    if let Some(crate::Operand::MemoryAddress { offset: crate::AddressingMode::ImmediateOffset(off), .. }) = inst.operands.get(1) {
+                        // Sequential load detected
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Mark all instructions in the region as data
+                for inst in &mut instructions[data_start..j] {
+                    inst.is_data = true;
+                    stats.sequential_load_marked += 1;
+                }
+
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+
+        stats
+    }
+
+    /// Detect constant table regions (sequences of immediate values)
+    /// Looks for patterns like: MOV r0, #0x12345678, MOV r1, #0xABCDEF00, etc.
+    pub fn mark_constant_table_regions(
+        &mut self,
+        instructions: &mut [DecodedInstruction],
+    ) -> DataDetectionStats {
+        let mut stats = DataDetectionStats::default();
+
+        if instructions.is_empty() {
+            return stats;
+        }
+
+        let window_size = 8;
+        let mut i = 0;
+        while i < instructions.len() {
+            // Skip if already marked as data
+            if instructions[i].is_data {
+                i += 1;
+                continue;
+            }
+
+            let end = (i + window_size).min(instructions.len());
+            let window = &instructions[i..end];
+
+            // Check if all instructions in window are MOV with large immediates
+            let is_constant_table = window.len() >= 4
+                && window.iter().all(|inst| {
+                    inst.opcode.starts_with("MOV")
+                        && matches!(inst.operands.get(1), Some(crate::Operand::Immediate(val)) if *val > 0x1000)
+                });
+
+            if is_constant_table {
+                stats.constant_table_regions += 1;
+                let data_start = i;
+                let mut j = i;
+
+                // Extend the region as long as we see MOV with large immediates
+                while j < instructions.len() {
+                    let inst = &instructions[j];
+                    if !inst.opcode.starts_with("MOV") {
+                        break;
+                    }
+
+                    if let Some(crate::Operand::Immediate(val)) = inst.operands.get(1) {
+                        if *val > 0x1000 {
+                            j += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                // Mark all instructions in the region as data
+                for inst in &mut instructions[data_start..j] {
+                    inst.is_data = true;
+                    stats.constant_table_marked += 1;
+                }
+
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+
+        stats
+    }
+
+    /// Detect repetitive instruction patterns (common in data regions)
+    /// Looks for sequences like: MOV r0, #0x12345678, MOV r0, #0x87654321, etc.
+    pub fn mark_repetitive_pattern_regions(
+        &mut self,
+        instructions: &mut [DecodedInstruction],
+    ) -> DataDetectionStats {
+        let mut stats = DataDetectionStats::default();
+
+        if instructions.is_empty() {
+            return stats;
+        }
+
+        let window_size = 16;
+        let mut i = 0;
+        while i < instructions.len() {
+            // Skip if already marked as data
+            if instructions[i].is_data {
+                i += 1;
+                continue;
+            }
+
+            let end = (i + window_size).min(instructions.len());
+            let window = &instructions[i..end];
+
+            // Check if all instructions in window are MOV with large immediates (repetitive pattern)
+            let is_repetitive = window.len() >= 8
+                && window.iter().all(|inst| {
+                    inst.opcode.starts_with("MOV")
+                        && matches!(inst.operands.get(1), Some(crate::Operand::Immediate(val)) if *val > 0xFFFF)
+                });
+
+            if is_repetitive {
+                stats.repetitive_pattern_regions += 1;
+                let data_start = i;
+                let mut j = i;
+
+                // Extend the region as long as we see repetitive MOV with large immediates
+                while j < instructions.len() {
+                    let inst = &instructions[j];
+                    if !inst.opcode.starts_with("MOV") {
+                        break;
+                    }
+
+                    if let Some(crate::Operand::Immediate(val)) = inst.operands.get(1) {
+                        if *val > 0xFFFF {
+                            j += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                // Mark all instructions in the region as data
+                for inst in &mut instructions[data_start..j] {
+                    inst.is_data = true;
+                    stats.repetitive_pattern_marked += 1;
+                }
+
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+
+        stats
+    }
+
+    /// Detect regions with high ratio of UNKNOWN/UNDEFINED instructions
+    pub fn mark_high_unknown_ratio_regions(
+        &mut self,
+        instructions: &mut [DecodedInstruction],
+    ) -> DataDetectionStats {
+        let mut stats = DataDetectionStats::default();
+
+        if instructions.is_empty() {
+            return stats;
+        }
+
+        let window_size = 32;
+        let mut i = 0;
+        while i < instructions.len() {
+            // Skip if already marked as data
+            if instructions[i].is_data {
+                i += 1;
+                continue;
+            }
+
+            let end = (i + window_size).min(instructions.len());
+            let window = &instructions[i..end];
+
+            let unknown_count = window
+                .iter()
+                .filter(|inst| inst.opcode.starts_with("UNKNOWN") || inst.opcode == "UNDEFINED")
+                .count();
+
+            let unknown_ratio = unknown_count as f64 / window.len() as f64;
+
+            if unknown_ratio > 0.7 {
+                stats.high_unknown_ratio_regions += 1;
+                let data_start = i;
+                let mut j = i;
+
+                // Extend the region as long as unknown ratio stays high
+                while j < instructions.len() {
+                    let curr_end = (j + window_size).min(instructions.len());
+                    let curr_window = &instructions[j..curr_end];
+                    
+                    if curr_window.is_empty() {
+                        break;
+                    }
+
+                    let curr_unknown = curr_window
+                        .iter()
+                        .filter(|inst| inst.opcode.starts_with("UNKNOWN") || inst.opcode == "UNDEFINED")
+                        .count();
+
+                    let curr_ratio = curr_unknown as f64 / curr_window.len() as f64;
+
+                    if curr_ratio > 0.7 {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Mark all instructions in the region as data
+                for inst in &mut instructions[data_start..j] {
+                    inst.is_data = true;
+                    stats.high_unknown_ratio_marked += 1;
+                }
+
                 i = j;
             } else {
                 i += 1;
@@ -672,5 +958,79 @@ impl Disassembler {
         functions.sort_by_key(|f| f.address);
 
         FunctionDiscoveryResult { functions, stats }
+    }
+
+    /// Disassemble ONLY the specified addresses (for CFG-first/reachable code analysis).
+    /// This prevents linear sweep on large ROMs by disassembling only reachable code.
+    ///
+    /// # Arguments
+    /// * `rom` - The ROM data to disassemble
+    /// * `addresses` - Sorted list of addresses to disassemble (from CFG reachable analysis)
+    ///
+    /// # Returns
+    /// Vector of decoded instructions, sorted by address
+    pub fn selective_disassemble(&mut self, rom: &[u8], addresses: &[u32]) -> Vec<DecodedInstruction> {
+        let mut instructions = Vec::new();
+        let arm_decoder = crate::arm::ArmDecoder::new();
+        let thumb_decoder = crate::thumb::ThumbDecoder::new();
+
+        for &addr in addresses {
+            let rom_offset = (addr - 0x08000000) as usize;
+            
+            if rom_offset >= rom.len() {
+                continue;
+            }
+
+            let is_thumb = addr % 2 == 1;
+            let mode = if is_thumb { ArmMode::Thumb } else { ArmMode::Arm };
+
+            match mode {
+                ArmMode::Arm => {
+                    if rom_offset + 4 > rom.len() {
+                        continue;
+                    }
+                    let word = u32::from_le_bytes([
+                        rom[rom_offset],
+                        rom[rom_offset + 1],
+                        rom[rom_offset + 2],
+                        rom[rom_offset + 3],
+                    ]);
+                    let (opcode, operands, _) = arm_decoder.decode(word, addr);
+                    
+                    instructions.push(DecodedInstruction {
+                        address: addr,
+                        opcode,
+                        operands,
+                        condition: None,
+                        raw: word,
+                        sets_flags: false,
+                        width: 4,
+                        mode: ArmMode::Arm,
+                        is_data: false,
+                    });
+                }
+                ArmMode::Thumb => {
+                    if rom_offset + 2 > rom.len() {
+                        continue;
+                    }
+                    let halfword = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
+                    let (opcode, operands, _) = thumb_decoder.decode(halfword, addr);
+                    
+                    instructions.push(DecodedInstruction {
+                        address: addr,
+                        opcode,
+                        operands,
+                        condition: None,
+                        raw: halfword as u32,
+                        sets_flags: false,
+                        width: 2,
+                        mode: ArmMode::Thumb,
+                        is_data: false,
+                    });
+                }
+            }
+        }
+
+        instructions
     }
 }

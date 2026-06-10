@@ -62,9 +62,12 @@ impl CfgBuilder {
     pub fn build_from_entry(&mut self, rom: &[u8], entry_point: u32) {
         let mut visited: HashSet<u32> = HashSet::new();
         let mut to_visit = vec![entry_point];
-        let mut current_mode = if entry_point % 2 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
+        
+        // Safety limit to prevent infinite loops on corrupted ROMs
+        const MAX_INSTRUCTIONS: usize = 500_000;
+        let mut instruction_count = 0;
 
         while let Some(addr) = to_visit.pop() {
             if visited.contains(&addr) {
@@ -72,12 +75,21 @@ impl CfgBuilder {
             }
             visited.insert(addr);
 
+            // Progress reporting every 100K instructions
+            if instruction_count % 100_000 == 0 {
+                eprintln!("  CFG progress: {} visited, {} branch targets", 
+                          instruction_count, self.branch_targets.len());
+            }
+
+            // Determine mode for this specific address
+            let current_mode = if addr % 2 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
+
             let rom_offset = (addr - 0x08000000) as usize;
             if rom_offset >= rom.len() {
                 continue;
             }
 
-            let (opcode_str, operands, is_thumb) = match current_mode {
+            let (opcode_str, operands, _is_thumb, _width) = match current_mode {
                 ArmMode::Arm => {
                     if rom_offset + 4 > rom.len() {
                         continue;
@@ -88,14 +100,16 @@ impl CfgBuilder {
                         rom[rom_offset + 2],
                         rom[rom_offset + 3],
                     ]);
-                    arm_decoder.decode(opcode, addr)
+                    let (op, ops, thumb) = arm_decoder.decode(opcode, addr);
+                    (op, ops, thumb, 4)
                 }
                 ArmMode::Thumb => {
                     if rom_offset + 2 > rom.len() {
                         continue;
                     }
                     let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                    thumb_decoder.decode(opcode, addr)
+                    let (op, ops, thumb) = thumb_decoder.decode(opcode, addr);
+                    (op, ops, thumb, 2)
                 }
             };
 
@@ -106,6 +120,32 @@ impl CfgBuilder {
             self.track_register_values(&opcode_str, &operands);
 
             let targets = self.extract_branch_targets(&opcode_str, &operands);
+            
+            // Determine instruction width based on current mode
+            let instr_width = if current_mode == ArmMode::Thumb { 2 } else { 4 };
+            
+            // Check if this is ANY branch (unconditional or conditional)
+            // Branches should NOT add fall-through because they may not execute
+            // We still add the branch target separately, so we need to be selective about fall-through
+            let is_branch = opcode_str.starts_with('B') 
+                && !opcode_str.starts_with("BIT")  // Exclude BIT, BIC, etc.
+                && opcode_str != "BKPT"  // Not a branch
+                && opcode_str != "BLX";  // Handled separately below
+            
+            // For unconditional branches (B, BL, BX without condition), no fall-through
+            // For conditional branches (BEQ, BNE, etc.), we add fall-through because 
+            // the branch might not be taken - but we need to be careful
+            // Actually, for accurate CFG, we should add fall-through for ALL branches
+            // because we don't know if they'll be taken at runtime
+            let is_definite_branch = opcode_str == "B" || opcode_str == "BX";
+            
+            if !is_definite_branch {
+                let next_addr = addr + instr_width;
+                if !visited.contains(&next_addr) && ((next_addr - 0x08000000) as usize) < rom.len() {
+                    to_visit.push(next_addr);
+                }
+            }
+
             for target in targets {
                 if !visited.contains(&target) {
                     to_visit.push(target);
@@ -118,10 +158,6 @@ impl CfgBuilder {
             // Invalidate register tracker after BL/BLX (function call)
             if opcode_str == "BL" || opcode_str == "BLX" {
                 self.register_tracker.invalidate_all();
-            }
-
-            if is_thumb {
-                current_mode = ArmMode::Thumb;
             }
         }
 
@@ -155,7 +191,8 @@ impl CfgBuilder {
 
     fn extract_branch_targets(&mut self, opcode: &str, operands: &[Operand]) -> Vec<u32> {
         let mut targets = Vec::new();
-        let is_branch = matches!(opcode, "B" | "BEQ" | "BNE" | "BCC" | "BCS" | "BVS" | "BVC" | "BHI" | "BLS" | "BGE" | "BLT" | "BGT" | "BLE" | "BL" | "BLX" | "BX");
+        let upper_op = opcode.to_uppercase();
+        let is_branch = upper_op.starts_with("B") && !upper_op.starts_with("BIT") && !upper_op.starts_with("BIC") && upper_op != "BKPT";
 
         if is_branch {
             // Handle direct branches with immediate target
