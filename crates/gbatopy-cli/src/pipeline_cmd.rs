@@ -152,23 +152,10 @@ pub fn run_pipeline(
 ) -> Result<(), String> {
     let rom = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
-    eprintln!("Step 1: CFG-first Disassembly");
+    eprintln!("Step 1: Disassembly");
     let mut disasm = Disassembler::new();
-    
-    // PASS 1: Build CFG by disassembling reachable addresses only
-    eprintln!("  Building CFG from entry point...");
-    let reachable_addrs = disasm.disassemble(&rom, 0x08000000);
-    
-    // PASS 2: Extract reachable addresses from disassembled instructions
-    let mut reachable_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    for inst in &reachable_addrs {
-        reachable_set.insert(inst.address);
-    }
-    
-    // PASS 3: Selective disassembly - only disassemble reachable addresses
-    eprintln!("  Disassembling {} reachable addresses...", reachable_set.len());
-    let instructions = disasm.selective_disassemble(&rom, &reachable_set.iter().copied().collect::<Vec<_>>(), 0x08000000);
-    eprintln!("  Disassembled {} instructions (filtered from {} reachable)", instructions.len(), reachable_set.len());
+    let instructions = disasm.disassemble(&rom, 0x08000000);
+    eprintln!("  Disassembled {} instructions", instructions.len());
 
     // Detect or use provided feature flags
     let flags = feature_flags.unwrap_or_else(|| {
