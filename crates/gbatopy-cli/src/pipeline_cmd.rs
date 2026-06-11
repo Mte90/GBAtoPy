@@ -8,6 +8,7 @@ use gbatopy_disasm::{
 };
 use std::fs;
 use std::path::Path;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 /// Feature flags for stripping unused hardware features
 /// These can be auto-detected from ROM or manually overridden via CLI
@@ -245,13 +246,12 @@ pub fn run_pipeline(
     code.push_str("# === GBA Runtime (embedded) ===\n\n");
     for file_path in &runtime_files {
         if let Ok(content) = std::fs::read_to_string(file_path) {
-            // Filter out relative imports
             let filtered: String = content
                 .lines()
                 .filter(|line| {
                     let trimmed = line.trim();
                     !trimmed.starts_with("from .")
-                        && !trimmed.starts_with("from gba_runtime.")
+                        && !trimmed.starts_with("from gba_runtime")
                         && !trimmed.starts_with("import gba_runtime")
                 })
                 .collect::<Vec<_>>()
@@ -266,10 +266,33 @@ pub fn run_pipeline(
             eprintln!("    WARNING: Could not read {}", file_path);
         }
     }
-    code.push_str("# === End of Runtime ===\n\n");
-    code.push_str("# Initialize runtime objects\n");
-    code.push_str("memory = Memory()\n");
-    code.push_str("ppu_instance = PPU(memory)\n");
+        code.push_str("# === End of Runtime ===\n\n");
+        // Runtime loader: ensure runtime modules are importable from any directory
+        code.push_str("# === Runtime Loader ===\n");
+        code.push_str("# Ensure runtime path is accessible to runtime modules\n");
+        code.push_str("import sys\nimport os\nfrom pathlib import Path\n");
+        code.push_str("if __file__:\n");
+        code.push_str("    # Try multiple strategies to find gba_runtime\n");
+        code.push_str("    script_dir = Path(__file__).resolve().parent\n");
+        code.push_str("    # Strategy 1: gba_runtime in same directory as script\n");
+        code.push_str("    runtime_dir = script_dir / 'gba_runtime'\n");
+        code.push_str("    if runtime_dir.exists():\n");
+        code.push_str("        sys.path.insert(0, str(script_dir))\n");
+        code.push_str("    else:\n");
+        code.push_str("        # Strategy 2: check parent directories for gba_runtime\n");
+        code.push_str("        for parent in [script_dir] + list(script_dir.parents):\n");
+        code.push_str("            runtime_dir = parent / 'gba_runtime'\n");
+        code.push_str("            if runtime_dir.exists():\n");
+        code.push_str("                sys.path.insert(0, str(parent))\n");
+        code.push_str("                break\n");
+        code.push_str("    # Strategy 3: use environment variable if set\n");
+        code.push_str("    gba_runtime_env = os.environ.get('GBA_RUNTIME_PATH')\n");
+        code.push_str("    if gba_runtime_env and Path(gba_runtime_env).exists():\n");
+        code.push_str("        sys.path.insert(0, gba_runtime_env)\n");
+        code.push_str("\n");
+        code.push_str("# Initialize runtime objects\n");
+        code.push_str("memory = Memory()\n");
+        code.push_str("ppu_instance = PPU(memory)\n");
 
     if flags.audio {
         code.push_str("apu_instance = APU()\n");
@@ -314,17 +337,14 @@ pub fn run_pipeline(
 
     // PASS 1: Identify branch target addresses (basic block boundaries)
     let mut branch_targets: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    let mut branch_addresses: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-    // Collect all branch targets and branch instruction addresses
+    // Collect all branch targets
     for inst in &instructions {
         let addr = inst.address as u64;
         let opcode = inst.opcode.as_str();
 
-        // Check if this is a branch instruction
+        // Check if this is a branch instruction - extract target address from operands
         if opcode == "B" || opcode == "BL" || opcode == "BX" || opcode == "BLX" {
-            branch_addresses.insert(addr);
-            // Extract target address from operands
             for op in &inst.operands {
                 if let Operand::Immediate(target) = op {
                     branch_targets.insert(*target as u64);
@@ -336,23 +356,25 @@ pub fn run_pipeline(
     branch_targets.insert(0x08000000);
 
     eprintln!(
-        "  Found {} branch targets, {} branch instructions",
-        branch_targets.len(),
-        branch_addresses.len()
+        "  Found {} branch targets",
+        branch_targets.len()
     );
 
     // PASS 2: Group instructions into basic blocks
-    let mut func_groups: std::collections::BTreeMap<u64, Vec<&gbatopy_disasm::DecodedInstruction>> =
-        std::collections::BTreeMap::new();
+    let mut func_groups: std::collections::HashMap<u64, Vec<&gbatopy_disasm::DecodedInstruction>> =
+        std::collections::HashMap::new();
 
     let mut current_block_start: Option<u64> = None;
     let mut prev_addr: Option<u64> = None;
+    let mut prev_was_branch = false;
 
     for inst in &instructions {
         let addr = inst.address as u64;
         let is_thumb = addr % 2 == 1;
         let instr_size = if is_thumb { 2 } else { 4 };
         let next_expected = prev_addr.map(|a| a + instr_size);
+        let opcode = inst.opcode.as_str();
+        let is_branch = opcode == "B" || opcode == "BL" || opcode == "BX" || opcode == "BLX";
 
         // Start new block if:
         // 1. This is a branch target, OR
@@ -360,10 +382,11 @@ pub fn run_pipeline(
         // 3. Gap in addresses (not sequential)
         let should_start_new_block = branch_targets.contains(&addr)
             || prev_addr.map_or(true, |pa| {
-                let is_branch = branch_addresses.contains(&pa);
                 let is_sequential = next_expected == Some(addr);
-                is_branch || !is_sequential
+                prev_was_branch || !is_sequential
             });
+
+        prev_was_branch = is_branch;
 
         if should_start_new_block {
             current_block_start = Some(addr);
@@ -389,17 +412,24 @@ pub fn run_pipeline(
 
     // Embed ROM data FIRST (before GBA class needs it)
     code.push_str("# Full ROM data\n");
-    code.push_str("ROM_DATA = bytearray([\n");
-    for (i, byte) in rom.iter().enumerate() {
-        if i > 0 {
-            code.push_str(", ");
+    if rom.len() > 1_048_576 {
+        // Use base64 for large ROMs (>1MB)
+        code.push_str("import base64\n");
+        let encoded = BASE64.encode(&rom);
+        code.push_str(&format!("ROM_DATA = bytearray(base64.b64decode(\"{}\"))\n\n", encoded));
+    } else {
+        code.push_str("ROM_DATA = bytearray([\n");
+        for (i, byte) in rom.iter().enumerate() {
+            if i > 0 {
+                code.push_str(", ");
+            }
+            if i % 16 == 0 {
+                code.push_str("\n    ");
+            }
+            code.push_str(&format!("0x{:02X}", byte));
         }
-        if i % 16 == 0 {
-            code.push_str("\n    ");
-        }
-        code.push_str(&format!("0x{:02X}", byte));
+        code.push_str("\n])\n\n");
     }
-    code.push_str("\n])\n\n");
 
     // Embed wave data (audio samples)
     code.push_str("# Wave data for APU CH3\n");
@@ -730,24 +760,18 @@ class GBA:
     // Write all block functions
     code.push_str(&block_function_code);
 
-    // Generate jump table dispatch (replaces func_map dictionary for 60-70% faster lookup)
+    // Generate jump table dispatch (dict-based for memory efficiency)
     let base_addr = 0x08000000;
-    let table_size = rom.len().next_power_of_two();
-    code.push_str(&format!("func_table = [None] * {}\n", table_size));
+    code.push_str("func_table = {}\n");
     
     // Populate jump table entries (NOP blocks redirect to next non-NOP function)
     for &addr in &address_list {
-        let rom_offset = (addr - base_addr) as usize;
-        if rom_offset >= rom.len() {
-            continue;
-        }
         if non_nop_addrs.contains(&addr) {
-            code.push_str(&format!("func_table[{}] = func_{:08X}\n", rom_offset, addr));
+            code.push_str(&format!("func_table[0x{:08X}] = func_{:08X}\n", addr, addr));
         } else {
-            // NOP block: redirect to next non-NOP function
             let target = non_nop_addrs.iter().find(|&&a| a > addr).copied();
             if let Some(target_addr) = target {
-                code.push_str(&format!("func_table[{}] = func_{:08X}\n", rom_offset, target_addr));
+                code.push_str(&format!("func_table[0x{:08X}] = func_{:08X}\n", addr, target_addr));
             }
         }
     }
@@ -798,10 +822,9 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     print(f"PC=0x{r[15]:08X}")
     while ic < mi:
         pc = r[15]
-        # Jump table dispatch: direct array indexing (60-70% faster than dict lookup)
-        idx = pc - 0x08000000
-        if idx < 0 or idx >= len(func_table) or func_table[idx] is None: print(f"Unknown PC: 0x{pc:08X}"); break
-        func_table[idx](); ic += 1
+        func = func_table.get(pc)
+        if func is None: print(f"Unknown PC: 0x{pc:08X}"); break
+        func(); ic += 1
         if r[15] == pc: print(f"Loop at 0x{pc:08X}"); break
         if ic % 10000 == 0: print(f"{ic} instrs")
         if frame_limit and fc >= frame_limit: break
@@ -825,10 +848,9 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         # Execute instructions for this frame (max 200000 instrs per frame)
         for _ in range(200000):
             pc = r[15]
-            # Jump table dispatch: direct array indexing
-            idx = pc - 0x08000000
-            if idx < 0 or idx >= len(func_table) or func_table[idx] is None: break
-            func_table[idx](); ic += 1
+            func = func_table.get(pc)
+            if func is None: break
+            func(); ic += 1
             if r[15] == pc: break
         # Render frame and update APU
         ppu_instance.render_frame()

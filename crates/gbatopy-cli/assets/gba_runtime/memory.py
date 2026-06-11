@@ -1,4 +1,3 @@
-import array as _array
 from typing import Callable, Optional
 
 
@@ -42,17 +41,16 @@ class MemoryMap:
 
 class Memory:
     def __init__(self):
-        # Use array.array('B') for faster memory access
-        self.bios = _array.array('B', [0] * MemoryMap.BIOS_SIZE)
-        self.ewram = _array.array('B', [0] * MemoryMap.EWRAM_SIZE)
-        self.iwram = _array.array('B', [0] * MemoryMap.IWRAM_SIZE)
-        self.io = _array.array('B', [0] * MemoryMap.IO_SIZE)
-        self.palette = _array.array('B', [0] * MemoryMap.PALETTE_SIZE)
-        self.vram = _array.array('B', [0] * MemoryMap.VRAM_SIZE)
-        self.oam = _array.array('B', [0] * MemoryMap.OAM_SIZE)
-        self.sram = _array.array('B', [0] * MemoryMap.SRAM_SIZE)
+        self.bios = bytearray(MemoryMap.BIOS_SIZE)
+        self.ewram = bytearray(MemoryMap.EWRAM_SIZE)
+        self.iwram = bytearray(MemoryMap.IWRAM_SIZE)
+        self.io = bytearray(MemoryMap.IO_SIZE)
+        self.palette = bytearray(MemoryMap.PALETTE_SIZE)
+        self.vram = bytearray(MemoryMap.VRAM_SIZE)
+        self.oam = bytearray(MemoryMap.OAM_SIZE)
+        self.sram = bytearray(MemoryMap.SRAM_SIZE)
 
-        self._affine_params = _array.array('B', [0] * 16)
+        self._affine_params = bytearray(16)
 
         self.rom: Optional[bytearray] = None
         self.rom_size: int = 0
@@ -452,12 +450,6 @@ class Memory:
             offset = addr - MemoryMap.IWRAM_START
             self.iwram[offset] = value
             self.open_bus = value
-            if offset + 1 < len(self.iwram):
-                self.iwram[offset + 1] = value
-            if offset + 2 < len(self.iwram):
-                self.iwram[offset + 2] = value
-            if offset + 3 < len(self.iwram):
-                self.iwram[offset + 3] = value
             return
 
         if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
@@ -537,7 +529,7 @@ class Memory:
     def load_rom_data(self, data):
         if isinstance(data, str):
             data = data.encode("latin-1")
-        self.rom = _array.array('B', data)
+        self.rom = bytearray(data)
         self.rom_size = len(data)
 
         if self.rom_size >= 4:

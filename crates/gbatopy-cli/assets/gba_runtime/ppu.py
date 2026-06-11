@@ -373,17 +373,14 @@ class PPU:
         if sprite["mode"] == 2:
             return
         
-        # Skip 8BPP sprites (out of scope per task requirements)
-        if sprite["color_mode"] == 1:  # 8BPP mode
-            return
-        
         y = sprite["y"]
         x = sprite["x"]
         width = sprite["width"]
         height = sprite["height"]
         tile_num = sprite["tile_num"]
         palette_num = sprite["palette_num"]
-        
+        color_mode = sprite["color_mode"]
+
         # Apply rotation/scaling if enabled
         if sprite["rotate_scale"]:
             self._render_affine_sprite(sprite)
@@ -392,8 +389,9 @@ class PPU:
         # Render normal (non-rotated) sprite
         # Calculate base tile address in VRAM
         # 4BPP tiles: 32 bytes each (8x8 pixels × 4 bits)
+        # 8BPP tiles: 64 bytes each (8x8 pixels × 8 bits)
         vram_base = 0x06000000
-        tile_size = 32
+        tile_size = 32 if color_mode == 0 else 64
         
         # VRAM tile addressing - handle 1D mapping (standard for sprites)
         # Each row of tiles is (256 pixels / 8) = 32 tiles
@@ -424,17 +422,20 @@ class PPU:
                 tile_addr = vram_base + global_tile * tile_size
                 
                 # Read pixel from tile
-                byte_offset = local_y * 4 + (local_x // 2)
-                byte_val = self.memory.read_u8(tile_addr + byte_offset)
-                
-                if local_x % 2 == 0:
-                    # Left pixel: bits 7-4
-                    color_idx = (byte_val >> 4) & 0x0F
+                if color_mode == 0:
+                    # 4BPP: 2 pixels packed in 1 byte
+                    byte_offset = local_y * 4 + (local_x // 2)
+                    byte_val = self.memory.read_u8(tile_addr + byte_offset)
+                    if local_x % 2 == 0:
+                        color_idx = (byte_val >> 4) & 0x0F
+                    else:
+                        color_idx = byte_val & 0x0F
                 else:
-                    # Right pixel: bits 3-0
-                    color_idx = byte_val & 0x0F
-                
-                # Skip transparent pixels (index 0 in 4BPP mode)
+                    # 8BPP: 1 byte per pixel
+                    byte_offset = local_y * 8 + local_x
+                    color_idx = self.memory.read_u8(tile_addr + byte_offset)
+
+                # Skip transparent pixels
                 if color_idx == 0:
                     continue
                 
@@ -447,11 +448,14 @@ class PPU:
                         0 <= screen_y < self.screen_height):
                     continue
                 
-                # Get color from sprite palette (0x05000200 +)
-                # Sprite palettes start at offset 0x200 in palette RAM
-                # Each sprite palette is 16 colors (32 bytes)
-                sprite_palette_base = 0x05000200
-                palette_addr = sprite_palette_base + (sprite["palette_num"] * 32) + (color_idx * 2)
+                # Get color from sprite palette
+                if color_mode == 0:
+                    # 4BPP: 16-color sprite palette
+                    sprite_palette_base = 0x05000200
+                    palette_addr = sprite_palette_base + (sprite["palette_num"] * 32) + (color_idx * 2)
+                else:
+                    # 8BPP: 256-color sprite palette at 0x05000200
+                    palette_addr = 0x05000200 + (color_idx * 2)
                 
                 try:
                     color_val = self.memory.read_u16(palette_addr)
@@ -1317,7 +1321,7 @@ class PPU:
             return self.win1_in_enable
 
         if self.obj_window_enable:
-            return self.winout_obj_enable
+            return self.win_obj_enable
 
         # Default to out enables
         if self.win0_enable or self.win1_enable:
@@ -1395,6 +1399,10 @@ class PPU:
         else:
             # Clear VBlank flag
             self.memory.write_u16(dispstat_addr, current_dispstat & ~0x0001)
+            # Fire HBlank interrupt if enabled (during active display)
+            if self.hblank_irq_enable:
+                if hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
+                    self.memory._interrupts.hblank_irq()
 
         # Note: forced_blank is a display control flag but we still render
         # Don't return early - let rendering proceed even if forced_blank is set

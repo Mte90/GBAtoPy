@@ -318,10 +318,28 @@ class BIOS:
                 self.memory.write_u8(addr, 0)
 
     def swi_halt(self):
-        """Halt CPU until next interrupt"""
+        """Halt CPU until next interrupt fires.
+
+        Busy-waits on the IF register instead of sleeping — the interrupt
+        controller sets bits when IRQ sources (VBlank, HBlank, timers, DMA,
+        keypad) fire.  Clears all pending flags so the next Halt cycle starts
+        from scratch.
+        """
         self._sleep_mode = True
-        time.sleep(0.016)
+        interrupts = getattr(self.memory, "_interrupts", None)
+        if interrupts is not None:
+            # Spin until an enabled IRQ is pending
+            while not interrupts.has_pending_interrupt():
+                pass
+            # Consume the pending bits so repeated calls don't short-circuit
+            interrupts.clear_if()
         self._sleep_mode = False
+
+    def swi_vsync(self):
+        """Trigger a VBlank interrupt."""
+        interrupts = getattr(self.memory, "_interrupts", None)
+        if interrupts is not None:
+            interrupts.vblank_irq()
 
     def swi_stop(self, mode: int):
         """Stop CPU until key press"""
