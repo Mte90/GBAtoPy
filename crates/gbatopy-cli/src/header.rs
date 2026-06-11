@@ -1,3 +1,4 @@
+#![allow(unused_variables, dead_code)]
 use std::fs;
 
 pub const ROM_HEADER_SIZE: usize = 0x100;

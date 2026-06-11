@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_mut)]
 use crate::{ArmMode, DecodedInstruction, Function, ModeTracker};
 
 #[derive(Debug, Clone, Default)]

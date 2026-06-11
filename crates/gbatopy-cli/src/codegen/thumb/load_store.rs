@@ -1,6 +1,6 @@
 pub fn generate_ldrh_instruction(ops: &[String]) -> String {
     // LDRH Rd, [Rn, #imm] or LDRH Rd, [Rn, Rm]
-    format!("r[{}] = memory.read_16({}) & 0xFFFF", ops[0], ops[1])
+    format!("r[{}] = memory.read_u16({}) & 0xFFFF", ops[0], ops[1])
 }
 
 pub fn generate_strh_instruction(ops: &[String]) -> String {
@@ -9,7 +9,7 @@ pub fn generate_strh_instruction(ops: &[String]) -> String {
 }
 
 pub fn generate_ldrhb_instruction(ops: &[String]) -> String {
-    format!("r[{}] = memory.read_16({}) & 0xFFFF", ops[0], ops[1])
+    format!("r[{}] = memory.read_u16({}) & 0xFFFF", ops[0], ops[1])
 }
 
 pub fn generate_strhb_instruction(ops: &[String]) -> String {

@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_mut)]
 //! Control Flow Graph (CFG) builder for GBA ROM disassembly.
 //!
 //! This module implements reachable code analysis by performing a BFS traversal
@@ -62,6 +63,23 @@ impl CfgBuilder {
     pub fn build_from_entry(&mut self, rom: &[u8], entry_point: u32) {
         let mut visited: HashSet<u32> = HashSet::new();
         let mut to_visit = vec![entry_point];
+        
+        let common_entry_points = [
+            0x080000A0,
+            0x08000100,
+            0x08000200,
+            0x08000300,
+            0x08000400,
+            0x08000500,
+        ];
+        
+        for &addr in &common_entry_points {
+            let rom_offset = (addr - 0x08000000) as usize;
+            if rom_offset < rom.len() && !to_visit.contains(&addr) {
+                to_visit.push(addr);
+            }
+        }
+        
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
         
@@ -137,14 +155,14 @@ impl CfgBuilder {
             // the branch might not be taken - but we need to be careful
             // Actually, for accurate CFG, we should add fall-through for ALL branches
             // because we don't know if they'll be taken at runtime
-            let is_definite_branch = opcode_str == "B" || opcode_str == "BX";
-            
-            if !is_definite_branch {
-                let next_addr = addr + instr_width;
-                if !visited.contains(&next_addr) && ((next_addr - 0x08000000) as usize) < rom.len() {
-                    to_visit.push(next_addr);
-                }
+let is_uncond_branch = opcode_str == "B" || opcode_str == "BX" || opcode_str == "BL" || opcode_str == "BLX";
+        
+        if !is_uncond_branch {
+            let next_addr = addr + instr_width;
+            if !visited.contains(&next_addr) && ((next_addr - 0x08000000) as usize) < rom.len() {
+                to_visit.push(next_addr);
             }
+        }
 
             for target in targets {
                 if !visited.contains(&target) {
@@ -228,4 +246,5 @@ impl CfgBuilder {
             .ok()
             .map(|i| self.mode_map[i].1)
     }
-}
+    
+    }

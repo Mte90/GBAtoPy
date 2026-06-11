@@ -1,3 +1,4 @@
+#![allow(unused_variables, unused_mut)]
 /// Extracted assets from GBA ROM
 #[derive(Default)]
 pub struct ExtractedAssets {

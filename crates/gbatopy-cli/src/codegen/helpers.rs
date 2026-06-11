@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 use gbatopy_disasm::operand::ShiftAmount;
 use std::fs;
 

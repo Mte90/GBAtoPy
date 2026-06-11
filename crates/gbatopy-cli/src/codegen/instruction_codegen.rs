@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 use gbatopy_disasm::{operand::ShiftAmount, DecodedInstruction, Operand};
 
 /// Check if address is in VRAM range (0x06000000-0x06017FFF)
@@ -815,7 +816,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             }
                         };
                         return format!(
-                            "r[{}] = memory.read_16(r[{}]{}) & 0xFFFF",
+                            "r[{}] = memory.read_u16(r[{}]{}) & 0xFFFF",
                             rd, rn, offset_expr
                         );
                     }
@@ -833,7 +834,7 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
                             _ => "0".to_string(),
                         };
                         return format!(
-                            "r[{}] = memory.read_16(r[{}] + {}) & 0xFFFF",
+                            "r[{}] = memory.read_u16(r[{}] + {}) & 0xFFFF",
                             rd, rn, op2_expr
                         );
                     }

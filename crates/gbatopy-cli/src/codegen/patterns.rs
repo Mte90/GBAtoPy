@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 pub fn gen_arith_32bit(rd: String, expr: String) -> String {
     format!("r[{}] = ({}) & 0xFFFFFFFF", rd, expr)
 }
@@ -120,7 +121,7 @@ pub fn gen_ldr_word(rd: String, rn: String, offset: String) -> String {
 
 pub fn gen_ldr_halfword(rd: String, rn: String, offset: String) -> String {
     format!(
-        "r[{}] = memory.read_16(r[{}]{}) & 0xFFFF",
+        "r[{}] = memory.read_u16(r[{}]{}) & 0xFFFF",
         rd,
         rn,
         if offset.is_empty() {

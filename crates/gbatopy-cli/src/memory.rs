@@ -10,6 +10,7 @@
 //! - 0x07000000-0x070003FF: OAM
 //! - 0x08000000-0x09FFFFFF: ROM (up to 32MB)
 
+#![allow(unused_mut)]
 use std::collections::HashMap;
 
 #[allow(dead_code)]

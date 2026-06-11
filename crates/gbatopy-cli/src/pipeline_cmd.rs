@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 use crate::asset_extractor::extract_assets;
 use crate::codegen::generate_instruction_python;
 #[allow(unused_imports)]
@@ -5,7 +6,6 @@ use crate::ppu::generate_ppu_code;
 use gbatopy_disasm::{
     operand::AddressingMode, operand::Operand, operand::ShiftAmount, CfgBuilder, Disassembler,
 };
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use std::fs;
 use std::path::Path;
 
@@ -153,12 +153,23 @@ pub fn run_pipeline(
 ) -> Result<(), String> {
     let rom = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
-    eprintln!("Step 1: CFG-based Disassembly");
-    let mut cfg = CfgBuilder::new();
-    cfg.build_from_entry(&rom, 0x08000000);
-    let reachable = cfg.get_reachable_addresses();
-    eprintln!("  CFG found {} reachable addresses", reachable.len());
-    eprintln!("  CFG found {} branch targets", cfg.branch_targets.len());
+    let reachable: Vec<u32>;
+    let branch_targets: Vec<u32>;
+    
+    if rom.len() > 1024 * 1024 {
+        eprintln!("Step 1: CFG-based Disassembly (large ROM)");
+        let mut cfg = CfgBuilder::new();
+        cfg.build_from_entry(&rom, 0x08000000);
+        reachable = cfg.get_reachable_addresses().to_vec();
+        branch_targets = cfg.branch_targets.clone();
+        eprintln!("  CFG found {} reachable addresses", reachable.len());
+    } else {
+        eprintln!("Step 1: Full Disassembly (small ROM)");
+        let mut disasm = Disassembler::new();
+        reachable = disasm.disassemble(&rom, 0x08000000).into_iter().map(|i| i.address).collect();
+        branch_targets = vec![];
+        eprintln!("  Disassembled {} instructions", reachable.len());
+    }
     
     if (reachable.len()) < 10 {
         eprintln!("  DEBUG: reachable addresses:");
@@ -166,72 +177,15 @@ pub fn run_pipeline(
             eprintln!("    0x{:08X}", a);
         }
         eprintln!("  DEBUG: branch targets:");
-        for t in cfg.branch_targets.iter().take(20) {
+        for t in branch_targets.iter().take(20) {
             eprintln!("    0x{:08X}", t);
         }
     }
     
-    // Hybrid approach: CFG-first + linear sweep fallback for large ROMs
+    // Disassemble only reachable addresses (no linear sweep on large ROMs)
     let mut disasm = Disassembler::new();
-    let reachable_vec: Vec<u32> = reachable.to_vec();
-    let mut instructions = if rom.len() > 1_000_000 {
-        // For large ROMs (>1MB), use hybrid approach:
-        // 1. CFG to find reachable code from entry point
-        // 2. Linear sweep for remaining regions
-        // 3. Aggressive data filtering
-        
-        eprintln!("  ROM size > 1MB, using hybrid disassembly approach...");
-        
-        // Step 1: CFG-based disassembly for reachable code
-        let cfg_instructions = disasm.selective_disassemble(&rom, &reachable_vec);
-        eprintln!("  CFG found {} reachable instructions", cfg_instructions.len());
-        
-        // Step 2: Linear sweep for the entire ROM (to catch unreachable code)
-        let mut disasm2 = Disassembler::new();
-        let linear_sweep = disasm2.disassemble(&rom, 0x08000000);
-        eprintln!("  Linear sweep found {} total instructions", linear_sweep.len());
-        
-        // Step 3: Merge and deduplicate (prefer CFG instructions)
-        let reachable_set: std::collections::HashSet<u32> = reachable_vec.iter().copied().collect();
-        let mut all_instructions = cfg_instructions;
-        
-        for inst in linear_sweep {
-            if !reachable_set.contains(&inst.address) {
-                all_instructions.push(inst);
-            }
-        }
-        
-        eprintln!("  Merged: {} total instructions (CFG + linear sweep)", all_instructions.len());
-        all_instructions
-    } else {
-        // For small ROMs, use CFG-only approach
-        disasm.selective_disassemble(&rom, &reachable_vec)
-    };
-    eprintln!("  Disassembled {} total instructions", instructions.len());
-
-    // Step 1.5: Apply advanced data detection heuristics
-    eprintln!("  Applying data detection heuristics...");
-    let stats1 = disasm.mark_data_regions(&mut instructions);
-    let stats2 = disasm.mark_data_regions_by_reference(&instructions);
-    let stats3 = disasm.mark_sequential_load_regions(&mut instructions);
-    let stats4 = disasm.mark_constant_table_regions(&mut instructions);
-    let stats5 = disasm.mark_repetitive_pattern_regions(&mut instructions);
-    let stats6 = disasm.mark_high_unknown_ratio_regions(&mut instructions);
-    
-    let data_count = instructions.iter().filter(|i| i.is_data).count();
-    let code_count = instructions.len() - data_count;
-    eprintln!("  Data detection results:");
-    eprintln!("    - Unknown regions: {} instructions", stats1.data_instructions_marked);
-    eprintln!("    - LDR/STR only regions: {} instructions", stats2.ldr_str_only_marked);
-    eprintln!("    - Sequential load regions: {} instructions", stats3.sequential_load_marked);
-    eprintln!("    - Constant table regions: {} instructions", stats4.constant_table_marked);
-    eprintln!("    - Repetitive pattern regions: {} instructions", stats5.repetitive_pattern_marked);
-    eprintln!("    - High unknown ratio regions: {} instructions", stats6.high_unknown_ratio_marked);
-    eprintln!("  Final: {} code instructions, {} data instructions (filtered)", code_count, data_count);
-
-    // Filter out data instructions before code generation
-    let instructions: Vec<_> = instructions.into_iter().filter(|i| !i.is_data).collect();
-    eprintln!("  Code instructions after filtering: {}", instructions.len());
+    let instructions = disasm.selective_disassemble(&rom, &reachable);
+    eprintln!("  Disassembled {} reachable instructions", instructions.len());
 
     // Detect or use provided feature flags
     let flags = feature_flags.unwrap_or_else(|| {
@@ -435,23 +389,17 @@ pub fn run_pipeline(
 
     // Embed ROM data FIRST (before GBA class needs it)
     code.push_str("# Full ROM data\n");
-    if rom.len() > 100 * 1024 {
-        // Base64 for large ROMs — keeps generated Python < 1.34× ROM size
-        let encoded = BASE64.encode(&rom);
-        code.push_str(&format!("ROM_DATA = bytearray(__import__('base64').b64decode(\"{}\"))\n\n", encoded));
-    } else {
-        code.push_str("ROM_DATA = bytearray([\n");
-        for (i, byte) in rom.iter().enumerate() {
-            if i > 0 {
-                code.push_str(", ");
-            }
-            if i % 16 == 0 {
-                code.push_str("\n    ");
-            }
-            code.push_str(&format!("0x{:02X}", byte));
+    code.push_str("ROM_DATA = bytearray([\n");
+    for (i, byte) in rom.iter().enumerate() {
+        if i > 0 {
+            code.push_str(", ");
         }
-        code.push_str("\n])\n\n");
+        if i % 16 == 0 {
+            code.push_str("\n    ");
+        }
+        code.push_str(&format!("0x{:02X}", byte));
     }
+    code.push_str("\n])\n\n");
 
     // Embed wave data (audio samples)
     code.push_str("# Wave data for APU CH3\n");

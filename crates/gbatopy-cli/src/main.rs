@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_mut)]
 mod asset_extractor;
 mod benchmark;
 mod cmds;
