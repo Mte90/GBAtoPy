@@ -127,10 +127,16 @@ pub fn generate_bios() -> String {
 
 def Halt():
     """Freeze loop when ROM calls BIOS Halt (most common)."""
-    pass
+    import time
+    # Busy-wait loop that checks for interrupts
+    # In a real implementation, this would check memory.interrupt_controller._interrupt_fired
+    # For now, use a small sleep to avoid CPU spin
+    time.sleep(0.001)
 
 def VSync():
     """Trigger VBlank interrupt for save states and frame sync."""
+    # VBlank IRQ is already triggered by the render loop in ppu.py
+    # This is a no-op in the transpiled output since frame sync happens naturally
     pass
 
 def Div(numerator, denominator):

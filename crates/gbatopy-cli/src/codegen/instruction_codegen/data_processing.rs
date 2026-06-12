@@ -81,7 +81,12 @@ fn generate_add(ops: &[Operand], op: &str) -> Option<String> {
                         ShiftAmount::Immediate(n) => *n,
                         _ => 0,
                     };
-                    format!("(registers[{}] {:?} {})", reg, shift, amt)
+                    match shift {
+                        gbatopy_disasm::operand::ShiftType::Lsl => format!("(registers[{}] << {})", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Lsr => format!("(registers[{}] >> {})", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Asr => format!("(registers[{}] >> {})", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
+                    }
                 }
                 _ => "0".to_string(),
             };
@@ -102,6 +107,18 @@ fn generate_sub(ops: &[Operand], op: &str) -> Option<String> {
             let op2 = match &ops[2] {
                 Operand::Register(r) => format!("registers[{}]", r),
                 Operand::Immediate(i) => format!("{}", i),
+                Operand::ShiftedRegister { reg, shift, amount } => {
+                    let amt = match amount {
+                        ShiftAmount::Immediate(n) => *n,
+                        _ => 0,
+                    };
+                    match shift {
+                        gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
+                    }
+                }
                 _ => "0".to_string(),
             };
             return Some(format!("registers[{}] = ({} - {})", rd, rn, op2));
@@ -121,6 +138,18 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
             let op2 = match &ops[2] {
                 Operand::Register(r) => format!("registers[{}]", r),
                 Operand::Immediate(i) => format!("{}", i),
+                Operand::ShiftedRegister { reg, shift, amount } => {
+                    let amt = match amount {
+                        ShiftAmount::Immediate(n) => *n,
+                        _ => 0,
+                    };
+                    match shift {
+                        gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
+                        gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
+                    }
+                }
                 _ => "0".to_string(),
             };
             let py_op = match op {
@@ -155,7 +184,7 @@ fn generate_shift(ops: &[Operand], op: &str) -> Option<String> {
                 "ROR" => "|",
                 _ => "<<",
             };
-            return Some(format!("registers[{}] = ({} {})", rd, rn, shift));
+            return Some(format!("registers[{}] = ({} {} {})", rd, rn, py_op, shift));
         }
     }
     None

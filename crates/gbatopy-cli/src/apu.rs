@@ -176,8 +176,10 @@ class APU:
         if self.sounds[ch] is not None:
             try:
                 self.sounds[ch].stop()
-            except:
-                pass
+            except pygame.error as e:
+                eprintln!("Warning: pygame error stopping channel {}: {}", ch, e);
+            except Exception as e:
+                eprintln!("Warning: Unexpected error stopping channel {}: {}", ch, e);
         
         # Generate sound based on channel type
         if ch == 0:
@@ -336,7 +338,7 @@ class APU:
             if self.sounds[ch] is not None:
                 try:
                     self.sounds[ch].stop()
-                except:
+                except pygame.error:
                     pass
 
 

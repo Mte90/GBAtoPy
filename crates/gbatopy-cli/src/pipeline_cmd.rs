@@ -253,6 +253,7 @@ pub fn run_pipeline(
                     !trimmed.starts_with("from .")
                         && !trimmed.starts_with("from gba_runtime")
                         && !trimmed.starts_with("import gba_runtime")
+                        && !trimmed.starts_with("from bios")
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -296,6 +297,8 @@ pub fn run_pipeline(
 
     if flags.audio {
         code.push_str("apu_instance = APU()\n");
+    } else {
+        code.push_str("apu_instance = None\n");
     }
     if flags.irq {
         code.push_str("# IRQ handler available via interrupts module\n");
@@ -324,7 +327,28 @@ pub fn run_pipeline(
     code.push_str("import pygame\n");
     code.push_str("\n");
 
-    code.push_str("registers[15] = 0x08000000\n\n");
+    code.push_str("registers[15] = 0x08000000\n");
+    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0}\n");
+    code.push_str("\ndef cpsr_check(cond):\n");
+    code.push_str("    n = cpsr['n']\n");
+    code.push_str("    z = cpsr['z']\n");
+    code.push_str("    c = cpsr['c']\n");
+    code.push_str("    v = cpsr['v']\n");
+    code.push_str("    if cond == 'EQ': return z == 1\n");
+    code.push_str("    if cond == 'NE': return z == 0\n");
+    code.push_str("    if cond == 'CS' or cond == 'HS': return c == 1\n");
+    code.push_str("    if cond == 'CC' or cond == 'LO': return c == 0\n");
+    code.push_str("    if cond == 'MI': return n == 1\n");
+    code.push_str("    if cond == 'PL': return n == 0\n");
+    code.push_str("    if cond == 'VS': return v == 1\n");
+    code.push_str("    if cond == 'VC': return v == 0\n");
+    code.push_str("    if cond == 'HI': return c == 1 and z == 0\n");
+    code.push_str("    if cond == 'LS': return c == 0 or z == 1\n");
+    code.push_str("    if cond == 'GE': return n == v\n");
+    code.push_str("    if cond == 'LT': return n != v\n");
+    code.push_str("    if cond == 'GT': return z == 0 and n == v\n");
+    code.push_str("    if cond == 'LE': return z == 1 or n != v\n");
+    code.push_str("    return True\n\n");
 
     // PASS 1: Identify branch target addresses (basic block boundaries)
     let mut branch_targets: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -854,7 +878,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             if ie & 0x01 and ime & 0x01:
                 memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
                 registers[15] = memory.read_u32(0x03007FFC)
-        apu_instance.update()
+        if apu_instance: apu_instance.update()
         surf = ppu_instance.get_surface()
         screen.blit(pygame.transform.scale(surf, (240 * scale, 160 * scale)), (0, 0))
         if not headless: pygame.display.flip()

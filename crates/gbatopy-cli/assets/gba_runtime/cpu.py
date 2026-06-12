@@ -162,6 +162,14 @@ class CPU:
         else:
             raise ValueError(f"Invalid CPSR flag: {flag}. Must be N, Z, C, or V")
 
+    # (flag, op): flag="z"|"c"|"n"|"v"|True|False, op=None|"not"|"&"|"|"
+    CONDITIONS = [
+        ("z", None), ("z", "not"), ("c", None), ("c", "not"),
+        ("n", None), ("n", "not"), ("v", None), ("v", "not"),
+        ("c", "&"), ("c", "|"), ("n", None), ("n", "not"),
+        ("z", "not"), ("z", None), (True, None), (False, None),
+    ]
+
     def check_condition(self, cond: int) -> bool:
         """Check if ARM condition is satisfied (cond: 0-15) — O(1) lookup"""
         if cond < 0 or cond > 15:

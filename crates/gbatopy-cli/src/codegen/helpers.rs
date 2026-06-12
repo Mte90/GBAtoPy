@@ -54,6 +54,7 @@ pub fn embed_runtime_files() -> String {
                     !trimmed.starts_with("from .")
                         && !trimmed.starts_with("from gba_runtime.")
                         && !trimmed.starts_with("import gba_runtime")
+                        && !trimmed.starts_with("from bios")
                 })
                 .map(|line| line.trim_end())
                 .collect::<Vec<_>>()

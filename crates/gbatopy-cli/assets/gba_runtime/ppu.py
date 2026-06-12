@@ -803,7 +803,9 @@ class PPU:
             import numpy as np
 
             arr = np.array(self.framebuffer, dtype=np.uint8)
-            surf = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+            # Transpose from (height, width, 3) to (width, height, 3) for blit_array
+            arr = np.transpose(arr, (1, 0, 2))
+            surf = pygame.Surface((self.screen_width, self.screen_height))
             pygame.surfarray.blit_array(surf, arr)
             return surf
         except ImportError:
