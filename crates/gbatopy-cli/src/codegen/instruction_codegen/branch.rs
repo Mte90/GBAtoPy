@@ -17,7 +17,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     }
     if opcode == "BX" || opcode == "BLX" {
         if let Some(Operand::Register(rn)) = ops.first() {
-            return Some(format!("return r[{}]", rn));
+            return Some(format!("return registers[{}]", rn));
         }
         return Some(format!("# {} branch exchange", opcode));
     }

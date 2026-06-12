@@ -104,7 +104,8 @@ class Timers:
         Args:
             cycles: Number of CPU cycles to advance timers
         """
-        # Reset overflow flags at start of step
+        # Check cascade flags BEFORE reset, then clear
+        cascade_flags = [self._overflow_flags[i] for i in range(4)]
         self._overflow_flags = [False] * 4
 
         # Process each timer
@@ -120,8 +121,8 @@ class Timers:
                 if i == 0:
                     # Timer0 in cascade mode - should not happen, but handle it
                     continue
-                # Check if previous timer overflowed this step
-                if not self._overflow_flags[i - 1]:
+                # Check if previous timer overflowed (saved before reset)
+                if not cascade_flags[i - 1]:
                     continue
                 # Increment by 1 for cascade
                 increment = 1

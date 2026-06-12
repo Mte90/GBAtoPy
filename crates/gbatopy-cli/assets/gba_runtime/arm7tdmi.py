@@ -1,6 +1,7 @@
 """ARM7TDMI CPU Interpreter for GBA"""
 
 from typing import Optional, Callable, List, Tuple
+from bios import BIOS
 
 try:
     import numba
@@ -119,6 +120,9 @@ class ARM7TDMI:
         self.thumb_mode = False
         self.running = True
         self.cycles = 0
+
+        # Initialize BIOS for SWI handlers
+        self.bios = BIOS(self.memory)
 
     @property
     def r(self):

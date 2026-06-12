@@ -84,6 +84,19 @@ class SquareWaveChannel:
             self.timer = 0
             self.output_bit = 1 - self.output_bit
 
+            # Sweep
+            if self.sweep_steps > 0:
+                self.sweep_counter -= 1
+                if self.sweep_counter <= 0:
+                    self.sweep_counter = self.sweep_steps
+                    if self.sweep_decrease:
+                        self.frequency -= self.frequency >> self.sweep_shift
+                    else:
+                        self.frequency += self.frequency >> self.sweep_shift
+                    if self.frequency > 2047:
+                        self.enabled = False
+                        return 0
+
         return self.output_bit * self.envelope_volume_current
 
     def trigger(self):
@@ -93,6 +106,7 @@ class SquareWaveChannel:
         self.envelope_counter = 0
         self.envelope_volume_current = self.envelope_volume
         self.length_counter = 0
+        self.sweep_counter = self.sweep_steps
         self.enabled = True
 
 
@@ -113,7 +127,7 @@ class WaveChannel:
         self.counter = 0
         self.format_8bit = False
 
-    def step(self, sample_rate: int) -> int:
+    def step(self, sample_rate: int, wave_ram: list, wave_bank: int) -> int:
         """Generate one sample."""
         if not self.enabled:
             return 0
@@ -136,10 +150,10 @@ class WaveChannel:
             self.timer = 0
             self.counter += 1
 
-        # Read from wave RAM
+        # Read from wave RAM — select bank based on wave_bank register
         nibble_index = self.counter % 64
         byte_index = nibble_index // 2
-        wave_value = self.wave_ram[byte_index % 32]
+        wave_value = wave_ram[wave_bank][byte_index % 32]
 
         if nibble_index % 2 == 0:
             sample = wave_value & 0x0F
@@ -297,7 +311,7 @@ class APU:
         self.ch4 = NoiseChannel()
         self.fifo_a = FIFO()
         self.fifo_b = FIFO()
-        self.wave_ram = [[0] * 16, [0] * 16]
+        self.wave_ram = [[0] * 32, [0] * 32]
         self.wave_bank = 0
         self.master_volume_left = 0
         self.master_volume_right = 0
@@ -356,6 +370,7 @@ class APU:
                 self.ch2.trigger()
         elif addr == 0x04000070:
             self.ch3.wave_bank = (value >> 5) & 0x01
+            self.wave_bank = self.ch3.wave_bank
             self.ch3.enabled = bool(value & 0x80)
         elif addr == 0x04000072:
             self.ch3.length = value & 0xFF
@@ -397,10 +412,9 @@ class APU:
             self.fifo_a.write(value & 0xFF)
         elif 0x040000A4 <= addr <= 0x040000A7:
             self.fifo_b.write(value & 0xFF)
-        elif 0x04000090 <= addr <= 0x0400009F:
+        elif 0x04000090 <= addr <= 0x040000AF:
             offset = addr - 0x04000090
-            self.wave_ram[self.wave_bank][offset % 16] = value & 0xFF
-            self.ch3.wave_ram = self.wave_ram[self.wave_bank]
+            self.wave_ram[self.wave_bank][offset % 32] = value & 0xFF
 
     def get_sample(self) -> tuple:
         """Return mixed stereo sample (left, right)"""
@@ -419,7 +433,7 @@ class APU:
             right += sample * self.master_volume_right
 
         if self.ch3_enabled:
-            sample = self.ch3.step(self.SAMPLE_RATE)
+            sample = self.ch3.step(self.SAMPLE_RATE, self.wave_ram, self.wave_bank)
             left += sample * self.master_volume_left
             right += sample * self.master_volume_right
 
@@ -453,30 +467,64 @@ class APU:
                 self.fifo_a_enabled or self.fifo_b_enabled):
             return
 
-        BUFFER_SIZE = 1024
-        # Use array for better memory efficiency
-        samples = array.array('B')  # Unsigned byte array
-        for _ in range(BUFFER_SIZE):
-            left, right = self.get_sample()
-            samples.append(left)
-            samples.append(right)
-
-        if len(samples) == 0:
-            return
-
-        sample_bytes = samples.tobytes()
-
+        # Use dedicated FIFO channel (channel 1) for continuous playback
+        # Channel 0 is reserved for regular audio channels
         if self._audio_channel is None:
             try:
-                self._audio_channel = pygame.mixer.Channel(0)
+                # Use channel 1 for FIFO to avoid conflict
+                if pygame.mixer.get_num_channels() < 2:
+                    pygame.mixer.set_num_channels(2)
+                self._audio_channel = pygame.mixer.Channel(1)
+                self._fifo_buffer_queue = deque(maxlen=8)
+                self._fifo_initial_buffers_queued = False
             except pygame.error:
                 return
 
+        # Only process FIFO audio if either FIFO is enabled
+        if not (self.fifo_a_enabled or self.fifo_b_enabled):
+            return
+
+        BUFFER_SIZE = 2048  # Larger buffer for smoother playback
+
         try:
-            sound = pygame.mixer.Sound(buffer=sample_bytes)
-            if self._audio_channel.get_queue():
-                self._audio_channel.queue(sound)
-            elif not self._audio_channel.get_busy():
+            if not self._fifo_initial_buffers_queued:
+                samples = array.array('B')
+                for _ in range(BUFFER_SIZE):
+                    left, right = self.get_sample()
+                    samples.append(left)
+                    samples.append(right)
+
+                if len(samples) == 0:
+                    return
+
+                sound = pygame.mixer.Sound(buffer=samples.tobytes())
                 self._audio_channel.play(sound)
+
+                for _ in range(3):
+                    samples = array.array('B')
+                    for _ in range(BUFFER_SIZE):
+                        left, right = self.get_sample()
+                        samples.append(left)
+                        samples.append(right)
+                    if samples:
+                        buf_sound = pygame.mixer.Sound(buffer=samples.tobytes())
+                        self._audio_channel.queue(buf_sound)
+
+                self._fifo_initial_buffers_queued = True
+
+            else:
+                if self._audio_channel.get_busy():
+                    samples = array.array('B')
+                    for _ in range(BUFFER_SIZE):
+                        left, right = self.get_sample()
+                        samples.append(left)
+                        samples.append(right)
+
+                    if samples:
+                        sound = pygame.mixer.Sound(buffer=samples.tobytes())
+                        self._audio_channel.queue(sound)
+                else:
+                    self._fifo_initial_buffers_queued = False
+
         except pygame.error:
             pass

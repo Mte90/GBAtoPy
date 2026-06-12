@@ -10,17 +10,12 @@ import struct
 import sys
 import time
 
-# Registers as array for zero-overhead access
-r = [0] * 16
-r[15] = 0x08000000  # PC - GBA ROM entry point
+# Registers dict - indices 0-15: r0-r15 (PC), 16: N, 17: Z, 18: C, 19: V flag
+registers = {i: 0 for i in range(20)}
+registers[15] = 0x08000000  # PC starts at ROM entry
 
 # BL_PREFIX state
 _bl_prefix_offset = 0
-
-cpsr_n = 0
-cpsr_z = 0
-cpsr_c = 0
-cpsr_v = 0
 
 ROM_DATA = bytearray([])
 vram = None

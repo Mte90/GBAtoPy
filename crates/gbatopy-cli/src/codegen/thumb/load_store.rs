@@ -1,28 +1,28 @@
 pub fn generate_ldrh_instruction(ops: &[String]) -> String {
     // LDRH Rd, [Rn, #imm] or LDRH Rd, [Rn, Rm]
-    format!("r[{}] = memory.read_u16({}) & 0xFFFF", ops[0], ops[1])
+    format!("registers[{}] = memory.read_u16({}) & 0xFFFF", ops[0], ops[1])
 }
 
 pub fn generate_strh_instruction(ops: &[String]) -> String {
     // STRH Rd, [Rn, #imm] or STRH Rd, [Rn, Rm]
-    format!("memory.write_16({}, r[{}] & 0xFFFF)", ops[0], ops[1])
+    format!("memory.write_16({}, registers[{}] & 0xFFFF)", ops[0], ops[1])
 }
 
 pub fn generate_ldrhb_instruction(ops: &[String]) -> String {
-    format!("r[{}] = memory.read_u16({}) & 0xFFFF", ops[0], ops[1])
+    format!("registers[{}] = memory.read_u16({}) & 0xFFFF", ops[0], ops[1])
 }
 
 pub fn generate_strhb_instruction(ops: &[String]) -> String {
-    format!("memory.write_16({}, r[{}] & 0xFFFF)", ops[0], ops[1])
+    format!("memory.write_16({}, registers[{}] & 0xFFFF)", ops[0], ops[1])
 }
 
 pub fn generate_ldrd_instruction(ops: &[String]) -> String {
-    format!("r[{}] = r[{}]", ops[0], ops[1])
+    format!("registers[{}] = registers[{}]", ops[0], ops[1])
 }
 
 pub fn generate_strd_instruction(ops: &[String]) -> String {
     // STRD Rd, [Rn, #imm]
-    format!("memory.write_u32({}, r[{}] & 0xFFFFFFFF)", ops[0], ops[1])
+    format!("memory.write_u32({}, registers[{}] & 0xFFFFFFFF)", ops[0], ops[1])
 }
 
 pub fn generate_thumb_ldmia_instruction(ops: &[String]) -> String {
@@ -33,12 +33,12 @@ pub fn generate_thumb_ldmia_instruction(ops: &[String]) -> String {
     let reg_list = &ops[1].trim_matches(|c| c == '{' || c == '}');
     let regs: Vec<&str> = reg_list.split(',').map(|s| s.trim()).collect();
 
-    let mut code = format!("addr = r[{}]
+    let mut code = format!("addr = registers[{}]
 ", base_reg);
     for (i, reg) in regs.iter().enumerate() {
         let reg_num = reg.trim_start_matches('r');
         code.push_str(&format!(
-            "r[{}] = memory.read_u32(addr) & 0xFFFFFFFF
+            "registers[{}] = memory.read_u32(addr) & 0xFFFFFFFF
 ",
             reg_num
         ));
@@ -46,7 +46,7 @@ pub fn generate_thumb_ldmia_instruction(ops: &[String]) -> String {
             code.push_str(&format!("addr += 4\n"));
         }
     }
-    code.push_str(&format!("r[{}] = addr\n", base_reg)); // Writeback
+    code.push_str(&format!("registers[{}] = addr\n", base_reg)); // Writeback
     code
 }
 
@@ -58,12 +58,12 @@ pub fn generate_thumb_stmia_instruction(ops: &[String]) -> String {
     let reg_list = &ops[1].trim_matches(|c| c == '{' || c == '}');
     let regs: Vec<&str> = reg_list.split(',').map(|s| s.trim()).collect();
 
-    let mut code = format!("addr = r[{}]
+    let mut code = format!("addr = registers[{}]
 ", base_reg);
     for (i, reg) in regs.iter().enumerate() {
         let reg_num = reg.trim_start_matches('r');
         code.push_str(&format!(
-            "memory.write_u32(addr, r[{}] & 0xFFFFFFFF)
+            "memory.write_u32(addr, registers[{}] & 0xFFFFFFFF)
 ",
             reg_num
         ));
@@ -71,7 +71,7 @@ pub fn generate_thumb_stmia_instruction(ops: &[String]) -> String {
             code.push_str(&format!("addr += 4\n"));
         }
     }
-    code.push_str(&format!("r[{}] = addr\n", base_reg)); // Writeback
+    code.push_str(&format!("registers[{}] = addr\n", base_reg)); // Writeback
     code
 }
 
@@ -86,7 +86,7 @@ pub fn generate_thumb_pop_instruction(ops: &[String]) -> String {
     for (i, reg) in regs.iter().enumerate() {
         let reg_num = reg.trim_start_matches('r');
         code.push_str(&format!(
-            "r[{}] = memory.read_u32(addr) & 0xFFFFFFFF
+            "registers[{}] = memory.read_u32(addr) & 0xFFFFFFFF
 ",
             reg_num
         ));
@@ -94,7 +94,7 @@ pub fn generate_thumb_pop_instruction(ops: &[String]) -> String {
             code.push_str("addr += 4\n");
         }
     }
-    code.push_str("r[13] = addr
+    code.push_str("registers[13] = addr
 "); // Update SP
     code
 }
@@ -110,7 +110,7 @@ pub fn generate_thumb_push_instruction(ops: &[String]) -> String {
     for (i, reg) in regs.iter().enumerate() {
         let reg_num = reg.trim_start_matches('r');
         code.push_str(&format!(
-            "memory.write_u32(addr, r[{}] & 0xFFFFFFFF)
+            "memory.write_u32(addr, registers[{}] & 0xFFFFFFFF)
 ",
             reg_num
         ));
@@ -118,7 +118,7 @@ pub fn generate_thumb_push_instruction(ops: &[String]) -> String {
             code.push_str("addr += 4\n");
         }
     }
-    code.push_str("r[13] = addr
+    code.push_str("registers[13] = addr
 "); // Update SP
     code
 }

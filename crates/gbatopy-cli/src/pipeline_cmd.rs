@@ -324,16 +324,7 @@ pub fn run_pipeline(
     code.push_str("import pygame\n");
     code.push_str("\n");
 
-    code.push_str("# Global ARM registers (r0-r15, cpsr_n, cpsr_z, cpsr_c, cpsr_v, cpsr, spsr)\n");
-    code.push_str("r0 = r1 = r2 = r3 = r4 = r5 = r6 = r7 = 0\n");
-    code.push_str("r8 = r9 = r10 = r11 = r12 = r13 = r14 = 0\n");
-    // r15 (PC) is set by header.py to 0x08000000 - do NOT reset here
-    code.push_str("cpsr_n = 0  # Negative flag\n");
-    code.push_str("cpsr_z = 0  # Zero flag\n");
-    code.push_str("cpsr_c = 0  # Carry flag\n");
-    code.push_str("cpsr_v = 0  # Overflow flag\n");
-    code.push_str("cpsr = 0  # Current Program Status Register\n");
-    code.push_str("spsr = 0  # Saved Program Status Register\n\n");
+    code.push_str("registers[15] = 0x08000000\n\n");
 
     // PASS 1: Identify branch target addresses (basic block boundaries)
     let mut branch_targets: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -727,7 +718,7 @@ class GBA:
                 if let Some(next_inst) = func_instructions.get(idx + 1) {
                     if reads_r15(next_inst) {
                         let next_addr = inst.address as u64 + instr_size;
-                        body.push_str(&format!("    r[15] = 0x{:08X}\n", next_addr));
+                        body.push_str(&format!("    registers[15] = 0x{:08X}\n", next_addr));
                     }
                 }
             }
@@ -736,21 +727,21 @@ class GBA:
         let last_addr = func_instructions.last().unwrap().address as u64;
         if !writes_r15(func_instructions.last().unwrap()) {
             let end_addr = last_addr + instr_size;
-            body.push_str(&format!("    r[15] = 0x{:08X}\n", end_addr));
+            body.push_str(&format!("    registers[15] = 0x{:08X}\n", end_addr));
         }
 
         // Check if block is pure NOP (only comments and PC advances)
         // A NOP block has no real register/memory operations
         let is_nop = body.lines().all(|l| {
             let t = l.trim();
-            t.is_empty() || t.starts_with('#') || t.starts_with("r[15] = 0x")
+            t.is_empty() || t.starts_with('#') || t.starts_with("registers[15] = 0x")
         });
 
         if is_nop {
             // NOP block: skip generating function, will redirect func_map
             // NOP blocks are implicitly handled by chaining
         } else {
-            block_function_code.push_str(&format!("\ndef {}():\n", func_name));
+            block_function_code.push_str(&format!("\ndef {}(registers, cpsr):\n", func_name));
             block_function_code.push_str("    global vram, palette_ram, oam, ewram, ROM_DATA\n");
             block_function_code.push_str(&body);
             non_nop_addrs.push(func_start);
@@ -819,13 +810,13 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
-    print(f"PC=0x{r[15]:08X}")
+    print(f"PC=0x{registers[15]:08X}")
     while ic < mi:
-        pc = r[15]
+        pc = registers[15]
         func = func_table.get(pc)
         if func is None: print(f"Unknown PC: 0x{pc:08X}"); break
-        func(); ic += 1
-        if r[15] == pc: print(f"Loop at 0x{pc:08X}"); break
+        func(registers, cpsr); ic += 1
+        if registers[15] == pc: print(f"Loop at 0x{pc:08X}"); break
         if ic % 10000 == 0: print(f"{ic} instrs")
         if frame_limit and fc >= frame_limit: break
         if ic % 1000 == 0: fc += 1
@@ -841,17 +832,17 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen = pygame.Surface((240 * scale, 160 * scale))
     clock = pygame.time.Clock()
     fc = 0; running = True; mi = 1000000; ic = 0
-    print(f"PC=0x{r[15]:08X}")
+    print(f"PC=0x{registers[15]:08X}")
     while running and fc < 10000:
         for e in pygame.event.get():
             if e.type == pygame.QUIT: running = False
         # Execute instructions for this frame (max 200000 instrs per frame)
         for _ in range(200000):
-            pc = r[15]
+            pc = registers[15]
             func = func_table.get(pc)
             if func is None: break
-            func(); ic += 1
-            if r[15] == pc: break
+            func(registers, cpsr); ic += 1
+            if registers[15] == pc: break
         # Render frame and update APU
         ppu_instance.render_frame()
         # VBlank IRQ dispatch
@@ -862,7 +853,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             ime = memory.read_u16(0x04000208)
             if ie & 0x01 and ime & 0x01:
                 memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
-                r[15] = memory.read_u32(0x03007FFC)
+                registers[15] = memory.read_u32(0x03007FFC)
         apu_instance.update()
         surf = ppu_instance.get_surface()
         screen.blit(pygame.transform.scale(surf, (240 * scale, 160 * scale)), (0, 0))

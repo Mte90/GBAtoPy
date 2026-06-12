@@ -22,7 +22,7 @@ fn generate_mov(ops: &[Operand]) -> Option<String> {
         if let Operand::Register(rd) = ops[0] {
             let src = if ops.len() >= 2 {
                 match &ops[1] {
-                    Operand::Register(rn) => format!("r[{}]", rn),
+                    Operand::Register(rn) => format!("registers[{}]", rn),
                     Operand::Immediate(imm) => format!("{}", imm),
                     Operand::ShiftedRegister { reg, shift, amount } => {
                         let amt = match amount {
@@ -30,10 +30,10 @@ fn generate_mov(ops: &[Operand]) -> Option<String> {
                             _ => 0,
                         };
                         match shift {
-                            gbatopy_disasm::operand::ShiftType::Lsl => format!("r[{}] << {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Lsr => format!("r[{}] >> {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Asr => format!("r[{}] >> {}", reg, amt),
-                            _ => format!("r[{}]", reg),
+                            gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
+                            gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
+                            gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
+                            _ => format!("registers[{}]", reg),
                         }
                     }
                     _ => "0".to_string(),
@@ -41,7 +41,7 @@ fn generate_mov(ops: &[Operand]) -> Option<String> {
             } else {
                 "0".to_string()
             };
-            return Some(format!("r[{}] = {}", rd, src));
+            return Some(format!("registers[{}] = {}", rd, src));
         }
     }
     None
@@ -52,14 +52,14 @@ fn generate_mvn(ops: &[Operand]) -> Option<String> {
         if let Operand::Register(rd) = ops[0] {
             let src = if ops.len() >= 2 {
                 match &ops[1] {
-                    Operand::Register(rn) => format!("r[{}]", rn),
+                    Operand::Register(rn) => format!("registers[{}]", rn),
                     Operand::Immediate(imm) => format!("{}", imm),
                     _ => "0".to_string(),
                 }
             } else {
                 "0".to_string()
             };
-            return Some(format!("r[{}] = {} ^ 0xFFFFFFFF", rd, src));
+            return Some(format!("registers[{}] = {} ^ 0xFFFFFFFF", rd, src));
         }
     }
     None
@@ -69,23 +69,23 @@ fn generate_add(ops: &[Operand], op: &str) -> Option<String> {
     if ops.len() >= 3 {
         if let Operand::Register(rd) = ops[0] {
             let rn = match &ops[1] {
-                Operand::Register(r) => format!("r[{}]", r),
+                Operand::Register(r) => format!("registers[{}]", r),
                 Operand::Immediate(i) => format!("{}", i),
                 _ => "0".to_string(),
             };
             let op2 = match &ops[2] {
-                Operand::Register(r) => format!("r[{}]", r),
+                Operand::Register(r) => format!("registers[{}]", r),
                 Operand::Immediate(i) => format!("{}", i),
                 Operand::ShiftedRegister { reg, shift, amount } => {
                     let amt = match amount {
                         ShiftAmount::Immediate(n) => *n,
                         _ => 0,
                     };
-                    format!("(r[{}] {:?} {})", reg, shift, amt)
+                    format!("(registers[{}] {:?} {})", reg, shift, amt)
                 }
                 _ => "0".to_string(),
             };
-            return Some(format!("r[{}] = ({})", rd, op2));
+            return Some(format!("registers[{}] = ({})", rd, op2));
         }
     }
     None
@@ -95,16 +95,16 @@ fn generate_sub(ops: &[Operand], op: &str) -> Option<String> {
     if ops.len() >= 3 {
         if let Operand::Register(rd) = ops[0] {
             let rn = match &ops[1] {
-                Operand::Register(r) => format!("r[{}]", r),
+                Operand::Register(r) => format!("registers[{}]", r),
                 Operand::Immediate(i) => format!("{}", i),
                 _ => "0".to_string(),
             };
             let op2 = match &ops[2] {
-                Operand::Register(r) => format!("r[{}]", r),
+                Operand::Register(r) => format!("registers[{}]", r),
                 Operand::Immediate(i) => format!("{}", i),
                 _ => "0".to_string(),
             };
-            return Some(format!("r[{}] = ({} - {})", rd, rn, op2));
+            return Some(format!("registers[{}] = ({} - {})", rd, rn, op2));
         }
     }
     None
@@ -114,12 +114,12 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
     if ops.len() >= 3 {
         if let Operand::Register(rd) = ops[0] {
             let rn = match &ops[1] {
-                Operand::Register(r) => format!("r[{}]", r),
+                Operand::Register(r) => format!("registers[{}]", r),
                 Operand::Immediate(i) => format!("{}", i),
-                _ => "r[0]".to_string(),
+                _ => "registers[0]".to_string(),
             };
             let op2 = match &ops[2] {
-                Operand::Register(r) => format!("r[{}]", r),
+                Operand::Register(r) => format!("registers[{}]", r),
                 Operand::Immediate(i) => format!("{}", i),
                 _ => "0".to_string(),
             };
@@ -130,7 +130,7 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
                 "BIC" => "& ~",
                 _ => "&",
             };
-            return Some(format!("r[{}] = ({} {} {}) & 0xFFFFFFFF", rd, rn, py_op, op2));
+            return Some(format!("registers[{}] = ({} {} {}) & 0xFFFFFFFF", rd, rn, py_op, op2));
         }
     }
     None
@@ -140,12 +140,12 @@ fn generate_shift(ops: &[Operand], op: &str) -> Option<String> {
     if ops.len() >= 3 {
         if let Operand::Register(rd) = ops[0] {
             let rn = match &ops[1] {
-                Operand::Register(r) => format!("r[{}]", r),
-                _ => "r[0]".to_string(),
+                Operand::Register(r) => format!("registers[{}]", r),
+                _ => "registers[0]".to_string(),
             };
             let shift = match &ops[2] {
                 Operand::Immediate(i) => format!("{}", i),
-                Operand::Register(r) => format!("r[{}]", r),
+                Operand::Register(r) => format!("registers[{}]", r),
                 _ => "0".to_string(),
             };
             let py_op = match op {
@@ -155,7 +155,7 @@ fn generate_shift(ops: &[Operand], op: &str) -> Option<String> {
                 "ROR" => "|",
                 _ => "<<",
             };
-            return Some(format!("r[{}] = ({} {})", rd, rn, shift));
+            return Some(format!("registers[{}] = ({} {})", rd, rn, shift));
         }
     }
     None
@@ -165,11 +165,11 @@ fn generate_clz(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
             let rm = match &ops[1] {
-                Operand::Register(r) => format!("r[{}]", r),
-                _ => "r[0]".to_string(),
+                Operand::Register(r) => format!("registers[{}]", r),
+                _ => "registers[0]".to_string(),
             };
             return Some(format!(
-                "r[{}] = 32 - len(bin({} | 0xFFFFFFFF)) + 1 if {} == 0 else 32 - len(bin({})) + 1",
+                "registers[{}] = 32 - len(bin({} | 0xFFFFFFFF)) + 1 if {} == 0 else 32 - len(bin({})) + 1",
                 rd, rm, rm, rm
             ));
         }

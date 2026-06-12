@@ -1150,6 +1150,7 @@ class PPU:
         self.win1_in_enable = 0
         self.win1_out_enable = 0
         self.win_obj_enable = 0
+        self.winout_obj_enable = False
 
         self.window_enabled = False
 
@@ -1651,9 +1652,10 @@ class PPU:
             self.win0_in_enable = value & 0x3F
             self.win1_in_enable = (value >> 8) & 0x3F
         elif addr == self.REG_WINOUT:
-            # WINOUT: bits 0-5 = window 0 out, bits 8-13 = window 1 out
-            self.win0_out_enable = value & 0x3F
-            self.win1_out_enable = (value >> 8) & 0x3F
+            # WINOUT: bits 0-3 = BG0-3 out, bit 4 = OBJ out, bit 5 = Blend out
+            self.win0_out_enable = value & 0x1F
+            self.win1_out_enable = (value >> 8) & 0x1F
+            self.winout_obj_enable = bool((value >> 4) & 1)
         elif addr == self.REG_WINOBJ:
             # WINOBJ: bits 0-5 = OBJ window enable
             self.win_obj_enable = value & 0x3F
@@ -1773,7 +1775,7 @@ class PPU:
         elif addr == self.REG_WININ:
             return self.win0_in_enable | (self.win1_in_enable << 8)
         elif addr == self.REG_WINOUT:
-            return self.win0_out_enable | (self.win1_out_enable << 8)
+            return self.win0_out_enable | ((1 if self.winout_obj_enable else 0) << 4) | (self.win1_out_enable << 8)
         elif addr == self.REG_WINOBJ:
             return self.win_obj_enable
 

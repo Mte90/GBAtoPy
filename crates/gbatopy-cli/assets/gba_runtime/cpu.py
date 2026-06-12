@@ -2,7 +2,42 @@
 
 from typing import Any, Literal
 
-
+_CONDITION = (
+    # Each entry: (flag_key_bitmask, invert) for simple flags, or a 16-entry tuple for compound
+    # Index 0-14: condition code, 15: flag key (z<<3|c<<2|n<<1|v)
+    #  0:EQ  (=Z)
+    tuple(1 if bool(k >> 3 & 1) else 0 for k in range(16)),
+    #  1:NE (!Z)
+    tuple(1 if not bool(k >> 3 & 1) else 0 for k in range(16)),
+    #  2:CS  (=C)
+    tuple(1 if bool(k >> 2 & 1) else 0 for k in range(16)),
+    #  3:CC (!C)
+    tuple(1 if not bool(k >> 2 & 1) else 0 for k in range(16)),
+    #  4:MI  (=N)
+    tuple(1 if bool(k >> 1 & 1) else 0 for k in range(16)),
+    #  5:PL (!N)
+    tuple(1 if not bool(k >> 1 & 1) else 0 for k in range(16)),
+    #  6:VS  (=V)
+    tuple(1 if bool(k & 1) else 0 for k in range(16)),
+    #  7:VC (!V)
+    tuple(1 if not bool(k & 1) else 0 for k in range(16)),
+    #  8:HI (C & !Z)
+    tuple(1 if bool(k >> 2 & 1) and not bool(k >> 3 & 1) else 0 for k in range(16)),
+    #  9:LS (!C | Z)
+    tuple(1 if (not bool(k >> 2 & 1)) or bool(k >> 3 & 1) else 0 for k in range(16)),
+    # 10:GE (N == V)
+    tuple(1 if bool(k >> 1 & 1) == bool(k & 1) else 0 for k in range(16)),
+    # 11:LT (N != V)
+    tuple(1 if bool(k >> 1 & 1) != bool(k & 1) else 0 for k in range(16)),
+    # 12:GT (!Z & N==V)
+    tuple(1 if (not bool(k >> 3 & 1)) and (bool(k >> 1 & 1) == bool(k & 1)) else 0 for k in range(16)),
+    # 13:LE (Z | N!=V)
+    tuple(1 if bool(k >> 3 & 1) or (bool(k >> 1 & 1) != bool(k & 1)) else 0 for k in range(16)),
+    # 14:AL (always true)
+    tuple(1 for _ in range(16)),
+    # 15:NV (never true)
+    tuple(0 for _ in range(16)),
+)
 class CPU:
     """ARM7TDMI CPU emulator state"""
 
@@ -128,41 +163,31 @@ class CPU:
             raise ValueError(f"Invalid CPSR flag: {flag}. Must be N, Z, C, or V")
 
     def check_condition(self, cond: int) -> bool:
-        """Check if ARM condition is satisfied (cond: 0-15)"""
-        if cond == 0:
-            return self.flag_z
-        elif cond == 1:
-            return not self.flag_z
-        elif cond == 2:
-            return self.flag_c
-        elif cond == 3:
-            return not self.flag_c
-        elif cond == 4:
-            return self.flag_n
-        elif cond == 5:
-            return not self.flag_n
-        elif cond == 6:
-            return self.flag_v
-        elif cond == 7:
-            return not self.flag_v
-        elif cond == 8:
-            return self.flag_c and not self.flag_z
-        elif cond == 9:
-            return not self.flag_c or self.flag_z
-        elif cond == 10:
-            return self.flag_n == self.flag_v
-        elif cond == 11:
-            return self.flag_n != self.flag_v
-        elif cond == 12:
-            return not self.flag_z and (self.flag_n == self.flag_v)
-        elif cond == 13:
-            return self.flag_z or (self.flag_n != self.flag_v)
-        elif cond == 14:
-            return True
-        elif cond == 15:
-            return False
-        else:
+        """Check if ARM condition is satisfied (cond: 0-15) — O(1) lookup"""
+        if cond < 0 or cond > 15:
             raise ValueError(f"Invalid condition code: {cond}. Must be 0-15")
+        entry = CONDITIONS[cond]
+        src, op = entry
+        if src is True or src is False:
+            return src
+        flag = getattr(self, f"flag_{src}")
+        if op is None:
+            return flag
+        if op == "not":
+            return not flag
+        if op == "&":
+            return flag and not self.flag_z
+        if op == "|":
+            return not flag or self.flag_z
+        if op == "eq":
+            return self.flag_n == self.flag_v
+        if op == "ne":
+            return self.flag_n != self.flag_v
+        if op == "gt":
+            return not self.flag_z and self.flag_n == self.flag_v
+        if op == "le":
+            return self.flag_z or self.flag_n != self.flag_v
+        return False
 
     def step(self) -> int:
         """Execute one ARM or Thumb instruction"""

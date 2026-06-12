@@ -1,3 +1,4 @@
+import array as _array
 from typing import Callable, Optional
 
 
@@ -41,16 +42,17 @@ class MemoryMap:
 
 class Memory:
     def __init__(self):
-        self.bios = bytearray(MemoryMap.BIOS_SIZE)
-        self.ewram = bytearray(MemoryMap.EWRAM_SIZE)
-        self.iwram = bytearray(MemoryMap.IWRAM_SIZE)
-        self.io = bytearray(MemoryMap.IO_SIZE)
-        self.palette = bytearray(MemoryMap.PALETTE_SIZE)
-        self.vram = bytearray(MemoryMap.VRAM_SIZE)
-        self.oam = bytearray(MemoryMap.OAM_SIZE)
-        self.sram = bytearray(MemoryMap.SRAM_SIZE)
+        # Use array.array('B') for faster memory access
+        self.bios = _array.array('B', [0] * MemoryMap.BIOS_SIZE)
+        self.ewram = _array.array('B', [0] * MemoryMap.EWRAM_SIZE)
+        self.iwram = _array.array('B', [0] * MemoryMap.IWRAM_SIZE)
+        self.io = _array.array('B', [0] * MemoryMap.IO_SIZE)
+        self.palette = _array.array('B', [0] * MemoryMap.PALETTE_SIZE)
+        self.vram = _array.array('B', [0] * MemoryMap.VRAM_SIZE)
+        self.oam = _array.array('B', [0] * MemoryMap.OAM_SIZE)
+        self.sram = _array.array('B', [0] * MemoryMap.SRAM_SIZE)
 
-        self._affine_params = bytearray(16)
+        self._affine_params = _array.array('B', [0] * 16)
 
         self.rom: Optional[bytearray] = None
         self.rom_size: int = 0
@@ -403,20 +405,41 @@ class Memory:
 
         return self.open_bus & 0xFF
 
-    def read_u16(self, addr: int) -> int:
-        """Read 16-bit unsigned value"""
-        addr &= 0xFFFFFFFF
+    def _buffer_for_addr(self, addr: int) -> tuple[bytearray, int]:
         addr = self._map_address(addr)
-        
-        lo = self.read_u8(addr)
-        hi = self.read_u8(addr + 1)
-        return lo | (hi << 8)
+        if MemoryMap.ROM_START <= addr <= 0x0EFFFFFF:
+            rom_addr = self._get_rom_addr(addr)
+            if 0 <= rom_addr < self.rom_size:
+                return self.rom, rom_addr
+        if MemoryMap.EWRAM_START <= addr <= MemoryMap.EWRAM_END:
+            return self.ewram, addr - MemoryMap.EWRAM_START
+        if MemoryMap.IWRAM_START <= addr <= MemoryMap.IWRAM_END:
+            return self.iwram, addr - MemoryMap.IWRAM_START
+        if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
+            return self.io, addr - MemoryMap.IO_START
+        if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
+            return self.palette, addr - MemoryMap.PALETTE_START
+        if MemoryMap.VRAM_START <= addr <= MemoryMap.VRAM_END:
+            return self.vram, addr - MemoryMap.VRAM_START
+        if MemoryMap.OAM_START <= addr <= MemoryMap.OAM_END:
+            return self.oam, addr - MemoryMap.OAM_START
+        if MemoryMap.SRAM_START <= addr <= MemoryMap.SRAM_END:
+            return self.sram, addr - MemoryMap.SRAM_START
+        return None, 0
+
+    def read_u16(self, addr: int) -> int:
+        buf, start = self._buffer_for_addr(addr & 0xFFFFFFFF)
+        if buf:
+            return int.from_bytes(buf[start:start + 2], 'little')
+        return int.from_bytes(self.rom[addr - 0x08000000:(addr - 0x08000000) + 2], 'little')
     
     def read_32(self, addr: int) -> int:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
         addr = self._map_address(addr)
-        
+        buf, off = self._buffer_for_addr(addr)
+        if buf is not None and off + 4 <= len(buf):
+            return int.from_bytes(buf[off:off + 4], 'little')
         b0 = self.read_u8(addr)
         b1 = self.read_u8(addr + 1)
         b2 = self.read_u8(addr + 2)
@@ -426,7 +449,9 @@ class Memory:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
         addr = self._map_address(addr)
-        
+        buf, off = self._buffer_for_addr(addr)
+        if buf is not None and off + 4 <= len(buf):
+            return int.from_bytes(buf[off:off + 4], 'little')
         b0 = self.read_u8(addr)
         b1 = self.read_u8(addr + 1)
         b2 = self.read_u8(addr + 2)
@@ -450,6 +475,12 @@ class Memory:
             offset = addr - MemoryMap.IWRAM_START
             self.iwram[offset] = value
             self.open_bus = value
+            if offset + 1 < len(self.iwram):
+                self.iwram[offset + 1] = value
+            if offset + 2 < len(self.iwram):
+                self.iwram[offset + 2] = value
+            if offset + 3 < len(self.iwram):
+                self.iwram[offset + 3] = value
             return
 
         if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
@@ -529,7 +560,7 @@ class Memory:
     def load_rom_data(self, data):
         if isinstance(data, str):
             data = data.encode("latin-1")
-        self.rom = bytearray(data)
+        self.rom = _array.array('B', data)
         self.rom_size = len(data)
 
         if self.rom_size >= 4:

@@ -16,7 +16,27 @@ except ImportError:
     _HAS_NUMBA = False
 
 _NUMBA_ENABLED = True
-_NUMBA_PPU_ENABLED = False  # Separate flag for PPU JIT
+_NUMBA_PPU_ENABLED = True  # Separate flag for PPU JIT
+
+
+def _try_enable_numba_jit() -> bool:
+    """Attempt to enable Numba JIT for PPU functions.
+
+    Returns the enabled state. Falls back gracefully if numba is not installed."""
+    global _NUMBA_PPU_ENABLED, _HAS_NUMBA
+    try:
+        import numba  # noqa: F401
+        if numba is not None:
+            _HAS_NUMBA = True
+            _NUMBA_PPU_ENABLED = True
+            return True
+    except ImportError:
+        pass
+
+    _HAS_NUMBA = False
+    _NUMBA_PPU_ENABLED = False
+    print("  Warning: numba not installed, PPU JIT disabled")
+    return False
 
 
 def jit_compile(func):
@@ -351,7 +371,7 @@ class PPU:
         - Sprite priority (higher priority sprites draw on top)
         - Basic rotation/scaling if affine mode enabled
         
-        Note: 8BPP sprites use palette indices directly, not implemented yet.
+        Note: 8BPP sprites use 256-color palette at 0x05000200 with direct color index lookup.
         """
         # Parse OAM to build sprite list
         self.parse_oam()
@@ -393,9 +413,14 @@ class PPU:
         vram_base = 0x06000000
         tile_size = 32 if color_mode == 0 else 64
         
-        # VRAM tile addressing - handle 1D mapping (standard for sprites)
-        # Each row of tiles is (256 pixels / 8) = 32 tiles
+        # VRAM tile addressing - DISPCNT bit 6 controls OBJ character VRAM mapping
+        #   1D mapping (bit 6 == 1): stride 32, no VRAM offset
+        #   2D mapping (bit 6 == 0): stride 32, BG2 VRAM offset (4K = 128 tiles for 32B, 64 for 64B)
         tiles_per_row = 32
+        vram_offset = 0
+        if not self.obj_character_vram_mapping:
+            # 2D mode: OBJ characters use BG2 character VRAM region (4K offset)
+            vram_offset = 128 if color_mode == 0 else 64
         
         for py in range(height):
             for px in range(width):
@@ -415,8 +440,8 @@ class PPU:
                 if sprite["flip_v"]:
                     local_y = 7 - local_y
                 
-                # Calculate global tile number
-                global_tile = tile_num + tile_y * tiles_per_row + tile_x
+                # Calculate global tile number (with 2D mode offset if applicable)
+                global_tile = tile_num + vram_offset + tile_y * tiles_per_row + tile_x
                 
                 # Calculate address in VRAM
                 tile_addr = vram_base + global_tile * tile_size
@@ -504,10 +529,13 @@ class PPU:
         cx = width / 2
         cy = height / 2
         
-        # VRAM tile addressing (same as normal sprites)
+        # VRAM tile addressing - check DISPCNT bit 6 (obj_character_vram_mapping)
         vram_base = 0x06000000
         tile_size = 32
         tiles_per_row = 32
+        vram_offset = 0
+        if not self.obj_character_vram_mapping:
+            vram_offset = 128
         
         # Render sprite with affine transformation
         for py in range(height):
@@ -530,8 +558,8 @@ class PPU:
                 local_x = int(src_x) % 8
                 local_y = int(src_y) % 8
                 
-                # Calculate global tile number
-                global_tile = tile_num + tile_y * tiles_per_row + tile_x
+                # Calculate global tile number (with 2D mode offset if applicable)
+                global_tile = tile_num + vram_offset + tile_y * tiles_per_row + tile_x
                 tile_addr = vram_base + global_tile * tile_size
                 
                 # Read pixel from tile
@@ -741,6 +769,8 @@ class PPU:
         self.win1_in_enable = 0
         self.win1_out_enable = 0
         self.win_obj_enable = 0
+        # WINOUT OBJ enable bit (OBJ displayed outside window area)
+        self.winout_obj_enable = False
 
         # Mosaic configuration
         self.bg_mosaic_h = 1  # Horizontal size (1-16 pixels)
@@ -764,16 +794,26 @@ class PPU:
         self._init_framebuffer()
 
     def get_surface(self) -> "pygame.Surface":
-        """Convert framebuffer to pygame Surface for screenshot"""
+        """Convert framebuffer to pygame Surface for screenshot.
+
+        Uses surfarray.blit_array() for bulk pixel transfer (~100x faster than set_at)."""
         import pygame
 
-        surf = pygame.Surface((self.screen_width, self.screen_height))
-        for y in range(self.screen_height):
-            for x in range(self.screen_width):
-                color = self.framebuffer[y][x]
-                surf.set_at((x, y), color)
-        return surf
+        try:
+            import numpy as np
 
+            arr = np.array(self.framebuffer, dtype=np.uint8)
+            surf = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+            pygame.surfarray.blit_array(surf, arr)
+            return surf
+        except ImportError:
+            # Fallback: per-pixel set_at if numpy not available
+            surf = pygame.Surface((self.screen_width, self.screen_height))
+            for y in range(self.screen_height):
+                for x in range(self.screen_width):
+                    color = self.framebuffer[y][x]
+                    surf.set_at((x, y), color)
+            return surf
     def _init_framebuffer(self):
         """Initialize the framebuffer"""
         self.framebuffer = [
@@ -781,13 +821,20 @@ class PPU:
         ]
 
     def _get_vram_data(self) -> bytes:
-        """Get VRAM data as bytes for JIT functions."""
+        """Get VRAM data as bytes for JIT functions.
+
+        Returns 128KB = 96KB VRAM + 16KB copy of start for double buffering.
+        Mode 3/5 page 1 (0x0600A000 + 0x18000 max) reads contiguously at 0xA000-0x1BFFF.
+        """
         vram_start = 0x06000000
-        vram_end = 0x06018000
+        vram_size = 0x18000  # 96KB
+        pad_size = 0x4000    # 16KB
         try:
-            return bytes(self.memory.read_range(vram_start, vram_end - vram_start))
+            raw = bytearray(self.memory.read_range(vram_start, vram_size))
+            raw.extend(raw[:pad_size])
+            return bytes(raw)
         except:
-            return b'\x00' * (vram_end - vram_start)
+            return b'\x00' * (vram_size + pad_size)
 
     def _get_palette_data(self) -> bytes:
         """Get palette RAM data as bytes for JIT functions."""
@@ -887,9 +934,10 @@ class PPU:
             self.win0_in_enable = value & 0x3F
             self.win1_in_enable = (value >> 8) & 0x3F
         elif addr == self.REG_WINOUT:
-            # WINOUT: bits 0-5 = window 0 out, bits 8-13 = window 1 out
-            self.win0_out_enable = value & 0x3F
-            self.win1_out_enable = (value >> 8) & 0x3F
+            # WINOUT: bits 0-3 = BG0-3 out, bit 4 = OBJ out, bit 5 = Blend out
+            self.win0_out_enable = value & 0x1F
+            self.win1_out_enable = (value >> 8) & 0x1F
+            self.winout_obj_enable = bool((value >> 4) & 1)
         elif addr == self.REG_WINOBJ:
             # WINOBJ: bits 0-5 = OBJ window enable
             self.win_obj_enable = value & 0x3F
@@ -1011,7 +1059,7 @@ class PPU:
         elif addr == self.REG_WININ:
             return self.win0_in_enable | (self.win1_in_enable << 8)
         elif addr == self.REG_WINOUT:
-            return self.win0_out_enable | (self.win1_out_enable << 8)
+            return self.win0_out_enable | ((1 if self.winout_obj_enable else 0) << 4) | (self.win1_out_enable << 8)
         elif addr == self.REG_WINOBJ:
             return self.win_obj_enable
 
@@ -1059,6 +1107,10 @@ class PPU:
             dispstat |= (self.vblank & 1) << 0
             dispstat |= (self.hblank & 1) << 1
             dispstat |= (self.vcount_trigger & 1) << 2
+            dispstat |= (self.vblank_irq_enable & 1) << 3
+            dispstat |= (self.hblank_irq_enable & 1) << 4
+            dispstat |= (self.vcount_irq_enable & 1) << 5
+            dispstat |= (self.lyc & 0xFF) << 8
             return dispstat
 
         # BG Control registers read
@@ -1310,6 +1362,38 @@ class PPU:
 
         return in_h and in_v
 
+    def _is_in_obj_window(self, x: int, y: int) -> bool:
+        OAM_BASE = 0x07000000
+        NUM_SPRITES = 128
+
+        for sprite_idx in range(NUM_SPRITES):
+            sprite_addr = OAM_BASE + (sprite_idx * 8)
+            try:
+                attr0 = self.memory.read_u16(sprite_addr + 0)
+                attr1 = self.memory.read_u16(sprite_addr + 2)
+            except:
+                continue
+
+            obj_mode = (attr0 >> 10) & 3
+            if obj_mode != 3:
+                continue
+
+            sprite_y = attr0 & 0xFF
+            sprite_x = attr1 & 0x1FF
+            height = ((attr0 >> 12) & 7) * 8 + 8
+            width = ((attr1 >> 8) & 0x3) * 8 + 8
+
+            if width > 64:
+                width = 64
+            if height > 64:
+                height = 64
+
+            if sprite_y <= y < sprite_y + height:
+                if sprite_x <= x < sprite_x + width:
+                    return True
+
+        return False
+
     def _get_window_layer_enable(self, x: int, y: int) -> int:
         """Get which layers are enabled at the given coordinate based on windows"""
         # Check WIN0 first
@@ -1321,7 +1405,10 @@ class PPU:
             return self.win1_in_enable
 
         if self.obj_window_enable:
-            return self.win_obj_enable
+            if self._is_in_obj_window(x, y):
+                return 0x10 if self.winout_obj_enable else 0
+            else:
+                return 0x10 if (self.win0_out_enable & 0x10) else 0
 
         # Default to out enables
         if self.win0_enable or self.win1_enable:
@@ -1391,18 +1478,20 @@ class PPU:
         dispstat_addr = 0x04000004
         current_dispstat = self.memory.read_u16(dispstat_addr)
         if self.vblank:
-            # Set VBlank flag (bit 0)
-            self.memory.write_u16(dispstat_addr, current_dispstat | 0x0001)
-            # Fire VBlank interrupt if enabled
+            self.memory.write_u16(dispstat_addr, (current_dispstat | 0x0001) & ~0x0002)
             if hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
                 self.memory._interrupts.vblank_irq()
+            # Fire DMA VBlank triggers (DMA with timing=VBlank starts at VBlank)
+            if hasattr(self.memory, '_dma') and self.memory._dma is not None:
+                self.memory._dma.vblank_fire()
         else:
-            # Clear VBlank flag
-            self.memory.write_u16(dispstat_addr, current_dispstat & ~0x0001)
-            # Fire HBlank interrupt if enabled (during active display)
+            self.memory.write_u16(dispstat_addr, (current_dispstat & ~0x0001) | 0x0002)
             if self.hblank_irq_enable:
                 if hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
                     self.memory._interrupts.hblank_irq()
+            # Fire DMA HBlank triggers (DMA with timing=HBlank starts at HBlank)
+            if hasattr(self.memory, '_dma') and self.memory._dma is not None:
+                self.memory._dma.hblank_fire()
 
         # Note: forced_blank is a display control flag but we still render
         # Don't return early - let rendering proceed even if forced_blank is set
@@ -1511,7 +1600,7 @@ class PPU:
 
         # Render sprites from OAM at 0x07000000 AFTER all BG layers
         if self.obj_enable:
-            self._render_sprites()
+            self._render_sprites(0x3F)
 
     def _render_mode1(self):
         """Render Mode 1: Text BG0/1 + Affine BG2/3"""
@@ -1583,9 +1672,7 @@ class PPU:
                             pixel_x = tile_x % 8
                             pixel_y = tile_y % 8
 
-                            palette_indices = self._decode_tile_4bpp(
-                                tile_index, self.bg_char_block[bg]
-                            )
+                            # Check bg256[bg] to determine 8BPP vs 4BPP mode
                             if self.bg256[bg]:
                                 palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
                             else:
@@ -1601,7 +1688,7 @@ class PPU:
                 # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
 
         if self.obj_enable:
-            self._render_sprites()
+            self._render_sprites(0x3F)
 
     def _render_mode2(self):
         """Render Mode 2: Affine BG2/3 only"""
@@ -1649,11 +1736,12 @@ class PPU:
                 # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
 
         if self.obj_enable:
-            self._render_sprites()
+            self._render_sprites(0x3F)
 
     def _render_mode3(self):
-        """Render Mode 3: 240x160 bitmap mode with mosaic support"""
-        vram_base = 0x06000000
+        """Render Mode 3: 240x160 bitmap mode with double buffering and mosaic support"""
+        page = self.display_frame_select
+        vram_base = 0x06000000 if page == 0 else 0x0600A000
 
         if is_numba_ppu_enabled():
             vram_data = self._get_vram_data()
@@ -1682,7 +1770,7 @@ class PPU:
                         self.framebuffer[y][x] = (0, 0, 0)
 
         if self.obj_enable:
-            self._render_sprites()
+            self._render_sprites(0x3F)
 
     def _render_mode4(self):
         """Render Mode 4: 240x160 8BPP bitmap with double buffering and mosaic support"""
@@ -1712,7 +1800,7 @@ class PPU:
                     self.framebuffer[y][x] = (0, 0, 0)
 
         if self.obj_enable:
-            self._render_sprites()
+            self._render_sprites(0x3F)
 
     def _get_palette_color_256(self, palette_idx: int) -> Tuple[int, int, int]:
         """Get RGB color from 256-color palette (Mode 4)."""
@@ -1734,8 +1822,9 @@ class PPU:
             return (0, 0, 0)
 
     def _render_mode5(self):
-        """Render Mode 5: 160x128 bitmap mode with mosaic support"""
-        vram_base = 0x06000000
+        """Render Mode 5: 160x128 bitmap mode with double buffering and mosaic support"""
+        page = self.display_frame_select
+        vram_base = 0x06000000 if page == 0 else 0x0600A000
 
         for y in range(128):
             for x in range(160):
@@ -1758,7 +1847,7 @@ class PPU:
                         self.framebuffer[y][x] = (0, 0, 0)
 
         if self.obj_enable:
-            self._render_sprites()
+            self._render_sprites(0x3F)
 
     def _blending_enabled(self) -> bool:
         return (self.bldcnt & 0x3FFF) != 0
@@ -1937,7 +2026,7 @@ class PPU:
 
         return colors
 
-    def _render_sprites(self):
+    def _render_sprites(self, layer_enable: int = 0x3F):
         OAM_BASE = 0x07000000
         NUM_SPRITES = 128
 
@@ -2005,6 +2094,11 @@ class PPU:
                     if tile_pixel_idx < len(tile_indices):
                         color_idx = tile_indices[tile_pixel_idx]
                         if color_idx != 0:
+                            if self.win0_enable or self.win1_enable:
+                                pixel_layer_enable = self._get_window_layer_enable(screen_x, screen_y)
+                                if not (pixel_layer_enable & 0x10):
+                                    continue
+
                             palette_idx = palette_num * 16 + color_idx
                             color = self._get_palette_color(palette_idx)
                             self.framebuffer[screen_y][screen_x] = color

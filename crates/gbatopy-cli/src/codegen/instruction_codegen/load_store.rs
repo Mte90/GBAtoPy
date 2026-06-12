@@ -13,7 +13,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     }
                     _ => String::new(),
                 };
-                return Some(format!("r[{}] = memory.read_u32(r[{}]{})", rd, base, offset_expr));
+                return Some(format!("registers[{}] = memory.read_u32(registers[{}]{})", rd, base, offset_expr));
             }
         }
     }
@@ -26,7 +26,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     }
                     _ => String::new(),
                 };
-                return Some(format!("memory.write_u32(r[{}]{}, r[{}])", base, offset_expr, rd));
+                return Some(format!("memory.write_u32(registers[{}]{}, registers[{}])", base, offset_expr, rd));
             }
         }
     }
@@ -39,7 +39,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     }
                     _ => String::new(),
                 };
-                return Some(format!("r[{}] = memory.read_u8(r[{}]{}) & 0xFF", rd, base, offset_expr));
+                return Some(format!("registers[{}] = memory.read_u8(registers[{}]{}) & 0xFF", rd, base, offset_expr));
             }
         }
     }
@@ -52,7 +52,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     }
                     _ => String::new(),
                 };
-                return Some(format!("memory.write_u8(r[{}]{}, r[{}] & 0xFF)", base, offset_expr, rd));
+                return Some(format!("memory.write_u8(registers[{}]{}, registers[{}] & 0xFF)", base, offset_expr, rd));
             }
         }
     }
@@ -65,7 +65,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     }
                     _ => String::new(),
                 };
-                return Some(format!("r[{}] = memory.read_u16(r[{}]{}) & 0xFFFF", rd, base, offset_expr));
+                return Some(format!("registers[{}] = memory.read_u16(registers[{}]{}) & 0xFFFF", rd, base, offset_expr));
             }
         }
     }
@@ -78,7 +78,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     }
                     _ => String::new(),
                 };
-                return Some(format!("memory.write_u16(r[{}]{}, r[{}] & 0xFFFF)", base, offset_expr, rd));
+                return Some(format!("memory.write_u16(registers[{}]{}, registers[{}] & 0xFFFF)", base, offset_expr, rd));
             }
         }
     }
