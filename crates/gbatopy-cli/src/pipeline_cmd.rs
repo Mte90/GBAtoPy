@@ -231,7 +231,7 @@ pub fn run_pipeline(
         optional_files.push("crates/gbatopy-cli/assets/gba_runtime/interrupts.py");
     }
     if flags.timers {
-        optional_files.push("crates/gbatopy-cli/assets/gba_runtime/timer.py");
+        optional_files.push("crates/gbatopy-cli/assets/gba_runtime/timers.py");
     }
     if flags.dma {
         optional_files.push("crates/gbatopy-cli/assets/gba_runtime/dma.py");
@@ -294,6 +294,7 @@ pub fn run_pipeline(
         code.push_str("# Initialize runtime objects\n");
         code.push_str("memory = Memory()\n");
         code.push_str("ppu_instance = PPU(memory)\n");
+        code.push_str("memory.attach_ppu(ppu_instance)\n");
 
     if flags.audio {
         code.push_str("apu_instance = APU()\n");
@@ -775,20 +776,17 @@ class GBA:
     // Write all block functions
     code.push_str(&block_function_code);
 
-    // Generate jump table dispatch (dict-based for memory efficiency)
-    let base_addr = 0x08000000;
-    code.push_str("func_table = {}\n");
+    // Generate jump table dispatch (array-based for performance)
+    code.push_str("dispatch_table = [None] * 0x080000\n");
     
     // Populate jump table entries (NOP blocks redirect to next non-NOP function)
-    for &addr in &address_list {
-        if non_nop_addrs.contains(&addr) {
-            code.push_str(&format!("func_table[0x{:08X}] = func_{:08X}\n", addr, addr));
-        } else {
-            let target = non_nop_addrs.iter().find(|&&a| a > addr).copied();
-            if let Some(target_addr) = target {
-                code.push_str(&format!("func_table[0x{:08X}] = func_{:08X}\n", addr, target_addr));
-            }
+    let base_addr: u64 = 0x08000000;
+    for &addr in &non_nop_addrs {
+        let idx = (addr - base_addr) >> 2;
+        if idx >= 0x080000 {
+            continue;
         }
+        code.push_str(&format!("dispatch_table[0x{:07X}] = func_{:08X}\n", idx, addr));
     }
     code.push_str("\n");
 
@@ -829,25 +827,51 @@ class GBA:
 // Helper function to generate game loop (copied from cmds/pipeline.rs)
 fn generate_game_loop() -> String {
     r#"
+import time
+
+def calibrate_gba_timing(measure_cycles=100000):
+    """Calibrate Python execution speed to match GBA 16.79 MHz."""
+    loop_start = time.perf_counter()
+    cal_cycles = 0
+    cal_x = 0
+    while cal_cycles < measure_cycles:
+        cal_x = cal_x + 1
+        cal_cycles += 1
+    loop_end = time.perf_counter()
+    elapsed = loop_end - loop_start
+    cycles_per_second = cal_cycles / elapsed if elapsed > 0 else measure_cycles
+    gba_hz = 16789800  # GBA clock speed (16.79 MHz)
+    speed_ratio = cycles_per_second / gba_hz
+    target_cycles_per_frame = gba_hz / 60.0
+    calibrated_delay = 1.0 / cycles_per_second * target_cycles_per_frame
+    return speed_ratio, calibrated_delay, cycles_per_second, gba_hz
+
 def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):
+    speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     def ror(v, a):
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
-    print(f"PC=0x{registers[15]:08X}")
+    # print(f"PC=0x{registers[15]:08X}")
     while ic < mi:
         pc = registers[15]
-        func = func_table.get(pc)
-        if func is None: print(f"Unknown PC: 0x{pc:08X}"); break
+        idx = (pc - 0x08000000) >> 2
+        func = dispatch_table[idx] if 0 <= idx < 0x080000 else None
+        if func is None: 
+            print(f"Unknown PC: 0x{pc:08X}")
+            break
+        if registers[15] == pc: 
+            break
         func(registers, cpsr); ic += 1
-        if registers[15] == pc: print(f"Loop at 0x{pc:08X}"); break
-        if ic % 10000 == 0: print(f"{ic} instrs")
+    # print(f"Done: {ic} instrs")
+        # if ic % 10000 == 0: print(f"{ic} instrs")
         if frame_limit and fc >= frame_limit: break
         if ic % 1000 == 0: fc += 1
-    print(f"Done: {ic} instrs")
+    # print(f"Done: {ic} instrs")
     return fc
 
 def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None):
+    speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     pygame.init()
     if not headless:
         screen = pygame.display.set_mode((240 * scale, 160 * scale))
@@ -856,28 +880,24 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen = pygame.Surface((240 * scale, 160 * scale))
     clock = pygame.time.Clock()
     fc = 0; running = True; mi = 1000000; ic = 0
-    print(f"PC=0x{registers[15]:08X}")
+    # print(f"PC=0x{registers[15]:08X}")
     while running and fc < 10000:
         for e in pygame.event.get():
             if e.type == pygame.QUIT: running = False
-        # Execute instructions for this frame (max 200000 instrs per frame)
-        for _ in range(200000):
+        # Execute instructions for this frame
+        target_cycles_per_frame = int(gba_hz / 60.0)
+        for _ in range(target_cycles_per_frame // 4):
             pc = registers[15]
-            func = func_table.get(pc)
-            if func is None: break
-            func(registers, cpsr); ic += 1
+            idx = (pc - 0x08000000) >> 2
+            func = dispatch_table[idx] if 0 <= idx < 0x080000 else None
+            if func is None: 
+                print(f"Unknown PC: 0x{pc:08X}")
+                break
             if registers[15] == pc: break
-        # Render frame and update APU
+            func(registers, cpsr); ic += 1
+        # Render frame (this sets VBlank flag and dispatches VBlank IRQ internally)
         ppu_instance.render_frame()
-        # VBlank IRQ dispatch
-        dispstat = memory.read_u16(0x04000004)
-        vblank_flag = (dispstat & 0x01) != 0
-        if vblank_flag:
-            ie = memory.read_u16(0x04000200)
-            ime = memory.read_u16(0x04000208)
-            if ie & 0x01 and ime & 0x01:
-                memory.write_u16(0x04000202, memory.read_u16(0x04000202) | 0x01)
-                registers[15] = memory.read_u32(0x03007FFC)
+        # Update APU audio
         if apu_instance: apu_instance.update()
         surf = ppu_instance.get_surface()
         screen.blit(pygame.transform.scale(surf, (240 * scale, 160 * scale)), (0, 0))

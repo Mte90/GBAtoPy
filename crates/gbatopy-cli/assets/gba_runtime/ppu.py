@@ -1523,6 +1523,9 @@ class PPU:
         if self._blending_enabled():
             self._apply_blending_to_framebuffer()
 
+        # Render sprites
+        self._render_sprites()
+
     def _render_mode0(self):
         """Render Mode 0: Text backgrounds (BG0-3) with priority-based compositing"""
         for y in range(self.screen_height):

@@ -27,11 +27,11 @@ _memory = Memory()
 _input = Input()
 _memory.attach_input(_input)
 
-# CPSR flag variables (N, Z, C, V)
-cpsr_n = False  # Negative flag
-cpsr_z = False  # Zero flag
-cpsr_c = False  # Carry flag
-cpsr_v = False  # Overflow flag
+# CPSR flag dictionary (N, Z, C, V)
+cpsr = {'n': False, 'z': False, 'c': False, 'v': False}
+
+# Register file for generated code
+registers = [0] * 16  # r0-r12, sp, lr, pc (we use indices 0-15)
 
 
 def read_memory(addr: int) -> int:
@@ -249,7 +249,7 @@ def main_entry(
 
             def run_rom():
                 try:
-                    generated.func_map[0x08000000]()
+                    generated.func_map[0x08000000](registers, cpsr)
                 except Exception as e:
                     result["exception"] = e
 
@@ -266,7 +266,7 @@ def main_entry(
                 break
         elif hasattr(generated, "main"):
             try:
-                generated.main()
+                generated.main(registers, cpsr)
             except Exception as e:
                 print(f"  WARNING: main() raised exception: {e}")
                 break
@@ -311,7 +311,7 @@ def main_entry(
                     # Call ISR through func_map if registered
                     if hasattr(generated, "func_map") and isr_addr in generated.func_map:
                         try:
-                            generated.func_map[isr_addr]()
+                            generated.func_map[isr_addr](registers, cpsr)
                         except Exception as e:
                             print(f"  WARNING: ISR raised exception: {e}")
 

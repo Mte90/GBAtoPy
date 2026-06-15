@@ -14,7 +14,7 @@ fn embed_pyboyadvance(_runtime_dir: &str) -> Result<String, String> {
         "crates/gbatopy-cli/assets/gba_runtime/cpu.py",
         "crates/gbatopy-cli/assets/gba_runtime/arm7tdmi.py",
         "crates/gbatopy-cli/assets/gba_runtime/interrupts.py",
-        "crates/gbatopy-cli/assets/gba_runtime/timer.py",
+        "crates/gbatopy-cli/assets/gba_runtime/timers.py",
         "crates/gbatopy-cli/assets/gba_runtime/dma.py",
         "crates/gbatopy-cli/assets/gba_runtime/input.py",
         "crates/gbatopy-cli/assets/gba_runtime/apu.py",
