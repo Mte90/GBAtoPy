@@ -127,4 +127,26 @@ impl Operand {
             Operand::Label(s) => s.clone(),
         }
     }
+
+    /// Format operand for Python codegen output.
+    /// - Register: returns just the number (e.g. "0", "15") for use in registers[]
+    /// - Immediate: returns just the number without '#' prefix
+    pub fn to_codegen(&self) -> String {
+        match self {
+            Operand::Register(r) => r.to_string(),
+            Operand::Immediate(i) => i.to_string(),
+            Operand::ShiftedRegister { reg, shift, amount } => {
+                let amount_str = match amount {
+                    ShiftAmount::Immediate(v) => format!(", {}", v),
+                    ShiftAmount::Register(r) => format!(", r{}", r),
+                };
+                format!("reg|{}|{}r{}", reg, shift.name(), amount_str)
+            }
+            Operand::MemoryAddress { base, offset, .. } => {
+                format!("[r{}, {:?}]", base, offset)
+            }
+            Operand::PcRelative(offset) => format!("pc + {}", offset),
+            Operand::Label(s) => s.clone(),
+        }
+    }
 }

@@ -245,9 +245,42 @@ impl Disassembler {
                 }
             };
 
-            if opcode == "BX" || opcode == "BLX" {
+            // BX/BLX mode switch detection:
+            // BX/BLX in Thumb mode are returns, NOT mode switches. Skip heuristic.
+            // In ARM mode, detect Thumb entry patterns:
+            // 1. Odd register index (r1, r3, r5...) → always Thumb
+            // 2. Even register index → check if previous instruction is ADD Rd, PC, #N
+            //    (common GBA pattern for Thumb entry: ADD R0, PC, #1 / BX R0)
+            if (opcode == "BX" || opcode == "BLX") && mode == ArmMode::Arm {
                 let is_thumb = match operands.first() {
-                    Some(crate::Operand::Register(r)) => *r % 2 == 1,
+                    Some(crate::Operand::Register(r)) if *r % 2 == 1 => true,
+                    Some(crate::Operand::Register(r)) => {
+                        let b_target_reg = *r;
+                        // Check previous instruction for ADD Rd, PC, #N pattern
+                        // Common GBA Thumb entry: ADD R0, PC, #1 / BX R0
+                        instructions.last().map_or(false, |prev: &DecodedInstruction| {
+                            if prev.opcode == "ADD" && prev.mode == ArmMode::Arm {
+                                let same_rd = match prev.operands.first() {
+                                    Some(crate::Operand::Register(rd)) => *rd == b_target_reg,
+                                    _ => false,
+                                };
+                                if same_rd {
+                                    prev.operands.iter().any(|op| {
+                                        match op {
+                                            crate::Operand::Immediate(val) => {
+                                                (address + 8 + val) % 2 == 1
+                                            }
+                                            _ => false,
+                                        }
+                                    })
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        })
+                    }
                     _ => false,
                 };
                 let new_mode = if is_thumb {
@@ -695,7 +728,7 @@ impl Disassembler {
                 continue;
             }
 
-            let is_thumb = addr % 2 == 1;
+            let is_thumb = addr % 2 == 0;
             let mode = if is_thumb { ArmMode::Thumb } else { ArmMode::Arm };
 
             match mode {

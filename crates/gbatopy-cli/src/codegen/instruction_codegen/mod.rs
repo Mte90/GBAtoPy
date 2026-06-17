@@ -3,11 +3,19 @@ pub mod branch;
 pub mod load_store;
 pub mod coprocessor;
 
-use gbatopy_disasm::DecodedInstruction;
+use crate::codegen::thumb;
+
+use gbatopy_disasm::{DecodedInstruction, ArmMode};
 
 pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
     let opcode = &inst.opcode;
     
+    // Dispatch to Thumb codegen if in Thumb mode
+    if matches!(inst.mode, ArmMode::Thumb) {
+        return generate_thumb_instruction(inst);
+    }
+    
+    // ARM mode dispatch
     if let Some(code) = data_processing::generate(inst) {
         return code;
     }
@@ -22,4 +30,40 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
     }
     
     format!("# {} unimplemented", opcode)
+}
+
+fn generate_thumb_instruction(inst: &DecodedInstruction) -> String {
+    let opcode = &inst.opcode;
+    
+    // Thumb conditionals (BEQ, BNE, etc. with condition codes)
+    if let Some(code) = thumb::conditionals::generate(inst) {
+        return code;
+    }
+    
+    // Thumb branch instructions
+    if let Some(code) = thumb::branch::generate(inst) {
+        return code;
+    }
+    
+    // Thumb data processing
+    if let Some(code) = thumb::data_processing::generate(inst) {
+        return code;
+    }
+    
+    // Thumb load/store
+    if let Some(code) = thumb::load_store::generate(inst) {
+        return code;
+    }
+    
+    // Thumb multiply
+    if let Some(code) = thumb::multiply::generate(inst) {
+        return code;
+    }
+    
+    // Thumb misc
+    if let Some(code) = thumb::misc::generate(inst) {
+        return code;
+    }
+    
+    format!("# {} {} unimplemented", opcode, inst.condition.map(|c| format!("{:?}", c)).unwrap_or_default())
 }

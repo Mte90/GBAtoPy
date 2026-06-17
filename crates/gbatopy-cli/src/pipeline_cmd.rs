@@ -157,22 +157,34 @@ pub fn run_pipeline(
     let reachable: Vec<u32>;
     let branch_targets: Vec<u32>;
     
-    if rom.len() > 1024 * 1024 {
+    let instructions: Vec<gbatopy_disasm::DecodedInstruction>;
+    let is_large_rom = rom.len() > 1024 * 1024;
+
+    if is_large_rom {
         eprintln!("Step 1: CFG-based Disassembly (large ROM)");
         let mut cfg = CfgBuilder::new();
         cfg.build_from_entry(&rom, 0x08000000);
         reachable = cfg.get_reachable_addresses().to_vec();
         branch_targets = cfg.branch_targets.clone();
         eprintln!("  CFG found {} reachable addresses", reachable.len());
+
+        // For large ROMs, use selective disassembly (only reachable addresses)
+        let mut disasm = Disassembler::new();
+        instructions = disasm.selective_disassemble(&rom, &reachable);
     } else {
         eprintln!("Step 1: Full Disassembly (small ROM)");
         let mut disasm = Disassembler::new();
-        reachable = disasm.disassemble(&rom, 0x08000000).into_iter().map(|i| i.address).collect();
+        let all_instructions = disasm.disassemble(&rom, 0x08000000);
+        reachable = all_instructions.iter().map(|i| i.address).collect();
         branch_targets = vec![];
         eprintln!("  Disassembled {} instructions", reachable.len());
+
+        // For small ROMs, use instructions directly from disassemble()
+        // (which has correct ModeTracker-based ARM/Thumb detection)
+        instructions = all_instructions;
     }
     
-    if (reachable.len()) < 10 {
+    if reachable.len() < 10 {
         eprintln!("  DEBUG: reachable addresses:");
         for a in reachable.iter().take(20) {
             eprintln!("    0x{:08X}", a);
@@ -183,9 +195,6 @@ pub fn run_pipeline(
         }
     }
     
-    // Disassemble only reachable addresses (no linear sweep on large ROMs)
-    let mut disasm = Disassembler::new();
-    let instructions = disasm.selective_disassemble(&rom, &reachable);
     eprintln!("  Disassembled {} reachable instructions", instructions.len());
 
     // Detect or use provided feature flags
@@ -386,8 +395,7 @@ pub fn run_pipeline(
 
     for inst in &instructions {
         let addr = inst.address as u64;
-        let is_thumb = addr % 2 == 1;
-        let instr_size = if is_thumb { 2 } else { 4 };
+        let instr_size = inst.width as u64;
         let next_expected = prev_addr.map(|a| a + instr_size);
         let opcode = inst.opcode.as_str();
         let is_branch = opcode == "B" || opcode == "BL" || opcode == "BX" || opcode == "BLX";
@@ -724,9 +732,8 @@ class GBA:
 
     for (&func_start, func_instructions) in &func_groups {
         let func_name = format!("func_{:08X}", func_start);
-        let is_thumb = func_start % 2 == 1;
         let block_len = func_instructions.len();
-        let instr_size: u64 = if is_thumb { 2 } else { 4 };
+        let instr_size: u64 = func_instructions[0].width as u64;
 
         // Generate function body into a temp buffer
         let mut body = String::new();

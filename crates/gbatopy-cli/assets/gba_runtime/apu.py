@@ -480,11 +480,57 @@ class APU:
             except pygame.error:
                 return
 
-        # Only process FIFO audio if either FIFO is enabled
-        if not (self.fifo_a_enabled or self.fifo_b_enabled):
-            return
-
         BUFFER_SIZE = 2048  # Larger buffer for smoother playback
+
+        # Process CH1-CH4 when FIFO is not enabled
+        if not (self.fifo_a_enabled or self.fifo_b_enabled):
+            if not (self.ch1_enabled or self.ch2_enabled or self.ch3_enabled or self.ch4_enabled):
+                return
+
+            try:
+                if not self._fifo_initial_buffers_queued:
+                    samples = array.array('B')
+                    for _ in range(BUFFER_SIZE):
+                        left, right = self.get_sample()
+                        samples.append(left)
+                        samples.append(right)
+
+                    if len(samples) == 0:
+                        return
+
+                    sound = pygame.mixer.Sound(buffer=samples.tobytes())
+                    self._audio_channel.play(sound)
+
+                    for _ in range(3):
+                        samples = array.array('B')
+                        for _ in range(BUFFER_SIZE):
+                            left, right = self.get_sample()
+                            samples.append(left)
+                            samples.append(right)
+                        if samples:
+                            buf_sound = pygame.mixer.Sound(buffer=samples.tobytes())
+                            self._audio_channel.queue(buf_sound)
+
+                    self._fifo_initial_buffers_queued = True
+
+                else:
+                    if self._audio_channel.get_busy():
+                        samples = array.array('B')
+                        for _ in range(BUFFER_SIZE):
+                            left, right = self.get_sample()
+                            samples.append(left)
+                            samples.append(right)
+
+                        if samples:
+                            sound = pygame.mixer.Sound(buffer=samples.tobytes())
+                            self._audio_channel.queue(sound)
+                    else:
+                        self._fifo_initial_buffers_queued = False
+
+            except pygame.error:
+                return
+
+            return
 
         try:
             if not self._fifo_initial_buffers_queued:

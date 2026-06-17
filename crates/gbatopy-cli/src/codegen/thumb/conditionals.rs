@@ -82,3 +82,28 @@ pub fn generate_thumb_ble_instruction(ops: &[String]) -> String {
     // BLE target - Branch if Less or Equal (Z=1 or N!=V)
     format!("if registers[17] == 1 or registers[16] != registers[19]: registers[15] = {}", ops[0])
 }
+
+pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
+    let opcode = &inst.opcode.to_uppercase();
+    let ops: Vec<String> = inst.operands.iter().map(|op| op.to_codegen()).collect();
+    
+    match opcode.as_str() {
+        "CBNZ" => Some(generate_thumb_cbnz_instruction(&ops)),
+        "CBZ" => Some(generate_thumb_cbz_instruction(&ops)),
+        "BEQ" => Some(generate_thumb_beq_instruction(&ops)),
+        "BNE" => Some(generate_thumb_bne_instruction(&ops)),
+        "BCS" => Some(generate_thumb_bcs_instruction(&ops)),
+        "BCC" => Some(generate_thumb_bcc_instruction(&ops)),
+        "BMI" => Some(generate_thumb_bmi_instruction(&ops)),
+        "BPL" => Some(generate_thumb_bpl_instruction(&ops)),
+        "BVS" => Some(generate_thumb_bvs_instruction(&ops)),
+        "BVC" => Some(generate_thumb_bvc_instruction(&ops)),
+        "BHI" => Some(generate_thumb_bhi_instruction(&ops)),
+        "BLS" => Some(generate_thumb_bls_instruction(&ops)),
+        "BGE" => Some(generate_thumb_bge_instruction(&ops)),
+        "BLT" => Some(generate_thumb_blt_instruction(&ops)),
+        "BGT" => Some(generate_thumb_bgt_instruction(&ops)),
+        "BLE" => Some(generate_thumb_ble_instruction(&ops)),
+        _ => None,
+    }
+}
