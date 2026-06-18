@@ -4,24 +4,32 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let opcode = inst.opcode.as_str();
     let ops = &inst.operands;
     let base_opcode = opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    let opcode_upper = base_opcode.to_uppercase();
+
+    // Handle conditional variants like COPROCESSORge, COPROCESSORne, etc.
+    if opcode_upper.starts_with("COPROCESSOR") {
+        return Some("pass  # COPROCESSOR conditional variant".to_string());
+    }
 
     if base_opcode == "MRC" || base_opcode == "MCR" {
-        return Some(format!("# {} coprocessor register transfer", base_opcode));
+        return Some(format!("pass  # {} coprocessor register transfer", base_opcode));
     }
     if base_opcode == "LDC" || base_opcode == "STC" {
-        return Some(format!("# {} coprocessor data transfer", base_opcode));
+        return Some(format!("pass  # {} coprocessor data transfer", base_opcode));
     }
     if base_opcode == "CDP" {
-        return Some("# CDP coprocessor data operation".to_string());
+        return Some("pass  # CDP coprocessor data operation".to_string());
     }
     if base_opcode == "SWI" || base_opcode == "SVC" {
-        return Some(format!("# {} software interrupt", base_opcode));
+        // SWI/SVC: software interrupt - increment PC and continue
+        // The actual SWI handler is called by the runtime at the appropriate time
+        return Some("pass  # SWI/SVC software interrupt (handled by runtime)".to_string());
     }
     if base_opcode == "MSR" {
-        return Some("# MSR move to status register".to_string());
+        return Some("pass  # MSR move to status register".to_string());
     }
     if base_opcode == "MRS" {
-        return Some("# MRS move from status register".to_string());
+        return Some("pass  # MRS move from status register".to_string());
     }
     if base_opcode == "NOP" {
         return Some("pass  # NOP".to_string());

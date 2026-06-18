@@ -50,6 +50,8 @@ enum Commands {
         #[arg(long, default_value = "false")]
         minify: bool,
         #[arg(long, default_value = "false")]
+        minify_aggressive: bool,
+        #[arg(long, default_value = "false")]
         no_audio: bool,
         #[arg(long, default_value = "false")]
         no_irq: bool,
@@ -74,6 +76,8 @@ enum Commands {
         #[arg(long, default_value = "false")]
         minify: bool,
         #[arg(long, default_value = "false")]
+        minify_aggressive: bool,
+        #[arg(long, default_value = "false")]
         no_audio: bool,
         #[arg(long, default_value = "false")]
         no_irq: bool,
@@ -83,6 +87,10 @@ enum Commands {
         no_dma: bool,
         #[arg(long, default_value = "false")]
         no_numba: bool,
+        #[arg(long)]
+        save_state: Option<PathBuf>,
+        #[arg(long)]
+        load_state: Option<PathBuf>,
     },
     Test {
         #[arg(short, long)]
@@ -91,6 +99,10 @@ enum Commands {
         frames: u32,
         #[arg(long)]
         screenshot: Option<PathBuf>, // screenshot path for verification
+        #[arg(long)]
+        dump_memory: Option<PathBuf>, // memory dump path
+        #[arg(long)]
+        dump_region: Option<String>, // memory region to dump
         #[arg(long, default_value = "false")]
         #[allow(dead_code)]
         headless: bool, // available for future use
@@ -158,6 +170,7 @@ fn main() {
             assets_dir,
             use_ir,
             minify,
+            minify_aggressive,
             no_audio,
             no_irq,
             no_timers,
@@ -178,6 +191,7 @@ fn main() {
                 use_ir,
                 feature_flags,
                 minify,
+                minify_aggressive,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
@@ -190,11 +204,14 @@ fn main() {
             use_ir,
             profile: _,
             minify,
+            minify_aggressive,
             no_audio,
             no_irq,
             no_timers,
             no_dma,
             no_numba,
+            save_state,
+            load_state,
         } => {
             let feature_flags = Some(pipeline_cmd::FeatureFlags {
                 audio: !no_audio,
@@ -210,15 +227,21 @@ fn main() {
                 use_ir,
                 feature_flags,
                 minify,
+                minify_aggressive,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
+            
+            // Note: save_state and load_state are passed to the generated Python script's argparse
+            // They will be used when running the generated Python file, not during transpilation
         }
         Commands::Test {
             rom,
             frames,
             screenshot,
+            dump_memory,
+            dump_region,
             ..
         } => {
             println!("Running test on {} for {} frames...", rom.display(), frames);
@@ -286,6 +309,18 @@ fn main() {
                     "  Screenshot will be saved to: {}",
                     screenshot_path.display()
                 );
+            }
+
+            // Add dump-memory argument if provided
+            if let Some(dm) = dump_memory {
+                python_args.push(format!("--dump-memory={}", dm.display()));
+                println!("  Memory will be dumped to: {}", dm.display());
+            }
+
+            // Add dump-region argument if provided
+            if let Some(dr) = dump_region {
+                python_args.push(format!("--dump-region={}", dr));
+                println!("  Memory region to dump: {}", dr);
             }
 
             let output = std::process::Command::new("python3")

@@ -93,9 +93,15 @@ impl ArmDecoder {
         let bits_27_26 = (word >> 26) & 0x3;
         let bit_25 = (word >> 25) & 0x1;
 
-        // Check for branch instructions FIRST (bits 27-25 take precedence)
-        // B/BL: bits 27-25 = 101
+        // Check bits 27-25 FIRST for instructions that span multiple (bits_27_26, bit_25) combinations
         let bits_27_25 = (word >> 25) & 0x7;
+        
+        // LDM/STM: bits 27-25 = 100 (can have bits_27_26 = 10 or 11 depending on encoding)
+        if bits_27_25 == 0b100 {
+            return self.decode_block_transfer(word, address);
+        }
+        
+        // B/BL: bits 27-25 = 101
         if bits_27_25 == 0b101 {
             return self.decode_branch(word, address);
         }
@@ -106,10 +112,7 @@ impl ArmDecoder {
             (0b10, _) => self.decode_load_store_imm(word, address),  // Bits 27-26 = 10
             (0b11, _) => {
                 // Check bit 25 for more specific classification
-                let bits_27_25 = (word >> 25) & 0x7;
                 match bits_27_25 {
-                    0b100 => self.decode_block_transfer(word, address),
-                    0b101 => self.decode_branch(word, address),
                     0b110 => (format!("COPROCESSOR"), vec![], false),
                     0b111 => {
                         let swi_num = (word & 0xFFFFFF) as u32;

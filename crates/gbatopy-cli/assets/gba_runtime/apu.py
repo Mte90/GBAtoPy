@@ -1,9 +1,10 @@
 """GBA APU (Audio Processing Unit) - Optimized Implementation"""
 
 import pygame
-import threading
 from collections import deque
 import array
+import threading
+import queue as queue_module
 
 # Optional Numba JIT support
 try:
@@ -321,25 +322,63 @@ class APU:
         self.ch4_enabled = False
         self.fifo_a_enabled = False
         self.fifo_b_enabled = False
-        self._audio_output = None
-        self._sound_buffer_a = None
-        self._sound_buffer_b = None
-        self._current_buffer = 'a'
-        self._channel = None
-        self._audio_channel = None  # Dedicated channel for continuous playback
-        self._buffer_queue = deque(maxlen=4)  # Queue buffers for seamless playback
+        
+        # Continuous audio playback with thread-safe queue
+        self._audio_channel = None
+        self._buffer_size = 4096  # Samples per buffer (93ms at 44100Hz) - larger for stability
+        self._sound_queue = queue_module.Queue(maxsize=3)  # Buffer 3 sounds ahead
+        self._audio_thread = None
+        self._stop_event = threading.Event()
+        self._audio_started = False
+        self._last_audio_state = False  # Track previous audio state
 
     def start(self):
         """Start audio playback"""
         if not pygame.mixer.get_init():
-            pygame.mixer.init(frequency=self.SAMPLE_RATE, size=-8, channels=2, buffer=512)
+            # Use larger buffer for smoother playback
+            pygame.mixer.init(frequency=self.SAMPLE_RATE, size=-8, channels=2, buffer=2048)
+
+    def _audio_worker(self):
+        """Background thread that continuously generates and queues audio buffers."""
+        while not self._stop_event.is_set():
+            try:
+                # Generate audio samples
+                samples = self._generate_samples(self._buffer_size)
+                sound = pygame.mixer.Sound(buffer=samples)
+                
+                # Queue the sound (blocks if queue is full)
+                self._sound_queue.put(sound, timeout=0.1)
+            except queue_module.Full:
+                # Queue is full, skip this buffer
+                continue
+            except Exception:
+                # Ignore errors in audio generation
+                continue
 
     def stop(self):
         """Stop audio playback"""
+        self._stop_event.set()
+        
+        # Wait for audio thread to finish
+        if self._audio_thread is not None:
+            self._audio_thread.join(timeout=1.0)
+            self._audio_thread = None
+        
+        # Clear the queue
+        while not self._sound_queue.empty():
+            try:
+                self._sound_queue.get_nowait()
+            except queue_module.Empty:
+                break
+        
+        # Stop mixer
         try:
             pygame.mixer.stop()
         except pygame.error:
             pass
+        
+        self._audio_started = False
+        self._audio_channel = None
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to sound registers"""
@@ -458,119 +497,76 @@ class APU:
 
         return (left, right)
 
+    def _generate_samples(self, count: int) -> bytes:
+        """Generate 'count' stereo samples and return as bytes."""
+        samples = array.array('B')
+        for _ in range(count):
+            left, right = self.get_sample()
+            samples.append(left)
+            samples.append(right)
+        return samples.tobytes()
+
+    def _audio_worker(self):
+        """Background thread that continuously generates and queues audio buffers."""
+        while not self._stop_event.is_set():
+            try:
+                # Generate audio samples
+                samples = self._generate_samples(self._buffer_size)
+                sound = pygame.mixer.Sound(buffer=samples)
+                
+                # Queue the sound (blocks if queue is full)
+                self._sound_queue.put(sound, timeout=0.1)
+            except queue_module.Full:
+                # Queue is full, skip this buffer
+                continue
+            except Exception:
+                # Ignore errors in audio generation
+                continue
+
     def update(self):
+        """Update audio playback with continuous thread-based buffering."""
         if not pygame.mixer.get_init():
             return
 
-        if not (self.ch1_enabled or self.ch2_enabled or
-                self.ch3_enabled or self.ch4_enabled or
-                self.fifo_a_enabled or self.fifo_b_enabled):
+        # Check if any audio is enabled
+        audio_enabled = (self.ch1_enabled or self.ch2_enabled or
+                        self.ch3_enabled or self.ch4_enabled or
+                        self.fifo_a_enabled or self.fifo_b_enabled)
+        
+        # Stop audio if nothing is enabled
+        if not audio_enabled:
+            if self._last_audio_state:
+                self.stop()
+                self._last_audio_state = False
             return
 
-        # Use dedicated FIFO channel (channel 1) for continuous playback
-        # Channel 0 is reserved for regular audio channels
-        if self._audio_channel is None:
+        # Initialize audio channel on first use
+        if not self._audio_started:
             try:
-                # Use channel 1 for FIFO to avoid conflict
                 if pygame.mixer.get_num_channels() < 2:
                     pygame.mixer.set_num_channels(2)
                 self._audio_channel = pygame.mixer.Channel(1)
-                self._fifo_buffer_queue = deque(maxlen=8)
-                self._fifo_initial_buffers_queued = False
+                
+                # Start the audio worker thread
+                self._stop_event.clear()
+                self._audio_thread = threading.Thread(target=self._audio_worker, daemon=True)
+                self._audio_thread.start()
+                
+                self._audio_started = True
+                self._last_audio_state = True
             except pygame.error:
                 return
 
-        BUFFER_SIZE = 2048  # Larger buffer for smoother playback
-
-        # Process CH1-CH4 when FIFO is not enabled
-        if not (self.fifo_a_enabled or self.fifo_b_enabled):
-            if not (self.ch1_enabled or self.ch2_enabled or self.ch3_enabled or self.ch4_enabled):
-                return
-
-            try:
-                if not self._fifo_initial_buffers_queued:
-                    samples = array.array('B')
-                    for _ in range(BUFFER_SIZE):
-                        left, right = self.get_sample()
-                        samples.append(left)
-                        samples.append(right)
-
-                    if len(samples) == 0:
-                        return
-
-                    sound = pygame.mixer.Sound(buffer=samples.tobytes())
-                    self._audio_channel.play(sound)
-
-                    for _ in range(3):
-                        samples = array.array('B')
-                        for _ in range(BUFFER_SIZE):
-                            left, right = self.get_sample()
-                            samples.append(left)
-                            samples.append(right)
-                        if samples:
-                            buf_sound = pygame.mixer.Sound(buffer=samples.tobytes())
-                            self._audio_channel.queue(buf_sound)
-
-                    self._fifo_initial_buffers_queued = True
-
-                else:
-                    if self._audio_channel.get_busy():
-                        samples = array.array('B')
-                        for _ in range(BUFFER_SIZE):
-                            left, right = self.get_sample()
-                            samples.append(left)
-                            samples.append(right)
-
-                        if samples:
-                            sound = pygame.mixer.Sound(buffer=samples.tobytes())
-                            self._audio_channel.queue(sound)
-                    else:
-                        self._fifo_initial_buffers_queued = False
-
-            except pygame.error:
-                return
-
-            return
-
+        # Play sounds from the queue
         try:
-            if not self._fifo_initial_buffers_queued:
-                samples = array.array('B')
-                for _ in range(BUFFER_SIZE):
-                    left, right = self.get_sample()
-                    samples.append(left)
-                    samples.append(right)
-
-                if len(samples) == 0:
-                    return
-
-                sound = pygame.mixer.Sound(buffer=samples.tobytes())
-                self._audio_channel.play(sound)
-
-                for _ in range(3):
-                    samples = array.array('B')
-                    for _ in range(BUFFER_SIZE):
-                        left, right = self.get_sample()
-                        samples.append(left)
-                        samples.append(right)
-                    if samples:
-                        buf_sound = pygame.mixer.Sound(buffer=samples.tobytes())
-                        self._audio_channel.queue(buf_sound)
-
-                self._fifo_initial_buffers_queued = True
-
-            else:
-                if self._audio_channel.get_busy():
-                    samples = array.array('B')
-                    for _ in range(BUFFER_SIZE):
-                        left, right = self.get_sample()
-                        samples.append(left)
-                        samples.append(right)
-
-                    if samples:
-                        sound = pygame.mixer.Sound(buffer=samples.tobytes())
-                        self._audio_channel.queue(sound)
-                else:
-                    self._fifo_initial_buffers_queued = False
-
+            # Check if channel is busy
+            if not self._audio_channel.get_busy():
+                # Try to get next sound from queue (non-blocking)
+                try:
+                    next_sound = self._sound_queue.get_nowait()
+                    self._audio_channel.play(next_sound)
+                except queue_module.Empty:
+                    # No sound ready yet, will be filled by worker thread
+                    pass
         except pygame.error:
             pass

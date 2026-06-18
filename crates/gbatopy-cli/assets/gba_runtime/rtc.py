@@ -78,6 +78,7 @@ class RTC:
         # Base time for calculating elapsed time (stored as offset from epoch)
         self.base_timestamp: float = 0.0
         self.base_realtime: float = 0.0
+        self.so_value: int = 0
         
         # Load persisted state
         self._load_state()
@@ -133,8 +134,10 @@ class RTC:
                 self._process_command()
     
     def _write_so(self, addr: int, value: int):
-        """Write to SO register."""
-        pass
+        """Write to SO register - no operation (SO is output only)."""
+        # SO is a read-only output pin, writes are ignored
+        # But we track the value for debugging/logging purposes
+        self.so_value = value
     
     def _write_sck(self, addr: int, value: int):
         """Write to SCK register - clock pulse."""
@@ -157,8 +160,15 @@ class RTC:
             self.read_data = (self.read_data << 1) & 0xFF
             self.transfer_count += 1
         elif self.current_operation == 'write' and self.transfer_count < 8:
-            # Read SI bit (would need to be passed differently)
+            # Collect write data - SI bit is already in self.command LSB during write
+            # We need to read the SI bit from the SI register
+            si_bit = (self.memory.read_u16(self.REG_RTC_SI - 0x04000000) & 1)
+            self.data_buffer = (self.data_buffer << 1) | si_bit
             self.transfer_count += 1
+            
+            # Check if we've received a complete byte
+            if self.transfer_count == 8:
+                self._handle_write_byte()
     
     def _process_command(self):
         """Process the received RTC command."""
@@ -183,21 +193,26 @@ class RTC:
             self.current_operation = 'read'
             self.transfer_count = 0
         elif (cmd & 0xF0) == self.CMD_WRITE_TIME:
-            # Write time command - prepare to receive 3 bytes
+            # Write time command - prepare to receive 3 bytes (seconds, minutes, hours)
             self.current_operation = 'write'
             self.data_buffer = 0
             self.transfer_count = 0
             self.write_buffer = []
+            self.write_command = cmd
         elif (cmd & 0xF0) == self.CMD_WRITE_DATE:
-            # Write date command - prepare to receive 3 bytes
+            # Write date command - prepare to receive 3 bytes (day, month, year)
             self.current_operation = 'write'
             self.data_buffer = 0
             self.transfer_count = 0
             self.write_buffer = []
+            self.write_command = cmd
         elif cmd == self.CMD_WRITE_STATUS:
-            # Write status register
+            # Write status register - receive 1 byte
             self.current_operation = 'write'
+            self.data_buffer = 0
             self.transfer_count = 0
+            self.write_buffer = []
+            self.write_command = cmd
         else:
             # Unknown command - reset
             self._reset_transfer()
@@ -248,6 +263,8 @@ class RTC:
         self.transfer_count = 0
         self.current_operation = None
         self.read_data = 0
+        self.write_buffer = []
+        self.write_command = 0
     
     def _is_leap_year(self, year: int) -> bool:
         """Check if a year is a leap year."""
@@ -307,6 +324,90 @@ class RTC:
         self.day = dt.day
         self.month = dt.month
         self.year = dt.year % 100
+    
+    def _handle_write_byte(self):
+        """Handle a complete byte received during write operation."""
+        # Store the byte in write buffer
+        self.write_buffer.append(self.data_buffer)
+        
+        # Determine how many bytes we need based on command
+        if self.write_command == self.CMD_WRITE_STATUS:
+            # Status register: 1 byte
+            if len(self.write_buffer) >= 1:
+                self._apply_write_status()
+        elif self.write_command == self.CMD_WRITE_TIME:
+            # Time: 3 bytes (seconds, minutes, hours)
+            if len(self.write_buffer) >= 3:
+                self._apply_write_time()
+        elif self.write_command == self.CMD_WRITE_DATE:
+            # Date: 3 bytes (day, month, year)
+            if len(self.write_buffer) >= 3:
+                self._apply_write_date()
+        
+        # Reset for next byte
+        self.data_buffer = 0
+        self.transfer_count = 0
+    
+    def _apply_write_status(self):
+        """Apply written status register value."""
+        if len(self.write_buffer) >= 1:
+            status = self.write_buffer[0]
+            # Update status1 register
+            self.status1 = status
+            
+            # Handle STOP bit (bit 3)
+            if status & self.STATUS1_STOP:
+                # Clock stopped - don't update time
+                pass
+            else:
+                # Clock running - time updates normally
+                pass
+            
+            # Handle RESET bit (bit 4)
+            if status & self.STATUS1_RESET:
+                # Reset time to initial values
+                self.seconds = 0
+                self.minutes = 0
+                self.hours = 0
+                self.day = 1
+                self.month = 1
+                self.year = 0
+                # Clear reset bit after reset
+                self.status1 &= ~self.STATUS1_RESET
+    
+    def _apply_write_time(self):
+        """Apply written time values."""
+        if len(self.write_buffer) >= 3:
+            # Bytes are: seconds, minutes, hours
+            self._unpack_time(self.write_buffer[0])
+            self._unpack_time((self.write_buffer[1] << 8) | self.write_buffer[0])  # Reuse unpack logic
+            
+            # Actually unpack properly
+            self.seconds = self._bcd_to_int(self.write_buffer[0] & 0x7F)
+            self.minutes = self._bcd_to_int(self.write_buffer[1] & 0x7F)
+            self.hours = self._bcd_to_int(self.write_buffer[2] & 0x3F)
+            
+            # Reset base timestamp to match new time
+            now = time.time()
+            dt = datetime.now()
+            dt = dt.replace(hour=self.hours, minute=self.minutes, second=self.seconds, microsecond=0)
+            self.base_timestamp = dt.timestamp()
+            self.base_realtime = now
+    
+    def _apply_write_date(self):
+        """Apply written date values."""
+        if len(self.write_buffer) >= 3:
+            # Bytes are: day, month, year
+            self.day = self._bcd_to_int(self.write_buffer[0] & 0x3F)
+            self.month = self._bcd_to_int(self.write_buffer[1] & 0x1F)
+            self.year = self._bcd_to_int(self.write_buffer[2] & 0xFF)
+            
+            # Reset base timestamp to match new date
+            now = time.time()
+            dt = datetime.now()
+            dt = dt.replace(year=2000 + self.year, month=self.month, day=self.day, microsecond=0)
+            self.base_timestamp = dt.timestamp()
+            self.base_realtime = now
     
     def _load_state(self):
         """Load RTC state from file."""

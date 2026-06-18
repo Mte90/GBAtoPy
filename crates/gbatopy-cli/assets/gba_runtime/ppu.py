@@ -821,6 +821,10 @@ class PPU:
         self.framebuffer = [
             [(0, 0, 0) for _ in range(self.screen_width)] for _ in range(self.screen_height)
         ]
+        # Track which BG layer (0-3) or OBJ (4) or backdrop (5) each pixel belongs to
+        self.layer_origin = [[0]*240 for _ in range(160)]
+        # Second target framebuffer for blend operations
+        self.second_target_framebuffer = [[None]*240 for _ in range(160)]
 
     def _get_vram_data(self) -> bytes:
         """Get VRAM data as bytes for JIT functions.
@@ -1340,6 +1344,12 @@ class PPU:
             value = value - 0x1000000
         return value / 256.0
 
+    def _s178_to_float(self, value: int) -> float:
+        """Convert s1.7.8 fixed point to float (16-bit, 256 = 1.0)"""
+        if value & 0x8000:
+            value = value - 0x10000
+        return value / 256.0
+
     def _is_in_window(self, x: int, y: int, win_num: int) -> bool:
         """Check if coordinate is inside specified window"""
         if win_num == 0:
@@ -1602,6 +1612,35 @@ class PPU:
                 if candidates:
                     candidates.sort(key=lambda c: c[0])
                     self.framebuffer[y][x] = candidates[0][1]
+                    # Track layer origin (BG number from priority order)
+                    # Find which BG this color came from
+                    for bg in range(4):
+                        if not getattr(self, f"bg{bg}_enable"):
+                            continue
+                        if not (layer_enable & (1 << bg)):
+                            continue
+                        mx, my = self._apply_mosaic(x, y, is_obj=False)
+                        tile_x = (mx + self.bg_hofs[bg]) % 256
+                        tile_y = (my + self.bg_vofs[bg]) % 256
+                        tilemap = getattr(self, f"bg{bg}_tilemap")
+                        tilemap_x = tile_x // 8
+                        tilemap_y = tile_y // 8
+                        tilemap_index = tilemap_y * 32 + tilemap_x
+                        if tilemap_index >= 0 and tilemap_index < len(tilemap):
+                            tilemap_entry = tilemap[tilemap_index]
+                            tile_index = tilemap_entry & 0x03FF
+                            char_block_base = self.bg_char_block[bg]
+                            bg_cnt_addr = 0x04000008 + bg * 2
+                            bg_cnt = self.memory.read_u16(bg_cnt_addr)
+                            bpp_mode = (bg_cnt >> 2) & 0x03
+                            if bpp_mode == 1:
+                                palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_8bpp(tile_index, char_block_base)
+                            else:
+                                palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_4bpp(tile_index, char_block_base)
+                            pixel_index = (tile_y % 8) * 8 + (tile_x % 8)
+                            if pixel_index < len(palette_indices) and palette_indices[pixel_index] != 0:
+                                self.layer_origin[y][x] = bg
+                                break
 
         # Render sprites from OAM at 0x07000000 AFTER all BG layers
         if self.obj_enable:
@@ -1655,6 +1694,8 @@ class PPU:
                                     color = self._get_palette_color(palette_num * 16 + color_idx)
                                 if color != (0, 0, 0):
                                     self.framebuffer[y][x] = color
+                                    self.layer_origin[y][x] = bg
+                                    self.layer_origin[y][x] = bg
                 else:
                     # Affine mode (BG2, BG3)
                         aff_x, aff_y = self._apply_affine_transform(bg, x, y)
@@ -1738,6 +1779,7 @@ class PPU:
                                 color = self._get_palette_color(palette_num * 16 + color_idx)
                             if color != (0, 0, 0):
                                 self.framebuffer[y][x] = color
+                                self.layer_origin[y][x] = bg
                 # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
 
         if self.obj_enable:
@@ -1759,6 +1801,7 @@ class PPU:
                     g = _c5to8_jit((color_val >> 5) & 0x1F)
                     b = _c5to8_jit((color_val >> 10) & 0x1F)
                     self.framebuffer[y][x] = (r, g, b)
+                    self.layer_origin[y][x] = 2
         else:
             for y in range(self.screen_height):
                 for x in range(self.screen_width):
@@ -1771,6 +1814,8 @@ class PPU:
                         g = _c5to8((color_val >> 5) & 0x1F)
                         b = _c5to8((color_val >> 10) & 0x1F)
                         self.framebuffer[y][x] = (r, g, b)
+                        self.layer_origin[y][x] = 2
+                        self.layer_origin[y][x] = 2
                     except:
                         self.framebuffer[y][x] = (0, 0, 0)
 
@@ -1801,6 +1846,7 @@ class PPU:
                     else:
                         color = self._get_palette_color_256(palette_idx)
                     self.framebuffer[y][x] = color
+                    self.layer_origin[y][x] = 2
                 except:
                     self.framebuffer[y][x] = (0, 0, 0)
 
@@ -1860,20 +1906,20 @@ class PPU:
     def _apply_blending_to_framebuffer(self):
         blend_mode = (self.bldcnt >> 6) & 0x3
         
-        if blend_mode == 1:
+        if blend_mode == 1:  # Special effect: alpha blend between 1st and 2nd targets
             eva = min(self.bldalpha_eva, 16)
             evb = min(self.bldalpha_evb, 16)
             if eva > 0 or evb > 0:
-                # Read backdrop color from BDCNT register (bits 12-15 = BG backdrop, bits 0-3 = OBJ backdrop)
-                bldcnt = self.bldcnt
-                bg_backdrop_idx = (bldcnt >> 12) & 0xF
-                bg_backdrop_r = 31  # Default
-                bg_backdrop_g = 31
-                bg_backdrop_b = 31
-                if 0 <= bg_backdrop_idx < 16:
-                    # Read backdrop color from palette RAM (0x05000000)
+                # BLDCNT bits 0-5: 1st target (BG0=bit0, BG1=bit1, BG2=bit2, BG3=bit3, OBJ=bit4, BD=bit5)
+                # BLDCNT bits 8-13: 2nd target (same mapping)
+                first_target_mask = self.bldcnt & 0x3F
+                second_target_mask = (self.bldcnt >> 8) & 0x3F
+                
+                # Read backdrop color for BD (bit 5 of each mask)
+                bg_backdrop_r, bg_backdrop_g, bg_backdrop_b = 31, 31, 31
+                if second_target_mask & (1 << 5):  # BD is 2nd target
                     try:
-                        backdrop_color_val = self.memory.read_u16(0x05000000 + (bg_backdrop_idx * 2))
+                        backdrop_color_val = self.memory.read_u16(0x05000000)
                         bg_backdrop_r = _c5to8((backdrop_color_val >> 0) & 0x1F)
                         bg_backdrop_g = _c5to8((backdrop_color_val >> 5) & 0x1F)
                         bg_backdrop_b = _c5to8((backdrop_color_val >> 10) & 0x1F)
@@ -1882,13 +1928,28 @@ class PPU:
                 
                 for y in range(self.screen_height):
                     for x in range(self.screen_width):
+                        source_layer = self.layer_origin[y][x]
                         r, g, b = self.framebuffer[y][x]
-                        bg_r = bg_backdrop_r
-                        bg_g = bg_backdrop_g
-                        bg_b = bg_backdrop_b
-                        r = (r * eva + bg_r * evb) // 16
-                        g = (g * eva + bg_g * evb) // 16
-                        b = (b * eva + bg_b * evb) // 16
+                        
+                        # Check if this pixel's source layer is in 1st target
+                        if (first_target_mask >> source_layer) & 1:
+                            # Find 2nd target pixel color
+                            second_r, second_g, second_b = bg_backdrop_r, bg_backdrop_g, bg_backdrop_b
+                            
+                            # Check if 2nd target includes backdrop (BD)
+                            if (second_target_mask >> 5) & 1:
+                                second_r, second_g, second_b = bg_backdrop_r, bg_backdrop_g, bg_backdrop_b
+                            else:
+                                # Look for 2nd target layer at this position
+                                stf_color = self.second_target_framebuffer[y][x]
+                                if stf_color is not None:
+                                    second_r, second_g, second_b = stf_color
+                            
+                            # Apply blend formula: result = (pixel * eva + second_target * evb) / 16
+                            r = (r * eva + second_r * evb) // 16
+                            g = (g * eva + second_g * evb) // 16
+                            b = (b * eva + second_b * evb) // 16
+                        
                         self.framebuffer[y][x] = (r, g, b)
             evy = min(self.bldy, 16)
             factor = evy / 16.0
@@ -1899,18 +1960,19 @@ class PPU:
                     g = min(int(g + (255 - g) * factor), 255)
                     b = min(int(b + (255 - b) * factor), 255)
                     self.framebuffer[y][x] = (r, g, b)
-        elif blend_mode == 3:
+        elif blend_mode == 2:  # Brightness increase (add white)
+            # Formula: result = min(src + (255 - src) * Evy / 16, 255)
             evy = min(self.bldy, 16)
             factor = evy / 16.0
             for y in range(self.screen_height):
                 for x in range(self.screen_width):
                     r, g, b = self.framebuffer[y][x]
-                    r = int(r * (1 - factor))
-                    g = int(g * (1 - factor))
-                    b = int(b * (1 - factor))
+                    r = min(int(r + (255 - r) * factor), 255)
+                    g = min(int(g + (255 - g) * factor), 255)
+                    b = min(int(b + (255 - b) * factor), 255)
                     self.framebuffer[y][x] = (r, g, b)
-        elif blend_mode == 2:
-            # Brightness increase: (src * (16 - Evy)) / 16
+        elif blend_mode == 3:  # Brightness decrease (multiply by dark)
+            # Formula: result = int(src * (16 - Evy) / 16)
             evy = min(self.bldy, 16)
             factor = evy / 16.0
             for y in range(self.screen_height):
@@ -1946,8 +2008,13 @@ class PPU:
         """Check if sprite uses affine transformation (attr1 bit 11)"""
         return bool((attr1 >> 11) & 1)
 
-    def _get_sprite_affine_params(self, sprite_index: int) -> Tuple[int, int, int, int, int, int]:
-        affine_index = (sprite_index >> 1) & 0x1F
+    def _get_sprite_affine_params(self, attr1: int) -> Tuple[int, int, int, int, int, int]:
+        """Get affine parameters for sprite from OAM affine parameter table.
+        
+        attr1 bits 8-10 store the affine parameter table index (0-31).
+        Each entry in the table is 8 bytes: PA, PB, PC, PD (16-bit each).
+        """
+        affine_index = (attr1 >> 8) & 0x1F
         affine_base = 0x07000020 + (affine_index * 8)
         pa = self.memory.read_u16(affine_base + 0)
         pb = self.memory.read_u16(affine_base + 2)
@@ -1960,10 +2027,11 @@ class PPU:
     def _apply_affine_transform_sprite(
         self, x: int, y: int, pa: int, pb: int, pc: int, pd: int, center_x: int, center_y: int
     ) -> Tuple[int, int]:
-        pa_float = self._fixed_8_8_to_float(pa)
-        pb_float = self._fixed_8_8_to_float(pb)
-        pc_float = self._fixed_8_8_to_float(pc)
-        pd_float = self._fixed_8_8_to_float(pd)
+        """Apply affine transform using s1.7.8 fixed-point parameters."""
+        pa_float = self._s178_to_float(pa)
+        pb_float = self._s178_to_float(pb)
+        pc_float = self._s178_to_float(pc)
+        pd_float = self._s178_to_float(pd)
         new_x = pa_float * (x - center_x) + pb_float * (y - center_y) + center_x
         new_y = pc_float * (x - center_x) + pd_float * (y - center_y) + center_y
         return int(new_x), int(new_y)
@@ -1983,6 +2051,14 @@ class PPU:
         if self._is_affine_sprite(attr1):
             pa, pb, pc, pd, _, _ = self._get_sprite_affine_params(attr1)
             sprite_width = ((attr1 >> 8) & 0x3) * 8 + 8 if width > 8 else 8
+            
+            # Check double-size flag (attr0 bit 8)
+            double_size = bool(attr0 & 0x100)
+            if double_size:
+                # Double the bounding box dimensions
+                sprite_width *= 2
+                height *= 2
+            
             center_x = sprite_width // 2
             center_y = height // 2
 
@@ -2009,6 +2085,10 @@ class PPU:
                 else:
                     colors.append(None)
         else:
+            # Check flip flags for normal (non-affine) sprites
+            hflip = bool(attr1 & 0x0800)  # bit 12
+            vflip = bool(attr1 & 0x1000)  # bit 13
+            
             for px in range(width):
                 if sprite_x + px < 0 or sprite_x + px >= self.screen_width:
                     colors.append(None)
@@ -2016,7 +2096,14 @@ class PPU:
                 if line < 0 or line >= self.screen_height:
                     colors.append(None)
                     continue
-                vram_addr = 0x06014000 + (line * width + px) * 2
+                
+                # Apply horizontal flip
+                src_px = width - 1 - px if hflip else px
+                
+                # Apply vertical flip
+                src_line = height - 1 - (line - sprite_y) if vflip else (line - sprite_y)
+                
+                vram_addr = 0x06014000 + (src_line * width + src_px) * 2
                 try:
                     color_val = self.memory.read_u16(vram_addr)
                     if color_val & 0x8000:
@@ -2107,6 +2194,7 @@ class PPU:
                             palette_idx = palette_num * 16 + color_idx
                             color = self._get_palette_color(palette_idx)
                             self.framebuffer[screen_y][screen_x] = color
+                            self.layer_origin[screen_y][screen_x] = 4  # OBJ layer
 
     def _render_sprites_line(self, y: int, x: int, layer_enable: int):
         OAM_BASE = 0x07000000

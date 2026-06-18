@@ -172,7 +172,21 @@ class BIOS:
         return len(dst)
 
     def swi_huff_uncomp(self, src_addr: int, dst_addr: int) -> int:
-        """Huffman decompression"""
+        """Huffman decompression (SWI 0x11)
+        
+        GBA BIOS Huffman decompression algorithm:
+        - Header: 5 bytes (format byte + decompressed size + tree size)
+        - Tree: tree_size bytes (must be even), stored as packed nodes
+        - Data: compressed bitstream following the tree
+        
+        Tree structure:
+        - Each node is 1 byte: bit 7 = 1 for branch, 0 for data
+        - Branch node: bits 0-6 = child offset (left child at offset, right at offset+1)
+        - Data node: bits 0-6 = output value
+        - Root node is at offset (tree_size / 2)
+        
+        Returns: number of bytes decompressed, or 0 on failure
+        """
         src = self.memory.read_bytes(src_addr, 102400)
 
         if len(src) < 8 or src[0] != 0x11:
@@ -180,19 +194,86 @@ class BIOS:
             return 0
 
         expanded_size = struct.unpack("<I", src[1:5])[0]
+        if expanded_size == 0:
+            return 0
+            
         tree_size = src[4] if len(src) > 4 else 0
-        src_pos = 8 + tree_size
-
-        dst = bytearray()
-        compressed = src[src_pos : src_pos + expanded_size]
-
-        for byte in compressed[:expanded_size]:
-            dst.append(byte)
-
-        for i, byte in enumerate(dst):
+        
+        # Tree size must be even and non-zero
+        if tree_size == 0 or tree_size % 2 != 0:
+            return 0
+        
+        # Tree occupies tree_size bytes, stored starting at src_addr + 5
+        # Tree nodes are packed: (tree_size / 2) + 1 nodes
+        tree_node_count = (tree_size >> 1) + 1
+        tree_start = src_addr + 5
+        data_start = tree_start + tree_size
+        
+        # Read tree nodes
+        tree_nodes = []
+        for i in range(tree_node_count):
+            if data_start + tree_size - tree_size + i < src_addr + len(src):
+                tree_nodes.append(self.memory.read_u8(tree_start + i))
+            else:
+                return 0
+        
+        # Root node is at offset (tree_size / 2)
+        root_offset = tree_size >> 1
+        
+        # Decompression state
+        output = bytearray()
+        bit_buffer = 0
+        bits_in_buffer = 0
+        data_byte_offset = 0
+        
+        while len(output) < expanded_size:
+            # Start from root and walk tree
+            node_offset = root_offset
+            
+            while True:
+                # Ensure we have bits in buffer
+                if bits_in_buffer == 0:
+                    # Read next byte from compressed data
+                    if data_byte_offset >= tree_node_count:
+                        # Error: ran out of compressed data
+                        return 0
+                    bit_buffer = self.memory.read_u8(data_start + data_byte_offset)
+                    data_byte_offset += 1
+                    bits_in_buffer = 8
+                
+                # Read next bit (MSB first)
+                bit = (bit_buffer >> (bits_in_buffer - 1)) & 1
+                bits_in_buffer -= 1
+                
+                # Get current node
+                if node_offset >= len(tree_nodes):
+                    return 0
+                    
+                node = tree_nodes[node_offset]
+                
+                if node & 0x80:
+                    # Branch node: bits 0-6 = child offset
+                    child_offset = node & 0x7F
+                    
+                    if bit == 0:
+                        # Left child
+                        node_offset = child_offset
+                    else:
+                        # Right child (offset + 1)
+                        node_offset = child_offset + 1
+                else:
+                    # Data node: bits 0-6 = value
+                    value = node & 0x7F
+                    output.append(value)
+                    break
+        
+        # Write output to destination
+        for i, byte in enumerate(output):
+            if i >= expanded_size:
+                break
             self.memory.write_u8(dst_addr + i, byte)
 
-        return len(dst)
+        return len(output)
 
     def swi_rl_uncomp(self, src_addr: int, dst_addr: int) -> int:
         """Run-Length decompression"""
@@ -239,19 +320,84 @@ class BIOS:
         return len(dst)
 
     def swi_huffman(self, src_addr: int, dst_addr: int) -> int:
-        """Huffman decompression - stub for now (no test ROMs use it)"""
-        # Read Huffman header
-        src = bytearray()
-        for i in range(512):  # Read up to 512 bytes
-            src.append(self.memory.read_u8(src_addr + i))
+        """Huffman decompression (SWI 0x13). Returns bytes decompressed or 0 on failure."""
+        header_byte0 = self.memory.read_u8(src_addr)
+        decompressed_size = struct.unpack(
+            "<I", 
+            bytes([
+                self.memory.read_u8(src_addr + 1),
+                self.memory.read_u8(src_addr + 2),
+                self.memory.read_u8(src_addr + 3),
+                self.memory.read_u8(src_addr + 4)
+            ])
+        )[0]
         
-        # Check header (0x10 = Huffman)
-        if len(src) < 8 or src[0] != 0x10:
+        if decompressed_size == 0:
             return 0
         
-        expanded_size = struct.unpack("<I", src[1:5])[0]
-        # TODO: Implement full Huffman decompression
-        # For now, return 0 (no data decompressed)
+        data_size_format = header_byte0 >> 4
+        tree_size = header_byte0 & 0x0F
+        
+        if tree_size == 0 or tree_size % 2 != 0:
+            return 0
+        
+        tree_node_count = (tree_size >> 1) + 1
+        tree_start = src_addr + 4
+        data_start = tree_start + tree_node_count
+        
+        tree_nodes = [self.memory.read_u8(tree_start + i) for i in range(tree_node_count)]
+        root_offset = tree_size >> 1
+        
+        output = []
+        bit_buffer = 0
+        bits_in_buffer = 0
+        data_byte_offset = 0
+        
+        while len(output) < decompressed_size:
+            node_offset = root_offset
+            
+            while True:
+                if bits_in_buffer == 0:
+                    if data_byte_offset >= tree_node_count:
+                        return 0
+                    bit_buffer = self.memory.read_u8(data_start + data_byte_offset)
+                    data_byte_offset += 1
+                    bits_in_buffer = 8
+                
+                bit = (bit_buffer >> (bits_in_buffer - 1)) & 1
+                bits_in_buffer -= 1
+                node = tree_nodes[node_offset]
+                
+                if node & 0x80:
+                    child_offset = node & 0x7F
+                    node_offset = child_offset if bit == 0 else child_offset + 1
+                else:
+                    output.append(node & 0x7F)
+                    break
+        
+        if data_size_format == 0x1:
+            for i, val in enumerate(output):
+                if i >= decompressed_size:
+                    break
+                self.memory.write_u8(dst_addr + i, val)
+            return len(output)
+        
+        elif data_size_format == 0x2:
+            for i in range(0, len(output), 2):
+                if i + 1 >= len(output):
+                    break
+                val = output[i] | (output[i + 1] << 8)
+                self.memory.write_u16(dst_addr + (i // 2) * 2, val)
+            return len(output)
+        
+        elif data_size_format == 0x4:
+            for i in range(0, len(output), 4):
+                if i + 3 >= len(output):
+                    break
+                val = output[i] | (output[i + 1] << 8) | (output[i + 2] << 16) | (output[i + 3] << 24)
+                self.memory.write_u32(dst_addr + (i // 4) * 4, val)
+            return len(output)
+        
         return 0
 
     def swi_vblank_intr_wait(self):

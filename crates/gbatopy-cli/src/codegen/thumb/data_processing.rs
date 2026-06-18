@@ -201,8 +201,7 @@ pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
     let ops: Vec<String> = inst.operands.iter().map(|op| op.to_codegen()).collect();
     
     // Strip condition codes from opcode (e.g., "ADDMI" -> "ADD", "ADCVC" -> "ADC", "ADDmi" -> "ADD")
-    let valid_conditions = ["EQ", "NE", "CS", "CC", "MI", "PL", "VS", "VC", "HI", "LS", "GE", "LT", "GT", "LE",
-                            "eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le"];
+    let valid_conditions = ["EQ", "NE", "CS", "CC", "MI", "PL", "VS", "VC", "HI", "LS", "GE", "LT", "GT", "LE"];
     let opcode = if opcode_raw.len() > 2 {
         let maybe_cond = &opcode_raw[opcode_raw.len()-2..];
         if valid_conditions.contains(&maybe_cond) {
@@ -241,7 +240,13 @@ pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
             if ops.len() == 3 {
                 Some(generate_thumb_add_imm3(&ops))
             } else if ops.len() == 2 {
-                Some(generate_thumb_add_hi(&ops))
+                // Could be ADD Rd, Rm (hi reg) or ADD Rd, #imm8
+                // Check if ops[1] is a register or immediate
+                if ops[1].starts_with('r') || ops[1].starts_with('R') {
+                    Some(generate_thumb_add_hi(&ops))
+                } else {
+                    Some(generate_thumb_add_imm8(&ops))
+                }
             } else {
                 Some(generate_thumb_add_imm8(&ops))
             }

@@ -41,7 +41,13 @@ impl FeatureFlags {
     /// Detect which features are used by scanning the ROM for MMIO accesses
     /// This analyzes the disassembled instructions to find hardware register usage
     pub fn detect_from_instructions(instructions: &[gbatopy_disasm::DecodedInstruction]) -> Self {
-        let mut flags = Self::all_enabled();
+        let mut flags = Self {
+            audio: false,
+            irq: false,
+            timers: false,
+            dma: false,
+            numba: true,  // numba enabled by default even in detection
+        };
 
         // MMIO address ranges for different hardware features
         // Audio: 0x04000060-0x0400008F (SOUNDCNT_L, SOUNDCNT_H, SOUNDCNT_X, etc.)
@@ -144,6 +150,36 @@ fn shift_to_python(
     }
 }
 
+// Helper function to strip inline comments from Python code
+// Strips # comments but tries to avoid stripping # inside strings
+fn strip_inline_comment(line: &str) -> String {
+    let mut in_string = false;
+    let mut string_char = '\0';
+    let mut prev_char = '\0';
+    
+    for (i, ch) in line.chars().enumerate() {
+        // Handle string delimiters (simple approach - doesn't handle all edge cases)
+        if (ch == '"' || ch == '\'') && prev_char != '\\' {
+            if !in_string {
+                in_string = true;
+                string_char = ch;
+            } else if ch == string_char {
+                in_string = false;
+                string_char = '\0';
+            }
+        }
+        
+        // Found comment start outside of string
+        if ch == '#' && !in_string {
+            return line[..i].to_string();
+        }
+        
+        prev_char = ch;
+    }
+    
+    line.to_string()
+}
+
 pub fn run_pipeline(
     rom_path: &str,
     output_path: &str,
@@ -151,6 +187,7 @@ pub fn run_pipeline(
     _use_ir: bool,
     feature_flags: Option<FeatureFlags>,
     minify: bool,
+    minify_aggressive: bool,
 ) -> Result<(), String> {
     let rom = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
@@ -232,6 +269,8 @@ pub fn run_pipeline(
         "crates/gbatopy-cli/assets/gba_runtime/arm7tdmi.py",
         "crates/gbatopy-cli/assets/gba_runtime/input.py",
         "crates/gbatopy-cli/assets/gba_runtime/bios.py",
+        "crates/gbatopy-cli/assets/gba_runtime/save_state.py",
+        "crates/gbatopy-cli/assets/gba_runtime/hooks.py",
     ];
 
     // Optional modules - included based on feature flags
@@ -277,30 +316,8 @@ pub fn run_pipeline(
         }
     }
         code.push_str("# === End of Runtime ===\n\n");
-        // Runtime loader: ensure runtime modules are importable from any directory
-        code.push_str("# === Runtime Loader ===\n");
-        code.push_str("# Ensure runtime path is accessible to runtime modules\n");
-        code.push_str("import sys\nimport os\nfrom pathlib import Path\n");
-        code.push_str("if __file__:\n");
-        code.push_str("    # Try multiple strategies to find gba_runtime\n");
-        code.push_str("    script_dir = Path(__file__).resolve().parent\n");
-        code.push_str("    # Strategy 1: gba_runtime in same directory as script\n");
-        code.push_str("    runtime_dir = script_dir / 'gba_runtime'\n");
-        code.push_str("    if runtime_dir.exists():\n");
-        code.push_str("        sys.path.insert(0, str(script_dir))\n");
-        code.push_str("    else:\n");
-        code.push_str("        # Strategy 2: check parent directories for gba_runtime\n");
-        code.push_str("        for parent in [script_dir] + list(script_dir.parents):\n");
-        code.push_str("            runtime_dir = parent / 'gba_runtime'\n");
-        code.push_str("            if runtime_dir.exists():\n");
-        code.push_str("                sys.path.insert(0, str(parent))\n");
-        code.push_str("                break\n");
-        code.push_str("    # Strategy 3: use environment variable if set\n");
-        code.push_str("    gba_runtime_env = os.environ.get('GBA_RUNTIME_PATH')\n");
-        code.push_str("    if gba_runtime_env and Path(gba_runtime_env).exists():\n");
-        code.push_str("        sys.path.insert(0, gba_runtime_env)\n");
-        code.push_str("\n");
-        code.push_str("# Initialize runtime objects\n");
+        
+        // Initialize runtime objects
         code.push_str("memory = Memory()\n");
         code.push_str("ppu_instance = PPU(memory)\n");
         code.push_str("memory.attach_ppu(ppu_instance)\n");
@@ -310,20 +327,74 @@ pub fn run_pipeline(
     } else {
         code.push_str("apu_instance = None\n");
     }
+    
+    // Create CPU instance (arm7tdmi)
+    code.push_str("arm7tdmi_instance = CPU(memory)\n");
+    
+    // Create interrupt controller if enabled
     if flags.irq {
-        code.push_str("# IRQ handler available via interrupts module\n");
+        code.push_str("interrupts_instance = InterruptController()\n");
+        // Attach interrupts to memory for MMIO-based IRQ handling
+        code.push_str("memory.attach_interrupts(interrupts_instance)\n");
+    } else {
+        code.push_str("interrupts_instance = None\n");
     }
+    
+    // Create timer instance if enabled
     if flags.timers {
-        code.push_str("# Timer module available\n");
+        code.push_str("timers_instance = Timers()\n");
+        if flags.irq {
+            code.push_str("timers_instance.attach_interrupts(interrupts_instance)\n");
+        }
+    } else {
+        code.push_str("timers_instance = None\n");
     }
+    
+    // Create DMA instance if enabled
     if flags.dma {
-        code.push_str("# DMA module available\n");
+        code.push_str("dma_instance = DMA()\n");
+        code.push_str("dma_instance.attach_memory(memory)\n");
+        if flags.irq {
+            code.push_str("dma_instance.attach_interrupts(interrupts_instance)\n");
+        }
+    } else {
+        code.push_str("dma_instance = None\n");
     }
+    
+    // Create input instance
+    code.push_str("input_instance = Input()\n");
     if !flags.numba {
         code.push_str("set_numba_enabled(False)\n");
     } else {
         code.push_str("set_numba_enabled(True)\n");
     }
+    
+    // Initialize save state manager
+    code.push_str("# Initialize save state manager\n");
+    code.push_str("save_state_mgr = create_save_state(\n");
+    code.push_str("    cpu=arm7tdmi_instance, memory=memory, ppu=ppu_instance,\n");
+    if flags.audio {
+        code.push_str("    apu=apu_instance,\n");
+    } else {
+        code.push_str("    apu=None,\n");
+    }
+    if flags.dma {
+        code.push_str("    dma=dma_instance,\n");
+    } else {
+        code.push_str("    dma=None,\n");
+    }
+    if flags.timers {
+        code.push_str("    timers=timers_instance,\n");
+    } else {
+        code.push_str("    timers=None,\n");
+    }
+    if flags.irq {
+        code.push_str("    interrupts=interrupts_instance,\n");
+    } else {
+        code.push_str("    interrupts=None,\n");
+    }
+    code.push_str("    input_state=input_instance\n");
+    code.push_str(")\n");
     code.push_str("\n");
 
     // PPU mode is read from DISPCNT register at runtime, not hardcoded
@@ -591,101 +662,7 @@ pub fn run_pipeline(
     code.push_str("            break\n");
     code.push_str("\n");
 
-    // Embed GBA memory class (Python version)
-    code.push_str(
-        r#"# GBA Memory Map Implementation
-# Memory layout:
-# - 0x00000000-0x00003FFF: BIOS ROM (16KB)
-# - 0x02000000-0x0203FFFF: EWRAM (256KB)
-# - 0x03000000-0x03007FFF: IWRAM (32KB)
-# - 0x04000000-0x040003FF: MMIO registers
-# - 0x05000000-0x050003FF: Palette RAM (1KB)
-# - 0x06000000-0x06017FFF: VRAM (96KB)
-# - 0x07000000-0x070003FF: OAM (1KB)
-# - 0x08000000-0x09FFFFFF: ROM (up to 32MB)
-
-class GBA:
-    def __init__(self, rom_data):
-        self.bios = bytearray(0x4000)       # 16KB
-        self.ewram = bytearray(0x40000)     # 256KB
-        self.iwram = bytearray(0x8000)      # 32KB
-        self.mmio = {}                      # MMIO registers
-        self.palette = bytearray(0x400)     # 1KB
-        self.vram = bytearray(0x18000)      # 96KB
-        self.oam = bytearray(0x400)         # 1KB
-        self.rom = rom_data                 # up to 32MB
-
-    def read_8(self, addr):
-        if 0x00000000 <= addr <= 0x00003FFF:
-            offset = addr - 0x00000000
-            return self.bios[offset] if offset < len(self.bios) else 0
-        elif 0x02000000 <= addr <= 0x0203FFFF:
-            offset = addr - 0x02000000
-            return self.ewram[offset] if offset < len(self.ewram) else 0
-        elif 0x03000000 <= addr <= 0x03007FFF:
-            offset = addr - 0x03000000
-            return self.iwram[offset] if offset < len(self.iwram) else 0
-        elif 0x04000000 <= addr <= 0x040003FF:
-            offset = addr - 0x04000000
-            return self.mmio.get(offset, 0)
-        elif 0x05000000 <= addr <= 0x050003FF:
-            offset = addr - 0x05000000
-            return self.palette[offset] if offset < len(self.palette) else 0
-        elif 0x06000000 <= addr <= 0x06017FFF:
-            offset = addr - 0x06000000
-            return self.vram[offset] if offset < len(self.vram) else 0
-        elif 0x07000000 <= addr <= 0x070003FF:
-            offset = addr - 0x07000000
-            return self.oam[offset] if offset < len(self.oam) else 0
-        elif 0x08000000 <= addr <= 0x09FFFFFF:
-            offset = addr - 0x08000000
-            return self.rom[offset] if offset < len(self.rom) else 0
-        return 0
-
-    def read_32(self, addr):
-        b0 = self.read_8(addr)
-        b1 = self.read_8(addr + 1)
-        b2 = self.read_8(addr + 2)
-        b3 = self.read_8(addr + 3)
-        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-
-    def write_8(self, addr, value):
-        # Handle MMIO DMA control writes (detect FIFO C mode for DMA3)
-        if 0x040000EC <= addr <= 0x040000EC:
-            # DMA3 control register - check for FIFO C mode
-            offset = addr - 0x04000000
-            dma3_control = self.mmio.get(offset, 0)
-            if dma3_control & 0x05000000:  # FIFO C trigger (bit 16)
-                # Trigger FIFO C transfer for DMA3
-                pass  # Handler in dma.py processes this
-        
-        if 0x02000000 <= addr <= 0x0203FFFF:
-            offset = addr - 0x02000000
-            if offset < len(self.ewram): self.ewram[offset] = value
-        elif 0x03000000 <= addr <= 0x03007FFF:
-            offset = addr - 0x03000000
-            if offset < len(self.iwram): self.iwram[offset] = value
-        elif 0x04000000 <= addr <= 0x040003FF:
-            offset = addr - 0x04000000
-            self.mmio[offset] = value  # MMIO side effects would be handled here
-        elif 0x05000000 <= addr <= 0x050003FF:
-            offset = addr - 0x05000000
-            if offset < len(self.palette): self.palette[offset] = value
-        elif 0x06000000 <= addr <= 0x06017FFF:
-            offset = addr - 0x06000000
-            if offset < len(self.vram): self.vram[offset] = value
-        elif 0x07000000 <= addr <= 0x070003FF:
-            offset = addr - 0x07000000
-            if offset < len(self.oam): self.oam[offset] = value
-
-    def write_32(self, addr, value):
-        self.write_8(addr, value & 0xFF)
-        self.write_8(addr + 1, (value >> 8) & 0xFF)
-        self.write_8(addr + 2, (value >> 16) & 0xFF)
-        self.write_8(addr + 3, (value >> 24) & 0xFF)
-
-"#,
-    );
+    // GBA class removed - duplicates Memory from memory.py which is already embedded
 
     // Memory is already initialized in runtime section (line ~6022)
     // Don't create duplicate - the runtime memory is shared with PPU
@@ -821,6 +798,55 @@ class GBA:
         eprintln!("  Minification complete");
     }
 
+    // Apply aggressive minification if requested
+    if minify_aggressive {
+        eprintln!("Step 3b: Aggressive minification...");
+        // Aggressive minification: strip docstrings, inline comments, and collapse blanks
+        let mut aggressive = String::new();
+        let mut in_docstring = false;
+        let mut docstring_delimiter = "";
+        
+        for line in code.lines() {
+            let trimmed = line.trim();
+            
+            // Skip empty lines
+            if trimmed.is_empty() {
+                continue;
+            }
+            
+            // Handle docstrings
+            if in_docstring {
+                // Check if docstring ends on this line
+                if line.contains(docstring_delimiter) {
+                    in_docstring = false;
+                }
+                continue;
+            }
+            
+            // Check for docstring start
+            if trimmed.starts_with("\"\"\"") || trimmed.starts_with("'''") {
+                let delimiter = if trimmed.starts_with("\"\"\"") { "\"\"\"" } else { "'''" };
+                // Check if docstring ends on same line
+                let after_start = &trimmed[3..];
+                if after_start.contains(delimiter) {
+                    // Single-line docstring - skip entirely
+                    continue;
+                }
+                in_docstring = true;
+                docstring_delimiter = delimiter;
+                continue;
+            }
+            
+            // Strip inline comments (but not in strings)
+            let stripped_line = strip_inline_comment(line);
+            
+            aggressive.push_str(&stripped_line);
+            aggressive.push('\n');
+        }
+        code = aggressive;
+        eprintln!("  Aggressive minification complete");
+    }
+
     fs::write(output_path, &code).map_err(|e| format!("Failed to write output: {}", e))?;
 
     println!(
@@ -877,8 +903,30 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     # print(f"Done: {ic} instrs")
     return fc
 
-def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None):
+def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None):
+    # Initialize HookManager if hook file provided
+    hook_manager = HookManager() if hook_file else None
+    if hook_file:
+        # Load and execute hook script
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("hook_script", hook_file)
+            hook_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(hook_module)
+            # Call setup_hooks if it exists
+            if hasattr(hook_module, 'setup_hooks'):
+                hook_module.setup_hooks(hook_manager)
+                print(f"Hooks loaded from: {hook_file}")
+        except Exception as e:
+            print(f"Warning: Failed to load hook file {hook_file}: {e}", file=sys.stderr)
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
+    
+    # Load state if requested
+    if load_state and save_state_mgr:
+        print(f"Loading state from: {load_state}")
+        if not save_state_mgr.load(load_state):
+            print(f"Warning: Failed to load state from {load_state}", file=sys.stderr)
+    
     pygame.init()
     if not headless:
         screen = pygame.display.set_mode((240 * scale, 160 * scale))
@@ -891,6 +939,24 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     while running and fc < 10000:
         for e in pygame.event.get():
             if e.type == pygame.QUIT: running = False
+            # Handle save state hotkeys: F5=save, F8=load
+            elif e.type == pygame.KEYDOWN:
+                if e.key == pygame.K_F5 and save_state_mgr:
+                    # Save state to default file or provided path
+                    save_path = save_state if save_state else "save_state.json"
+                    print(f"Saving state to: {save_path}")
+                    if save_state_mgr.save(save_path):
+                        print(f"State saved successfully")
+                    else:
+                        print(f"Warning: Failed to save state to {save_path}", file=sys.stderr)
+                elif e.key == pygame.K_F8 and save_state_mgr:
+                    # Load state from default file or provided path
+                    load_path = load_state if load_state else "save_state.json"
+                    print(f"Loading state from: {load_path}")
+                    if save_state_mgr.load(load_path):
+                        print(f"State loaded successfully")
+                    else:
+                        print(f"Warning: Failed to load state from {load_path}", file=sys.stderr)
         # Execute instructions for this frame
         target_cycles_per_frame = int(gba_hz / 60.0)
         for _ in range(target_cycles_per_frame // 4):
@@ -902,6 +968,12 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 break
             if registers[15] == pc: break
             func(registers, cpsr); ic += 1
+            # Check hooks (zero-overhead when no hooks registered)
+            if hook_manager and hook_manager.has_hooks():
+                if hook_manager.check_hooks(registers[15], 'instruction'):
+                    # Breakpoint hit - pause execution
+                    print("Execution paused at breakpoint")
+                    break
         # Render frame (this sets VBlank flag and dispatches VBlank IRQ internally)
         ppu_instance.render_frame()
         # Update APU audio
@@ -910,11 +982,43 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen.blit(pygame.transform.scale(surf, (240 * scale, 160 * scale)), (0, 0))
         if not headless: pygame.display.flip()
         clock.tick(60); fc += 1
+        # Notify frame hooks
+        if hook_manager and hook_manager.has_hooks():
+            hook_manager.notify_frame(fc)
         if frame_limit and fc >= frame_limit: break
     if screenshot_path:
         pygame.image.save(screen, screenshot_path)
         print(f"Screenshot: {screenshot_path}")
+    
+    # Save state if requested
+    if save_state and save_state_mgr:
+        print(f"Saving state to: {save_state}")
+        if save_state_mgr.save(save_state):
+            print(f"State saved successfully")
+        else:
+            print(f"Warning: Failed to save state to {save_state}", file=sys.stderr)
+    
     pygame.quit()
+    
+    # Dump memory if requested
+    if dump_memory:
+        with open(dump_memory, 'wb') as f:
+            if dump_region:
+                # Map region name to memory array
+                regions = {
+                    'ewram': ewram,
+                    'iwram': iwram,
+                    'vram': vram,
+                    'palette': palette,
+                    'oam': oam
+                }
+                region_data = regions.get(dump_region, ewram)
+                f.write(bytes(region_data))
+            else:
+                # Default: dump full EWRAM (256KB)
+                f.write(bytes(ewram))
+        print(f"Memory dump written to: {dump_memory}")
+    
     return fc
 
 if __name__ == "__main__":
@@ -924,8 +1028,23 @@ if __name__ == "__main__":
     parser.add_argument("--frame", type=int)
     parser.add_argument("--screenshot", type=str)
     parser.add_argument("--scale", type=int, default=1)
+    parser.add_argument("--dump-memory", type=str, help="Dump memory to binary file")
+    parser.add_argument("--dump-region", type=str, help="Specific region to dump (ewram/iwram/vram/palette/oam)")
+    parser.add_argument("--save-state", type=str, help="Save state to JSON file after execution")
+    parser.add_argument("--load-state", type=str, help="Load state from JSON file before execution")
+    parser.add_argument("--hook-file", type=str, help="Python script with debugging hooks (breakpoints, tracing, etc.)")
     args = parser.parse_args()
-    frames = run_with_pygame(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot, scale=args.scale)
+    frames = run_with_pygame(
+        headless=args.headless, 
+        frame_limit=args.frame, 
+        screenshot_path=args.screenshot, 
+        scale=args.scale,
+        dump_memory=args.dump_memory,
+        dump_region=args.dump_region,
+        load_state=args.load_state,
+        save_state=args.save_state,
+        hook_file=args.hook_file
+    )
     print(f"{frames} frames")
 "#
     .to_string()
