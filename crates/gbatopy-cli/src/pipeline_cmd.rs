@@ -8,7 +8,6 @@ use gbatopy_disasm::{
 };
 use std::fs;
 use std::path::Path;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
 /// Feature flags for stripping unused hardware features
 /// These can be auto-detected from ROM or manually overridden via CLI
@@ -305,10 +304,16 @@ pub fn run_pipeline(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            code.push_str(&filtered);
+            // Minify: remove only blank lines (preserve docstrings for syntax correctness)
+            let minified: String = filtered
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            code.push_str(&minified);
             code.push_str("\n\n");
             eprintln!(
-                "    Included: {}",
+                "    Included: {} (minified)",
                 file_path.split('/').last().unwrap_or("")
             );
         } else {
@@ -505,26 +510,22 @@ pub fn run_pipeline(
 
     // Helper function to generate Python from ARM instruction
 
-    // Embed ROM data FIRST (before GBA class needs it)
-    code.push_str("# Full ROM data\n");
-    if rom.len() > 1_048_576 {
-        // Use base64 for large ROMs (>1MB)
-        code.push_str("import base64\n");
-        let encoded = BASE64.encode(&rom);
-        code.push_str(&format!("ROM_DATA = bytearray(base64.b64decode(\"{}\"))\n\n", encoded));
-    } else {
-        code.push_str("ROM_DATA = bytearray([\n");
-        for (i, byte) in rom.iter().enumerate() {
-            if i > 0 {
-                code.push_str(", ");
-            }
-            if i % 16 == 0 {
-                code.push_str("\n    ");
-            }
-            code.push_str(&format!("0x{:02X}", byte));
-        }
-        code.push_str("\n])\n\n");
-    }
+    // ROM data will be loaded from external .bin file instead of embedded
+    // This keeps the Python script smaller and cleaner
+    let rom_basename = Path::new(&rom_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("rom");
+    let rom_bin_path = format!("{}.bin", rom_basename);
+    code.push_str(&format!(
+        "# ROM data loaded from external file: {}\n",
+        rom_bin_path
+    ));
+    code.push_str("def load_rom_data():\n");
+    code.push_str("    \"\"\"Load ROM data from external .bin file\"\"\"\n");
+    code.push_str(&format!("    with open('{}', 'rb') as f:\n", rom_bin_path));
+    code.push_str("        return bytearray(f.read())\n\n");
+    code.push_str("ROM_DATA = load_rom_data()\n\n");
 
     // Embed wave data (audio samples)
     code.push_str("# Wave data for APU CH3\n");
@@ -751,7 +752,6 @@ pub fn run_pipeline(
             // NOP blocks are implicitly handled by chaining
         } else {
             block_function_code.push_str(&format!("\ndef {}(registers, cpsr):\n", func_name));
-            block_function_code.push_str("    global vram, palette_ram, oam, ewram, ROM_DATA\n");
             block_function_code.push_str(&body);
             non_nop_addrs.push(func_start);
         }
@@ -760,19 +760,19 @@ pub fn run_pipeline(
     // Write all block functions
     code.push_str(&block_function_code);
 
-    // Generate jump table dispatch (array-based for performance)
-    code.push_str("dispatch_table = [None] * 0x080000\n");
+    // Generate jump table dispatch (dict-based for sparse ROMs - reduces memory overhead)
+    code.push_str("dispatch_table = {\n");
     
-    // Populate jump table entries (NOP blocks redirect to next non-NOP function)
+    // Populate jump table entries using dict (more compact for sparse ROMs)
     let base_addr: u64 = 0x08000000;
     for &addr in &non_nop_addrs {
         let idx = (addr - base_addr) >> 2;
         if idx >= 0x080000 {
             continue;
         }
-        code.push_str(&format!("dispatch_table[0x{:07X}] = func_{:08X}\n", idx, addr));
+        code.push_str(&format!("    0x{:07X}: func_{:08X},\n", idx, addr));
     }
-    code.push_str("\n");
+    code.push_str("}\n\n");
 
     // Add game loop (from generate_game_loop in pipeline.rs)
     code.push_str(&generate_game_loop());
@@ -849,11 +849,23 @@ pub fn run_pipeline(
 
     fs::write(output_path, &code).map_err(|e| format!("Failed to write output: {}", e))?;
 
+    // Write ROM data to external .bin file
+    let rom_basename = Path::new(&rom_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("rom");
+    let rom_bin_path = format!("{}.bin", rom_basename);
+    let output_dir = Path::new(&output_path).parent().unwrap_or(Path::new("."));
+    let bin_full_path = output_dir.join(&rom_bin_path);
+    fs::write(&bin_full_path, &rom)
+        .map_err(|e| format!("Failed to write ROM data to {}: {}", rom_bin_path, e))?;
+
     println!(
         "Generated {} lines of Python to {}",
         code.lines().count(),
         output_path
     );
+    println!("Wrote ROM data to {}", bin_full_path.display());
     Ok(())
 }
 
@@ -885,11 +897,10 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
-    # print(f"PC=0x{registers[15]:08X}")
     while ic < mi:
         pc = registers[15]
         idx = (pc - 0x08000000) >> 2
-        func = dispatch_table[idx] if 0 <= idx < 0x080000 else None
+        func = dispatch_table.get(idx)
         if func is None: 
             print(f"Unknown PC: 0x{pc:08X}")
             break
@@ -962,7 +973,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         for _ in range(target_cycles_per_frame // 4):
             pc = registers[15]
             idx = (pc - 0x08000000) >> 2
-            func = dispatch_table[idx] if 0 <= idx < 0x080000 else None
+            func = dispatch_table.get(idx)
             if func is None: 
                 print(f"Unknown PC: 0x{pc:08X}")
                 break
