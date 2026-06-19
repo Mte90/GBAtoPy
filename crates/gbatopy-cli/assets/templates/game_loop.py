@@ -74,11 +74,11 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     
     while ic < mi:
         pc = r[15]
-        if pc not in func_map:
+        if pc not in dispatch_table:
             print(f"Unknown PC: 0x{pc:08X}")
             break
         # Dispatch instruction - use JIT-wrapped function for performance
-        func = func_map[pc]
+        func = dispatch_table[pc]
         if func:
             func()
         ic += 1
@@ -123,8 +123,8 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 running = False
         
         pc = r[15]
-        if pc in func_map:
-            func_map[pc]()
+        if pc in dispatch_table:
+            dispatch_table[pc]()
         else:
             print(f"Unknown PC: 0x{pc:08X}")
             break

@@ -1448,14 +1448,6 @@ class PPU:
         return mosaic_x, mosaic_y
 
     def render_frame(self):
-        import sys
-        print(
-    f"DEBUG: render_frame called, frame_count={
-        getattr(
-            self,
-            '_debug_frame',
-            0)}",
-             file=sys.stderr)
         """Render one frame of graphics with Windows, Mosaic, and all effects"""
         # Update VCOUNT
         self.vcount = (self.vcount + 1) % self.screen_height

@@ -447,7 +447,14 @@ pub fn run_pipeline(
         let opcode = inst.opcode.as_str();
 
         // Check if this is a branch instruction - extract target address from operands
-        if opcode == "B" || opcode == "BL" || opcode == "BX" || opcode == "BLX" {
+        // Include conditional branches (BEQ, BNE, BGT, BLT, etc.)
+        let is_branch = opcode == "B" 
+            || opcode == "BL" 
+            || opcode == "BX" 
+            || opcode == "BLX"
+            || opcode.starts_with('B') && opcode.len() == 3; // Conditional branches: BEQ, BNE, etc.
+        
+        if is_branch {
             for op in &inst.operands {
                 if let Operand::Immediate(target) = op {
                     branch_targets.insert(*target as u64);
@@ -476,7 +483,11 @@ pub fn run_pipeline(
         let instr_size = inst.width as u64;
         let next_expected = prev_addr.map(|a| a + instr_size);
         let opcode = inst.opcode.as_str();
-        let is_branch = opcode == "B" || opcode == "BL" || opcode == "BX" || opcode == "BLX";
+        let is_branch = opcode == "B" 
+            || opcode == "BL" 
+            || opcode == "BX" 
+            || opcode == "BLX"
+            || (opcode.starts_with('B') && opcode.len() == 3); // Conditional branches
 
         // Start new block if:
         // 1. This is a branch target, OR
@@ -487,8 +498,6 @@ pub fn run_pipeline(
                 let is_sequential = next_expected == Some(addr);
                 prev_was_branch || !is_sequential
             });
-
-        prev_was_branch = is_branch;
 
         if should_start_new_block {
             current_block_start = Some(addr);
@@ -501,6 +510,8 @@ pub fn run_pipeline(
                 .push(inst);
         }
 
+        // Update prev_was_branch AFTER adding to block (for next iteration)
+        prev_was_branch = is_branch;
         prev_addr = Some(addr);
     }
 
@@ -742,11 +753,24 @@ pub fn run_pipeline(
             body.push_str(&format!("    registers[15] = 0x{:08X}\n", end_addr));
         }
 
-        // Check if block is pure NOP (only comments and PC advances)
-        // A NOP block has no real register/memory operations
+        // Check if block is pure NOP (only comments and sequential PC advances)
+        // A NOP block has no real register/memory operations AND only advances PC sequentially
         let is_nop = body.lines().all(|l| {
             let t = l.trim();
-            t.is_empty() || t.starts_with('#') || t.starts_with("registers[15] = 0x")
+            if t.is_empty() || t.starts_with('#') {
+                return true;
+            }
+            // Check if this is a PC advance that matches the next sequential address
+            if t.starts_with("registers[15] = 0x") {
+                // Extract the target address
+                if let Some(hex_str) = t.split("0x").nth(1).and_then(|s| s.split('\n').next()) {
+                    // If it's just advancing to the next instruction, it's a NOP
+                    // We need to check if this is a branch (non-sequential jump)
+                    // For now, treat ANY registers[15] assignment as non-NOP to be safe
+                    return false;
+                }
+            }
+            false
         });
 
         if is_nop {

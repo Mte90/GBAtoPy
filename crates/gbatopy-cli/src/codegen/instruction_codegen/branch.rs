@@ -12,13 +12,13 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
             } else {
                 return Some(format!("# Invalid branch target: 0x{:08X}", target));
             };
-            return Some(format!("return 0x{:08X}", target));
+            return Some(format!("registers[15] = 0x{:08X}", target));
         }
         return Some(format!("# {} branch (target unknown)", base_opcode));
     }
     if base_opcode == "BX" || base_opcode == "BLX" {
         if let Some(Operand::Register(rn)) = ops.first() {
-            return Some(format!("return registers[{}]", rn));
+            return Some(format!("registers[15] = registers[{}]", rn));
         }
         return Some(format!("# {} branch exchange", base_opcode));
     }
@@ -30,7 +30,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 return None;
             };
             let cond = &opcode[1..];
-            return Some(format!("if cpsr_check('{}'): return 0x{:08X}", cond, target));
+            return Some(format!("if cpsr_check('{}'): registers[15] = 0x{:08X}", cond, target));
         }
     }
     None
