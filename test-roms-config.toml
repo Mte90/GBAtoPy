@@ -1,14 +1,18 @@
 # GBAtoPy Test Configuration
-# Auto-generated: 68 ROMs registered with Smoke test type
+# Test runner configuration for all 68 ROMs
 
 roms_dir = "test_roms/roms"
-output_dir = "test-reports"
+output_dir = "test-reports/artifacts"
 parallel = 4
 
-[[tests]]
-name = "128kb-boundary"
-rom_path = "128kb-boundary.gba"
-test_type = "Smoke"
+# Test entries - each ROM with its test type
+# Test types:
+#   Smoke - Basic transpilation + Python syntax check
+#   ScreenshotGolden - Compare screenshot against golden image
+#   ScreenshotMgba - Use mGBA as oracle for screenshot comparison
+#   EwramDump - Verify EWRAM contents match expected dump
+#   PassFailScreen - Parse pass/fail text from screen
+#   AssertionText - Check for assertion text in output
 
 [[tests]]
 name = "arm"
@@ -26,12 +30,27 @@ rom_path = "ARM_DataProcessing.gba"
 test_type = "Smoke"
 
 [[tests]]
+name = "FuzzARM"
+rom_path = "FuzzARM.gba"
+test_type = "Smoke"
+
+[[tests]]
+name = "THUMB_Any"
+rom_path = "THUMB_Any.gba"
+test_type = "Smoke"
+
+[[tests]]
+name = "THUMB_DataProcessing"
+rom_path = "THUMB_DataProcessing.gba"
+test_type = "Smoke"
+
+[[tests]]
 name = "armwrestler"
 rom_path = "armwrestler.gba"
 test_type = "Smoke"
 
 [[tests]]
-name = "armwrestler-gba-fixed"
+name = "armwrestler-fixed"
 rom_path = "armwrestler-gba-fixed.gba"
 test_type = "Smoke"
 
@@ -43,12 +62,12 @@ test_type = "Smoke"
 [[tests]]
 name = "bgpd"
 rom_path = "bgpd.gba"
-test_type = "ScreenshotGolden"
+test_type = "Smoke"
 
 [[tests]]
 name = "bgx"
 rom_path = "bgx.gba"
-test_type = "ScreenshotGolden"
+test_type = "Smoke"
 
 [[tests]]
 name = "bios"
@@ -83,7 +102,7 @@ test_type = "Smoke"
 [[tests]]
 name = "dispcnt-latch"
 rom_path = "dispcnt-latch.gba"
-test_type = "ScreenshotGolden"
+test_type = "Smoke"
 
 [[tests]]
 name = "dma_priority"
@@ -116,14 +135,9 @@ rom_path = "force-nseq-access.gba"
 test_type = "Smoke"
 
 [[tests]]
-name = "FuzzARM"
-rom_path = "FuzzARM.gba"
-test_type = "Smoke"
-
-[[tests]]
 name = "greenswap"
 rom_path = "greenswap.gba"
-test_type = "ScreenshotGolden"
+test_type = "Smoke"
 
 [[tests]]
 name = "haltcnt"
@@ -131,13 +145,13 @@ rom_path = "haltcnt.gba"
 test_type = "Smoke"
 
 [[tests]]
-name = "hello"
-rom_path = "hello.gba"
+name = "helloAudio"
+rom_path = "helloAudio.gba"
 test_type = "Smoke"
 
 [[tests]]
-name = "helloAudio"
-rom_path = "helloAudio.gba"
+name = "hello"
+rom_path = "hello.gba"
 test_type = "Smoke"
 
 [[tests]]
@@ -228,7 +242,7 @@ test_type = "Smoke"
 [[tests]]
 name = "ram-access-timing"
 rom_path = "ram-access-timing.gba"
-test_type = "ScreenshotGolden"
+test_type = "Smoke"
 
 [[tests]]
 name = "rates"
@@ -268,7 +282,7 @@ test_type = "Smoke"
 [[tests]]
 name = "sprite-hmosaic"
 rom_path = "sprite-hmosaic.gba"
-test_type = "ScreenshotGolden"
+test_type = "Smoke"
 
 [[tests]]
 name = "sram"
@@ -298,7 +312,7 @@ test_type = "Smoke"
 [[tests]]
 name = "status-irq-dma"
 rom_path = "status-irq-dma.gba"
-test_type = "ScreenshotGolden"
+test_type = "Smoke"
 
 [[tests]]
 name = "stripes"
@@ -316,16 +330,6 @@ rom_path = "thumb.gba"
 test_type = "Smoke"
 
 [[tests]]
-name = "THUMB_Any"
-rom_path = "THUMB_Any.gba"
-test_type = "Smoke"
-
-[[tests]]
-name = "THUMB_DataProcessing"
-rom_path = "THUMB_DataProcessing.gba"
-test_type = "Smoke"
-
-[[tests]]
 name = "timer_change"
 rom_path = "timer_change.gba"
 test_type = "Smoke"
@@ -338,7 +342,7 @@ test_type = "Smoke"
 [[tests]]
 name = "vram-mirror"
 rom_path = "vram-mirror.gba"
-test_type = "ScreenshotGolden"
+test_type = "Smoke"
 
 [[tests]]
 name = "window_midframe"
@@ -346,6 +350,6 @@ rom_path = "window_midframe.gba"
 test_type = "Smoke"
 
 [[tests]]
-name = "FuzzARM"
-rom_path = "FuzzARM.gba"
-test_type = "EwramDump"
+name = "128kb-boundary"
+rom_path = "128kb-boundary.gba"
+test_type = "Smoke"

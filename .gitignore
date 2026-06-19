@@ -77,3 +77,4 @@ yarn-error.log*
 
 test_roms/
 AGENTS.md
+scripts/screenshot/golden/

@@ -290,6 +290,8 @@ pub fn run_pipeline(
     // Combine core and optional files
     let runtime_files: Vec<&str> = core_files.iter().chain(optional_files.iter()).copied().collect();
 
+    // Add shebang and make executable
+    code.push_str("#!/usr/bin/env python3\n");
     code.push_str("# === GBA Runtime (embedded) ===\n\n");
     for file_path in &runtime_files {
         if let Ok(content) = std::fs::read_to_string(file_path) {
