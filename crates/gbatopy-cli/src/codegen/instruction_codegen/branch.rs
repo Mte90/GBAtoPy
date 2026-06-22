@@ -22,7 +22,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         }
         return Some(format!("# {} branch exchange", base_opcode));
     }
-    if base_opcode.starts_with('B') && base_opcode.len() == 2 && opcode.len() == 3 {
+    // Conditional branches: BEQ, BNE, BCS, BCC, BMI, BPL, BVS, BVC, BHI, BLS, BGE, BLT, BGT, BLE
+    if opcode.len() == 3 && opcode.starts_with('B') && opcode != "BX" && opcode != "BLX" {
         if let Some(Operand::Immediate(target)) = ops.first() {
             let target = if *target > 0x08000000 && *target < 0x0A000000 {
                 *target

@@ -605,9 +605,32 @@ impl ArmDecoder {
             .wrapping_add(4)
             .wrapping_add((signed_offset as u32).wrapping_mul(4));
 
-        let op_name = if l_bit { "BL" } else { "B" };
+        // Get condition code (bits 28-31)
+        let cond_bits = ((word >> 28) & 0xF) as u8;
+        let cond = decode_condition(cond_bits);
+        
+        // Build opcode name with condition for conditional branches
+        // AL (0xE) is unconditional, so use plain B/BL
+        // Other conditions: BEQ, BNE, BCS, BCC, etc.
+        let op_name = if cond_bits == 0xE {
+            // Unconditional branch (AL condition)
+            if l_bit { "BL".to_string() } else { "B".to_string() }
+        } else {
+            // Conditional branch: add condition suffix
+            let cond_str = match cond_bits {
+                0x0 => "EQ", 0x1 => "NE", 0x2 => "CS", 0x3 => "CC",
+                0x4 => "MI", 0x5 => "PL", 0x6 => "VS", 0x7 => "VC",
+                0x8 => "HI", 0x9 => "LS", 0xA => "GE", 0xB => "LT",
+                0xC => "GT", 0xD => "LE", _ => "AL",
+            };
+            if l_bit {
+                format!("BL{}", cond_str)
+            } else {
+                format!("B{}", cond_str)
+            }
+        };
 
-        (op_name.to_string(), vec![Operand::Immediate(target)], false)
+        (op_name, vec![Operand::Immediate(target)], false)
     }
 }
 
