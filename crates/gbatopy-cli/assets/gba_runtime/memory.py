@@ -60,9 +60,10 @@ class Memory:
 
         self._mmio_write_handlers: dict[int, Callable[[int, int], None]] = {}
         self._mmio_read_handlers: dict[int, Callable[[int], int]] = {}
-        # GBA hardware default: DISPCNT = 0x80 (display enabled)
-        self.io[0x00] = 0x80
-        self.io[0x01] = 0x00
+        # GBA hardware default: DISPCNT = 0x0080 (Mode 0, display not forced blank, all BGs off)
+        # The ROM writes to DISPCNT will set the correct mode and enable bits
+        self.io[0x00] = 0x00  # Mode 0
+        self.io[0x01] = 0x80  # Display enabled (bit 7=0 = no forced blank)
 
         self._ppu: Optional[object] = None
         self._dma: Optional[object] = None
@@ -133,6 +134,7 @@ class Memory:
         return None
 
     def _dispatch_hal_write(self, addr: int, value: int):
+        
         if 0x04000000 <= addr <= 0x0400005F:
             if self._ppu:
                 self._ppu.write_register(addr, value)

@@ -12,6 +12,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
                         if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
                     }
+                    gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                        format!(" + registers[{}]", reg)
+                    }
                     _ => String::new(),
                 };
                 return Some(format!("registers[{}] = memory.read_u32(registers[{}]{})", rd, base, offset_expr));
@@ -24,6 +27,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
                         if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                    }
+                    gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                        format!(" + registers[{}]", reg)
                     }
                     _ => String::new(),
                 };
@@ -38,6 +44,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
                         if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
                     }
+                    gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                        format!(" + registers[{}]", reg)
+                    }
                     _ => String::new(),
                 };
                 return Some(format!("registers[{}] = memory.read_u8(registers[{}]{}) & 0xFF", rd, base, offset_expr));
@@ -50,6 +59,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
                         if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                    }
+                    gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                        format!(" + registers[{}]", reg)
                     }
                     _ => String::new(),
                 };
@@ -64,6 +76,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
                         if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
                     }
+                    gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                        format!(" + registers[{}]", reg)
+                    }
                     _ => String::new(),
                 };
                 return Some(format!("registers[{}] = memory.read_u16(registers[{}]{}) & 0xFFFF", rd, base, offset_expr));
@@ -76,6 +91,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
                         if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                    }
+                    gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                        format!(" + registers[{}]", reg)
                     }
                     _ => String::new(),
                 };
@@ -160,6 +178,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
                         if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
                     }
+                    gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                        format!(" + registers[{}]", reg)
+                    }
                     _ => String::new(),
                 };
                 return Some(format!(
@@ -177,6 +198,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
                         if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                    }
+                    gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
+                        format!(" + registers[{}]", reg)
                     }
                     _ => String::new(),
                 };

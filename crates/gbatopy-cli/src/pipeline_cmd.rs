@@ -211,8 +211,26 @@ pub fn run_pipeline(
         eprintln!("Step 1: Full Disassembly (small ROM)");
         let mut disasm = Disassembler::new();
         let all_instructions = disasm.disassemble(&rom, 0x08000000);
-        reachable = all_instructions.iter().map(|i| i.address).collect();
-        branch_targets = vec![];
+        
+        // Follow branch targets to find actual entry point
+        // Some ROMs (like stripes.gba) start with a branch to the real code
+        let mut reachable_set: std::collections::HashSet<u32> = all_instructions.iter().map(|i| i.address).collect();
+        let mut branch_targets_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        
+        // Check first instruction - if it's a branch, follow it
+        if let Some(first_inst) = all_instructions.first() {
+            if first_inst.opcode.starts_with('B') && !first_inst.opcode.starts_with("BX") {
+                // Extract branch target from the instruction
+                if let Some(target) = extract_branch_target(first_inst) {
+                    eprintln!("  First instruction is branch to 0x{:08X}, following...", target);
+                    reachable_set.insert(target);
+                    branch_targets_set.insert(target);
+                }
+            }
+        }
+        
+        reachable = reachable_set.into_iter().collect();
+        branch_targets = branch_targets_set.into_iter().collect();
         eprintln!("  Disassembled {} instructions", reachable.len());
 
         // For small ROMs, use instructions directly from disassemble()
@@ -407,9 +425,23 @@ pub fn run_pipeline(
     // PPU mode is read from DISPCNT register at runtime, not hardcoded
     code.push_str("\n");
 
-    use gbatopy_disasm::Operand;
+use gbatopy_disasm::Operand;
 
-    // Generate Python from disassembled instructions (runtime already embedded above)
+// Helper function to extract branch target from a branch instruction
+fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u32> {
+    // Branch instructions: B, BEQ, BNE, etc. have immediate offset
+    if inst.opcode.starts_with('B') && !inst.opcode.starts_with("BX") {
+        // Look for immediate operand
+        for op in &inst.operands {
+            if let gbatopy_disasm::Operand::Immediate(val) = op {
+                return Some(*val);
+            }
+        }
+    }
+    None
+}
+
+// Generate Python from disassembled instructions (runtime already embedded above)
 
     // Required imports
     code.push_str("import pygame\n");
@@ -454,10 +486,28 @@ pub fn run_pipeline(
             || opcode == "BLX"
             || opcode.starts_with('B') && opcode.len() == 3; // Conditional branches: BEQ, BNE, etc.
         
+        // Also check for instructions that write to R15 (PC)
+        let writes_to_pc = opcode == "MOV" && inst.operands.iter().any(|op| {
+            if let Operand::Register(15) = op { true } else { false }
+        }) || opcode == "ADD" && inst.operands.iter().any(|op| {
+            if let Operand::Register(15) = op { true } else { false }
+        });
+        
         if is_branch {
             for op in &inst.operands {
                 if let Operand::Immediate(target) = op {
                     branch_targets.insert(*target as u64);
+                    eprintln!("  Branch from 0x{:08X} -> target 0x{:08X}", addr, *target);
+                }
+            }
+        }
+        
+        // Also add target if this instruction writes to PC with an immediate value
+        if writes_to_pc {
+            for op in &inst.operands {
+                if let Operand::Immediate(target) = op {
+                    branch_targets.insert(*target as u64);
+                    eprintln!("  PC write from 0x{:08X} -> target 0x{:08X}", addr, *target);
                 }
             }
         }
@@ -510,6 +560,36 @@ pub fn run_pipeline(
                 .push(inst);
         }
 
+        // CRITICAL FIX: After any instruction that writes to R0-R3, check if there's a branch target
+        // coming up. If so, terminate the current block to preserve the register value.
+        
+        // Check if this instruction writes to R0-R3
+        let writes_to_low_regs = {
+            let opcode = inst.opcode.as_str();
+            opcode == "MOV" || opcode == "ADD" || opcode == "SUB" || 
+            opcode == "AND" || opcode == "ORR" || opcode == "EOR" || 
+            opcode == "BIC" || opcode == "MVN" || opcode == "LDR" || 
+            opcode == "LDRH" || opcode == "LDRB" || opcode == "LDRSH" || 
+            opcode == "LDRSB"
+        };
+        
+        if writes_to_low_regs && current_block_start.is_some() {
+            // Check if there's a branch target at or after the next instruction
+            // that might use this register
+            let next_addr = addr + instr_size;
+            let has_branch_target_after = branch_targets.iter().any(|&target| target >= next_addr && target < next_addr + 64);
+            
+            if has_branch_target_after {
+                // Force next instruction to start a new block
+                current_block_start = None;
+            }
+        }
+        
+        // Also: if this IS a branch, terminate the block after it
+        if is_branch {
+            current_block_start = None;
+        }
+        
         // Update prev_was_branch AFTER adding to block (for next iteration)
         prev_was_branch = is_branch;
         prev_addr = Some(addr);

@@ -159,51 +159,32 @@ impl ArmDecoder {
         let bits_23_21 = (word >> 21) & 0x7;
         let bits_7_4 = (word >> 4) & 0xF;
 
-        // Halfword/signed byte load/store: bits[27:24]=0001, bits[23:20]=1010,1011,1101,1111
-        if bits_27_24 == 0x1
-            && (bits_23_20 == 0xA || bits_23_20 == 0xB || bits_23_20 == 0xD || bits_23_20 == 0xF)
-        {
+        // Halfword/signed byte load/store: bits[27:25]=000, bit[7]=1, bit[4]=1
+        // ARM encoding: bits[7:4] = 1 H 1 S (H=0 halfword, H=1 signed; S=0 byte, S=1 word)
+        let bit_7_4 = (word >> 4) & 0xF;
+        let bit_7 = (word >> 7) & 1;
+        let bit_4 = (word >> 4) & 1;
+        if bits_27_24 == 0x1 && bit_7 == 1 && bit_4 == 1 {
             let l_bit = (word >> 20) & 1 != 0;
-            let _h_bit = (word >> 5) & 1 != 0;
             let rn = ((word >> 16) & 0xF) as u8;
             let rd = ((word >> 12) & 0xF) as u8;
             let rm = (word & 0xF) as u8;
 
-            let op_name = if bits_23_20 == 0xB || bits_23_20 == 0xA {
-                // LDRH/STRH: bits[23:20] = 0xB (LDRH) or 0xA (STRH)
-                // The L bit (bit 20) distinguishes them
-                // But wait, bit 20 is PART of bits[23:20]!
-                // For bits[23:20] = 0xB (1011), bit 20 = 1
-                // For bits[23:20] = 0xA (1010), bit 20 = 0
-                // So LDRH = 0xB (with L=1 implicitly), STRH = 0xA (with L=0 implicitly)
-                if bits_23_20 == 0xB {
-                    "LDRH"
-                } else {
-                    "STRH"
-                }
-            } else if bits_23_20 == 0xD {
-                if l_bit {
-                    "LDRSB"
-                } else {
-                    "UNDEFINED"
-                }
-            } else if bits_23_20 == 0xF {
-                if l_bit {
-                    "LDRSH"
-                } else {
-                    "UNDEFINED"
-                }
-            } else {
-                "UNDEFINED"
+            // Determine opcode from bits[7:4] pattern
+            let op_name = match bit_7_4 {
+                0xB => if l_bit { "LDRH" } else { "STRH" },    // halfword
+                0xD => if l_bit { "LDRSB" } else { "UNDEFINED" }, // signed byte
+                0xF => if l_bit { "LDRSH" } else { "UNDEFINED" }, // signed halfword
+                _ => "UNDEFINED",
             };
 
-            // Check if using register offset
-            let i_bit = (word >> 22) & 1 != 0;
-            let offset = if i_bit {
-                Operand::Register(rm)
+            // bit 22 = I: 0 = register offset (Rm), 1 = immediate offset (imm4H:imm4L)
+            let imm_offset = (word >> 22) & 1 != 0;
+            let offset = if imm_offset {
+                let imm = (((word >> 8) & 0xF) << 4) | (word & 0xF);
+                Operand::Immediate(imm as u32)
             } else {
-                let imm12 = (word >> 4) & 0xFFF;
-                Operand::Immediate(imm12)
+                Operand::Register(rm)
             };
 
             let mem_op = Operand::MemoryAddress {
@@ -341,6 +322,12 @@ impl ArmDecoder {
             let i_bit = (word >> 25) & 1 != 0; // I flag: 1=immediate, 0=register
             let operand2_bits = word & 0xFFF;
 
+            // DEBUG: Log ORR instructions
+            if opcode_bits == 0xC {
+                eprintln!("DEBUG ORR: word=0x{:08X}, rd=R{}, rn=R{}, i_bit={}, operand2=0x{:03X}", 
+                         word, rd, rn, i_bit, operand2_bits);
+            }
+
             if let Some(op) = DataOp::from_bits(opcode_bits) {
                 let mut operands = vec![Operand::Register(rd)];
 
@@ -438,10 +425,19 @@ impl ArmDecoder {
             }
         } else if i_bit {
             let rm = (word & 0xF) as u8;
-            Operand::ShiftedRegister {
-                reg: rm,
-                shift: crate::operand::ShiftType::Lsl,
-                amount: crate::operand::ShiftAmount::Immediate(((word >> 7) & 0x1F) as u8),
+            // Check if this is a register offset (no shift) or shifted register
+            let shift_bits = (word >> 5) & 0x3;
+            let shift_imm = (word >> 7) & 0x1F;
+            if shift_bits == 0 && shift_imm == 0 {
+                // Register offset without shift: STR R0, [R1, R2]
+                Operand::Register(rm)
+            } else {
+                // Shifted register: STR R0, [R1, R2, LSL #imm]
+                Operand::ShiftedRegister {
+                    reg: rm,
+                    shift: crate::operand::ShiftType::Lsl,
+                    amount: crate::operand::ShiftAmount::Immediate(shift_imm as u8),
+                }
             }
         } else {
             let imm = word & 0xFFF;
@@ -454,9 +450,32 @@ impl ArmDecoder {
 
         let writeback = w_bit && !p_bit;
 
+        // Convert offset Operand to AddressingMode
+        let addressing_mode = match offset {
+            Operand::Immediate(imm) => {
+                crate::operand::AddressingMode::ImmediateOffset(imm as i32)
+            }
+            Operand::Register(reg) => {
+                crate::operand::AddressingMode::RegisterOffset(reg)
+            }
+            Operand::ShiftedRegister { reg, shift, amount } => {
+                // Extract immediate value from ShiftAmount::Immediate
+                let imm = match amount {
+                    crate::operand::ShiftAmount::Immediate(v) => v as i32,
+                    _ => 0,
+                };
+                crate::operand::AddressingMode::ScaledRegisterOffset {
+                    reg,
+                    shift,
+                    amount: imm as u8,
+                }
+            }
+            _ => crate::operand::AddressingMode::ImmediateOffset(0),
+        };
+
         let mem_op = Operand::MemoryAddress {
             base: rn,
-            offset: crate::operand::AddressingMode::ImmediateOffset(offset.immediate_value()),
+            offset: addressing_mode,
             writeback,
         };
 
@@ -601,13 +620,15 @@ impl ArmDecoder {
         let l_bit = (word >> 24) & 1 != 0;
         let offset = word & 0xFFFFFF;
         let signed_offset = ((offset as i32) << 8) >> 8;
+        // ARM pipeline: PC = current_instruction_address + 8
+        // (Thumb uses +4, but this is the ARM decoder)
         let target = address
-            .wrapping_add(4)
+            .wrapping_add(8)
             .wrapping_add((signed_offset as u32).wrapping_mul(4));
 
         // Get condition code (bits 28-31)
         let cond_bits = ((word >> 28) & 0xF) as u8;
-        let cond = decode_condition(cond_bits);
+        let _cond = decode_condition(cond_bits);
         
         // Build opcode name with condition for conditional branches
         // AL (0xE) is unconditional, so use plain B/BL

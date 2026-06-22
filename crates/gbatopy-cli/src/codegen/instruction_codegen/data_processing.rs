@@ -26,6 +26,22 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
 fn generate_mov(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
+            // CRITICAL: MOV to PC (R15) is a branch!
+            if rd == 15 {
+                // MOV PC, #imm - direct jump to immediate address
+                if ops.len() >= 2 {
+                    if let Operand::Immediate(imm) = &ops[1] {
+                        return Some(format!("registers[15] = 0x{:08X}", imm));
+                    }
+                }
+                // MOV PC, Rn - indirect jump via register
+                if ops.len() >= 2 {
+                    if let Operand::Register(rn) = &ops[1] {
+                        return Some(format!("registers[15] = registers[{}] & 0xFFFFFFFC", rn));
+                    }
+                }
+            }
+            
             let src = if ops.len() >= 2 {
                 match &ops[1] {
                     Operand::Register(rn) => format!("registers[{}]", rn),
@@ -176,6 +192,26 @@ fn generate_sub(ops: &[Operand], op: &str) -> Option<String> {
 fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
     if ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
+            // CRITICAL: Writing to PC (R15) is a branch!
+            if rd == 15 {
+                // ORR PC, Rn, #imm - this is a branch to computed address
+                if ops.len() == 3 {
+                    if let Operand::Register(rn_reg) = &ops[1] {
+                        // ORR PC, Rn, #imm - jump to Rn | imm
+                        let imm = match &ops[2] {
+                            Operand::Immediate(i) => *i,
+                            _ => 0,
+                        };
+                        return Some(format!(
+                            "registers[15] = (registers[{}] | {}) & 0xFFFFFFFC",
+                            rn_reg, imm
+                        ));
+                    }
+                }
+                // Fallback: just set PC to result of logic operation
+                // This handles edge cases
+            }
+            
             // Handle 2-operand form: ORR Rd, #imm or ORR Rd, Rm
             if ops.len() == 2 {
                 let src = match &ops[1] {
