@@ -16,7 +16,9 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
     }
     
     // ARM mode dispatch
+    eprintln!("DEBUG dispatch: address=0x{:08X}, opcode={}", inst.address, opcode);
     if let Some(code) = data_processing::generate(inst) {
+        eprintln!("  -> dispatched to data_processing: {}", opcode);
         return code;
     }
     if let Some(code) = branch::generate(inst) {

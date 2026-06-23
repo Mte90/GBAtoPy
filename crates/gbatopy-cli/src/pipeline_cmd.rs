@@ -112,6 +112,9 @@ impl FeatureFlags {
         // Also check for SWI calls that might indicate feature usage
         for inst in instructions {
             let opcode = inst.opcode.as_str();
+            if inst.address >= 0x080000D8 && inst.address <= 0x080000E0 {
+                eprintln!("DEBUG: Instruction at 0x{:08X}: opcode={}, operands={:?}", inst.address, opcode, inst.operands);
+            }
             if opcode == "SWI" || opcode == "svc" {
                 // SWI numbers can indicate BIOS function usage
                 // Common SWI numbers: 0x00-0x1F are common, but we conservatively
@@ -539,6 +542,13 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
             || opcode == "BLX"
             || (opcode.starts_with('B') && opcode.len() == 3); // Conditional branches
 
+        // CRITICAL: Check if this instruction is a branch BEFORE adding to block
+        // If so, terminate the current block so the next instruction starts fresh
+        if is_branch {
+            eprintln!("DEBUG: Branch at 0x{:08X} ({}) - terminating block", addr, opcode);
+            current_block_start = None;
+        }
+        
         // Start new block if:
         // 1. This is a branch target, OR
         // 2. Previous instruction was a branch, OR
@@ -558,36 +568,6 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
                 .entry(block_start)
                 .or_insert_with(Vec::new)
                 .push(inst);
-        }
-
-        // CRITICAL FIX: After any instruction that writes to R0-R3, check if there's a branch target
-        // coming up. If so, terminate the current block to preserve the register value.
-        
-        // Check if this instruction writes to R0-R3
-        let writes_to_low_regs = {
-            let opcode = inst.opcode.as_str();
-            opcode == "MOV" || opcode == "ADD" || opcode == "SUB" || 
-            opcode == "AND" || opcode == "ORR" || opcode == "EOR" || 
-            opcode == "BIC" || opcode == "MVN" || opcode == "LDR" || 
-            opcode == "LDRH" || opcode == "LDRB" || opcode == "LDRSH" || 
-            opcode == "LDRSB"
-        };
-        
-        if writes_to_low_regs && current_block_start.is_some() {
-            // Check if there's a branch target at or after the next instruction
-            // that might use this register
-            let next_addr = addr + instr_size;
-            let has_branch_target_after = branch_targets.iter().any(|&target| target >= next_addr && target < next_addr + 64);
-            
-            if has_branch_target_after {
-                // Force next instruction to start a new block
-                current_block_start = None;
-            }
-        }
-        
-        // Also: if this IS a branch, terminate the block after it
-        if is_branch {
-            current_block_start = None;
         }
         
         // Update prev_was_branch AFTER adding to block (for next iteration)

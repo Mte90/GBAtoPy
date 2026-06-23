@@ -5,6 +5,15 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let ops = &inst.operands;
     let base_opcode = opcode.split_whitespace().next().unwrap_or(opcode);
     let base_opcode = base_opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    
+    // DEBUG: Log all ORR instructions
+    if base_opcode == "ORR" {
+        eprintln!("DEBUG generate ORR: opcode={}, inst.address=0x{:08X}", opcode, inst.address);
+        eprintln!("  ops.len()={}", ops.len());
+        for (i, o) in ops.iter().enumerate() {
+            eprintln!("    ops[{}]: {:?}", i, o);
+        }
+    }
 
     match base_opcode {
         "MOV" => generate_mov(ops),
@@ -24,8 +33,14 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
 }
 
 fn generate_mov(ops: &[Operand]) -> Option<String> {
+    eprintln!("DEBUG generate MOV: ops.len()={}", ops.len());
+    for (i, o) in ops.iter().enumerate() {
+        eprintln!("  ops[{}]: {:?}", i, o);
+    }
+    
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
+            eprintln!("  MOV Rd = R{}", rd);
             // CRITICAL: MOV to PC (R15) is a branch!
             if rd == 15 {
                 // MOV PC, #imm - direct jump to immediate address
@@ -190,6 +205,26 @@ fn generate_sub(ops: &[Operand], op: &str) -> Option<String> {
 }
 
 fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
+    // DEBUG: Log ALL logic calls
+    eprintln!("DEBUG generate_logic: op={}, ops.len()={}", op, ops.len());
+    for (i, o) in ops.iter().enumerate() {
+        eprintln!("  ops[{}]: {:?}", i, o);
+    }
+    // Check if this is the problematic ORR at 0x080000DC
+    if op == "ORR" {
+        if ops.len() >= 2 {
+            if let Operand::Register(rd) = ops[0] {
+                eprintln!("  ORR Rd = R{}", rd);
+                if rd == 0 {
+                    eprintln!("  WARNING: ORR with Rd=R0 should NOT generate a branch!");
+                }
+                if rd == 15 {
+                    eprintln!("  ORR Rd=R15 - generating branch!");
+                }
+            }
+        }
+    }
+    
     if ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
             // CRITICAL: Writing to PC (R15) is a branch!
@@ -210,6 +245,7 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
                 }
                 // Fallback: just set PC to result of logic operation
                 // This handles edge cases
+                eprintln!("DEBUG: {} with Rd=R{} generating PC write!", op, rd);
             }
             
             // Handle 2-operand form: ORR Rd, #imm or ORR Rd, Rm

@@ -1,4 +1,4 @@
-use crate::{decode_condition, Condition, Operand};
+use crate::{decode_condition, AddressingMode, Condition, Operand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataOp {
@@ -105,6 +105,21 @@ impl ArmDecoder {
         if bits_27_25 == 0b101 {
             return self.decode_branch(word, address);
         }
+        
+        // CRITICAL FIX: Load/Store with register offset can have bits 27-26 = 00
+        // Pattern: bits 27-26 = 00, bit 25 = 0, bit 21 = 0 (W=0), bit 20 = 1 (L=1) or 0 (L=0)
+        // This is actually a load/store instruction, NOT data processing!
+        if bits_27_26 == 0b00 && bit_25 == 0 {
+            let w_bit = (word >> 21) & 0x1;
+            let l_bit = (word >> 20) & 0x1;
+            // Check if this looks like load/store register offset
+            // bits 7-5 = shift type, bit 4 = type bit (0 for register offset)
+            let type_bit = (word >> 4) & 0x1;
+            if type_bit == 0 && w_bit == 0 {
+                // This is load/store with register offset!
+                return self.decode_load_store(word, address);
+            }
+        }
 
         let (base_name, operands, is_thumb) = match (bits_27_26, bit_25) {
             (0b00, _) => self.decode_data_processing(word, address), // Bits 27-26 = 00
@@ -139,7 +154,7 @@ impl ArmDecoder {
         (full_name, operands, is_thumb)
     }
 
-    fn decode_data_processing(&self, word: u32, _address: u32) -> (String, Vec<Operand>, bool) {
+    fn decode_data_processing(&self, word: u32, address: u32) -> (String, Vec<Operand>, bool) {
         // BX/BLX: bits[27:24]=0x1, bits[23:20]=0x2, bits[19:16]=0xF, bits[7:4]=0x1
         let bits_27_24 = (word >> 24) & 0xF;
         let bits_23_20 = (word >> 20) & 0xF;
@@ -314,6 +329,40 @@ impl ArmDecoder {
             // SWI: bits[27:24]=1111
             let swi_num = word & 0xFFFFFF;
             ("SWI".to_string(), vec![Operand::Immediate(swi_num)], false)
+        } else if ((word >> 26) & 0x3) == 0b01 && (word & (1 << 25)) == 0 {
+            // Load/Store with register offset: bits[27-26]=01, I-bit=0
+            let p_bit = (word >> 24) & 1 != 0;
+            let u_bit = (word >> 23) & 1 != 0;
+            let b_bit = (word >> 22) & 1 != 0;
+            let w_bit = (word >> 21) & 1 != 0;
+            let l_bit = (word >> 20) & 1 != 0;
+            let rn = ((word >> 16) & 0xF) as u8;
+            let rd = ((word >> 12) & 0xF) as u8;
+            let rm = (word & 0xF) as u8;
+            
+            let op_name = if l_bit {
+                if b_bit { "LDRB" }
+                else { "LDR" }
+            } else {
+                if b_bit { "STRB" }
+                else { "STR" }
+            };
+            
+            // Register offset addressing mode
+            let addressing_mode = AddressingMode::RegisterOffset(rm);
+            
+            (
+                op_name.to_string(),
+                vec![
+                    Operand::Register(rd),
+                    Operand::MemoryAddress {
+                        base: rn,
+                        offset: addressing_mode,
+                        writeback: w_bit,
+                    },
+                ],
+                false,
+            )
         } else {
             let opcode_bits = ((word >> 21) & 0xF) as u8;
             let s_bit = (word >> 20) & 1 != 0;
@@ -324,8 +373,8 @@ impl ArmDecoder {
 
             // DEBUG: Log ORR instructions
             if opcode_bits == 0xC {
-                eprintln!("DEBUG ORR: word=0x{:08X}, rd=R{}, rn=R{}, i_bit={}, operand2=0x{:03X}", 
-                         word, rd, rn, i_bit, operand2_bits);
+                eprintln!("DEBUG ORR at 0x{:08X}: word=0x{:08X}, rd=R{}, rn=R{}, i_bit={}, operand2=0x{:03X}", 
+                         address, word, rd, rn, i_bit, operand2_bits);
             }
 
             if let Some(op) = DataOp::from_bits(opcode_bits) {
