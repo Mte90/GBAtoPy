@@ -542,11 +542,21 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
             || opcode == "BLX"
             || (opcode.starts_with('B') && opcode.len() == 3); // Conditional branches
 
-        // CRITICAL: Check if this instruction is a branch BEFORE adding to block
-        // If so, terminate the current block so the next instruction starts fresh
+        // CRITICAL: Branch instructions ALWAYS start their own block and terminate it
         if is_branch {
-            eprintln!("DEBUG: Branch at 0x{:08X} ({}) - terminating block", addr, opcode);
-            current_block_start = None;
+            eprintln!("DEBUG: Branch at 0x{:08X} ({}) - new block and terminates it", addr, opcode);
+            // Start a new block for this branch instruction
+            current_block_start = Some(addr);
+            // Add this instruction to its own block
+            func_groups
+                .entry(addr)
+                .or_insert_with(Vec::new)
+                .push(inst);
+            // Terminate the block (don't add more instructions to it)
+            // BUT keep current_block_start = Some(addr) so next instruction knows prev_was_branch
+            prev_was_branch = true;
+            prev_addr = Some(addr);
+            continue;  // Skip the rest of the loop
         }
         
         // Start new block if:
@@ -560,7 +570,13 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
             });
 
         if should_start_new_block {
+            eprintln!("DEBUG: 0x{:08X} ({}) - starting new block (branch_target={}, prev_was_branch={}, sequential={})", 
+                addr, opcode, 
+                branch_targets.contains(&addr), 
+                prev_was_branch,
+                next_expected == Some(addr));
             current_block_start = Some(addr);
+            prev_was_branch = false;  // Reset after starting new block
         }
 
         if let Some(block_start) = current_block_start {
@@ -570,8 +586,14 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
                 .push(inst);
         }
         
-        // Update prev_was_branch AFTER adding to block (for next iteration)
-        prev_was_branch = is_branch;
+        // Update prev_was_branch: true only for the instruction immediately after a branch
+        if is_branch {
+            prev_was_branch = true;
+        } else if prev_was_branch {
+            // Reset after using it for the next instruction
+            prev_was_branch = false;
+        }
+        
         prev_addr = Some(addr);
     }
 
@@ -751,7 +773,9 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
         let op = inst.opcode.as_str();
         // Only actual branch instructions change control flow via r15
         // (LDR/STR r15 are DATA writes to PC, not control flow changes)
-        matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ")
+        // Include ALL branch instructions: unconditional, conditional (BNE, BEQ, etc.), and BX/BLX
+        matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ") 
+            || op.starts_with('B') && op.len() == 3  // Conditional branches: BNE, BEQ, BGT, BLT, BGE, BLE
     }
 
     // Helper: check if instruction reads r[15]

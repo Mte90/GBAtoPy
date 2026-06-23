@@ -466,20 +466,13 @@ class BIOS:
     def swi_halt(self):
         """Halt CPU until next interrupt fires.
 
-        Busy-waits on the IF register instead of sleeping — the interrupt
-        controller sets bits when IRQ sources (VBlank, HBlank, timers, DMA,
-        keypad) fire.  Clears all pending flags so the next Halt cycle starts
-        from scratch.
+        Return immediately - the main loop will handle VBlank timing.
+        The interrupt will be checked on next frame render.
         """
         self._sleep_mode = True
-        interrupts = getattr(self.memory, "_interrupts", None)
-        if interrupts is not None:
-            # Spin until an enabled IRQ is pending
-            while not interrupts.has_pending_interrupt():
-                pass
-            # Consume the pending bits so repeated calls don't short-circuit
-            interrupts.clear_if()
-        self._sleep_mode = False
+        # Don't busy-wait - let the main loop continue rendering frames
+        # The interrupt controller will be checked on next render_frame() call
+        # This allows the PPU to generate VBlank interrupts while "halted"
 
     def swi_vsync(self):
         """Trigger a VBlank interrupt."""
