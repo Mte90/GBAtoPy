@@ -111,7 +111,7 @@ impl ArmDecoder {
         // This is actually a load/store instruction, NOT data processing!
         if bits_27_26 == 0b00 && bit_25 == 0 {
             let w_bit = (word >> 21) & 0x1;
-            let l_bit = (word >> 20) & 0x1;
+            let _l_bit = (word >> 20) & 0x1;
             // Check if this looks like load/store register offset
             // bits 7-5 = shift type, bit 4 = type bit (0 for register offset)
             let type_bit = (word >> 4) & 0x1;
@@ -331,8 +331,8 @@ impl ArmDecoder {
             ("SWI".to_string(), vec![Operand::Immediate(swi_num)], false)
         } else if ((word >> 26) & 0x3) == 0b01 && (word & (1 << 25)) == 0 {
             // Load/Store with register offset: bits[27-26]=01, I-bit=0
-            let p_bit = (word >> 24) & 1 != 0;
-            let u_bit = (word >> 23) & 1 != 0;
+            let _p_bit = (word >> 24) & 1 != 0;
+            let _u_bit = (word >> 23) & 1 != 0;
             let b_bit = (word >> 22) & 1 != 0;
             let w_bit = (word >> 21) & 1 != 0;
             let l_bit = (word >> 20) & 1 != 0;

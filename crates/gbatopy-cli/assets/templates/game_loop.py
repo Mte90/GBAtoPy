@@ -111,13 +111,15 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     running = True
     mi = 1000000
     ic = 0
+    loop_stall_count = 0  # Track consecutive stalls at same PC
+    max_loop_stalls = 10000  # Max stalls before giving up (prevents true infinite loops)
     
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     
     print(f"PC=0x{r[15]:08X}")
     print(f"Calibrated timing: delay_per_instr={calibrated_delay*1000:.4f}ms, cycles/sec={cycles_per_second:.0f}")
     
-    while running and ic < mi:
+    while running and ic < mi and fc < (frame_limit or 10000):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -131,8 +133,14 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         
         ic += 1
         if r[15] == pc:
-            print(f"Loop at 0x{pc:08X}")
-            break
+            # PC didn't change - might be a wait loop (e.g., waiting for VBlank)
+            loop_stall_count += 1
+            if loop_stall_count > max_loop_stalls:
+                print(f"Stuck in infinite loop at 0x{pc:08X} after {loop_stall_count} stalls")
+                break
+            # Continue rendering frames even when stalled (for screenshot capture)
+        else:
+            loop_stall_count = 0  # Reset stall counter when PC changes
         
         # JIT optimized rendering
         _render_ref = render_rom_pattern

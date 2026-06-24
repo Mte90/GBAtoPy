@@ -1,0 +1,5 @@
+[report]
+out = ["lcov.info", "cobertura.xml"]
+
+[settings]
+exclude = ["**/tests/**", "**/benches/**"]

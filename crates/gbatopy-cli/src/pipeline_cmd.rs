@@ -347,6 +347,7 @@ pub fn run_pipeline(
         
         // Initialize runtime objects
         code.push_str("memory = Memory()\n");
+        code.push_str("memory.load_rom_data(ROM_DATA)\n");
         code.push_str("ppu_instance = PPU(memory)\n");
         code.push_str("memory.attach_ppu(ppu_instance)\n");
 
@@ -1056,8 +1057,10 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen = pygame.Surface((240 * scale, 160 * scale))
     clock = pygame.time.Clock()
     fc = 0; running = True; mi = 1000000; ic = 0
+    loop_stall_count = 0
+    max_loop_stalls = 10000
     # print(f"PC=0x{registers[15]:08X}")
-    while running and fc < 10000:
+    while running and ic < mi and fc < (frame_limit or 10000):
         for e in pygame.event.get():
             if e.type == pygame.QUIT: running = False
             # Handle save state hotkeys: F5=save, F8=load
@@ -1080,6 +1083,8 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         print(f"Warning: Failed to load state from {load_path}", file=sys.stderr)
         # Execute instructions for this frame
         target_cycles_per_frame = int(gba_hz / 60.0)
+        inner_loop_stalls = 0
+        max_inner_stalls = 10  # Break inner loop after just 10 stalls - ROM is likely in a wait loop
         for _ in range(target_cycles_per_frame // 4):
             pc = registers[15]
             idx = (pc - 0x08000000) >> 2
@@ -1087,8 +1092,15 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             if func is None: 
                 print(f"Unknown PC: 0x{pc:08X}")
                 break
-            if registers[15] == pc: break
             func(registers, cpsr); ic += 1
+            # Track stalls within inner loop - break if PC doesn't change
+            if registers[15] == pc:
+                inner_loop_stalls += 1
+                if inner_loop_stalls > max_inner_stalls:
+                    # PC is stuck, break inner loop to allow frame rendering
+                    break
+            else:
+                inner_loop_stalls = 0
             # Check hooks (zero-overhead when no hooks registered)
             if hook_manager and hook_manager.has_hooks():
                 if hook_manager.check_hooks(registers[15], 'instruction'):
