@@ -686,8 +686,8 @@ class PPU:
         self.bg3_tilemap = [0] * 1024
         self.sprites = []
 
-        # Display control - use sensible defaults (mode 0, all BGs)
-        self.mode = 0
+        # Display control - use sensible defaults (mode 3, all BGs)
+        self.mode = 3
         self.display_frame_select = 0
         self.hblank_interval_free = False
         self.obj_character_vram_mapping = False

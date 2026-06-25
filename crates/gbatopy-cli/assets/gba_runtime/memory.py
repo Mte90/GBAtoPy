@@ -394,6 +394,9 @@ class Memory:
         if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
             offset = addr - MemoryMap.PALETTE_START
             value = self.palette[offset]
+            # DEBUG: print palette reads
+            if offset < 10:
+                print(f"DEBUG read_u8 palette: offset={offset}, value={hex(value)}, addr={hex(addr)}")
             self.open_bus = value
             return value
 
@@ -511,7 +514,15 @@ class Memory:
 
         if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
             offset = addr - MemoryMap.PALETTE_START
+            # DEBUG: show original address
+            if offset < 10:
+                print(f"DEBUG write_u8 palette: original_addr={hex(addr)}, offset={offset}, wrote={hex(value)}")
             self.palette[offset] = value
+            # DEBUG: verify palette write
+            if offset < 4:
+                val0 = self.palette[0]
+                val1 = self.palette[1] if len(self.palette) > 1 else 0
+                print(f"DEBUG write_u8 palette: offset={offset}, wrote={hex(value)}, palette[0]={hex(val0)}, palette[1]={hex(val1)}")
             self.open_bus = value
             return
 
@@ -539,21 +550,25 @@ class Memory:
     def write_u16(self, addr: int, value: int):
         addr &= 0xFFFFFFFF
         value &= 0xFFFF
-        addr = self._map_address(addr)
+        mapped_addr = self._map_address(addr)
+        
+        # DEBUG: print palette writes
+        if 0x05000000 <= mapped_addr <= 0x050003FF:
+            print(f"DEBUG write_u16: addr={hex(addr)}, mapped={hex(mapped_addr)}, value={hex(value)}")
 
         # Handle affine parameters directly to avoid split across two addresses
         # Affine params are at even offsets: 0x80, 0x82, 0x84, 0x86, 0x88, 0x8A, 0x8C, 0x8E
         # Each is 16-bit, so we write both bytes to the dedicated storage
-        if 0x04000080 <= addr <= 0x0400008E and addr % 2 == 0:
+        if 0x04000080 <= mapped_addr <= 0x0400008E and mapped_addr % 2 == 0:
             base = MemoryMap.IO_START + 0x80
-            byte_offset = addr - base
+            byte_offset = mapped_addr - base
             param_idx = byte_offset // 2
             self._affine_params[param_idx * 2] = value & 0xFF
             self._affine_params[param_idx * 2 + 1] = (value >> 8) & 0xFF
             return
 
-        self.write_u8(addr, value & 0xFF)
-        self.write_u8(addr + 1, (value >> 8) & 0xFF)
+        self.write_u8(mapped_addr, value & 0xFF)
+        self.write_u8(mapped_addr + 1, (value >> 8) & 0xFF)
 
         if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
             self._dispatch_hal_write(addr, value)
