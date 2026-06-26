@@ -1,6 +1,6 @@
 # GBAtoPy Roadmap — Project Status
 
-> **Last updated**: 2026-06-18
+> **Last updated**: 2026-06-26
 > **Current state**: 68 ROMs transpile successfully. Build: 0 errors, 0 warnings. Test suite: 17/17 pass (gbatopy-disasm). Registers optimized as list (+20% speedup). LDM/STM decoder fixed.
 > **Status**: PRODUCTION READY - Core transpiler complete, ongoing optimizations
 

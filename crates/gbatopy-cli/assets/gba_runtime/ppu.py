@@ -1551,55 +1551,61 @@ class PPU:
                     tile_x = (mx + self.bg_hofs[bg]) % 256
                     tile_y = (my + self.bg_vofs[bg]) % 256
 
-                    tilemap = getattr(self, f"bg{bg}_tilemap")
+                    # Read tilemap from VRAM instead of static array
+                    screen_block = self.bg_screen_block[bg]
+                    tilemap_base = 0x06000000 + (screen_block * 0x0800)
                     tilemap_x = tile_x // 8
                     tilemap_y = tile_y // 8
                     tilemap_index = tilemap_y * 32 + tilemap_x
+                    tilemap_addr = tilemap_base + (tilemap_index * 2)
 
-                    if tilemap_index >= 0 and tilemap_index < len(tilemap):
-                        tilemap_entry = tilemap[tilemap_index]
-                        tile_index = tilemap_entry & 0x03FF
-                        palette_num = (tilemap_entry >> 12) & 0x0F
+                    # Read tilemap entry from VRAM
+                    tilemap_entry = self.memory.read_u16(tilemap_addr)
+                    tile_index = tilemap_entry & 0x03FF
+                    palette_num = (tilemap_entry >> 12) & 0x0F
 
-                        # Calculate pixel offset within tile
-                        pixel_x = tile_x % 8
-                        pixel_y = tile_y % 8
+                    # Calculate pixel offset within tile
+                    pixel_x = tile_x % 8
+                    pixel_y = tile_y % 8
 
-                        # Decode tile using _decode_tile_4bpp
-                        char_block_base = self.bg_char_block[bg]
-                        # Check if BG is in 8BPP mode (bits 2-3 of BGxCNT)
-                        bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
-                        bg_cnt = self.memory.read_u16(bg_cnt_addr)
-                        bpp_mode = (bg_cnt >> 2) & 0x03  # Bits 2-3: 00=4BPP, 01=8BPP
+                    # Decode tile using _decode_tile_4bpp
+                    char_block_base = self.bg_char_block[bg]
+                    # Check if BG is in 8BPP mode (bits 2-3 of BGxCNT)
+                    bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
+                    bg_cnt = self.memory.read_u16(bg_cnt_addr)
+                    bpp_mode = (bg_cnt >> 2) & 0x03  # Bits 2-3: 00=4BPP, 01=8BPP
 
-                        if bpp_mode == 1:  # 8BPP mode
-                            if is_numba_ppu_enabled():
-                                palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base)
-                            else:
-                                palette_indices = self._decode_tile_8bpp(tile_index, char_block_base)
-                        else:  # 4BPP mode
-                            if is_numba_ppu_enabled():
-                                palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base)
-                            else:
-                                palette_indices = self._decode_tile_4bpp(tile_index, char_block_base)
+                    if bpp_mode == 1:  # 8BPP mode
+                        if is_numba_ppu_enabled():
+                            palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base)
+                        else:
+                            palette_indices = self._decode_tile_8bpp(tile_index, char_block_base)
+                    else:  # 4BPP mode
+                        if is_numba_ppu_enabled():
+                            palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base)
+                        else:
+                            palette_indices = self._decode_tile_4bpp(tile_index, char_block_base)
 
-                        # Calculate linear index in 8x8 tile
-                        pixel_index = pixel_y * 8 + pixel_x
+                    # Calculate linear index in 8x8 tile
+                    pixel_index = pixel_y * 8 + pixel_x
 
-                        if pixel_index < len(palette_indices):
-                            color_idx = palette_indices[pixel_index]
+                    if pixel_index < len(palette_indices):
+                        color_idx = palette_indices[pixel_index]
 
-                            # Get color from palette using JIT-accelerated lookup
-                            if is_numba_ppu_enabled():
-                                color = self._get_palette_color_jit(color_idx)
-                            else:
-                                color = self._get_palette_color(color_idx)
-                            # Only add non-transparent pixels (color_idx != 0)
-                            if color_idx != 0:
-                                # Get priority from BGxCNT (bits 0-1)
-                                priority = bg_cnt & 0x03
-                                candidates.append((priority, color))
+                        # Get color from palette using JIT-accelerated lookup
+                        if is_numba_ppu_enabled():
+                            color = self._get_palette_color_jit(color_idx)
+                        else:
+                            color = self._get_palette_color(color_idx)
+                        # Only add non-transparent pixels (color_idx != 0)
+                        if color_idx != 0:
+                            # Get priority from BGxCNT (bits 0-1)
+                            priority = bg_cnt & 0x03
+                            candidates.append((priority, color))
+                        continue  # Skip the rest of the loop since we already handled it
 
+                    # If we get here, there was an error reading the tilemap
+                    continue
                 # Render highest priority non-transparent pixel
                 if candidates:
                     candidates.sort(key=lambda c: c[0])
@@ -1614,26 +1620,28 @@ class PPU:
                         mx, my = self._apply_mosaic(x, y, is_obj=False)
                         tile_x = (mx + self.bg_hofs[bg]) % 256
                         tile_y = (my + self.bg_vofs[bg]) % 256
-                        tilemap = getattr(self, f"bg{bg}_tilemap")
+                        # Read tilemap from VRAM instead of static array
+                        screen_block = self.bg_screen_block[bg]
+                        tilemap_base = 0x06000000 + (screen_block * 0x0800)
                         tilemap_x = tile_x // 8
                         tilemap_y = tile_y // 8
                         tilemap_index = tilemap_y * 32 + tilemap_x
-                        if tilemap_index >= 0 and tilemap_index < len(tilemap):
-                            tilemap_entry = tilemap[tilemap_index]
-                            tile_index = tilemap_entry & 0x03FF
-                            char_block_base = self.bg_char_block[bg]
-                            bg_cnt_addr = 0x04000008 + bg * 2
-                            bg_cnt = self.memory.read_u16(bg_cnt_addr)
-                            bpp_mode = (bg_cnt >> 2) & 0x03
-                            if bpp_mode == 1:
-                                palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_8bpp(tile_index, char_block_base)
-                            else:
-                                palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_4bpp(tile_index, char_block_base)
-                            pixel_index = (tile_y % 8) * 8 + (tile_x % 8)
-                            if pixel_index < len(palette_indices) and palette_indices[pixel_index] != 0:
-                                self.layer_origin[y][x] = bg
-                                break
-
+                        tilemap_addr = tilemap_base + (tilemap_index * 2)
+                        # Read tilemap entry from VRAM
+                        tilemap_entry = self.memory.read_u16(tilemap_addr)
+                    tile_index = tilemap_entry & 0x03FF
+                    char_block_base = self.bg_char_block[bg]
+                    bg_cnt_addr = 0x04000008 + bg * 2
+                    bg_cnt = self.memory.read_u16(bg_cnt_addr)
+                    bpp_mode = (bg_cnt >> 2) & 0x03
+                    if bpp_mode == 1:
+                        palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_8bpp(tile_index, char_block_base)
+                    else:
+                        palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_4bpp(tile_index, char_block_base)
+                    pixel_index = (tile_y % 8) * 8 + (tile_x % 8)
+                    if pixel_index < len(palette_indices) and palette_indices[pixel_index] != 0:
+                        self.layer_origin[y][x] = bg
+                        break
         # Render sprites from OAM at 0x07000000 AFTER all BG layers
         if self.obj_enable:
             self._render_sprites(0x3F)
@@ -1659,75 +1667,67 @@ class PPU:
                         tile_y = (my + self.bg_vofs[bg]) % 256
 
                         # Calculate tile index and pixel offset
-                        tilemap = getattr(self, f"bg{bg}_tilemap")
+                        # Read tilemap from VRAM instead of static array
+                        screen_block = self.bg_screen_block[bg]
+                        tilemap_base = 0x06000000 + (screen_block * 0x0800)
                         tilemap_x = tile_x // 8
                         tilemap_y = tile_y // 8
                         tilemap_index = tilemap_y * 32 + tilemap_x
+                        tilemap_addr = tilemap_base + (tilemap_index * 2)
+                        # Read tilemap entry from VRAM
+                        tilemap_entry = self.memory.read_u16(tilemap_addr)
+                    tile_index = tilemap_entry & 0x03FF
+                    palette_num = (tilemap_entry >> 12) & 0x0F
 
-                        if tilemap_index >= 0 and tilemap_index < len(tilemap):
-                            tilemap_entry = tilemap[tilemap_index]
-                            tile_index = tilemap_entry & 0x03FF
-                            palette_num = (tilemap_entry >> 12) & 0x0F
+                    # Get tile data
+                    pixel_x = tile_x % 8
+                    pixel_y = tile_y % 8
 
-                            # Get tile data
-                            pixel_x = tile_x % 8
-                            pixel_y = tile_y % 8
-
-                            # Check BGxCNT bit 7 for 8BPP mode
-                            if self.bg256[bg]:
-                                palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
-                            else:
-                                palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
-                            color_idx = palette_indices[pixel_y * 8 + pixel_x]
-                            if color_idx > 0:
-                                if self.bg256[bg]:
-                                    color = self._get_palette_color_256(color_idx)
-                                else:
-                                    color = self._get_palette_color(palette_num * 16 + color_idx)
-                                if color != (0, 0, 0):
-                                    self.framebuffer[y][x] = color
-                                    self.layer_origin[y][x] = bg
-                                    self.layer_origin[y][x] = bg
-                else:
-                    # Affine mode (BG2, BG3)
-                        aff_x, aff_y = self._apply_affine_transform(bg, x, y)
-                        mx, my = self._apply_mosaic(
-    int(aff_x), int(aff_y), is_obj=False)
+                    # Check BGxCNT bit 7 for 8BPP mode
+                    if self.bg256[bg]:
+                        palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
+                    else:
+                        palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
+                    color_idx = palette_indices[pixel_y * 8 + pixel_x]
+                    if color_idx > 0:
+                        if self.bg256[bg]:
+                            color = self._get_palette_color_256(color_idx)
+                        else:
+                            color = self._get_palette_color(color_idx)
+                        self.framebuffer[y][x] = color
+                        break
 
                         tile_x = mx % 256
                         tile_y = my % 256
 
-                        tilemap = getattr(self, f"bg{bg}_tilemap")
+                        # Read tilemap from VRAM instead of static array
+                        screen_block = self.bg_screen_block[bg]
+                        tilemap_base = 0x06000000 + (screen_block * 0x0800)
                         tilemap_x = tile_x // 8
                         tilemap_y = tile_y // 8
                         tilemap_index = tilemap_y * 32 + tilemap_x
+                        tilemap_addr = tilemap_base + (tilemap_index * 2)
+                        # Read tilemap entry from VRAM
+                        tilemap_entry = self.memory.read_u16(tilemap_addr)
+                    tile_index = tilemap_entry & 0x03FF
+                    palette_num = (tilemap_entry >> 12) & 0x0F
 
-                        if tilemap_index >= 0 and tilemap_index < len(tilemap):
-                            tilemap_entry = tilemap[tilemap_index]
-                            tile_index = tilemap_entry & 0x03FF
-                            palette_num = (tilemap_entry >> 12) & 0x0F
+                    pixel_x = tile_x % 8
+                    pixel_y = tile_y % 8
 
-                            pixel_x = tile_x % 8
-                            pixel_y = tile_y % 8
-
-                            # Check bg256[bg] to determine 8BPP vs 4BPP mode
-                            if self.bg256[bg]:
-                                palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
-                            else:
-                                palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
-                            color_idx = palette_indices[pixel_y * 8 + pixel_x]
-                            if color_idx > 0:
-                                if self.bg256[bg]:
-                                    color = self._get_palette_color_256(color_idx)
-                                else:
-                                    color = self._get_palette_color(palette_num * 16 + color_idx)
-                                if color != (0, 0, 0):
-                                    self.framebuffer[y][x] = color
-                # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
-
-        if self.obj_enable:
-            self._render_sprites(0x3F)
-
+                    # Check bg256[bg] to determine 8BPP vs 4BPP mode
+                    if self.bg256[bg]:
+                        palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
+                    else:
+                        palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
+                    color_idx = palette_indices[pixel_y * 8 + pixel_x]
+                    if color_idx > 0:
+                        if self.bg256[bg]:
+                            color = self._get_palette_color_256(color_idx)
+                        else:
+                            color = self._get_palette_color(palette_num * 16 + color_idx)
+                        if color != (0, 0, 0):
+                            self.framebuffer[y][x] = color
     def _render_mode2(self):
         """Render Mode 2: Affine BG2/3 only"""
         for y in range(self.screen_height):
@@ -1746,57 +1746,61 @@ class PPU:
                     tile_x = mx % 256
                     tile_y = my % 256
 
-                    tilemap = getattr(self, f"bg{bg}_tilemap")
+                    # Read tilemap from VRAM instead of static array
+                    screen_block = self.bg_screen_block[bg]
+                    tilemap_base = 0x06000000 + (screen_block * 0x0800)
                     tilemap_x = tile_x // 8
                     tilemap_y = tile_y // 8
                     tilemap_index = tilemap_y * 32 + tilemap_x
+                    tilemap_addr = tilemap_base + (tilemap_index * 2)
 
-                    if tilemap_index >= 0 and tilemap_index < len(tilemap):
-                        tilemap_entry = tilemap[tilemap_index]
-                        tile_index = tilemap_entry & 0x03FF
-                        palette_num = (tilemap_entry >> 12) & 0x0F
+                    # Read tilemap entry from VRAM
+                    tilemap_entry = self.memory.read_u16(tilemap_addr)
+                    tile_index = tilemap_entry & 0x03FF
+                    palette_num = (tilemap_entry >> 12) & 0x0F
 
-                        pixel_x = tile_x % 8
-                        pixel_y = tile_y % 8
+                    # Calculate pixel offset within tile
+                    pixel_x = tile_x % 8
+                    pixel_y = tile_y % 8
 
-                        if self.bg256[bg]:
-                            palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
+                    # Decode tile using _decode_tile_4bpp
+                    char_block_base = self.bg_char_block[bg]
+                    # Check if BG is in 8BPP mode (bits 2-3 of BGxCNT)
+                    bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
+                    bg_cnt = self.memory.read_u16(bg_cnt_addr)
+                    bpp_mode = (bg_cnt >> 2) & 0x03  # Bits 2-3: 00=4BPP, 01=8BPP
+
+                    if bpp_mode == 1:  # 8BPP mode
+                        if is_numba_ppu_enabled():
+                            palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base)
                         else:
-                            palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
-                        color_idx = palette_indices[pixel_y * 8 + pixel_x]
-                        if color_idx > 0:
-                            if self.bg256[bg]:
-                                color = self._get_palette_color_256(color_idx)
-                            else:
-                                color = self._get_palette_color(palette_num * 16 + color_idx)
-                            if color != (0, 0, 0):
-                                self.framebuffer[y][x] = color
-                                self.layer_origin[y][x] = bg
-                # print(f"DEBUG: Wrote color {color} at ({x}, {y})", file=sys.stderr)
+                            palette_indices = self._decode_tile_8bpp(tile_index, char_block_base)
+                    else:  # 4BPP mode
+                        if is_numba_ppu_enabled():
+                            palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base)
+                        else:
+                            palette_indices = self._decode_tile_4bpp(tile_index, char_block_base)
 
-        if self.obj_enable:
-            self._render_sprites(0x3F)
+                    # Calculate linear index in 8x8 tile
+                    pixel_index = pixel_y * 8 + pixel_x
 
-    def _render_mode3(self):
-        """Render Mode 3: 240x160 bitmap mode with double buffering and mosaic support"""
-        page = self.display_frame_select
-        vram_base = 0x06000000 if page == 0 else 0x0600A000
+                    if pixel_index < len(palette_indices):
+                        color_idx = palette_indices[pixel_index]
 
-        if is_numba_ppu_enabled():
-            vram_data = self._get_vram_data()
-            for y in range(self.screen_height):
-                for x in range(self.screen_width):
-                    mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
-                    offset = (mosaic_y * 240 + mosaic_x) * 2
-                    color_val = _read_color_jit(vram_data, vram_base + offset)
-                    r = _c5to8_jit((color_val >> 0) & 0x1F)
-                    g = _c5to8_jit((color_val >> 5) & 0x1F)
-                    b = _c5to8_jit((color_val >> 10) & 0x1F)
-                    self.framebuffer[y][x] = (r, g, b)
-                    self.layer_origin[y][x] = 2
-        else:
-            for y in range(self.screen_height):
-                for x in range(self.screen_width):
+                        # Get color from palette using JIT-accelerated lookup
+                        if is_numba_ppu_enabled():
+                            color = self._get_palette_color_jit(color_idx)
+                        else:
+                            color = self._get_palette_color(color_idx)
+                        # Only add non-transparent pixels (color_idx != 0)
+                        if color_idx != 0:
+                            # Get priority from BGxCNT (bits 0-1)
+                            priority = bg_cnt & 0x03
+                            candidates.append((priority, color))
+                        continue  # Skip the rest of the loop since we already handled it
+
+                    # If we get here, there was an error reading the tilemap
+                    continue
                     mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
                     offset = (mosaic_y * 240 + mosaic_x) * 2
                     addr = vram_base + offset

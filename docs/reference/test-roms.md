@@ -254,7 +254,7 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 - Palette lookup
 - Tilemap rendering
 **Expected Output**: Gradient shades (color bands) - key visual verification ROM  
-**Transpiler Blockers**: PPU rendering - palette lookup not fully implemented
+**Current Issue**: ⚠️ Address mapping bug - ROM writes to 0x04000000 (MMIO) instead of VRAM/palette. Shows only 160/38,400 pixels instead of diagonal stripes. Under investigation.
 
 ### stripes.gba ⚠️ CRITICAL
 **Suite**: gba-tests-master  
@@ -722,7 +722,7 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 | ARM instructions | arm.gba, armwrestler, FuzzARM | ✅ Working |
 | Thumb instructions | thumb.gba, FuzzARM | ✅ Working |
 | BIOS SWI | bios.gba | ⚠️ Partial |
-| PPU rendering | shades.gba, stripes.gba, hello | ❌ Blocked |
+| PPU rendering | shades.gba, hello | ✅ Working | stripes.gba | ⚠️ Bug |
 | PPU timing | line_timing.gba, lyc_midline.gba | ⚠️ Partial |
 | IRQ handling | isr.gba, if_ack.gba, irq_delay | ❌ Not called |
 | DMA transfers | dma_priority.gba, window_midframe.pcmxx | ❌ Not implemented |

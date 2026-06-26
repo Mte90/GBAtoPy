@@ -28,7 +28,7 @@ The generated Python embeds the **Py7TDMI CPU core** and **PPU renderer** direct
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **4BPP tile backgrounds (Mode 0)** | ✅ Working | renders correct pixels |
-| **Bitmap modes (Mode 3, Mode 4 8BPP)** | ✅ Working | stripes.gba: 35,850/38,400 non-black pixels |
+| **Bitmap modes (Mode 3, Mode 4 8BPP)** | ⚠️ Partial | stripes.gba has rendering bug (160/38,400 pixels) - address mapping issue |
 | **VRAM (96 KB)** | ✅ Working | direct memory writes |
 | **Palette (1 KB)** | ✅ Working | 4BPP+8BPP palette lookup |
 | **OAM sprites** | ✅ Working | OAM parsing, tile fetch, palette lookup |

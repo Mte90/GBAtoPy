@@ -483,7 +483,12 @@ class Memory:
     def write_u8(self, addr: int, value: int):
         addr &= 0xFFFFFFFF
         value &= 0xFF
-        addr = self._map_address(addr)
+        # Note: write_u8 is called from write_u32/write_u16 AFTER _map_address
+        # so we don't map again - the address is already absolute
+        # Only map if this is a direct call (not from write_u32/write_u16)
+        # We detect this by checking if addr is already in an absolute region
+        if not (0x04000000 <= addr <= 0x07FFFFFF):
+            addr = self._map_address(addr)
 
         if MemoryMap.BIOS_START <= addr <= MemoryMap.BIOS_END:
             return
@@ -514,15 +519,9 @@ class Memory:
 
         if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
             offset = addr - MemoryMap.PALETTE_START
-            # DEBUG: show original address
-            if offset < 10:
-                print(f"DEBUG write_u8 palette: original_addr={hex(addr)}, offset={offset}, wrote={hex(value)}")
+
             self.palette[offset] = value
-            # DEBUG: verify palette write
-            if offset < 4:
-                val0 = self.palette[0]
-                val1 = self.palette[1] if len(self.palette) > 1 else 0
-                print(f"DEBUG write_u8 palette: offset={offset}, wrote={hex(value)}, palette[0]={hex(val0)}, palette[1]={hex(val1)}")
+
             self.open_bus = value
             return
 
@@ -551,11 +550,7 @@ class Memory:
         addr &= 0xFFFFFFFF
         value &= 0xFFFF
         mapped_addr = self._map_address(addr)
-        
-        # DEBUG: print palette writes
-        if 0x05000000 <= mapped_addr <= 0x050003FF:
-            print(f"DEBUG write_u16: addr={hex(addr)}, mapped={hex(mapped_addr)}, value={hex(value)}")
-
+        # Handle affine parameters directly to avoid split across two addresses
         # Handle affine parameters directly to avoid split across two addresses
         # Affine params are at even offsets: 0x80, 0x82, 0x84, 0x86, 0x88, 0x8A, 0x8C, 0x8E
         # Each is 16-bit, so we write both bytes to the dedicated storage

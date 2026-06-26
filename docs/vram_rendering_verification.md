@@ -1,6 +1,6 @@
 # VRAM Rendering Verification Report
 
-> **⚠️ Stale document** — This report predates golden screenshot verification. Current status: stripes.gba achieves 100% pixel-perfect match against mGBA. See `docs/roadmap.md` and `docs/status.md` for up-to-date information.
+> **⚠️ Stale document** — This report predates current debugging. **Current status (June 2026)**: stripes.gba has a rendering bug showing only 160/38,400 pixels instead of full diagonal stripes. Root cause: address mapping issue where ROM writes to 0x04000000 (MMIO) instead of correct VRAM/palette addresses. Under investigation. See `docs/status.md` for details.
 
 ## Summary
 
@@ -17,7 +17,7 @@
 | Total ROMs | 39 |
 | Unique pixel patterns | 36 |
 | Most active ROM | THUMB_Any.gba (1452 px, 3.8%) |
-| Least active ROM | stripes.gba (249 px, 0.6%) |
+| Least active ROM | stripes.gba (160 px, 0.4%) - **BUG** |
 | Average coverage | 3.0% |
 | Min coverage | 0.6% |
 | Max coverage | 3.8% |
@@ -61,7 +61,7 @@
 | nes.gba | 1167 | 3.0% |
 | armwrestler.gba | 1267 | 3.3% |
 | thumb.gba | 1301 | 3.4% |
-| stripes.gba | 249 | 0.6% |
+| stripes.gba | 160 | 0.4% | **BUG** - address mapping issue |
 | test.gba | 1156 | 3.0% |
 | bios.gba | 1273 | 3.3% |
 | cond_invalid.gba | 1256 | 3.3% |
