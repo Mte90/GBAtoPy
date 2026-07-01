@@ -19,7 +19,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         "MOV" => generate_mov(ops),
         "MVN" => generate_mvn(ops),
         "ADD" | "ADC" => generate_add(ops, base_opcode),
-        "SUB" | "SBC" | "RSB" | "RSC" => generate_sub(ops, base_opcode),
+        "SUB" | "SBC" | "RSB" | "RSC" => generate_sub(ops, base_opcode, inst.sets_flags),
         "AND" | "EOR" | "ORR" | "BIC" => generate_logic(ops, base_opcode),
         "LSL" | "LSR" | "ASR" | "ROR" => generate_shift(ops, base_opcode),
         "CLZ" => generate_clz(ops),
@@ -164,7 +164,7 @@ fn generate_add(ops: &[Operand], op: &str) -> Option<String> {
     None
 }
 
-fn generate_sub(ops: &[Operand], op: &str) -> Option<String> {
+fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
             if ops.len() == 2 {
@@ -174,11 +174,21 @@ fn generate_sub(ops: &[Operand], op: &str) -> Option<String> {
                     Operand::Immediate(i) => format!("{}", i),
                     _ => "0".to_string(),
                 };
-                match op {
-                    "RSB" => return Some(format!("{} = ({} - {}) & 0xFFFFFFFF", rd_str, op2, rd_str)),
-                    "RSC" => return Some(format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", rd_str, op2, rd_str)),
-                    "SBC" => return Some(format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", rd_str, rd_str, op2)),
-                    _ => return Some(format!("{} = ({} - {}) & 0xFFFFFFFF", rd_str, rd_str, op2)),
+                let result_var = format!("result_sub_{}", rd);
+                let sub_code = match op {
+                    "RSB" => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, op2, rd_str),
+                    "RSC" => format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", result_var, op2, rd_str),
+                    "SBC" => format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", result_var, rd_str, op2),
+                    _ => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, rd_str, op2),
+                };
+                if sets_flags {
+                    let flag_code = format!(
+                        "{}\n{} = {}\nresult_sub_cmp = {} & 0xFFFFFFFF\ncpsr['z'] = 1 if result_sub_cmp == 0 else 0\ncpsr['n'] = 1 if result_sub_cmp >= 0x80000000 else 0",
+                        sub_code, rd_str, result_var, result_var
+                    );
+                    return Some(flag_code);
+                } else {
+                    return Some(format!("{}\n{} = {}", sub_code, rd_str, result_var));
                 }
             }
             if ops.len() >= 3 {
@@ -192,11 +202,21 @@ fn generate_sub(ops: &[Operand], op: &str) -> Option<String> {
                     Operand::Immediate(i) => format!("{}", i),
                     _ => "0".to_string(),
                 };
-                match op {
-                    "RSB" => return Some(format!("registers[{}] = ({} - {}) & 0xFFFFFFFF", rd, op2, rn)),
-                    "RSC" => return Some(format!("registers[{}] = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", rd, op2, rn)),
-                    "SBC" => return Some(format!("registers[{}] = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", rd, rn, op2)),
-                    _ => return Some(format!("registers[{}] = ({} - {}) & 0xFFFFFFFF", rd, rn, op2)),
+                let result_var = format!("result_sub_{}", rd);
+                let sub_code = match op {
+                    "RSB" => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, op2, rn),
+                    "RSC" => format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", result_var, op2, rn),
+                    "SBC" => format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", result_var, rn, op2),
+                    _ => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, rn, op2),
+                };
+                if sets_flags {
+                    let flag_code = format!(
+                        "{}\nregisters[{}] = {}\nresult_sub_cmp = {} & 0xFFFFFFFF\ncpsr['z'] = 1 if result_sub_cmp == 0 else 0\ncpsr['n'] = 1 if result_sub_cmp >= 0x80000000 else 0",
+                        sub_code, rd, result_var, result_var
+                    );
+                    return Some(flag_code);
+                } else {
+                    return Some(format!("{}\nregisters[{}] = {}", sub_code, rd, result_var));
                 }
             }
         }

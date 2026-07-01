@@ -1015,9 +1015,9 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         if func is None: 
             print(f"Unknown PC: 0x{pc:08X}")
             break
+        func(registers, cpsr); ic += 1
         if registers[15] == pc: 
             break
-        func(registers, cpsr); ic += 1
     # print(f"Done: {ic} instrs")
         # if ic % 10000 == 0: print(f"{ic} instrs")
         if frame_limit and fc >= frame_limit: break
