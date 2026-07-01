@@ -202,6 +202,7 @@ impl ArmDecoder {
                 Operand::Register(rm)
             };
 
+            let w_bit = (word >> 21) & 1 != 0;
             let mem_op = Operand::MemoryAddress {
                 base: rn,
                 offset: crate::operand::AddressingMode::ImmediateOffset(
@@ -211,7 +212,7 @@ impl ArmDecoder {
                         -offset.immediate_value()
                     },
                 ),
-                writeback: false,
+                writeback: w_bit,
             };
 
             (
@@ -431,10 +432,10 @@ impl ArmDecoder {
         let rn = ((word >> 16) & 0xF) as u8;
         let rd = ((word >> 12) & 0xF) as u8;
         
-        // Check for halfword instructions (STRH/LDRH) - bits 5-4 = 0b01
+        // Check for halfword instructions (STRH/LDRH) - bits 5-4 = 0b01 (S=0, H=1)
         let h_bit = (word >> 4) & 1 != 0;
         let s_bit = (word >> 5) & 1 != 0;
-        let is_halfword = s_bit && h_bit;
+        let is_halfword = !s_bit && h_bit;
         
         // Determine instruction name
         let op_name = if is_halfword {
@@ -497,7 +498,7 @@ impl ArmDecoder {
             }
         };
 
-        let writeback = w_bit && !p_bit;
+        let writeback = w_bit || !p_bit;
 
         // Convert offset Operand to AddressingMode
         let addressing_mode = match offset {

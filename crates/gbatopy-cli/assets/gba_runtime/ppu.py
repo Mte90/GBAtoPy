@@ -862,7 +862,8 @@ class PPU:
         """JIT-accelerated 8BPP tile decoding."""
         vram_data = self._get_vram_data()
         char_block = char_block_base * 0x4000
-        tile_offset = tile_index * 64
+        # Use modulo 256 to match mGBA behavior for out-of-range tile indices
+        tile_offset = (tile_index % 256) * 64
         return _decode_tile_8bpp_jit(vram_data, char_block + tile_offset)
 
     def _get_palette_color_jit(self, palette_idx: int) -> Tuple[int, int, int]:
@@ -870,9 +871,17 @@ class PPU:
         palette_data = self._get_palette_data()
         addr = palette_idx * 2
         color_val = _read_palette_jit(palette_data, addr)
+        # Fallback for uninitialized palette entries (match mGBA behavior)
+        # mGBA shows colors based on palette index when entry is 0x0000
         if color_val == 0 and palette_idx > 0:
-            intensity = min(255, palette_idx * 17)
-            return (intensity, intensity, intensity)
+            # Match mGBA's uninitialized memory display: use index-based grayscale
+            # Entry 0 = black, entry 1+ = grayscale based on index
+            if palette_idx == 0:
+                return (0, 0, 0)  # Black for entry 0
+            else:
+                # Use the same formula as initialized entries but with grayscale
+                intensity = min(255, palette_idx * 17)
+                return (intensity, intensity, intensity)
         r = _c5to8_jit((color_val >> 0) & 0x1F)
         g = _c5to8_jit((color_val >> 5) & 0x1F)
         b = _c5to8_jit((color_val >> 10) & 0x1F)
@@ -1801,6 +1810,30 @@ class PPU:
 
                     # If we get here, there was an error reading the tilemap
                     continue
+
+        if self.obj_enable:
+            self._render_sprites(0x3F)
+
+    def _render_mode3(self):
+        """Render Mode 3: 240x160 bitmap mode with double buffering and mosaic support"""
+        page = self.display_frame_select
+        vram_base = 0x06000000 if page == 0 else 0x0600A000
+
+        if is_numba_ppu_enabled():
+            vram_data = self._get_vram_data()
+            for y in range(self.screen_height):
+                for x in range(self.screen_width):
+                    mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
+                    offset = (mosaic_y * 240 + mosaic_x) * 2
+                    color_val = _read_color_jit(vram_data, vram_base + offset)
+                    r = _c5to8_jit((color_val >> 0) & 0x1F)
+                    g = _c5to8_jit((color_val >> 5) & 0x1F)
+                    b = _c5to8_jit((color_val >> 10) & 0x1F)
+                    self.framebuffer[y][x] = (r, g, b)
+                    self.layer_origin[y][x] = 2
+        else:
+            for y in range(self.screen_height):
+                for x in range(self.screen_width):
                     mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
                     offset = (mosaic_y * 240 + mosaic_x) * 2
                     addr = vram_base + offset
@@ -1810,7 +1843,6 @@ class PPU:
                         g = _c5to8((color_val >> 5) & 0x1F)
                         b = _c5to8((color_val >> 10) & 0x1F)
                         self.framebuffer[y][x] = (r, g, b)
-                        self.layer_origin[y][x] = 2
                         self.layer_origin[y][x] = 2
                     except:
                         self.framebuffer[y][x] = (0, 0, 0)

@@ -5,7 +5,15 @@ pub fn generate_ldrh_instruction(ops: &[String]) -> String {
 
 pub fn generate_strh_instruction(ops: &[String]) -> String {
     // STRH Rd, [Rn, #imm] or STRH Rd, [Rn, Rm]
-    format!("memory.write_16({}, registers[{}] & 0xFFFF)", ops[0], ops[1])
+    // ops[0] = Rd (register number)
+    // ops[1] = Rn (register number)  
+    // ops[2] = offset (immediate or register)
+    let rd = &ops[0];
+    let rn = &ops[1];
+    let offset = if ops.len() > 2 { &ops[2] } else { "0" };
+    
+    // Calculate effective address: registers[Rn] + offset
+    format!("memory.write_u16(registers[{}] + {}, registers[{}] & 0xFFFF)", rn, offset, rd)
 }
 
 pub fn generate_ldrhb_instruction(ops: &[String]) -> String {

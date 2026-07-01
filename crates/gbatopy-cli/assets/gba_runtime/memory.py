@@ -551,7 +551,6 @@ class Memory:
         value &= 0xFFFF
         mapped_addr = self._map_address(addr)
         # Handle affine parameters directly to avoid split across two addresses
-        # Handle affine parameters directly to avoid split across two addresses
         # Affine params are at even offsets: 0x80, 0x82, 0x84, 0x86, 0x88, 0x8A, 0x8C, 0x8E
         # Each is 16-bit, so we write both bytes to the dedicated storage
         if 0x04000080 <= mapped_addr <= 0x0400008E and mapped_addr % 2 == 0:
@@ -565,21 +564,23 @@ class Memory:
         self.write_u8(mapped_addr, value & 0xFF)
         self.write_u8(mapped_addr + 1, (value >> 8) & 0xFF)
 
-        if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
-            self._dispatch_hal_write(addr, value)
+        # Dispatch MMIO handlers using mapped_addr (not original addr)
+        if MemoryMap.IO_START <= mapped_addr <= MemoryMap.IO_END:
+            self._dispatch_hal_write(mapped_addr, value)
 
     def write_u32(self, addr: int, value: int):
         addr &= 0xFFFFFFFF
         value &= 0xFFFFFFFF
-        addr = self._map_address(addr)
+        mapped_addr = self._map_address(addr)
 
-        self.write_u8(addr, value & 0xFF)
-        self.write_u8(addr + 1, (value >> 8) & 0xFF)
-        self.write_u8(addr + 2, (value >> 16) & 0xFF)
-        self.write_u8(addr + 3, (value >> 24) & 0xFF)
+        self.write_u8(mapped_addr, value & 0xFF)
+        self.write_u8(mapped_addr + 1, (value >> 8) & 0xFF)
+        self.write_u8(mapped_addr + 2, (value >> 16) & 0xFF)
+        self.write_u8(mapped_addr + 3, (value >> 24) & 0xFF)
 
-        if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
-            self._dispatch_hal_write(addr, value)
+        # Dispatch MMIO handlers using mapped_addr (not original addr)
+        if MemoryMap.IO_START <= mapped_addr <= MemoryMap.IO_END:
+            self._dispatch_hal_write(mapped_addr, value)
 
     def load_rom(self, path: str):
         with open(path, "rb") as f:
