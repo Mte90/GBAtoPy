@@ -64,9 +64,11 @@
 | Python file generates | **Yes** - **68/68 ROMs** |
 | Python file runs without crash | **Yes** - All ROMs execute without errors |
 | Python syntax validation | **Yes** - **68/68 ROMs** (files >10MB skip py_compile but are syntactically valid) |
-| Game renders graphics | **Partial** - Mode 0/3/4 working for some ROMs. **stripes.gba has rendering bug** (shows 160/38,400 pixels instead of full stripes) - address mapping issue under investigation |
+| Game renders graphics | **Partial** - Mode 0/3/4 working for some ROMs. **Known bugs**: |
+| | - **stripes.gba**: Address mapping issue (160/38,400 pixels) - FIXED 2026-07-02 |
+| | - **shades.gba**: Dispatch table NOP block bug + STRH offset bug - UNDER INVESTIGATION |
 | Keyboard input affects game | **Yes** - Verified via KEYINPUT register |
-| Audio playback | **Yes** - Thread-based continuous playback implemented |
+| Audio playback | **Partial** - Infrastructure exists, synthesis not verified |
 | Save/Load state | **Yes** - Full state serialization/deserialization verified |
 | EWRAM dump | **Yes** - FuzzARM-compatible binary dumps generated |
 

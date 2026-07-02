@@ -687,6 +687,7 @@ class PPU:
         self.sprites = []
 
         # Display control - use sensible defaults (mode 3, all BGs)
+        # But read actual DISPCNT from memory if available
         self.mode = 3
         self.display_frame_select = 0
         self.hblank_interval_free = False
@@ -698,6 +699,18 @@ class PPU:
         self.bg3_enable = True
         self.obj_enable = True
         self.win0_enable = False
+        
+        # Read DISPCNT from memory to get actual mode
+        if self.memory:
+            dispcnt = self.memory.read_u16(self.REG_DISPCNT)
+            mode = dispcnt & 0x7
+            if mode <= 5:
+                self.mode = mode
+            self.bg0_enable = bool(dispcnt & 0x0100)
+            self.bg1_enable = bool(dispcnt & 0x0200)
+            self.bg2_enable = bool(dispcnt & 0x0400)
+            self.bg3_enable = bool(dispcnt & 0x0800)
+            self.obj_enable = bool(dispcnt & 0x1000)
         self.win1_enable = False
         self.obj_window_enable = False
         self.dispcnt = 0x0403
@@ -721,6 +734,19 @@ class PPU:
         self.bg_screen_block = [0] * 4
         self.bg_affine = [False] * 4
         self.bg_size = [0] * 4  # 0=256x256, 1=512x256, 2=256x512, 3=512x512
+        
+        # Read BGxCNT registers to get BG configuration (after initializing lists)
+        if self.memory:
+            for bg in range(4):
+                bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
+                bg_cnt = self.memory.read_u16(bg_cnt_addr)
+                self.bg_priority[bg] = bg_cnt & 0x03
+                self.bg_char_block[bg] = (bg_cnt >> 2) & 0x03
+                self.bg_mosaic[bg] = bool(bg_cnt & 0x0040)
+                self.bg256[bg] = bool(bg_cnt & 0x0080)  # 8BPP if set
+                self.bg_screen_block[bg] = (bg_cnt >> 8) & 0x1F
+                self.bg_affine[bg] = bool(bg_cnt & 0x0100)  # Affine if bit 8 is set (for BG2/BG3)
+                self.bg_size[bg] = (bg_cnt >> 14) & 0x03
 
         # BG scroll offsets
         self.bg_hofs = [0] * 4

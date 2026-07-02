@@ -405,9 +405,26 @@ These functions handle:
 
 ### Address Mapping Issues
 
-**Status**: Known bug in stripes.gba
+**Status**: Known bug in stripes.gba and shades.gba
 
-**Issue**: Some ROMs use relative addresses that aren't correctly converted to absolute addresses.
+**Issue 1: STRH/LDRH Immediate Offset Parsing**
+The disassembler incorrectly parses half-word immediate offsets by using bits 7-3 instead of bits 3-0.
+
+**Symptom**: `strh r0, [r1]` generates `memory.write_u16(registers[1] + 22, ...)` instead of `memory.write_u16(registers[1] + 0, ...)`
+
+**Root Cause**: 
+```rust
+// WRONG (current code)
+let imm5 = (word >> 3) & 0x1F;  // bits 7-3
+
+// CORRECT (fix)
+let imm4l = word & 0xF;  // bits 3-0
+let imm = (imm4h << 4) | imm4l;
+```
+
+**Fix Location**: `crates/gbatopy-disasm/src/arm/mod.rs`
+
+**Issue 2: Some ROMs use relative addresses that aren't correctly converted to absolute addresses.**
 
 **Symptoms**:
 - Incorrect graphics (wrong colors, missing tiles)

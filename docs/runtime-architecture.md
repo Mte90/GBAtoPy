@@ -238,6 +238,22 @@ Stage 3: Python Code Generation
 - Improves execution speed (52-80% code size reduction)
 - Better JIT compilation opportunities
 
+**⚠️ CRITICAL BUG: NOP Block Detection**
+
+The pipeline marks blocks as "NOP" if they only contain PC advances and comments. This is WRONG for initialization code that sets up registers before loops.
+
+**Symptom**: Code jumps over initialization, loops execute with wrong register values (e.g., R0=0 instead of expected value)
+
+**Check**: Search dispatch table for missing addresses:
+```python
+# In generated Python, check if addresses between branch source and target exist
+grep -n "0x000003E" rom.py  # Should find func_080000F8
+```
+
+**Fix**: In `pipeline_cmd.rs`, the NOP detection logic (lines 841-869) must be updated to NOT mark blocks as NOP if they contain register initialization instructions.
+
+**Workaround**: Manually add missing functions to dispatch table in generated Python.
+
 ---
 
 ## 3. MMIO Register Handling

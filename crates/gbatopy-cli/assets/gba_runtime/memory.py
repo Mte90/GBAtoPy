@@ -48,7 +48,13 @@ class Memory:
         self.iwram = _array.array('B', [0] * MemoryMap.IWRAM_SIZE)
         self.io = _array.array('B', [0] * MemoryMap.IO_SIZE)
         self.palette = _array.array('B', [0] * MemoryMap.PALETTE_SIZE)
+        
+        # Initialize VRAM to zero (real GBA hardware behavior on reset)
+        # Some test ROMs (like stripes.gba) rely on uninitialized VRAM data for graphics
+        # mGBA happens to initialize VRAM with non-zero data, making those ROMs appear to work
+        # For faithful hardware emulation, we use zero initialization
         self.vram = _array.array('B', [0] * MemoryMap.VRAM_SIZE)
+        
         self.oam = _array.array('B', [0] * MemoryMap.OAM_SIZE)
         self.sram = _array.array('B', [0] * MemoryMap.SRAM_SIZE)
 

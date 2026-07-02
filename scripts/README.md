@@ -5,16 +5,30 @@
 ```
 scripts/
 ├── README.md                  ← This file
-├── run-all-tests.sh           ← Smoke test: transpile + syntax check for all 68 ROMs
+├── run-all-tests.sh           ← Smoke test: transpile + syntax check for all 66 ROMs
 ├── run-parallel-tests.sh      ← Parallel variant of run-all-tests.sh
 ├── quick_test.sh              ← Quick single-ROM transpile and syntax check
+├── run_tests.py               ← Python test runner (alternative to run-all-tests.sh)
+├── analyze_codegen.py         ← Analyze codegen patterns and statistics
+├── detect_features.py         ← Detect GBA features used by ROMs
+├── extract_assets.py          ← Extract graphics/assets from ROMs
+├── minify.py                  ← Minify generated Python files
+├── final_benchmark.py         ← Performance benchmark for transpiled ROMs
+├── generate_baseline.py       ← Generate baseline comparison data
 ├── screenshot/
-│   ├── screenshot.lua         ← mGBA Lua script for golden screenshot capture
+│   ├── screenshot.lua         ← Main mGBA Lua script for golden screenshots
+│   ├── stripes_golden.lua     ← Specific for stripes.gba
+│   ├── sprite_mosaic_test.lua ← Sprite/mosaic testing
+│   ├── test_callback.lua      ← Callback test
+│   ├── test_manual.lua        ← Manual testing
+│   ├── test_simple.lua        ← Simple test
+│   ├── window_test.lua        ← Window rendering test
 │   └── golden/                ← Golden screenshots (generated manually)
 ├── setup/
 │   └── download_roms.sh       ← Downloads test ROMs from GitHub
 └── verify/
     ├── compare_screenshots.py ← Golden screenshot comparison (mGBA vs transpiled)
+    ├── coverage_tracker.py    ← Track test coverage across ROMs
     └── ewram_dump_verify.py   ← Verify EWRAM dump binary format
 ```
 
@@ -125,6 +139,97 @@ python3 stripes.py --dump-memory /tmp/ewram_dump.bin
 
 # Verify dump format
 python3 scripts/verify/ewram_dump_verify.py /tmp/ewram_dump.bin
+```
+
+---
+
+## Analysis & Utility Scripts
+
+### `analyze_codegen.py` — Codegen Analysis
+
+**Purpose:** Analyze patterns in generated Python code, statistics on instruction usage, and codegen quality metrics.
+
+**Usage:**
+```bash
+python3 scripts/analyze_codegen.py /tmp/stripes.py
+```
+
+---
+
+### `detect_features.py` — ROM Feature Detection
+
+**Purpose:** Detect which GBA hardware features are used by a ROM (modes, sprites, DMA, etc.).
+
+**Usage:**
+```bash
+python3 scripts/detect_features.py test_roms/roms/stripes.gba
+```
+
+---
+
+### `extract_assets.py` — Graphics Extraction
+
+**Purpose:** Extract tile data, palettes, and sprite graphics from ROMs for debugging or documentation.
+
+**Usage:**
+```bash
+python3 scripts/extract_assets.py test_roms/roms/stripes.gba --output /tmp/assets/
+```
+
+---
+
+### `minify.py` — Python Minification
+
+**Purpose:** Minify generated Python files to reduce size (removes comments, whitespace).
+
+**Usage:**
+```bash
+python3 scripts/minify.py /tmp/stripes.py --output /tmp/stripes.min.py
+```
+
+---
+
+### `final_benchmark.py` — Performance Benchmark
+
+**Purpose:** Measure execution speed of transpiled ROMs and compare with mGBA.
+
+**Usage:**
+```bash
+python3 scripts/final_benchmark.py --rom test_roms/roms/stripes.gba --frames 1000
+```
+
+---
+
+### `generate_baseline.py` — Baseline Generation
+
+**Purpose:** Generate baseline data for comparison tests (pixel data, timing, etc.).
+
+**Usage:**
+```bash
+python3 scripts/generate_baseline.py --rom test_roms/roms/stripes.gba
+```
+
+---
+
+### `run_tests.py` — Python Test Runner
+
+**Purpose:** Alternative Python-based test runner for smoke tests (alternative to `run-all-tests.sh`).
+
+**Usage:**
+```bash
+python3 scripts/run_tests.py --all
+python3 scripts/run_tests.py --filter mode3
+```
+
+---
+
+### `verify/coverage_tracker.py` — Test Coverage Tracker
+
+**Purpose:** Track which ROMs have passed visual verification and maintain coverage statistics.
+
+**Usage:**
+```bash
+python3 scripts/verify/coverage_tracker.py --report
 ```
 
 ---

@@ -193,10 +193,14 @@ impl ArmDecoder {
                 _ => "UNDEFINED",
             };
 
-            // bit 22 = I: 0 = register offset (Rm), 1 = immediate offset (imm4H:imm4L)
+            // bit 22 = I: 0 = register offset (Rm), 1 = immediate offset (imm5:imm4H)
+            // According to ARM ARM: imm4H is bits 11-8, imm5 is bits 7-3
             let imm_offset = (word >> 22) & 1 != 0;
             let offset = if imm_offset {
-                let imm = (((word >> 8) & 0xF) << 4) | (word & 0xF);
+                let imm4h = (word >> 8) & 0xF;  // bits 11-8
+                let imm4l = word & 0xF;         // bits 3-0
+                // Correct formula for halfword immediate offset: imm4H is high nibble, imm4l is low nibble
+                let imm = (imm4h << 4) | imm4l;
                 Operand::Immediate(imm as u32)
             } else {
                 Operand::Register(rm)

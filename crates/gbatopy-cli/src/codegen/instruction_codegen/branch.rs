@@ -31,7 +31,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 return None;
             };
             let cond = &opcode[1..];
-            return Some(format!("if cpsr_check('{}'): registers[15] = 0x{:08X}", cond, target));
+            // When condition is false, PC must still advance by 4 bytes (ARM instruction size)
+            return Some(format!("if cpsr_check('{}'):\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF", cond, target));
         }
     }
     None
