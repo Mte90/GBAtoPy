@@ -393,8 +393,13 @@ impl ArmDecoder {
                     let imm_val = if rot == 0 {
                         imm8 as u32
                     } else {
-                        let shift = (2 * rot) as u32;
-                        ((imm8 >> shift) | (imm8 << (32 - shift))) & 0xFFFFFFFF
+                        let shift = ((2 * rot) % 32) as u32;
+                        if shift == 0 {
+                            imm8 as u32
+                        } else {
+                            let imm32 = imm8 as u32;
+                            ((imm32 >> shift) | (imm32 << (32 - shift))) & 0xFFFFFFFF
+                        }
                     };
                     operands.push(Operand::Immediate(imm_val));
                 } else {

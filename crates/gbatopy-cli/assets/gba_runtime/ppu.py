@@ -130,9 +130,9 @@ def _decode_tile_4bpp_jit(vram_data, tile_offset):
             if addr >= 0 and addr < len(vram_data):
                 byte_val = vram_data[addr]
                 if col % 2 == 0:
-                    color_idx = int((byte_val >> 4) & 0x0F)
-                else:
                     color_idx = int(byte_val & 0x0F)
+                else:
+                    color_idx = int((byte_val >> 4) & 0x0F)
                 result[row * 8 + col] = color_idx
             else:
                 result[row * 8 + col] = 0
@@ -1257,9 +1257,9 @@ class PPU:
                     byte_val = self.memory.read_u8(byte_addr)
 
                     if col % 2 == 0:
-                        color_idx = (byte_val >> 4) & 0x0F
-                    else:
                         color_idx = byte_val & 0x0F
+                    else:
+                        color_idx = (byte_val >> 4) & 0x0F
 
                     palette_indices.append(color_idx)
                 except:
@@ -1482,8 +1482,53 @@ class PPU:
 
         return mosaic_x, mosaic_y
 
+    def _read_registers(self):
+        """Read PPU state from MMIO registers before rendering.
+        
+        This is necessary because the PPU may be created before the ROM
+        initializes DISPCNT/BGxCNT, and Memory writes do not notify the PPU.
+        """
+        if not self.memory:
+            return
+            
+        # DISPCNT
+        dispcnt = self.memory.read_u16(self.REG_DISPCNT)
+        mode = dispcnt & 0x7
+        if mode > 5:
+            mode = 5
+        self.mode = mode
+        self.display_frame_select = (dispcnt >> 4) & 1
+        self.hblank_interval_free = bool((dispcnt >> 5) & 1)
+        self.obj_character_vram_mapping = bool((dispcnt >> 6) & 1)
+        self.forced_blank = bool((dispcnt >> 7) & 1)
+        self.bg0_enable = bool((dispcnt >> 8) & 1)
+        self.bg1_enable = bool((dispcnt >> 9) & 1)
+        self.bg2_enable = bool((dispcnt >> 10) & 1)
+        self.bg3_enable = bool((dispcnt >> 11) & 1)
+        self.obj_enable = bool((dispcnt >> 12) & 1)
+        self.win0_enable = bool((dispcnt >> 13) & 1)
+        self.win1_enable = bool((dispcnt >> 14) & 1)
+        self.obj_window_enable = bool((dispcnt >> 15) & 1)
+        
+        # DISPSTAT
+        dispstat = self.memory.read_u16(self.REG_DISPSTAT)
+        self.lyc = (dispstat >> 8) & 0xFF
+        self.vblank_irq_enable = bool((dispstat >> 3) & 1)
+        self.hblank_irq_enable = bool((dispstat >> 4) & 1)
+        self.vcount_irq_enable = bool((dispstat >> 5) & 1)
+        
+        # BG Control and scroll registers
+        for bg in range(4):
+            bg_cnt = self.memory.read_u16(self.REG_BG0CNT + bg * 2)
+            self._write_bg_control(bg, bg_cnt)
+            self.bg_hofs[bg] = self.memory.read_u16(self.REG_BG0HOFS + bg * 4) & 0x1FF
+            self.bg_vofs[bg] = self.memory.read_u16(self.REG_BG0VOFS + bg * 4) & 0x1FF
+
     def render_frame(self):
         """Render one frame of graphics with Windows, Mosaic, and all effects"""
+        # Read current MMIO state before rendering (ROM may have updated registers)
+        self._read_registers()
+        
         # Update VCOUNT
         self.vcount = (self.vcount + 1) % self.screen_height
         self.vblank = self.vcount >= self.screen_height
@@ -1605,10 +1650,10 @@ class PPU:
 
                     # Decode tile using _decode_tile_4bpp
                     char_block_base = self.bg_char_block[bg]
-                    # Check if BG is in 8BPP mode (bits 2-3 of BGxCNT)
+                    # Check if BG is in 8BPP mode (bit 7 of BGxCNT)
                     bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
                     bg_cnt = self.memory.read_u16(bg_cnt_addr)
-                    bpp_mode = (bg_cnt >> 2) & 0x03  # Bits 2-3: 00=4BPP, 01=8BPP
+                    bpp_mode = (bg_cnt >> 7) & 0x01  # Bit 7: 0=4BPP, 1=8BPP
 
                     if bpp_mode == 1:  # 8BPP mode
                         if is_numba_ppu_enabled():
@@ -1637,10 +1682,7 @@ class PPU:
                             # Get priority from BGxCNT (bits 0-1)
                             priority = bg_cnt & 0x03
                             candidates.append((priority, color))
-                        continue  # Skip the rest of the loop since we already handled it
-
-                    # If we get here, there was an error reading the tilemap
-                    continue
+                    # Continue to next background layer
                 # Render highest priority non-transparent pixel
                 if candidates:
                     candidates.sort(key=lambda c: c[0])
@@ -1668,7 +1710,7 @@ class PPU:
                     char_block_base = self.bg_char_block[bg]
                     bg_cnt_addr = 0x04000008 + bg * 2
                     bg_cnt = self.memory.read_u16(bg_cnt_addr)
-                    bpp_mode = (bg_cnt >> 2) & 0x03
+                    bpp_mode = (bg_cnt >> 7) & 0x01
                     if bpp_mode == 1:
                         palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_8bpp(tile_index, char_block_base)
                     else:
@@ -1800,10 +1842,10 @@ class PPU:
 
                     # Decode tile using _decode_tile_4bpp
                     char_block_base = self.bg_char_block[bg]
-                    # Check if BG is in 8BPP mode (bits 2-3 of BGxCNT)
+                    # Check if BG is in 8BPP mode (bit 7 of BGxCNT)
                     bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
                     bg_cnt = self.memory.read_u16(bg_cnt_addr)
-                    bpp_mode = (bg_cnt >> 2) & 0x03  # Bits 2-3: 00=4BPP, 01=8BPP
+                    bpp_mode = (bg_cnt >> 7) & 0x01  # Bit 7: 0=4BPP, 1=8BPP
 
                     if bpp_mode == 1:  # 8BPP mode
                         if is_numba_ppu_enabled():
