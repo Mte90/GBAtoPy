@@ -7,6 +7,18 @@ Documentation for the GBA ROM-to-Python transpiler.
 - **[quickstart.md](quickstart.md)** — Build, run, and test the transpiler
 - **[architecture.md](architecture.md)** — How the pipeline works
 - **[status.md](status.md)** — Current implementation status per component
+- **[roadmap.md](roadmap.md)** — Development roadmap and remaining work
+
+## Debugging & Runtime
+
+Read these when actively debugging a transpiled ROM or tracing PPU/memory behavior.
+
+- **[how-debug.md](how-debug.md)** — Systematic debug workflow for GBA ROMs (Python-first edit cycle)
+- **[runtime-architecture.md](runtime-architecture.md)** — Runtime architecture, memory management, address mapping (CRITICAL for codegen debugging)
+- **[transpiler-reference.md](transpiler-reference.md)** — Generated Python file structure and API reference
+- **[vram-initialization.md](vram-initialization.md)** — VRAM initialization patterns
+- **[vram_rendering_verification.md](vram_rendering_verification.md)** — PPU rendering verification results across ROMs
+- **[README_AUTO.md](README_AUTO.md)** — Auto-generated project overview (do not edit by hand)
 
 ## Design Documents
 
@@ -17,7 +29,6 @@ Per-component design specifications. These describe what each pipeline stage *sh
 | File | Description |
 |------|-------------|
 | [design/disassembler.md](design/disassembler.md) | ARM/Thumb disassembler design |
-| [design/oracle.md](design/oracle.md) | mGBA oracle trace collection |
 | [design/ir-lifter.md](design/ir-lifter.md) | IR lifting and optimization |
 | [design/interrupts.md](design/interrupts.md) | GBA interrupt handling design |
 | [design/type-recovery.md](design/type-recovery.md) | Type inference from trace data |
@@ -42,13 +53,6 @@ Hardware specifications, instruction sets, and test ROM catalogs.
 ## Testing
 
 - **[testing-framework.md](testing-framework.md)** — Automated testing strategy, test ROM classification, implementation plan
-
-## Architecture
-
-
-## Roadmap
-
-- **[roadmap.md](roadmap.md)** — Development roadmap and remaining work
 
 ## Attribution
 

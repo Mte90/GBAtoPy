@@ -1,5 +1,17 @@
 # Plan 5: Python Code Generation (Rust crate: pygba-codegen)
 
+> **⚠️ HISTORICAL DESIGN DOCUMENT**
+>
+> This document describes the original SSA-IR-based codegen design (`pygba-codegen` consuming typed IR with phi nodes).
+> The **actual implementation** differs: codegen emits Python directly from disassembly via per-instruction `generate_*_python()`
+> functions, using a `dispatch_table`/`func_map`/`call_func` runtime with an embedded Py7TDMI interpreter.
+> `codegen/ir_ops.rs` is empty; the `gbatopy-ir` crate exists but is not wired into the emit path.
+>
+> For the **current** architecture, see:
+> - [`docs/design/transpilation-patterns.md`](transpilation-patterns.md) — interpreter fallback, dispatch table, hotspot tracking
+> - [`docs/runtime-architecture.md`](../runtime-architecture.md) — memory management, address mapping
+> - [`docs/codegen-pitfalls.md`](../codegen-pitfalls.md) — bugs fixed during codegen development
+
 ## 5.1 Objective
 
 Convert the typed, optimized SSA IR into readable, executable Python 3 source code that uses `gba_runtime` for hardware abstraction. The generated code is pure Python. Rust is not needed at runtime.
@@ -374,6 +386,19 @@ def _sign_div(a: int, b: int) -> int:
 | No Rust dependency | 100% (pure Python only) |
 | Type check (mypy) | 100% pass |
 
+### mGBA Golden Screenshot Workflow
+
+mGBA SDL supports Lua scripting via the `-S` flag. Golden screenshots are captured with:
+
+```bash
+./mgba/build/sdl/mgba -S scripts/screenshot/screenshot.lua test_roms/roms/<rom>.gba
+```
+
+The Lua API quirk: use `memory.read8(addr)` (not `memory:read_u8`). For u16/u32, read bytes
+manually and combine little-endian. See `scripts/screenshot/screenshot.lua` for the working
+capture script, and `scripts/verify/compare_screenshots.py` for the pixel-diff comparator
+(PASS if difference < 30%).
+
 ## 5.12 Code Generation API
 
 ```rust
@@ -430,7 +455,6 @@ impl CodeGenerator {
 
 ### Known Limitations (Updated 2026-04-17)
 - [ ] Test ROMs are minimal - no compressed graphics/audio (need commercial ROMs with LZ77/Huffman/RLE data)
-- [ ] mGBA SDL lacks Lua scripting - can't do programmatic screenshots (use register/memory comparison instead)
 - [x] Visual rendering verified against mGBA (stripes.gba 100% golden match)
 - [ ] APU audio synthesis not yet producing sound output
 - [ ] Affine backgrounds (Mode 1/2) not rendered

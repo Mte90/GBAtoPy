@@ -770,13 +770,47 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
     code.push_str("ewram = memory.ewram\n\n");
 
     // Helper: check if instruction writes to r[15]
+    // Any instruction that modifies PC changes control flow and must suppress the
+    // automatic fall-through PC advance that the codegen emits between blocks.
+    // This includes:
+    //   - Branch instructions (B, BL, BX, BLX, CBZ, CBNZ and conditional variants)
+    //   - LDM/STM with PC (R15) in the register list (function return / long jump)
+    //   - LDR with Rd = PC (PC-relative load into the program counter)
+    //   - Data-processing instructions with Rd = PC (e.g. MOV PC, R14)
     fn writes_r15(inst: &gbatopy_disasm::DecodedInstruction) -> bool {
         let op = inst.opcode.as_str();
-        // Only actual branch instructions change control flow via r15
-        // (LDR/STR r15 are DATA writes to PC, not control flow changes)
-        // Include ALL branch instructions: unconditional, conditional (BNE, BEQ, etc.), and BX/BLX
-        matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ") 
-            || op.starts_with('B') && op.len() == 3  // Conditional branches: BNE, BEQ, BGT, BLT, BGE, BLE
+
+        // Branch family. Unconditional forms (B/BL/BX/BLX/CBZ/CBNZ) and 3-letter
+        // conditional forms (BNE, BEQ, BGT, BLT, BGE, BLE, ...). Note BL/BLX are
+        // 2-3 chars so the len()==3 check covers Bcc only; BL/BLX handled above.
+        if matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ")
+            || (op.starts_with('B') && op.len() == 3 && op != "BLX")
+        {
+            return true;
+        }
+
+        // Operands: detect any instruction whose destination operand is R15.
+        // - LDM/STM: register list is inside MemoryAddress.offset = Multi{registers}.
+        // - LDR/STR: destination/source is Operand::Register(15) (first operand).
+        // - Data-processing (MOV, ADD, ...): destination is first operand.
+        for operand in &inst.operands {
+            match operand {
+                // Data-processing / LDR / STR with Rd = R15 (first operand).
+                Operand::Register(r) if *r == 15 => return true,
+                Operand::ShiftedRegister { reg: r, .. } if *r == 15 => return true,
+                // LDM/STM: the register list lives in AddressingMode::Multi.registers.
+                Operand::MemoryAddress { offset, .. } => {
+                    if let AddressingMode::Multi { registers, .. } = offset {
+                        if registers.contains(&15) {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        false
     }
 
     // Helper: check if instruction reads r[15]

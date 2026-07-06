@@ -12,6 +12,15 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
             } else {
                 return Some(format!("# Invalid branch target: 0x{:08X}", target));
             };
+            if base_opcode == "BL" {
+                // BL (Branch with Link): set LR = return address (next instruction),
+                // then branch to target. LR holds the address the callee should
+                // return to via LDMFD SP!, {..., PC} or BX LR.
+                return Some(format!(
+                    "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\nregisters[15] = 0x{:08X}",
+                    target
+                ));
+            }
             return Some(format!("registers[15] = 0x{:08X}", target));
         }
         return Some(format!("# {} branch (target unknown)", base_opcode));

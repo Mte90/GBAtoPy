@@ -1,5 +1,8 @@
 # GBAtoPy Roadmap — Project Status
 
+> **Role:** Strategy, sequencing, and remaining work.
+> For the current capability matrix (what works/what's stubbed), see [`status.md`](status.md).
+
 > **Last updated**: 2026-06-26
 > **Current state**: 68 ROMs transpile successfully. Build: 0 errors, 0 warnings. Test suite: 17/17 pass (gbatopy-disasm). Registers optimized as list (+20% speedup). LDM/STM decoder fixed.
 > **Status**: PRODUCTION READY - Core transpiler complete, ongoing optimizations
@@ -153,10 +156,10 @@ python3 /tmp/stripes.py --headless --frame=60 --screenshot=/tmp/stripes.png
 python3 -c "from PIL import Image; img=Image.open('/tmp/stripes.png'); nb=sum(1 for p in img.getdata() if sum(p)>30); print(f'Non-black: {nb}')"
 
 # Run all tests
-cargo run -p gbatopy-test -- --config test-config.toml --format console
+cargo run -p gbatopy-test -- --config test-roms-config.toml --format console
 
 # Run specific test type
-cargo run -p gbatopy-test -- --config test-config.toml --filter "bgx" --format json
+cargo run -p gbatopy-test -- --config test-roms-config.toml --filter "bgx" --format json
 ```
 
 ---

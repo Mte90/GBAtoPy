@@ -3,6 +3,8 @@
 > **Target Audience**: AI agents contributing to GBAtoPy code generation
 >
 > **Purpose**: Document the runtime architecture to prevent common mistakes in code generation and debugging
+>
+> **Related**: For the five core transpilation patterns (interpreter fallback, dispatch table, hotspot tracking, differential execution, code/data separation), see [`docs/design/transpilation-patterns.md`](design/transpilation-patterns.md) — the authoritative description of the current architecture.
 
 ---
 

@@ -1,5 +1,8 @@
 # Implementation Status
 
+> **Role:** Current capability matrix — what works, what's stubbed, per component.
+> For strategy/sequencing and remaining work, see [`roadmap.md`](roadmap.md).
+
 ## Honest assessment of what works and what doesn't.
 
 ### Pipeline

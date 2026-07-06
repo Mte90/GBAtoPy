@@ -9,7 +9,7 @@ This document describes GBAtoPy's test infrastructure. The old Python scripts ha
 GBAtoPy uses a Rust test framework (`crates/gbatopy-test/`) that provides:
 
 - Parallel test execution via rayon
-- Configurable per-ROM testing via `test-config.toml`
+- Configurable per-ROM testing via `test-roms-config.toml`
 - 6 verification strategies
 - Multiple report formats (Console, JSON, JUnit XML)
 
@@ -22,7 +22,7 @@ GBAtoPy uses a Rust test framework (`crates/gbatopy-test/`) that provides:
 | Component | Location | Description |
 |-----------|----------|-------------|
 | **Test Runner** | `crates/gbatopy-test/src/runner.rs` | Parallel execution engine |
-| **Configuration** | `test-config.toml` | Per-ROM test settings |
+| **Configuration** | `test-roms-config.toml` | Per-ROM test settings |
 | **Verifiers** | `crates/gbatopy-test/src/verifiers/` | 6 verification strategies |
 | **Reporter** | `crates/gbatopy-test/src/report.rs` | Console/JSON/JUnit output |
 
@@ -41,7 +41,7 @@ GBAtoPy uses a Rust test framework (`crates/gbatopy-test/`) that provides:
 
 ## Configuration
 
-Tests are configured in `test-config.toml`:
+Tests are configured in `test-roms-config.toml`:
 
 ```toml
 # Base paths
@@ -87,13 +87,13 @@ frames = 600
 ### Full Test Suite
 
 ```bash
-cargo run -p gbatopy-test -- --config test-config.toml
+cargo run -p gbatopy-test -- --config test-roms-config.toml
 ```
 
 ### Filter by ROM Name
 
 ```bash
-cargo run -p gbatopy-test -- --config test-config.toml --filter stripes
+cargo run -p gbatopy-test -- --config test-roms-config.toml --filter stripes
 ```
 
 ### Custom Config
@@ -110,7 +110,7 @@ cargo run -p gbatopy-test -- --config /path/to/custom.toml
 
 ```
 === GBAtoPy Test Suite ===
-Config: test-config.toml
+Config: test-roms-config.toml
 ROMs: 68
 Parallel workers: 4
 
@@ -265,24 +265,25 @@ def parse_assertion(screenshot):
 
 ---
 
-## Legacy Scripts (Deprecated)
+## Helper Scripts
 
-The following Python scripts have been **removed** in favor of the Rust test framework:
+The Rust test framework (`gbatopy-test`) is the primary CI surface. The following helper scripts remain for manual workflows:
+
+- ✅ `scripts/verify/compare_screenshots.py` — Golden-screenshot comparison against mGBA output (referenced in AGENTS.md full-verification workflow)
+- ✅ `scripts/verify/coverage_tracker.py` — Feature coverage analysis (not part of CI)
+- ✅ `scripts/verify/ewram_dump_verify.py` — EWRAM dump verification
+- ✅ `scripts/screenshot/screenshot.lua` — mGBA Lua script for capturing golden screenshots
+
+The following were removed as standalone tools in favor of `gbatopy-test`:
 
 - ❌ `scripts/verify/visual_test.py` — Replaced by `gbatopy-test` smoke + screenshot verifiers
 - ❌ `scripts/verify_all_roms.py` — Replaced by `gbatopy-test` with parallel execution
-- ❌ `scripts/screenshot/compare_screenshots.py` — Replaced by `gbatopy-test` screenshot verifier
-- ❌ `scripts/screenshot/screenshot.lua` — Still used for capturing mGBA golden screenshots
-
-The following script remains for reference:
-
-- ✅ `scripts/verify/coverage_tracker.py` — Feature coverage analysis (not part of CI)
 
 ---
 
 ## Adding New Tests
 
-1. Add entry to `test-config.toml`:
+1. Add entry to `test-roms-config.toml`:
 
 ```toml
 [[test]]
@@ -297,7 +298,7 @@ frames = 60
 3. Run tests:
 
 ```bash
-cargo run -p gbatopy-test -- --config test-config.toml --filter my-rom
+cargo run -p gbatopy-test -- --config test-roms-config.toml --filter my-rom
 ```
 
 ---
@@ -311,7 +312,7 @@ Run tests in CI:
 cargo build --release
 
 # Run test suite
-cargo run -p gbatopy-test -- --config test-config.toml
+cargo run -p gbatopy-test -- --config test-roms-config.toml
 
 # Check results
 if [ -f test-reports/results.json ]; then

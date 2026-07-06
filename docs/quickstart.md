@@ -145,7 +145,7 @@ GBAtoPy/
 │   ├── setup/                    # Download scripts
 │   └── verify/                   # Coverage tracker + visual test
 ├── test_roms/
-│   ├── roms/                     # Test .gba files (66 ROMs, downloaded)
+│   ├── roms/                     # Test .gba files (68 ROMs, downloaded)
 │   └── sources/                  # Source code per suite
 ├── mgba/                         # mGBA fork (extend-lua branch)
 └── docs/                         # Documentation

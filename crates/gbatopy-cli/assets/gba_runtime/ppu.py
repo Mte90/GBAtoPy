@@ -164,10 +164,6 @@ def _get_palette_color_jit(palette_data, palette_idx):
 
     color_val = palette_data[addr] | (palette_data[addr + 1] << 8)
 
-    if color_val == 0 and palette_idx > 0:
-        intensity = min(255, (palette_idx * 17))
-        return (intensity, intensity, intensity)
-
     r = int((color_val >> 0) & 0x1F)
     g = int((color_val >> 5) & 0x1F)
     b = int((color_val >> 10) & 0x1F)
@@ -184,10 +180,6 @@ def _get_palette_color_256_jit(palette_data, color_idx):
         return (0, 0, 0)
 
     color_val = palette_data[addr] | (palette_data[addr + 1] << 8)
-
-    if color_val == 0 and color_idx > 0:
-        intensity = min(255, (color_idx * 17))
-        return (intensity, intensity, intensity)
 
     r = int((color_val >> 0) & 0x1F)
     g = int((color_val >> 5) & 0x1F)
@@ -897,17 +889,6 @@ class PPU:
         palette_data = self._get_palette_data()
         addr = palette_idx * 2
         color_val = _read_palette_jit(palette_data, addr)
-        # Fallback for uninitialized palette entries (match mGBA behavior)
-        # mGBA shows colors based on palette index when entry is 0x0000
-        if color_val == 0 and palette_idx > 0:
-            # Match mGBA's uninitialized memory display: use index-based grayscale
-            # Entry 0 = black, entry 1+ = grayscale based on index
-            if palette_idx == 0:
-                return (0, 0, 0)  # Black for entry 0
-            else:
-                # Use the same formula as initialized entries but with grayscale
-                intensity = min(255, palette_idx * 17)
-                return (intensity, intensity, intensity)
         r = _c5to8_jit((color_val >> 0) & 0x1F)
         g = _c5to8_jit((color_val >> 5) & 0x1F)
         b = _c5to8_jit((color_val >> 10) & 0x1F)
@@ -918,8 +899,6 @@ class PPU:
         palette_data = self._get_palette_data()
         addr = palette_idx * 2
         color_val = _read_palette_jit(palette_data, addr)
-        if color_val == 0:
-            return (palette_idx, palette_idx, palette_idx)
         r = _c5to8_jit((color_val >> 0) & 0x1F)
         g = _c5to8_jit((color_val >> 5) & 0x1F)
         b = _c5to8_jit((color_val >> 10) & 0x1F)
@@ -1324,20 +1303,12 @@ class PPU:
 
         try:
             color_val = self.memory.read_u16(palette_addr)
-            
-            # If palette RAM is uninitialized (all zeros), generate default grayscale
-            # This handles ROMs that don't explicitly initialize palette RAM
-            if color_val == 0 and palette_idx > 0:
-                # Generate grayscale gradient: index 1 = dark, index 15 = bright
-                intensity = min(255, (palette_idx * 17))
-                return (intensity, intensity, intensity)
-            
             r = _c5to8((color_val >> 0) & 0x1F)
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
         except:
-            return (255, 255, 255)  # White fallback for debugging
+            return (0, 0, 0)
 
     def _apply_affine_transform(
         self, bg_num: int, x: int, y: int) -> Tuple[int, int]:
@@ -1968,12 +1939,8 @@ class PPU:
 
         try:
             color_val = self.memory.read_u16(palette_addr)
-            
-            # If palette RAM is uninitialized (all zeros), generate default grayscale
-            if color_val == 0:
-                intensity = palette_idx
-                return (intensity, intensity, intensity)
-            
+            # On real hardware, palette entry 0 = color 0 = black.
+            # Do NOT generate fallback grayscale for uninitialized entries.
             r = _c5to8((color_val >> 0) & 0x1F)
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)

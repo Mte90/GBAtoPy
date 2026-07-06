@@ -10,7 +10,7 @@
 
 ## Test Results
 
-### ROM Comparison (39 ROMs tested)
+### ROM Comparison (68 ROMs tested)
 
 | Metric | Value |
 |--------|-------|

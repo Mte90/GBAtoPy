@@ -235,7 +235,7 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 
 ## PPU Tests
 
-### shades.gba ⚠️ CRITICAL
+### shades.gba ✅ FIXED
 **Suite**: gba-tests-master  
 **Source**: `test_roms/sources/gba-tests-master/ppu/shades.asm`  
 **Purpose**: Validates PPU register writes and rendering - THE critical test ROM  
@@ -254,7 +254,8 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 - Palette lookup
 - Tilemap rendering
 **Expected Output**: Gradient shades (color bands) - key visual verification ROM  
-**Current Issue**: ⚠️ Address mapping bug - ROM writes to 0x04000000 (MMIO) instead of VRAM/palette. Shows only 160/38,400 pixels instead of diagonal stripes. Under investigation.
+**Status**: ✅ PASS - 100% pixel match with mGBA (35,840 non-black pixels)  
+**Root Cause**: PPU mode 0 renderer had tilemap entry read placed outside the BG layer loop, causing only one tile to be used for all pixels. Fixed by moving tilemap read inside the `for bg in range(4)` loop in `ppu.py`. Additional fixes: character block address mapping (store VRAM address not block number), palette asset loading for ROMs that don't write palette at runtime.
 
 ### stripes.gba ⚠️ CRITICAL
 **Suite**: gba-tests-master  
@@ -816,11 +817,11 @@ All 39 test ROMs in `test_roms/roms/` transpile to syntactically valid Python wi
 ```bash
 # Count ROM files
 ls test_roms/roms/*.gba | wc -l
-# Output: 39
+# Output: 68
 
 # Count structured entries in this document
 grep -c "^### " docs/reference/test-roms.md
-# Should be 41 (39 ROMs + 2 sound demos)
+# Should be 70 (68 ROMs + 2 sound demos)
 
 # Verify gba-sound-demo ROMs are documented
 grep -c "song.gba\|rates.gba" docs/reference/test-roms.md

@@ -276,34 +276,29 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
 
     if (base_opcode.starts_with("LDM") || base_opcode.starts_with("STM")) && ops.len() >= 1 {
         if let Operand::MemoryAddress { base, offset, writeback } = &ops[0] {
-            if let gbatopy_disasm::operand::AddressingMode::Multi { registers, increment, writeback: wb, .. } = offset {
+            if let gbatopy_disasm::operand::AddressingMode::Multi { registers, increment, pre_index, writeback: wb, .. } = offset {
                 let is_load = base_opcode.starts_with("LDM");
                 let base_reg = *base;
                 let reg_list = registers;
                 let do_writeback = *writeback || *wb;
                 let is_increment = *increment;
-
-                // Determine addressing mode from opcode suffix
-                // IA = Increment After (post-increment), DB = Decrement Before (pre-decrement)
-                // IB = Increment Before (pre-increment), DA = Decrement After (post-decrement)
-                let is_pre_index = base_opcode.contains("IB") || base_opcode.contains("DB");
-                let is_decrement = base_opcode.contains("DA") || base_opcode.contains("DB");
+                let is_pre_index = *pre_index;
 
                 let mut code = String::new();
 
                 // Calculate initial address based on addressing mode
+                // IA (post,inc): base, base+4, ...; final = base + n*4
+                // IB (pre,inc): base+4, base+8, ...; final = base + n*4
+                // DA (post,dec): base, base-4, ...; final = base - n*4
+                // DB (pre,dec): base-4, base-8, ...; final = base - n*4
                 let num_regs = reg_list.len();
                 if is_pre_index {
-                    // Pre-index: adjust address before first access
                     if is_increment {
-                        // IB: start at base + 4
                         code.push_str(&format!("addr = registers[{}] + 4\n", base_reg));
                     } else {
-                        // DB: start at base - (num_regs * 4) + 4 = base - (num_regs - 1) * 4
-                        code.push_str(&format!("addr = registers[{}] - {}\n", base_reg, (num_regs - 1) * 4));
+                        code.push_str(&format!("addr = registers[{}] - 4\n", base_reg));
                     }
                 } else {
-                    // Post-index: start at base
                     code.push_str(&format!("addr = registers[{}]\n", base_reg));
                 }
 

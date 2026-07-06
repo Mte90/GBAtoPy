@@ -269,7 +269,7 @@ class ARM7TDMI:
         rd = (instr >> 12) & 0xF
         rm = instr & 0xF
 
-        if (instr & 0xC0000000) == 0 and (instr & 0x08000000) == 0:
+        if (instr & 0x0C000000) == 0:
             return self.exec_data_processing(instr)
 
         if (instr & 0xC000000) == 0x4000000:
@@ -448,36 +448,59 @@ class ARM7TDMI:
         return 3
 
     def exec_block_transfer(self, instr: int) -> int:
-        """Execute LDM/STM instruction."""
-        is_load = (instr >> 20) & 1
+        """Execute LDM/STM instruction.
+        ARM encoding:
+          bits 24: P (pre/post index)
+          bit  23: U (up/down)
+          bit  22: S (force user mode - ignored here)
+          bit  21: W (writeback)
+          bit  20: L (load/store)
+          bits 19-16: Rn (base)
+          bits 15-0:  register list
+        """
+        p_bit = (instr >> 24) & 1
         is_up = (instr >> 23) & 1
+        is_load = (instr >> 20) & 1
+        w_bit = (instr >> 21) & 1
         rn = (instr >> 16) & 0xF
         reg_list = instr & 0xFFFF
 
+        if reg_list == 0:
+            return 2
+
         base = self.registers[rn]
-        addr = base
+        n_regs = bin(reg_list).count('1')
+
+        # Compute start address honoring pre/post index
+        if p_bit:
+            # Pre-indexed: address is modified before first access
+            addr = base + 4 if is_up else base - 4
+        else:
+            # Post-indexed: address starts at base, modified after
+            addr = base
 
         if is_load:
             for i in range(16):
                 if reg_list & (1 << i):
-                    if is_up:
-                        val = self.memory.read_u32(addr)
-                        addr += 4
-                    else:
-                        addr -= 4
-                        val = self.memory.read_u32(addr)
+                    val = self.memory.read_u32(addr)
                     self.write_register(i, val)
+                    addr += 4
         else:
             for i in range(16):
                 if reg_list & (1 << i):
-                    if is_up:
-                        self.memory.write_u32(addr, self.registers[i])
-                        addr += 4
-                    else:
-                        addr -= 4
-                        self.memory.write_u32(addr, self.registers[i])
+                    val = self.registers[i]
+                    if i == 15:
+                        val = self.registers[15] + 8 if not self.thumb_mode else self.registers[15] + 4
+                    self.memory.write_u32(addr, val & 0xFFFFFFFF)
+                    addr += 4
 
-        return 2 + (reg_list.bit_count() * 2)
+        if w_bit:
+            if is_up:
+                self.registers[rn] = (base + n_regs * 4) & 0xFFFFFFFF
+            else:
+                self.registers[rn] = (base - n_regs * 4) & 0xFFFFFFFF
+
+        return 2 + (n_regs * 2)
 
     @jit_compile
     def exec_mul(self, instr: int) -> int:

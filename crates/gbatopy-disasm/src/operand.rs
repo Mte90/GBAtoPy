@@ -67,6 +67,7 @@ pub enum AddressingMode {
         base: u8,
         registers: Vec<u8>,
         increment: bool,
+        pre_index: bool,
         writeback: bool,
     },
 }
