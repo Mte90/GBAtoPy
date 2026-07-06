@@ -1677,11 +1677,33 @@ class PPU:
                             color = self._get_palette_color_jit(color_idx)
                         else:
                             color = self._get_palette_color(color_idx)
-                        # Only add non-transparent pixels (color_idx != 0)
-                        if color_idx != 0:
-                            # Get priority from BGxCNT (bits 0-1)
-                            priority = bg_cnt & 0x03
-                            candidates.append((priority, color))
+                        # Read tilemap entry for this BG layer
+                        screen_block = self.bg_screen_block[bg]
+                        tilemap_base = 0x06000000 + (screen_block * 0x0800)
+                        tilemap_x = tile_x // 8
+                        tilemap_y = tile_y // 8
+                        tilemap_index = tilemap_y * 32 + tilemap_x
+                        tilemap_addr = tilemap_base + (tilemap_index * 2)
+                        # Read tilemap entry from VRAM
+                        tilemap_entry = self.memory.read_u16(tilemap_addr)
+                        tile_index = tilemap_entry & 0x03FF
+                        char_block_base = self.bg_char_block[bg]
+                        bg_cnt_addr = 0x04000008 + bg * 2
+                        bg_cnt = self.memory.read_u16(bg_cnt_addr)
+                        bpp_mode = (bg_cnt >> 7) & 0x01
+                        if bpp_mode == 1:
+                            palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_8bpp(tile_index, char_block_base)
+                        else:
+                            palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_4bpp(tile_index, char_block_base)
+                        pixel_index = (tile_y % 8) * 8 + (tile_x % 8)
+                        if pixel_index < len(palette_indices):
+                            color_idx = palette_indices[pixel_index]
+                            # Only add non-transparent pixels (color_idx != 0)
+                            if color_idx != 0:
+                                color = self._get_palette_color(color_idx)
+                                # Get priority from BGxCNT (bits 0-1)
+                                priority = bg_cnt & 0x03
+                                candidates.append((priority, color))
                     # Continue to next background layer
                 # Render highest priority non-transparent pixel
                 if candidates:
@@ -1706,19 +1728,10 @@ class PPU:
                         tilemap_addr = tilemap_base + (tilemap_index * 2)
                         # Read tilemap entry from VRAM
                         tilemap_entry = self.memory.read_u16(tilemap_addr)
-                    tile_index = tilemap_entry & 0x03FF
-                    char_block_base = self.bg_char_block[bg]
-                    bg_cnt_addr = 0x04000008 + bg * 2
-                    bg_cnt = self.memory.read_u16(bg_cnt_addr)
-                    bpp_mode = (bg_cnt >> 7) & 0x01
-                    if bpp_mode == 1:
-                        palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_8bpp(tile_index, char_block_base)
-                    else:
-                        palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base) if is_numba_ppu_enabled() else self._decode_tile_4bpp(tile_index, char_block_base)
-                    pixel_index = (tile_y % 8) * 8 + (tile_x % 8)
-                    if pixel_index < len(palette_indices) and palette_indices[pixel_index] != 0:
-                        self.layer_origin[y][x] = bg
-                        break
+                        tile_index = tilemap_entry & 0x03FF
+                        if pixel_index < len(palette_indices):
+                            self.layer_origin[y][x] = bg
+                            break
         # Render sprites from OAM at 0x07000000 AFTER all BG layers
         if self.obj_enable:
             self._render_sprites(0x3F)
