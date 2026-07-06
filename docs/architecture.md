@@ -58,8 +58,8 @@ Generated Python includes an inlined runtime that emulates GBA hardware. The run
 
 | Module | Hardware | Role | Status |
 |--------|----------|------|--------|
-| `arm7tdmi.py` | CPU | ARM7TDMI core (22K lines) | ✅ Working |
-| `ppu.py` | Picture Processing Unit | Background tiles, sprites, scanline rendering | ✅ Mode 3/4 working, Mode 0 partial |
+| `arm7tdmi.py` | CPU | ARM7TDMI core (22K lines) | ⚠️ Partial — STMFD/LDMFD register order bug corrupts stack on real-game ROMs |
+| `ppu.py` | Picture Processing Unit | Background tiles, sprites, scanline rendering | ⚠️ Mode 0 verified on shades.gba, Mode 3 verified on stripes.gba; Mode 4 partial; Mode 1/2 affine, windows, blend, mosaic = stubs |
 | `memory.py` | Bus | Memory-mapped I/O with HAL side effects | ✅ Working |
 | `bios.py` | BIOS ROM | Software interrupt handlers (SWI) | ✅ 54 handlers implemented |
 | `dma.py` | DMA Controller | Background memory transfers | ✅ All 4 channels operational |
@@ -115,11 +115,12 @@ The output is a single `.py` file with all runtime code inlined. The only extern
 | Disassembler | ✅ Working | ~100% ARM/Thumb coverage |
 | Python generation | ✅ Working | All 68 ROMs produce valid Python |
 | Memory map | ✅ Working | Full GBA memory layout with mirrors |
-| CPU core | ✅ Working | ARM7TDMI with global registers |
-| PPU Mode 3 | ✅ Working | 100% golden screenshot match |
-| PPU Mode 4 | ✅ Working | 8BPP bitmap with palette |
-| PPU Mode 0 | ⚠️ Partial | 4BPP tiles working, text mode needs completion |
-| Sprite rendering | ✅ Working | OAM parsing + tile fetch |
+| CPU core | ⚠️ Partial | ARM7TDMI with global registers; STMFD/LDMFD register order bug corrupts stack |
+| PPU Mode 3 | ✅ Verified | stripes.gba 100% golden match |
+| PPU Mode 0 | ✅ Verified | shades.gba 100% golden match (after 5 bug fixes) |
+| PPU Mode 4 | ⚠️ Partial | 8BPP bitmap, palette fallback fixed on hello.gba, not all ROMs verified |
+| PPU Mode 1/2 | ⚠️ Stubs | Affine backgrounds, code exists, MMIO broken |
+| Sprite rendering | ⚠️ Unverified | OAM parsing + tile fetch implemented, no golden comparison |
 | BIOS handlers | ✅ Working | 54 SWI handlers implemented |
 | DMA controller | ✅ Working | All 4 channels operational |
 | Timers | ✅ Working | 4 timers with cascade mode |

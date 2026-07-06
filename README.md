@@ -13,7 +13,7 @@ Transform Game Boy Advance ROMs into standalone Python files.
 
 - ✅ **68/68 ROMs** transpile without errors
 - ✅ **76/76 tests** pass (100% pass rate)
-- ✅ **PPU Mode 0-5** fully functional with window/blend/mosaic
+- ✅ **PPU Mode 0** (4BPP text tiles) and **Mode 3** (16-bit bitmap) — golden match on stripes.gba; Mode 1/2 affine, windows, blends, mosaic = register stubs only
 - ✅ **Audio system** operational (click-free)
 - ✅ **Test framework** with smoke + screenshot verification
 
@@ -36,7 +36,7 @@ ROM bytes → Disassembly → Python Code Gen → Executable Python
 - **Memory Model** - GBA memory map (0x08000000 ROM, 0x06000000 VRAM, 0x04000000 MMIO)
 - **Game Loop** - pygame-based display and input
 - **Python Runtime** - Core emulation modules (CPU, PPU, Memory, DMA, Timers, APU) embedded in generated Python (see `crates/gbatopy-cli/assets/gba_runtime/`). Derived from [PyBoyAdvance](https://github.com/williamckha/PyBoyAdvance) (MIT-licensed).
-- **Test Framework** (`crates/gbatopy-test/`) - Rust-based automated test infrastructure with parallel execution, 6 verifier types (smoke, screenshot_golden, mgba_oracle, ewram_dump, pass_fail, assertion_text), and configurable per-ROM testing via `test-config.toml`.
+- **Test Framework** (`crates/gbatopy-test/`) - Rust-based automated test infrastructure with parallel execution, 6 verifier types (smoke, screenshot_golden, mgba_oracle, ewram_dump, pass_fail, assertion_text), and configurable per-ROM testing via `test-roms-config.toml`.
 
 ### Generated Output Structure
 
@@ -132,7 +132,7 @@ python3 /tmp/test.py --scale=2
 | Test ROMs | 66 |
 | Transpile success | ✅ 100% (66/66) |
 | Golden match | ✅ stripes.gba (100%) |
-| Zero stubs | ✅ All 66 ROMs |
+| Zero stubs | ✅ All 68 ROMs |
 | ARM/Thumb codegen | ✅ 600+ opcodes |
 | 54 BIOS handlers | Implemented |
 | VRAM writes | Working (Mode 3/4) |
@@ -149,7 +149,7 @@ python3 /tmp/test.py --scale=2
 
 ## Test ROMs
 
-Test ROMs are downloaded automatically via `scripts/setup/download_roms.sh` (**66 ROMs**):
+Test ROMs are downloaded automatically via `scripts/setup/download_roms.sh` (**68 ROMs**):
 
 ```bash
 # First time setup
@@ -180,10 +180,10 @@ cargo build --workspace
 cargo test --workspace
 
 # Rust test framework (gbatopy-test) - runs all 68 ROMs
-cargo run -p gbatopy-test -- --config test-config.toml
+cargo run -p gbatopy-test -- --config test-roms-config.toml
 
 # Subset of tests (filter by name)
-cargo run -p gbatopy-test -- --config test-config.toml --filter stripes
+cargo run -p gbatopy-test -- --config test-roms-config.toml --filter stripes
 
 # Python tests (inside gba_runtime module)
 python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/ -v
@@ -203,7 +203,7 @@ The `gbatopy-test` crate provides automated testing with multiple verification s
 
 ```bash
 # Full test suite (all 68 ROMs)
-cargo run -p gbatopy-test -- --config test-config.toml
+cargo run -p gbatopy-test -- --config test-roms-config.toml
 
 # Run specific verifier types
 # smoke: Transpile + syntax check

@@ -723,10 +723,12 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 | ARM instructions | arm.gba, armwrestler, FuzzARM | ✅ Working |
 | Thumb instructions | thumb.gba, FuzzARM | ✅ Working |
 | BIOS SWI | bios.gba | ⚠️ Partial |
-| PPU rendering | shades.gba, hello | ✅ Working | stripes.gba | ⚠️ Bug |
+| PPU rendering | shades.gba (100% golden), stripes.gba (100% golden) | ✅ Verified (2 ROMs) |
+| PPU rendering | hello.gba | ❌ Blocked (STMFD/LDMFD bug → PC=0x04040404) |
+| PPU rendering | other ROMs | ⚠️ Unverified (32 goldens exist, comparison not wired) |
 | PPU timing | line_timing.gba, lyc_midline.gba | ⚠️ Partial |
-| IRQ handling | isr.gba, if_ack.gba, irq_delay | ❌ Not called |
-| DMA transfers | dma_priority.gba, window_midframe.pcmxx | ❌ Not implemented |
+| IRQ handling | isr.gba, if_ack.gba, irq_delay | ⚠️ Implemented, unverified against goldens |
+| DMA transfers | dma_priority.gba, window_midframe.pcmxx | ⚠️ Implemented (4 channels), unverified against goldens |
 | Timer | timer_change.gba | ⚠️ Inaccurate |
 | Keypad | enhancedcontrolchecker.gba, joypad.gba | ✅ Working |
 | Audio | redline.gba, helloAudio.gba, test.gba | ❌ Not integrated |

@@ -384,7 +384,7 @@ def _sign_div(a: int, b: int) -> int:
 | Runtime correctness | >95% register value match vs oracle |
 | Memory accuracy | >95% memory state match vs oracle |
 | No Rust dependency | 100% (pure Python only) |
-| Type check (mypy) | 100% pass |
+| Type check (mypy) | ⚠️ Not run as part of CI |
 
 ### mGBA Golden Screenshot Workflow
 
@@ -445,7 +445,7 @@ impl CodeGenerator {
 - [x] ARM7TDMI interpreter executes real ARM code
 - [x] Asset extraction script works (LZ77/Huffman/RLE decompression)
 - [x] 54 BIOS handlers implemented
-- [x] PPU Mode 3/4 fully working (stripes.gba 100% golden match), Mode 0 (4BPP) partially working
+- [x] PPU Mode 3 verified (stripes.gba 100% golden match); Mode 0 verified (shades.gba 100% golden match, after 5 bug fixes); Mode 4 partial; Mode 1/2 affine, windows, blend, mosaic = stubs
 - [x] Conditional execution FIXED (branch instructions check CPSR flags)
 
 ### Verification Scripts
@@ -453,9 +453,12 @@ impl CodeGenerator {
 - [x] `coverage_tracker.py` - instruction codegen coverage tracking
 - [x] `screenshot.lua` - mGBA golden screenshot capture
 
-### Known Limitations (Updated 2026-04-17)
+### Known Limitations (Updated 2026-07-06)
+- [ ] **STMFD/LDMFD register order** (BLOCKING) — corrupts stack on real-game ROMs → PC=0x04040404 (hello.gba). See `docs/codegen-pitfalls.md`.
+- [ ] **helloAudio, rates** smoke failures — cause undiagnosed
+- [ ] **Automated ScreenshotGolden** — 32 goldens exist, comparison not wired into CI
 - [ ] Test ROMs are minimal - no compressed graphics/audio (need commercial ROMs with LZ77/Huffman/RLE data)
-- [x] Visual rendering verified against mGBA (stripes.gba 100% golden match)
+- [x] Visual rendering verified against mGBA (stripes.gba, shades.gba — 100% golden match, manual comparison)
 - [ ] APU audio synthesis not yet producing sound output
 - [ ] Affine backgrounds (Mode 1/2) not rendered
 - [ ] Window/blend/mosaic effects not rendered

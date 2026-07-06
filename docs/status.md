@@ -27,9 +27,9 @@
 | Module | Status | Notes |
 |--------|--------|-------|
 | Memory / MMIO | **Working** | 8/16/32-bit read/write implemented. All memory regions mapped with mirrors. STR/STRH/STRB codegen generates VRAM writes. |
-| PPU Backgrounds | **Working** | Mode 0 (4BPP tiles), Mode 3 (bitmap), Mode 4 (8BPP bitmap) working. Mode 1/2 (affine backgrounds) implemented. |
-| PPU Sprites | **Working** | OAM parsing + tile fetch + palette lookup implemented. Affine transformation with flip/double-size support. |
-| APU | **Working** | Audio synthesis implemented (CH1-4 + FIFO). DMA FIFO A/B operational. Thread-based continuous playback. |
+| PPU Backgrounds | ⚠️ Partial | Mode 0 (4BPP) verified on shades.gba (100% golden); Mode 3 (bitmap) verified on stripes.gba (100% golden); Mode 4 partial. Mode 1/2 (affine) code exists, MMIO broken — NOT verified. |
+| PPU Sprites | ⚠️ Unverified | OAM parsing + tile fetch + palette lookup implemented. NOT verified against golden screenshots. |
+| APU | ⚠️ Unverified | Audio synthesis infrastructure implemented (CH1-4 + FIFO). NOT verified end-to-end — no sound output confirmed. |
 | DMA | **Working** | All 4 channels operational. Immediate/VBlank/HBlank/special triggers. inc/dec/fixed address modes. |
 | BIOS SWI | **Working** | 54 handlers implemented (Halt, Div, Sqrt, LZ77, Huffman, RegisterRamReset, CpuSet, ArcTan, ArcTan2, etc.). |
 | Input | **Working** | KEYINPUT/KEYCNT registers mapped to pygame keyboard. |
@@ -38,26 +38,26 @@
 | Save State | **Working** | Full JSON serialization of CPU, Memory, PPU, APU, DMA, Timers, Interrupts, Input. CLI args `--save-state`/`--load-state`, hotkeys F5/F8. |
 | EWRAM Dump | **Working** | CLI args `--dump-memory`/`--dump-region`. FuzzARM-compatible binary format. Verification script included. |
 | Hook System | **Working** | HookManager with breakpoints, memory watchpoints, frame hooks. Zero-overhead when unused. |
-| Blend Modes | **Working** | Mode 1 (alpha blend), Mode 2 (brightness increase), Mode 3 (brightness decrease) with correct formulas. |
+| Blend Modes | ⚠️ Stubs | Register stubs only. NOT functional. |
 
 ### PPU Mode Support (Detailed)
 
 | Mode | Type | Layers | Color Depth | Status | Notes |
 |------|------|--------|-------------|--------|-------|
-| 0 | Text/Map | BG0-BG3 | 4BPP/8BPP | ✅ Working | 16/16 or 256/1 palettes. Full tile rendering with priority. |
+| 0 | Text/Map | BG0-BG3 | 4BPP/8BPP | ⚠️ Verified (Mode 0) | shades.gba 100% golden match. 8BPP unverified. |
 | 1 | Text + Affine | BG0-BG1 | 4BPP/8BPP | ⚠️ Partial | BG2 affine rotation/scaling implemented. |
 | 2 | Affine | BG2-BG3 | 8BPP | ⚠️ Partial | 16.16 fixed-point transforms. |
-| 3 | Bitmap | BG2 | 15-bit | ✅ Working | 240x160, 32768 colors. Verified: 100% golden screenshot match. |
-| 4 | Bitmap | BG2 | 8BPP | ✅ Working | 256-color palette lookup. Verified: 1956 non-black pixels. |
-| 5 | Bitmap | BG2 | 15-bit | ⚠️ Implemented | 160x128, 32768 colors. |
+| 3 | Bitmap | BG2 | 15-bit | ✅ Verified | stripes.gba 100% golden match. |
+| 4 | Bitmap | BG2 | 8BPP | ⚠️ Partial | Palette fallback bug fixed on hello.gba. Not all ROMs verified. |
+| 5 | Bitmap | BG2 | 15-bit | ⚠️ Unverified | 160x128, 32768 colors. Code exists, no golden comparison. |
 
-**Features by Mode:**
-- **Scrolling (S):** Modes 0-2 (text/affine)
-- **Flip (F):** Modes 0-1 (text)
-- **Mosaic (M):** All modes (BG/OBJ)
-- **Alpha Blending (A):** Modes 0-2 (text/affine)
-- **Brightness (B):** Modes 0-2 (text/affine)
-- **Priority (P):** All modes
+**Features by Mode (verification status):**
+- **Scrolling (S):** Modes 0-2 — implemented, partially verified
+- **Flip (F):** Modes 0-1 — implemented, unverified
+- **Mosaic (M):** All modes — ❌ stubs only, NOT functional
+- **Alpha Blending (A):** Modes 0-2 — ❌ stubs only, NOT functional
+- **Brightness (B):** Modes 0-2 — ❌ stubs only, NOT functional
+- **Priority (P):** All modes — implemented, unverified
 
 ### End-to-End
 
@@ -65,11 +65,14 @@
 |------------|--------|
 | ROM loads and disassembles | **Yes** - **68/68 ROMs** |
 | Python file generates | **Yes** - **68/68 ROMs** |
-| Python file runs without crash | **Yes** - All ROMs execute without errors |
-| Python syntax validation | **Yes** - **68/68 ROMs** (files >10MB skip py_compile but are syntactically valid) |
-| Game renders graphics | **Partial** - Mode 0/3/4 working for some ROMs. **Known bugs**: |
-| | - **stripes.gba**: Address mapping issue (160/38,400 pixels) - FIXED 2026-07-02 |
-| | - **shades.gba**: Dispatch table NOP block bug + STRH offset bug - UNDER INVESTIGATION |
+| Python file runs without crash | **Partial** - Most ROMs execute; hello.gba crashes (STMFD/LDMFD bug → PC=0x04040404) |
+| Python syntax validation | **Yes** - **66/68 ROMs** (helloAudio, rates fail; files >10MB skip py_compile) |
+| Game renders graphics | **Partial** - 2/68 ROMs verified pixel-perfect vs mGBA golden (stripes.gba, shades.gba). **Known bugs**: |
+| | - **STMFD/LDMFD register order** (UNRESOLVED): corrupts stack on real-game ROMs → PC jumps to 0x04040404 (hello.gba) |
+| | - **helloAudio, rates**: smoke test failures, cause undiagnosed |
+| | - **stripes.gba**: address mapping — FIXED 2026-07-02 (100% golden match) |
+| | - **shades.gba**: 5 bugs fixed (char-block base, nibble order, double-scale, dispatch NOP, STRH offset) — 100% golden match |
+| | - **Automated ScreenshotGolden**: 32 goldens exist, comparison NOT wired into CI |
 | Keyboard input affects game | **Yes** - Verified via KEYINPUT register |
 | Audio playback | **Partial** - Infrastructure exists, synthesis not verified |
 | Save/Load state | **Yes** - Full state serialization/deserialization verified |
@@ -99,10 +102,14 @@
 
 ### What Needs Fixing (Priority Order)
 
-1. **Window layers/Blend/Mosaic** - Advanced PPU features (out of scope)
-2. **Affine backgrounds** - Mode 1/2 transforms (out of scope per project boundaries)
-3. **Windows/Blend/Mosaic** - Advanced PPU features (out of scope)
-4. **8BPP tile modes** - 8BPP tile decode for backgrounds (optional)
+1. **STMFD/LDMFD register order** (BLOCKING) — corrupts stack on real-game ROMs. See `docs/codegen-pitfalls.md`.
+2. **helloAudio, rates smoke failures** — cause undiagnosed.
+3. **Wire ScreenshotGolden into CI** — 32 goldens exist, comparison not automated.
+4. **Verify sprite rendering** — code exists, no golden comparison.
+5. **Verify audio synthesis** — infrastructure exists, no output check.
+6. **Window layers/Blend/Mosaic** — stubs only, low priority.
+7. **Affine backgrounds** — Mode 1/2 code exists, MMIO broken, low priority.
+8. **8BPP tile modes** — 8BPP tile decode, optional.
 
 ## Test ROMs
 

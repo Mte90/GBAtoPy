@@ -470,12 +470,12 @@ let imm = (imm4h << 4) | imm4l;
 
 | Mode | Type | Layers | Color Depth | Status |
 |------|------|--------|-------------|--------|
-| 0 | Text/Map | BG0-BG3 | 4BPP/8BPP | ✅ Working |
-| 1 | Text + Affine | BG0-BG1 | 4BPP/8BPP | ⚠️ Partial |
-| 2 | Affine | BG2-BG3 | 8BPP | ⚠️ Partial |
-| 3 | Bitmap | BG2 | 15-bit | ✅ Working |
-| 4 | Bitmap | BG2 | 8BPP | ✅ Working |
-| 5 | Bitmap | BG2 | 15-bit | ⚠️ Implemented |
+| 0 | Text/Map | BG0-BG3 | 4BPP/8BPP | ✅ Verified (shades.gba golden match) |
+| 1 | Text + Affine | BG0-BG1 | 4BPP/8BPP | ⚠️ Stubs (code exists, MMIO broken) |
+| 2 | Affine | BG2-BG3 | 8BPP | ⚠️ Stubs (code exists, not verified) |
+| 3 | Bitmap | BG2 | 15-bit | ✅ Verified (stripes.gba golden match) |
+| 4 | Bitmap | BG2 | 8BPP | ⚠️ Partial (palette fallback fixed, not all ROMs verified) |
+| 5 | Bitmap | BG2 | 15-bit | ⚠️ Unverified |
 
 ### Audio Specifications
 

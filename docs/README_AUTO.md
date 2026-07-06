@@ -27,19 +27,19 @@ The generated Python embeds the **Py7TDMI CPU core** and **PPU renderer** direct
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **4BPP tile backgrounds (Mode 0)** | ✅ Working | renders correct pixels |
-| **Bitmap modes (Mode 3, Mode 4 8BPP)** | ⚠️ Partial | stripes.gba has rendering bug (160/38,400 pixels) - address mapping issue |
-| **VRAM (96 KB)** | ✅ Working | direct memory writes |
-| **Palette (1 KB)** | ✅ Working | 4BPP+8BPP palette lookup |
-| **OAM sprites** | ✅ Working | OAM parsing, tile fetch, palette lookup |
-| **APU audio channels** | ✅ Working | 4 channels + FIFO. Audio bug fix in future work |
-| **Memory mapped I/O** | ✅ Working | mirrors at 0x04000000-0x040003FF |
-| **Interrupts** | ✅ Working | VBlank/HBlank/VCount, ISR at 0x03007FFC |
-| **Timers 0-3** | ✅ Working | prescaler, cascade, overflow IRQ |
-| **DMA 0-3** | ✅ Working | immediate/VBlank/HBlank/special triggers, 16/32-bit |
-| **Keypad** | ✅ Working | KEYINPUT, 16-bit reads |
-| **BIOS SWI handlers** | ✅ Working | 54 handlers (Halt, Div, Sqrt, LZ77, etc.) |
-| **SRAM save/load** | ✅ Working | 182-line `sram.py` |
+| **4BPP tile backgrounds (Mode 0)** | ✅ Verified | shades.gba golden match (after char-block + nibble-order fixes) |
+| **Bitmap modes (Mode 3, Mode 4 8BPP)** | ✅ Verified Mode 3 (stripes.gba golden match) | Mode 4 partial, Mode 5 unverified |
+| **VRAM (96 KB)** | ✅ Verified | direct memory writes verified in shades/stripes |
+| **Palette (1 KB)** | ✅ Verified | 4BPP+8BPP palette lookup verified in shades/stripes |
+| **OAM sprites** | ⚠️ Implemented, unverified | OAM parsing, tile fetch, palette lookup code exists; no sprite ROM golden-verified |
+| **APU audio channels** | ⚠️ Implemented, not integrated | 4 channels + FIFO code exists in runtime template; not wired into transpiler output; helloAudio smoke test fails |
+| **Memory mapped I/O** | ✅ Verified | mirrors at 0x04000000-0x040003FF; DISPCNT reads verified in shades/stripes |
+| **Interrupts** | ⚠️ Implemented, unverified | VBlank/HBlank/VCount, ISR at 0x03007FFC code exists; no IRQ-dependent ROM golden-verified |
+| **Timers 0-3** | ⚠️ Implemented, unverified | prescaler, cascade, overflow IRQ code exists; no timer ROM golden-verified |
+| **DMA 0-3** | ⚠️ Implemented, unverified | immediate/VBlank/HBlank/special triggers, 16/32-bit code exists; no DMA ROM golden-verified |
+| **Keypad** | ✅ Verified | KEYINPUT, 16-bit reads; joypad.gba smoke passes |
+| **BIOS SWI handlers** | ⚠️ Implemented, unverified | 54 handlers (Halt, Div, Sqrt, LZ77, etc.); RegisterRamReset verified in shades debug; rest unverified |
+| **SRAM save/load** | ✅ Verified | 182-line `sram.py`; sram.gba smoke passes |
 | **Base64 encoding** | ✅ Working | ROMs >100KB embedded with Base64 for size reduction |
 | **External assets** | ✅ Working | `--external-assets` flag to export ROM data to `.assets` |
 
@@ -422,4 +422,6 @@ mgba/build/sdl/mgba test_roms/roms/stripes.gba --script scripts/screenshot.lua
 3. Documentation coherent with code
 4. Zero surprises in build or output
 
-**Status: PRODUCTION READY** 🎉
+**Status: IN ACTIVE DEVELOPMENT** ⚠️
+
+Core transpiler works for instruction-coverage ROMs. Real-game ROMs blocked by STMFD/LDMFD register order bug. 2/68 ROMs verified pixel-perfect vs mGBA golden (manual). Automated ScreenshotGolden not yet wired into CI.
