@@ -4,6 +4,10 @@ use super::Verifier;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use duct::cmd;
+use super::image_compare::{
+    compare_images_comprehensive, ComparisonConfig, format_success_message,
+    format_failure_message
+};
 
 pub struct ScreenshotGoldenVerifier;
 
@@ -38,10 +42,16 @@ impl Verifier for ScreenshotGoldenVerifier {
                 status: TestStatus::Fail,
                 message: format!("Transpilation failed: {}", e),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             };
         }
 
         log::info!("[ScreenshotGolden] Transpilation succeeded for {}", test_name);
+
+        // Copy ROM .bin alongside transpiled script for load_rom_data()
+        let rom_bin_dest = artifacts_dir.join(format!("{}.bin", rom_stem));
+        let _ = std::fs::copy(&rom_path, &rom_bin_dest);
 
         let frames = 60;
         if let Err(e) = self.capture_screenshot(&transpiled_py, &screenshot_path, frames) {
@@ -51,6 +61,8 @@ impl Verifier for ScreenshotGoldenVerifier {
                 status: TestStatus::Fail,
                 message: format!("Screenshot capture failed: {}", e),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             };
         }
 
@@ -63,55 +75,72 @@ impl Verifier for ScreenshotGoldenVerifier {
                 status: TestStatus::Error,
                 message: format!("Golden image not found: {}", golden_path.display()),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             };
         }
 
-        let threshold = 0.95;
-        match self.compare_images(&screenshot_path, &golden_path, threshold) {
-            Ok((match_percent, diff_pixels)) => {
-                if match_percent >= threshold {
-                    log::info!(
-                        "[ScreenshotGolden] PASS: {} ({}% match, {} pixels differ)",
-                        test_name,
-                        match_percent,
-                        diff_pixels
-                    );
+        // Use comprehensive comparison with new thresholds
+        let config = ComparisonConfig::default();
+        
+        match compare_images_comprehensive(
+            &screenshot_path,
+            &golden_path,
+            &config,
+            &rom_stem,
+            &test_type_str,
+            artifacts_dir,
+        ) {
+            Ok(result) => {
+                if result.passed {
+                    log::info!("[ScreenshotGolden] PASS: {}", test_name);
                     TestResult {
                         name: test_name,
                         test_type: test_type_str,
                         status: TestStatus::Pass,
-                        message: format!(
-                            "Images match: {:.1}% (threshold: {:.1}%)",
-                            match_percent, threshold
-                        ),
+                        message: format_success_message(&result.metrics, config.pixel_tolerance),
                         duration: start.elapsed(),
+                        metrics: None,
+                        failure_classification: None,
                     }
                 } else {
                     log::error!(
-                        "[ScreenshotGolden] FAIL: {} ({}% match, {} pixels differ)",
+                        "[ScreenshotGolden] FAIL: {} ({})",
                         test_name,
-                        match_percent,
-                        diff_pixels
+                        format_failure_message(&result.metrics, result.failure_classification.as_ref())
                     );
                     TestResult {
                         name: test_name,
                         test_type: test_type_str,
                         status: TestStatus::Fail,
-                        message: format!(
-                            "Image mismatch: {:.1}% < {:.1}% threshold ({} pixels differ)",
-                            match_percent, threshold, diff_pixels
-                        ),
+                        message: format_failure_message(&result.metrics, result.failure_classification.as_ref()),
                         duration: start.elapsed(),
+                        metrics: serde_json::to_value(&result.metrics).ok(),
+                        failure_classification: result.failure_classification.map(|c| {
+                            match c {
+                                super::image_compare::FailureClassification::SizeMismatch => "size_mismatch".to_string(),
+                                super::image_compare::FailureClassification::EmptyOutput => "empty_output".to_string(),
+                                super::image_compare::FailureClassification::NearBlackOutput => "near_black_output".to_string(),
+                                super::image_compare::FailureClassification::Offset => "offset".to_string(),
+                                super::image_compare::FailureClassification::ColorShift => "color_shift".to_string(),
+                                super::image_compare::FailureClassification::StructuralMismatch => "structural_mismatch".to_string(),
+                            }
+                        }),
                     }
                 }
             }
-            Err(e) => TestResult {
-                name: test_name,
-                test_type: test_type_str,
-                status: TestStatus::Error,
-                message: format!("Image comparison failed: {}", e),
-                duration: start.elapsed(),
-            },
+            Err(e) => {
+                log::error!("[ScreenshotGolden] Error comparing images: {}", e);
+                TestResult {
+                    name: test_name,
+                    test_type: test_type_str,
+                    status: TestStatus::Error,
+                    message: format!("Image comparison failed: {}", e),
+                    duration: start.elapsed(),
+                    metrics: None,
+                    failure_classification: None,
+                }
+            }
         }
     }
 
@@ -142,17 +171,18 @@ impl ScreenshotGoldenVerifier {
         frames: u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let frame_arg = format!("--frame={}", frames);
-        let screenshot_arg = format!("--screenshot={}", screenshot_path.to_string_lossy());
+        let screenshot_name = screenshot_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let screenshot_arg = format!("--screenshot={}", screenshot_name);
         
         cmd!(
             "python3",
-            py_file.to_string_lossy().as_ref(),
+            py_file.file_name().unwrap().to_string_lossy().as_ref(),
             "--headless",
             &frame_arg,
             &screenshot_arg
         )
         .env("SDL_VIDEODRIVER", "dummy")
-        .dir(".")
+        .dir(py_file.parent().unwrap_or(Path::new(".")))
         .run()?;
         
         if !screenshot_path.exists() {
@@ -160,52 +190,6 @@ impl ScreenshotGoldenVerifier {
         }
         
         Ok(())
-    }
-
-    fn compare_images(
-        &self,
-        screenshot: &Path,
-        golden: &Path,
-        threshold: f64,
-    ) -> Result<(f64, u32), Box<dyn std::error::Error>> {
-        use image::GenericImageView;
-        
-        let img1 = image::open(screenshot)?;
-        let img2 = image::open(golden)?;
-        
-        let (w1, h1) = img1.dimensions();
-        let (w2, h2) = img2.dimensions();
-        
-        if w1 != w2 || h1 != h2 {
-            let img2_resized = img2.resize_exact(w1, h1, image::imageops::FilterType::Nearest);
-            return self.compare_pixel_by_pixel(&img1, &img2_resized, threshold);
-        }
-        
-        self.compare_pixel_by_pixel(&img1, &img2, threshold)
-    }
-
-    fn compare_pixel_by_pixel(
-        &self,
-        img1: &image::DynamicImage,
-        img2: &image::DynamicImage,
-        _threshold: f64,
-    ) -> Result<(f64, u32), Box<dyn std::error::Error>> {
-        let pixels1 = img1.to_rgba8();
-        let pixels2 = img2.to_rgba8();
-        
-        let total_pixels = (pixels1.width() * pixels1.height()) as u32;
-        let mut matching_pixels = 0u32;
-        
-        for (p1, p2) in pixels1.pixels().zip(pixels2.pixels()) {
-            if p1 == p2 {
-                matching_pixels += 1;
-            }
-        }
-        
-        let match_percent = (matching_pixels as f64 / total_pixels as f64) * 100.0;
-        let diff_pixels = total_pixels - matching_pixels;
-        
-        Ok((match_percent, diff_pixels))
     }
 }
 

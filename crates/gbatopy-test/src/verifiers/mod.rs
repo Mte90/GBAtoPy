@@ -24,3 +24,4 @@ mod mgba_oracle;
 mod ewram;
 mod pass_fail;
 mod assertion;
+pub mod image_compare;

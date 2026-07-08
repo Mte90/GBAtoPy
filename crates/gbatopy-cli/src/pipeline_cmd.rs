@@ -789,24 +789,33 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
             return true;
         }
 
-        // Operands: detect any instruction whose destination operand is R15.
-        // - LDM/STM: register list is inside MemoryAddress.offset = Multi{registers}.
-        // - LDR/STR: destination/source is Operand::Register(15) (first operand).
-        // - Data-processing (MOV, ADD, ...): destination is first operand.
-        for operand in &inst.operands {
-            match operand {
-                // Data-processing / LDR / STR with Rd = R15 (first operand).
-                Operand::Register(r) if *r == 15 => return true,
-                Operand::ShiftedRegister { reg: r, .. } if *r == 15 => return true,
-                // LDM/STM: the register list lives in AddressingMode::Multi.registers.
-                Operand::MemoryAddress { offset, .. } => {
+        // Store instructions: first operand is a source, not a destination.
+        let is_store = matches!(
+            op,
+            "STR" | "STRH" | "STRB" | "STRD" | "STM" | "STMIA" | "STMIB" | "STMDA" | "PUSH"
+        );
+        // Comparison instructions: only set flags, no Rd write.
+        let is_comparison = matches!(op, "CMP" | "CMN" | "TST" | "TEQ");
+
+        // Only the FIRST operand is the destination for data-processing and loads.
+        if !is_store && !is_comparison {
+            if let Some(Operand::Register(r)) = inst.operands.first() {
+                if *r == 15 {
+                    return true;
+                }
+            }
+        }
+
+        // LDM: the register list (MemoryAddress.offset = Multi) holds destinations.
+        if !is_store {
+            for operand in &inst.operands {
+                if let Operand::MemoryAddress { offset, .. } = operand {
                     if let AddressingMode::Multi { registers, .. } = offset {
                         if registers.contains(&15) {
                             return true;
                         }
                     }
                 }
-                _ => {}
             }
         }
 
@@ -911,8 +920,8 @@ fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u3
     // Populate jump table entries using dict (more compact for sparse ROMs)
     let base_addr: u64 = 0x08000000;
     for &addr in &non_nop_addrs {
-        let idx = (addr - base_addr) >> 2;
-        if idx >= 0x080000 {
+        let idx = (addr - base_addr) >> 1;
+        if idx >= 0x100000 {
             continue;
         }
         code.push_str(&format!("    0x{:07X}: func_{:08X},\n", idx, addr));
@@ -1044,7 +1053,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     fc = 0; mi = 1000000; ic = 0
     while ic < mi:
         pc = registers[15]
-        idx = (pc - 0x08000000) >> 2
+        idx = (pc - 0x08000000) >> 1
         func = dispatch_table.get(idx)
         if func is None: 
             print(f"Unknown PC: 0x{pc:08X}")
@@ -1121,7 +1130,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         max_inner_stalls = 10  # Break inner loop after just 10 stalls - ROM is likely in a wait loop
         for _ in range(target_cycles_per_frame // 4):
             pc = registers[15]
-            idx = (pc - 0x08000000) >> 2
+            idx = (pc - 0x08000000) >> 1
             func = dispatch_table.get(idx)
             if func is None: 
                 print(f"Unknown PC: 0x{pc:08X}")

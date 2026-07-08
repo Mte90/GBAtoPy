@@ -31,8 +31,14 @@ impl Verifier for PassFailScreenVerifier {
                 status: TestStatus::Fail,
                 message: format!("Transpilation failed: {}", e),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             };
         }
+
+        // Copy ROM .bin alongside transpiled script for load_rom_data()
+        let rom_bin_dest = artifacts_dir.join(format!("{}.bin", rom_stem));
+        let _ = std::fs::copy(&rom_path, &rom_bin_dest);
 
         log::info!("[Pass/Fail Screen] Transpilation succeeded for {}", test_name);
 
@@ -45,6 +51,8 @@ impl Verifier for PassFailScreenVerifier {
                 status: TestStatus::Fail,
                 message: format!("Screenshot capture failed: {}", e),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             };
         }
 
@@ -60,6 +68,8 @@ impl Verifier for PassFailScreenVerifier {
                     status: TestStatus::Error,
                     message: format!("Screenshot analysis failed: {}", e),
                     duration: start.elapsed(),
+                    metrics: None,
+                    failure_classification: None,
                 };
             }
         };
@@ -74,6 +84,8 @@ impl Verifier for PassFailScreenVerifier {
                     status: TestStatus::Pass,
                     message: "Pass screen detected (blank or green)".to_string(),
                     duration: start.elapsed(),
+                    metrics: None,
+                    failure_classification: None,
                 }
             }
             ScreenAnalysis::HasContent(ratio) => {
@@ -88,6 +100,8 @@ impl Verifier for PassFailScreenVerifier {
                     status: TestStatus::Fail,
                     message: format!("Fail screen detected: {:.1}% visible content", ratio * 100.0),
                     duration: start.elapsed(),
+                    metrics: None,
+                    failure_classification: None,
                 }
             }
         }
@@ -122,17 +136,18 @@ fn transpile_rom(rom_path: &str, output: &Path) -> Result<(), Box<dyn std::error
 fn capture_screenshot(py_file: &Path, screenshot_path: &Path, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
     use duct::cmd;
     let frame_arg = format!("--frame={}", frames);
-    let screenshot_arg = format!("--screenshot={}", screenshot_path.to_string_lossy());
+    let screenshot_name = screenshot_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let screenshot_arg = format!("--screenshot={}", screenshot_name);
     
     cmd!(
         "python3",
-        py_file.to_string_lossy().as_ref(),
+        py_file.file_name().unwrap().to_string_lossy().as_ref(),
         "--headless",
         &frame_arg,
         &screenshot_arg
     )
     .env("SDL_VIDEODRIVER", "dummy")
-    .dir(".")
+    .dir(py_file.parent().unwrap_or(Path::new(".")))
     .run()?;
     
     if !screenshot_path.exists() {

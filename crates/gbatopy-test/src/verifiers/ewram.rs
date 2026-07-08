@@ -32,10 +32,16 @@ impl Verifier for EwramDumpVerifier {
                 status: TestStatus::Fail,
                 message: format!("Transpilation failed: {}", e),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             };
         }
 
         log::info!("[eWRAM Dump] Transpilation succeeded for {}", test_name);
+
+        // Copy ROM .bin alongside transpiled script for load_rom_data()
+        let rom_bin_dest = artifacts_dir.join(format!("{}.bin", rom_stem));
+        let _ = std::fs::copy(&rom_path, &rom_bin_dest);
 
         // Step 2: Run with --dump-memory flag (FuzzARM needs 600 frames)
         let frames = 600;
@@ -46,6 +52,8 @@ impl Verifier for EwramDumpVerifier {
                 status: TestStatus::Fail,
                 message: format!("eWRAM dump failed: {}", e),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             };
         }
 
@@ -61,6 +69,8 @@ impl Verifier for EwramDumpVerifier {
                     status: TestStatus::Error,
                     message: format!("Failed to read dump file: {}", e),
                     duration: start.elapsed(),
+                    metrics: None,
+                    failure_classification: None,
                 };
             }
         };
@@ -74,6 +84,8 @@ impl Verifier for EwramDumpVerifier {
                     status: TestStatus::Error,
                     message: format!("Failed to parse dump: {}", e),
                     duration: start.elapsed(),
+                    metrics: None,
+                    failure_classification: None,
                 };
             }
         };
@@ -87,6 +99,8 @@ impl Verifier for EwramDumpVerifier {
                 status: TestStatus::Pass,
                 message: "All eWRAM tests passed".to_string(),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             }
         } else {
             log::error!(
@@ -105,6 +119,8 @@ impl Verifier for EwramDumpVerifier {
                     summaries.join("; ")
                 ),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             }
         }
     }
@@ -159,17 +175,18 @@ fn transpile_rom(rom_path: &str, output: &Path) -> Result<(), Box<dyn std::error
 fn run_with_dump(py_file: &Path, dump_path: &Path, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
     use duct::cmd;
     let frame_arg = format!("--frame={}", frames);
-    let dump_arg = format!("--dump-memory={}", dump_path.to_string_lossy());
+    let dump_name = dump_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let dump_arg = format!("--dump-memory={}", dump_name);
     
     cmd!(
         "python3",
-        py_file.to_string_lossy().as_ref(),
+        py_file.file_name().unwrap().to_string_lossy().as_ref(),
         "--headless",
         &frame_arg,
         &dump_arg
     )
     .env("SDL_VIDEODRIVER", "dummy")
-    .dir(".")
+    .dir(py_file.parent().unwrap_or(Path::new(".")))
     .run()?;
     
     if !dump_path.exists() {

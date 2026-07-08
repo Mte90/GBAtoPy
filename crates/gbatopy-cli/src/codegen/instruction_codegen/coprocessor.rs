@@ -26,10 +26,44 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         return Some("pass  # SWI/SVC software interrupt (handled by runtime)".to_string());
     }
     if base_opcode == "MSR" {
-        return Some("pass  # MSR move to status register".to_string());
+        if ops.len() >= 2 {
+            if let Operand::Immediate(flags) = ops[0] {
+                // flags bits map to ARM CPSR fields:
+                //   bit 0 (ARM bit 16) = f field → flags (N/Z/C/V) → cpsr dict
+                //   bit 3 (ARM bit 19) = c field → control (mode/T bit) → not tracked by runtime
+                let has_flags = (flags & 1) != 0;
+                let has_control = (flags & 8) != 0;
+                if !has_flags && !has_control {
+                    return Some("pass  # MSR with no fields".to_string());
+                }
+                let source = match &ops[1] {
+                    Operand::Register(rd) => format!("registers[{}]", rd),
+                    Operand::Immediate(val) => format!("{:#010x}", val),
+                    _ => return None,
+                };
+                let mut code = String::new();
+                if has_flags {
+                    code.push_str(&format!("cpsr['n'] = ({} >> 31) & 1\n", source));
+                    code.push_str(&format!("cpsr['z'] = ({} >> 30) & 1\n", source));
+                    code.push_str(&format!("cpsr['c'] = ({} >> 29) & 1\n", source));
+                    code.push_str(&format!("cpsr['v'] = ({} >> 28) & 1", source));
+                }
+                if has_control && !has_flags {
+                    code.push_str("pass  # MSR control field (mode/T bit) not tracked by runtime");
+                }
+                if code.is_empty() {
+                    code.push_str("pass  # MSR no-op");
+                }
+                return Some(code);
+            }
+        }
+        return Some("pass  # MSR unhandled form".to_string());
     }
     if base_opcode == "MRS" {
-        return Some("pass  # MRS move from status register".to_string());
+        if let Some(Operand::Register(rd)) = ops.get(0) {
+            return Some(format!("registers[{}] = (cpsr['n'] << 31) | (cpsr['z'] << 30) | (cpsr['c'] << 29) | (cpsr['v'] << 28)", rd));
+        }
+        return Some("pass  # MRS unhandled form".to_string());
     }
     if base_opcode == "NOP" {
         return Some("pass  # NOP".to_string());

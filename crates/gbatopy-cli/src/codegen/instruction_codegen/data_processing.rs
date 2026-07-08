@@ -1,46 +1,52 @@
 use gbatopy_disasm::{operand::ShiftAmount, DecodedInstruction, Operand};
 
+/// ARM: PC = instruction_address + 8 (pipeline offset)
+const ARM_PC_OFFSET: u32 = 8;
+
+/// Replace R15 (PC) **source** operands with the computed PC value as an Immediate.
+/// In ARM mode, PC = instruction_address + 8.
+/// The destination register (ops[0] for instructions with Rd) is never replaced.
+fn resolve_pc_operands(ops: &[Operand], inst_addr: u32, base_opcode: &str) -> Vec<Operand> {
+    let pc_val = inst_addr.wrapping_add(ARM_PC_OFFSET);
+    let has_rd = !matches!(base_opcode, "CMP" | "CMN" | "TST" | "TEQ");
+    ops.iter().enumerate().map(|(i, op)| {
+        if has_rd && i == 0 {
+            return op.clone();
+        }
+        match op {
+            Operand::Register(15) => Operand::Immediate(pc_val),
+            other => other.clone(),
+        }
+    }).collect()
+}
+
 pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let opcode = &inst.opcode;
-    let ops = &inst.operands;
     let base_opcode = opcode.split_whitespace().next().unwrap_or(opcode);
     let base_opcode = base_opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());
-    
-    // DEBUG: Log all ORR instructions
-    if base_opcode == "ORR" {
-        eprintln!("DEBUG generate ORR: opcode={}, inst.address=0x{:08X}", opcode, inst.address);
-        eprintln!("  ops.len()={}", ops.len());
-        for (i, o) in ops.iter().enumerate() {
-            eprintln!("    ops[{}]: {:?}", i, o);
-        }
-    }
+
+    let ops = resolve_pc_operands(&inst.operands, inst.address, base_opcode);
 
     match base_opcode {
-        "MOV" => generate_mov(ops),
-        "MVN" => generate_mvn(ops),
-        "ADD" | "ADC" => generate_add(ops, base_opcode),
-        "SUB" | "SBC" | "RSB" | "RSC" => generate_sub(ops, base_opcode, inst.sets_flags),
-        "AND" | "EOR" | "ORR" | "BIC" => generate_logic(ops, base_opcode),
-        "LSL" | "LSR" | "ASR" | "ROR" => generate_shift(ops, base_opcode),
-        "CLZ" => generate_clz(ops),
-        "CMP" => generate_cmp(ops),
-        "CMN" => generate_cmn(ops),
-        "TST" => generate_tst(ops),
-        "TEQ" => generate_teq(ops),
-        "UMLAL" | "SMLAL" => generate_umlal(ops, base_opcode),
+        "MOV" => generate_mov(&ops),
+        "MVN" => generate_mvn(&ops),
+        "ADD" | "ADC" => generate_add(&ops, base_opcode),
+        "SUB" | "SBC" | "RSB" | "RSC" => generate_sub(&ops, base_opcode, inst.sets_flags),
+        "AND" | "EOR" | "ORR" | "BIC" => generate_logic(&ops, base_opcode),
+        "LSL" | "LSR" | "ASR" | "ROR" => generate_shift(&ops, base_opcode),
+        "CLZ" => generate_clz(&ops),
+        "CMP" => generate_cmp(&ops),
+        "CMN" => generate_cmn(&ops),
+        "TST" => generate_tst(&ops),
+        "TEQ" => generate_teq(&ops),
+        "UMLAL" | "SMLAL" => generate_umlal(&ops, base_opcode),
         _ => None,
     }
 }
 
 fn generate_mov(ops: &[Operand]) -> Option<String> {
-    eprintln!("DEBUG generate MOV: ops.len()={}", ops.len());
-    for (i, o) in ops.iter().enumerate() {
-        eprintln!("  ops[{}]: {:?}", i, o);
-    }
-    
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
-            eprintln!("  MOV Rd = R{}", rd);
             // CRITICAL: MOV to PC (R15) is a branch!
             if rd == 15 {
                 // MOV PC, #imm - direct jump to immediate address
@@ -225,26 +231,6 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
 }
 
 fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
-    // DEBUG: Log ALL logic calls
-    eprintln!("DEBUG generate_logic: op={}, ops.len()={}", op, ops.len());
-    for (i, o) in ops.iter().enumerate() {
-        eprintln!("  ops[{}]: {:?}", i, o);
-    }
-    // Check if this is the problematic ORR at 0x080000DC
-    if op == "ORR" {
-        if ops.len() >= 2 {
-            if let Operand::Register(rd) = ops[0] {
-                eprintln!("  ORR Rd = R{}", rd);
-                if rd == 0 {
-                    eprintln!("  WARNING: ORR with Rd=R0 should NOT generate a branch!");
-                }
-                if rd == 15 {
-                    eprintln!("  ORR Rd=R15 - generating branch!");
-                }
-            }
-        }
-    }
-    
     if ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
             // CRITICAL: Writing to PC (R15) is a branch!
@@ -263,9 +249,6 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
                         ));
                     }
                 }
-                // Fallback: just set PC to result of logic operation
-                // This handles edge cases
-                eprintln!("DEBUG: {} with Rd=R{} generating PC write!", op, rd);
             }
             
             // Handle 2-operand form: ORR Rd, #imm or ORR Rd, Rm

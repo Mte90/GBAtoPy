@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum TestStatus {
@@ -16,6 +17,10 @@ pub struct TestResult {
     pub status: TestStatus,
     pub message: String,
     pub duration: Duration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_classification: Option<String>,
 }
 
 impl TestResult {
@@ -26,6 +31,8 @@ impl TestResult {
             status: TestStatus::Pass,
             message: message.to_string(),
             duration,
+            metrics: None,
+            failure_classification: None,
         }
     }
 
@@ -36,6 +43,8 @@ impl TestResult {
             status: TestStatus::Fail,
             message: message.to_string(),
             duration,
+            metrics: None,
+            failure_classification: None,
         }
     }
 
@@ -46,6 +55,8 @@ impl TestResult {
             status: TestStatus::Skipped,
             message: message.to_string(),
             duration,
+            metrics: None,
+            failure_classification: None,
         }
     }
 
@@ -56,6 +67,8 @@ impl TestResult {
             status: TestStatus::Error,
             message: message.to_string(),
             duration,
+            metrics: None,
+            failure_classification: None,
         }
     }
 

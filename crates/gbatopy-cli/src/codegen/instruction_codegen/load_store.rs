@@ -1,5 +1,18 @@
 use gbatopy_disasm::{DecodedInstruction, Operand};
 
+fn base_address_expr(base: u8, inst: &DecodedInstruction) -> String {
+    if base == 15 {
+        let pc = if inst.mode == gbatopy_disasm::ArmMode::Thumb {
+            inst.address + 4
+        } else {
+            inst.address + 8
+        };
+        format!("0x{:08X}", pc)
+    } else {
+        format!("registers[{}]", base)
+    }
+}
+
 pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let opcode = inst.opcode.as_str();
     let ops = &inst.operands;
@@ -24,7 +37,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 
-                let mut code = format!("registers[{}] = memory.read_u32(registers[{}]{})", rd, base, offset_expr);
+                let base_expr = base_address_expr(*base, inst);
+                let mut code = format!("registers[{}] = memory.read_u32({}{})", rd, base_expr, offset_expr);
                 
                 // Handle post-increment writeback for LDR
                 if *writeback {
@@ -68,7 +82,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 
-                let mut code = format!("memory.write_u32(registers[{}]{}, registers[{}])", base, offset_expr, rd);
+                let base_expr = base_address_expr(*base, inst);
+                let mut code = format!("memory.write_u32({}{}, registers[{}])", base_expr, offset_expr, rd);
                 
                 // Handle post-increment writeback for STR
                 if *writeback {
@@ -112,7 +127,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 
-                let mut code = format!("registers[{}] = memory.read_u8(registers[{}]{}) & 0xFF", rd, base, offset_expr);
+                let base_expr = base_address_expr(*base, inst);
+                let mut code = format!("registers[{}] = memory.read_u8({}{}) & 0xFF", rd, base_expr, offset_expr);
                 
                 // Handle post-increment writeback for LDRB
                 if *writeback {
@@ -156,7 +172,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 
-                let mut code = format!("memory.write_u8(registers[{}]{}, registers[{}] & 0xFF)", base, offset_expr, rd);
+                let base_expr = base_address_expr(*base, inst);
+                let mut code = format!("memory.write_u8({}{}, registers[{}] & 0xFF)", base_expr, offset_expr, rd);
                 
                 // Handle post-increment writeback for STRB
                 if *writeback {
@@ -200,7 +217,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 
-                let mut code = format!("registers[{}] = memory.read_u16(registers[{}]{}) & 0xFFFF", rd, base, offset_expr);
+                let base_expr = base_address_expr(*base, inst);
+                let mut code = format!("registers[{}] = memory.read_u16({}{}) & 0xFFFF", rd, base_expr, offset_expr);
                 
                 // Handle post-increment writeback for LDRH
                 if *writeback {
@@ -244,7 +262,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 
-                let mut code = format!("memory.write_u16(registers[{}]{}, registers[{}] & 0xFFFF)", base, offset_expr, rd);
+                let base_expr = base_address_expr(*base, inst);
+                let mut code = format!("memory.write_u16({}{}, registers[{}] & 0xFFFF)", base_expr, offset_expr, rd);
                 
                 // Handle post-increment writeback for STRH
                 if *writeback {
@@ -351,8 +370,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 return Some(format!(
-                    "temp = memory.read_u16(registers[{}]{})\nregisters[{}] = (temp << 16) >> 16",
-                    base, offset_expr, rd
+                    "temp = memory.read_u16({}{})\nregisters[{}] = (temp << 16) >> 16",
+                    base_address_expr(*base, inst), offset_expr, rd
                 ));
             }
         }
@@ -372,8 +391,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 return Some(format!(
-                    "temp = memory.read_u8(registers[{}]{})\nregisters[{}] = (temp << 24) >> 24",
-                    base, offset_expr, rd
+                    "temp = memory.read_u8({}{})\nregisters[{}] = (temp << 24) >> 24",
+                    base_address_expr(*base, inst), offset_expr, rd
                 ));
             }
         }

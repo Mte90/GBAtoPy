@@ -154,20 +154,22 @@ impl ArmDecoder {
         (full_name, operands, is_thumb)
     }
 
-    fn decode_data_processing(&self, word: u32, address: u32) -> (String, Vec<Operand>, bool) {
-        // BX/BLX: bits[27:24]=0x1, bits[23:20]=0x2, bits[19:16]=0xF, bits[7:4]=0x1
+    fn decode_data_processing(&self, word: u32, _address: u32) -> (String, Vec<Operand>, bool) {
+        // BX/BLX: bits[27:24]=0x1, bits[23:20]=0x2(BX) or 0x3(BLX), bits[19:16]=0xF, bits[7:4]=0x1
+        // BX:  cond 0001 0010 1111 1111 1111 0001 Rm  (bit 20 = 0)
+        // BLX: cond 0001 0011 1111 1111 1111 0001 Rm  (bit 20 = 1)
         let bits_27_24 = (word >> 24) & 0xF;
         let bits_23_20 = (word >> 20) & 0xF;
         let bits_19_16 = (word >> 16) & 0xF;
         let bits_7_4 = (word >> 4) & 0xF;
 
         let is_bx_blx =
-            bits_27_24 == 0x1 && bits_23_20 == 0x2 && bits_19_16 == 0xF && bits_7_4 == 0x1;
+            bits_27_24 == 0x1 && (bits_23_20 == 0x2 || bits_23_20 == 0x3) && bits_19_16 == 0xF && bits_7_4 == 0x1;
 
         if is_bx_blx {
-            let h_bit = (word >> 21) & 1;
+            let l_bit = (word >> 20) & 1;  // bit 20 distinguishes BX (0) from BLX (1)
             let rm = (word & 0xF) as u8;
-            let op = if h_bit != 0 { "BLX" } else { "BX" };
+            let op = if l_bit != 0 { "BLX" } else { "BX" };
             return (op.to_string(), vec![Operand::Register(rm)], false);
         }
 
@@ -281,7 +283,9 @@ impl ArmDecoder {
             ];
 
             (op_name.to_string(), operands, s_bit)
-        } else if bits_27_24 == 0x1 && bits_23_21 == 0x1 && bits_7_4 == 0x0 {
+        } else if bits_27_24 == 0x1 && bits_7_4 == 0x9 && ((word >> 20) & 0x3) == 0x0 {
+            // SWP/SWPB: cond 0001 0B 00 Rn Rd 0000 1001 Rm
+            // bits 7-4 = 1001 is the unique SWP identifier
             let b_bit = (word >> 22) & 1 != 0;
             let rd = ((word >> 12) & 0xF) as u8;
             let rm = (word & 0xF) as u8;
@@ -297,18 +301,23 @@ impl ArmDecoder {
                 ],
                 false,
             )
-        } else if ((word >> 28) & 0xF) == 0xE && ((word >> 27) & 1) == 1 {
+        } else if bits_27_24 == 0x1 && ((word >> 20) & 0x3) == 0x0 && bits_7_4 == 0x0
+            && ((word >> 16) & 0xF) == 0xF && ((word >> 12) & 0xF) == 0x0
+        {
+            // MRS: cond 0001 0R 00 1111 0000 Rd 0000
+            // bits 21-20 = 00, bits 19-16 = 1111, bits 15-12 = 0000, bits 7-4 = 0000
+            let r_bit = (word >> 22) & 1;
             let rd = ((word >> 12) & 0xF) as u8;
-            let sr = ((word >> 8) & 0xF) as u8;
+            let sr = if r_bit != 0 { 1 } else { 0 };
             (
                 "MRS".to_string(),
                 vec![Operand::Register(rd), Operand::Immediate(sr as u32)],
                 false,
             )
-        } else if (word >> 23) & 0x1F == 0x00011 {
+        } else if bits_27_24 == 0x1 && ((word >> 20) & 0x3) == 0x2 && bits_7_4 == 0x0 {
             let s_bit = (word >> 20) & 1 != 0;
             let flags = (word >> 16) & 0xF;
-            let rd = ((word >> 12) & 0xF) as u8;
+            let _rd = ((word >> 12) & 0xF) as u8;
 
             let _flags_str = match flags {
                 0x1 => "C",
@@ -319,10 +328,11 @@ impl ArmDecoder {
                 _ => "CPSR",
             };
 
+            let rm = (word & 0xF) as u8;
             let operand = if (word & (1 << 25)) != 0 {
                 Operand::Immediate(word & 0xFF)
             } else {
-                Operand::Register(rd)
+                Operand::Register(rm)
             };
 
             (
@@ -376,12 +386,6 @@ impl ArmDecoder {
             let i_bit = (word >> 25) & 1 != 0; // I flag: 1=immediate, 0=register
             let operand2_bits = word & 0xFFF;
 
-            // DEBUG: Log ORR instructions
-            if opcode_bits == 0xC {
-                eprintln!("DEBUG ORR at 0x{:08X}: word=0x{:08X}, rd=R{}, rn=R{}, i_bit={}, operand2=0x{:03X}", 
-                         address, word, rd, rn, i_bit, operand2_bits);
-            }
-
             if let Some(op) = DataOp::from_bits(opcode_bits) {
                 let mut operands = vec![Operand::Register(rd)];
 
@@ -401,6 +405,7 @@ impl ArmDecoder {
                             ((imm32 >> shift) | (imm32 << (32 - shift))) & 0xFFFFFFFF
                         }
                     };
+                    operands.push(Operand::Register(rn));
                     operands.push(Operand::Immediate(imm_val));
                 } else {
                     // Register operand with optional shift

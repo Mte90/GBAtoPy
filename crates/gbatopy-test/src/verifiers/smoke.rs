@@ -46,6 +46,8 @@ impl Verifier for SmokeVerifier {
                 status: TestStatus::Fail,
                 message: format!("Transpilation failed: {}", e),
                 duration: start.elapsed(),
+                metrics: None,
+                failure_classification: None,
             };
         }
 
@@ -86,6 +88,8 @@ impl Verifier for SmokeVerifier {
                     status: TestStatus::Fail,
                     message: format!("Python syntax error: {}", e),
                     duration: start.elapsed(),
+                    metrics: None,
+                    failure_classification: None,
                 };
             }
             true
@@ -99,6 +103,8 @@ impl Verifier for SmokeVerifier {
             status: TestStatus::Pass,
             message: "Transpilation and syntax check passed".to_string(),
             duration: start.elapsed(),
+            metrics: None,
+            failure_classification: None,
         }
     }
 
