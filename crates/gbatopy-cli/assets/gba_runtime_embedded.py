@@ -2917,19 +2917,30 @@ class Memory:
         return None
 
     def _handle_dma_write(self, addr: int, value: int):
-        channel = (addr - 0x040000B0) // 0x10
-        reg_offset = (addr - 0x040000B0) % 0x10
+        channel = (addr - 0x040000B0) // 0x0C
+        reg_offset = (addr - 0x040000B0) % 0x0C
         if channel < 0 or channel > 3:
             return
+        ch = self._dma.channels[channel]
+        was_enabled = ch.enabled
+        ch.read_from_memory()
         if reg_offset == 0:
-            self._dma.channels[channel].src_addr = value
+            ch.src_addr = value
         elif reg_offset == 4:
-            self._dma.channels[channel].dst_addr = value
+            ch.dst_addr = value
         elif reg_offset == 8:
-            self._dma.channels[channel].count = value
-        elif reg_offset == 12:
-            self._dma.channels[channel].control = value
-            self._dma.channels[channel].enabled = (value & 0x80000000) != 0
+            if value > 0xFFFF:
+                ch.count = value & 0xFFFF
+                ch.control = (value >> 16) & 0xFFFF
+            else:
+                ch.count = value & 0xFFFF
+        elif reg_offset == 10:
+            ch.control = value & 0xFFFF
+        ch.write_to_memory()
+        ch.read_from_memory()
+        if ch.enabled and not was_enabled:
+            if ch.is_immediate():
+                self._dma.start_transfer(channel)
 
     def _handle_timer_write(self, addr: int, value: int):
         base = 0x04000100

@@ -835,12 +835,21 @@ class PPU:
                     surf.set_at((x, y), color)
             return surf
     def _init_framebuffer(self):
-        """Initialize the framebuffer"""
+        """Initialize the framebuffer with the backdrop color (palette entry 0)."""
+        backdrop = (0, 0, 0)
+        try:
+            color_val = self.memory.read_u16(0x05000000)
+            r = (color_val >> 0) & 0x1F
+            g = (color_val >> 5) & 0x1F
+            b = (color_val >> 10) & 0x1F
+            backdrop = (_c5to8(r), _c5to8(g), _c5to8(b))
+        except Exception:
+            pass
         self.framebuffer = [
-            [(0, 0, 0) for _ in range(self.screen_width)] for _ in range(self.screen_height)
+            [backdrop for _ in range(self.screen_width)] for _ in range(self.screen_height)
         ]
         # Track which BG layer (0-3) or OBJ (4) or backdrop (5) each pixel belongs to
-        self.layer_origin = [[0]*240 for _ in range(160)]
+        self.layer_origin = [[5]*240 for _ in range(160)]
         # Second target framebuffer for blend operations
         self.second_target_framebuffer = [[None]*240 for _ in range(160)]
 
@@ -1495,64 +1504,62 @@ class PPU:
             self.bg_hofs[bg] = self.memory.read_u16(self.REG_BG0HOFS + bg * 4) & 0x1FF
             self.bg_vofs[bg] = self.memory.read_u16(self.REG_BG0VOFS + bg * 4) & 0x1FF
 
-    def render_frame(self):
-        """Render one frame of graphics with Windows, Mosaic, and all effects"""
-        # Read current MMIO state before rendering (ROM may have updated registers)
-        self._read_registers()
-        
-        # Update VCOUNT
-        self.vcount = (self.vcount + 1) % self.screen_height
+    def step_scanline(self):
+        """Advance one scanline during instruction execution.
+        Updates VCount in MMIO, fires HBlank/VBlank DMA and IRQs.
+        Called 160+ times per frame by the main loop between instruction batches.
+        Does NOT render pixels — use render_frame() for that."""
+        self.vcount = (self.vcount + 1) % 228
         self.vblank = self.vcount >= self.screen_height
 
-        # VCount compare: check if VCOUNT == LYC
-        was_trigger = self.vcount_trigger
-        self.vcount_trigger = (self.vcount == self.lyc)
+        io = self.memory.io
+        # Write VCount to MMIO (0x04000006) so CPU reads see the current scanline
+        io[6] = self.vcount & 0xFF
+        io[7] = 0
 
-        # Fire VCount interrupt if enabled and trigger just occurred
-        if self.vcount_trigger and not was_trigger and self.vcount_irq_enable:
-            dispstat_addr = 0x04000004
-            current_dispstat = self.memory.read_u16(dispstat_addr)
-            self.memory.write_u16(dispstat_addr, current_dispstat | 0x0004)
-            if hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
-                self.memory._interrupts.vcounter_irq()
-
-        # VBlank interrupt: Set z=1 to unblock VBlank wait loops in generated code
-        # This simulates the VBlank interrupt flag that BIOS checks
-        import sys
-
-        if "generated_rom" in sys.modules:
-            generated = sys.modules["generated_rom"]
-            if hasattr(generated, "z"):
-                generated.z = 1  # Signal VBlank
-            else:
-                # Create z variable if it doesn't exist
-                generated.z = 1
-
-        # Also set via MMIO at DISPSTAT (0x04000004) bit 0
-        # Read current DISPSTAT, set VBlank flag, write back
-        dispstat_addr = 0x04000004
-        current_dispstat = self.memory.read_u16(dispstat_addr)
+        # Update DISPSTAT (0x04000004): bit0=VBlank, bit1=HBlank, bit2=VCount trigger
+        dispstat = io[4] | (io[5] << 8)
         if self.vblank:
-            self.memory.write_u16(dispstat_addr, (current_dispstat | 0x0001) & ~0x0002)
-            if hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
-                self.memory._interrupts.vblank_irq()
-            # Fire DMA VBlank triggers (DMA with timing=VBlank starts at VBlank)
-            if hasattr(self.memory, '_dma') and self.memory._dma is not None:
-                self.memory._dma.vblank_fire()
+            dispstat |= 0x0001
         else:
-            self.memory.write_u16(dispstat_addr, (current_dispstat & ~0x0001) | 0x0002)
-            if self.hblank_irq_enable:
-                if hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
-                    self.memory._interrupts.hblank_irq()
-            # Fire DMA HBlank triggers (DMA with timing=HBlank starts at HBlank)
-            if hasattr(self.memory, '_dma') and self.memory._dma is not None:
-                self.memory._dma.hblank_fire()
+            dispstat &= ~0x0001
+        dispstat |= 0x0002  # HBlank bit set during scanline
 
-        # Note: forced_blank is a display control flag but we still render
-        # Don't return early - let rendering proceed even if forced_blank is set
-        # This ensures framebuffer gets populated for screenshots
+        lyc = io[8] & 0xFF
+        if self.vcount == lyc:
+            dispstat |= 0x0004
+        else:
+            dispstat &= ~0x0004
+        io[4] = dispstat & 0xFF
+        io[5] = (dispstat >> 8) & 0xFF
 
-        # Clear framebuffer
+        # Fire DMA triggers
+        dma = self.memory._dma
+        if dma is not None:
+            if self.vblank:
+                dma.vblank_fire()
+            dma.hblank_fire()
+
+        # Fire interrupts
+        irq = self.memory._interrupts
+        if irq is not None:
+            if self.vblank and (dispstat & 0x0008):
+                irq.vblank_irq()
+            if dispstat & 0x0010:
+                irq.hblank_irq()
+            if (dispstat & 0x0004) and (dispstat & 0x0020):
+                irq.vcounter_irq()
+
+        # Signal VBlank to generated code (unblocks VBlank wait loops)
+        if self.vblank:
+            import sys
+            mod = sys.modules.get("generated_rom")
+            if mod is not None:
+                mod.z = 1
+
+    def render_frame(self):
+        """Render one frame of graphics. Called once per frame after all scanlines."""
+        self._read_registers()
         self._init_framebuffer()
 
         # Get current display mode
@@ -1991,16 +1998,16 @@ class PPU:
                 first_target_mask = self.bldcnt & 0x3F
                 second_target_mask = (self.bldcnt >> 8) & 0x3F
                 
-                # Read backdrop color for BD (bit 5 of each mask)
-                bg_backdrop_r, bg_backdrop_g, bg_backdrop_b = 31, 31, 31
+                # Read backdrop color for BD (bit 5 of each mask) from palette entry 0
+                try:
+                    backdrop_color_val = self.memory.read_u16(0x05000000)
+                    bg_backdrop_r = _c5to8((backdrop_color_val >> 0) & 0x1F)
+                    bg_backdrop_g = _c5to8((backdrop_color_val >> 5) & 0x1F)
+                    bg_backdrop_b = _c5to8((backdrop_color_val >> 10) & 0x1F)
+                except Exception:
+                    bg_backdrop_r, bg_backdrop_g, bg_backdrop_b = 0, 0, 0
                 if second_target_mask & (1 << 5):  # BD is 2nd target
-                    try:
-                        backdrop_color_val = self.memory.read_u16(0x05000000)
-                        bg_backdrop_r = _c5to8((backdrop_color_val >> 0) & 0x1F)
-                        bg_backdrop_g = _c5to8((backdrop_color_val >> 5) & 0x1F)
-                        bg_backdrop_b = _c5to8((backdrop_color_val >> 10) & 0x1F)
-                    except:
-                        pass
+                    pass  # backdrop already read above
                 
                 for y in range(self.screen_height):
                     for x in range(self.screen_width):

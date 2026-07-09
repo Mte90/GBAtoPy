@@ -304,48 +304,51 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 let is_pre_index = *pre_index;
 
                 let mut code = String::new();
-
-                // Calculate initial address based on addressing mode
-                // IA (post,inc): base, base+4, ...; final = base + n*4
-                // IB (pre,inc): base+4, base+8, ...; final = base + n*4
-                // DA (post,dec): base, base-4, ...; final = base - n*4
-                // DB (pre,dec): base-4, base-8, ...; final = base - n*4
                 let num_regs = reg_list.len();
-                if is_pre_index {
-                    if is_increment {
-                        code.push_str(&format!("addr = registers[{}] + 4\n", base_reg));
+
+                // ARM LDM/STM rule: registers are always accessed in ascending register-number
+                // order mapped to ascending addresses. For increment modes (IA/IB) the lowest
+                // register goes to the lowest address; for decrement modes (DA/DB) the lowest
+                // register goes to the lowest address as well, which means the access starts at
+                // the bottom of the range and walks upward.
+                //
+                // Address ranges per mode (n = num_regs):
+                //   IA (post,inc): [base,     base + 4n)   final SP = base + 4n
+                //   IB (pre,inc):  [base + 4, base + 4n + 4) final SP = base + 4n
+                //   DA (post,dec): [base - 4n + 4, base + 4) final SP = base - 4n
+                //   DB (pre,dec):  [base - 4n, base)       final SP = base - 4n
+                let lowest_addr_expr = if is_increment {
+                    if is_pre_index {
+                        format!("registers[{}] + 4", base_reg)
                     } else {
-                        code.push_str(&format!("addr = registers[{}] - 4\n", base_reg));
+                        format!("registers[{}]", base_reg)
                     }
                 } else {
-                    code.push_str(&format!("addr = registers[{}]\n", base_reg));
-                }
+                    if is_pre_index {
+                        format!("registers[{}] - {}", base_reg, num_regs * 4)
+                    } else {
+                        format!("registers[{}] - {} + 4", base_reg, num_regs * 4)
+                    }
+                };
+                code.push_str(&format!("addr = {}\n", lowest_addr_expr));
 
-                // Generate load/store for each register
+                // Walk the register list in order, incrementing address by 4 each time.
                 for (i, &reg) in reg_list.iter().enumerate() {
                     if is_load {
                         code.push_str(&format!("registers[{}] = memory.read_u32(addr)\n", reg));
                     } else {
                         code.push_str(&format!("memory.write_u32(addr, registers[{}])\n", reg));
                     }
-
-                    // Update address after each access (except last)
                     if i < num_regs - 1 {
-                        if is_increment {
-                            code.push_str("addr += 4\n");
-                        } else {
-                            code.push_str("addr -= 4\n");
-                        }
+                        code.push_str("addr += 4\n");
                     }
                 }
 
-                // Calculate final address for writeback
+                // Writeback: IA/IB → base + n*4; DA/DB → base - n*4
                 if do_writeback {
                     let final_addr = if is_increment {
-                        // IA and IB both write back to base + num_regs * 4
                         format!("registers[{}] + {}", base_reg, num_regs * 4)
                     } else {
-                        // DA and DB both write back to base - num_regs * 4
                         format!("registers[{}] - {}", base_reg, num_regs * 4)
                     };
                     code.push_str(&format!("registers[{}] = {}\n", base_reg, final_addr));

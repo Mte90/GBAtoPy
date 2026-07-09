@@ -101,8 +101,9 @@ impl CfgBuilder {
 
             // Determine mode for this specific address
             let current_mode = if addr % 2 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
+            let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
 
-            let rom_offset = (addr - 0x08000000) as usize;
+            let rom_offset = (decode_addr - 0x08000000) as usize;
             if rom_offset >= rom.len() {
                 continue;
             }
@@ -118,7 +119,7 @@ impl CfgBuilder {
                         rom[rom_offset + 2],
                         rom[rom_offset + 3],
                     ]);
-                    let (op, ops, thumb) = arm_decoder.decode(opcode, addr);
+                    let (op, ops, thumb) = arm_decoder.decode(opcode, decode_addr);
                     (op, ops, thumb, 4)
                 }
                 ArmMode::Thumb => {
@@ -126,7 +127,7 @@ impl CfgBuilder {
                         continue;
                     }
                     let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                    let (op, ops, thumb) = thumb_decoder.decode(opcode, addr);
+                    let (op, ops, thumb) = thumb_decoder.decode(opcode, decode_addr);
                     (op, ops, thumb, 2)
                 }
             };
@@ -155,7 +156,7 @@ impl CfgBuilder {
             // the branch might not be taken - but we need to be careful
             // Actually, for accurate CFG, we should add fall-through for ALL branches
             // because we don't know if they'll be taken at runtime
-let is_uncond_branch = opcode_str == "B" || opcode_str == "BX" || opcode_str == "BL" || opcode_str == "BLX";
+let is_uncond_branch = opcode_str == "B" || opcode_str == "BX";
         
         if !is_uncond_branch {
             let next_addr = addr + instr_width;

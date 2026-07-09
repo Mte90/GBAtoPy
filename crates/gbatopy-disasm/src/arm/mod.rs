@@ -106,17 +106,14 @@ impl ArmDecoder {
             return self.decode_branch(word, address);
         }
         
-        // CRITICAL FIX: Load/Store with register offset can have bits 27-26 = 00
-        // Pattern: bits 27-26 = 00, bit 25 = 0, bit 21 = 0 (W=0), bit 20 = 1 (L=1) or 0 (L=0)
-        // This is actually a load/store instruction, NOT data processing!
+        // Halfword load/store (LDRH/STRH/LDRSB/LDRSH) and SWP have bits 27-25 = 000
+        // with bit 7 = 1 and bit 4 = 1. Regular load/store has bits 27-26 = 01.
+        // Data processing with register operand has bits 27-26 = 00, bit 25 = 0,
+        // and bit 4 may be 0 (immediate shift) or 1 (register shift).
         if bits_27_26 == 0b00 && bit_25 == 0 {
-            let w_bit = (word >> 21) & 0x1;
-            let _l_bit = (word >> 20) & 0x1;
-            // Check if this looks like load/store register offset
-            // bits 7-5 = shift type, bit 4 = type bit (0 for register offset)
-            let type_bit = (word >> 4) & 0x1;
-            if type_bit == 0 && w_bit == 0 {
-                // This is load/store with register offset!
+            let bit_7 = (word >> 7) & 0x1;
+            let bit_4 = (word >> 4) & 0x1;
+            if bit_7 == 1 && bit_4 == 1 {
                 return self.decode_load_store(word, address);
             }
         }
@@ -387,7 +384,16 @@ impl ArmDecoder {
             let operand2_bits = word & 0xFFF;
 
             if let Some(op) = DataOp::from_bits(opcode_bits) {
-                let mut operands = vec![Operand::Register(rd)];
+                // MOV and MVN don't use Rn (bits 19-16 are SBZ).
+                // TST/TEQ/CMP/CMN only set flags; Rd (bits 15-12) is SBZ and
+                // must not be pushed, otherwise the codegen treats it as a
+                // source operand, corrupting the computation.
+                let has_rn = !matches!(op, DataOp::Mov | DataOp::Mvn);
+                let has_rd = !matches!(op, DataOp::Tst | DataOp::Teq | DataOp::Cmp | DataOp::Cmn);
+                let mut operands = vec![];
+                if has_rd {
+                    operands.push(Operand::Register(rd));
+                }
 
                 if i_bit {
                     // Immediate operand: calculate rotated immediate value
@@ -405,17 +411,37 @@ impl ArmDecoder {
                             ((imm32 >> shift) | (imm32 << (32 - shift))) & 0xFFFFFFFF
                         }
                     };
-                    operands.push(Operand::Register(rn));
+                    if has_rn {
+                        operands.push(Operand::Register(rn));
+                    }
                     operands.push(Operand::Immediate(imm_val));
                 } else {
                     // Register operand with optional shift
-                    operands.push(Operand::Register(rn));
+                    if has_rn {
+                        operands.push(Operand::Register(rn));
+                    }
 
                     let rm = (operand2_bits & 0xF) as u8;
                     if (operand2_bits & 0x10) != 0 {
-                        let shift_imm = ((operand2_bits >> 7) & 0x1F) as u8;
+                        // bit 4 = 1: register-specified shift amount (Rs in bits 11-8)
+                        let rs = ((operand2_bits >> 8) & 0xF) as u8;
                         let shift_type_bits = ((operand2_bits >> 5) & 0x3) as u8;
                         if let Some(shift) = crate::operand::ShiftType::from_bits(shift_type_bits) {
+                            operands.push(Operand::ShiftedRegister {
+                                reg: rm,
+                                shift,
+                                amount: crate::operand::ShiftAmount::Register(rs),
+                            });
+                        } else {
+                            operands.push(Operand::Register(rm));
+                        }
+                    } else {
+                        // bit 4 = 0: immediate shift amount (bits 11-7)
+                        let shift_imm = ((operand2_bits >> 7) & 0x1F) as u8;
+                        let shift_type_bits = ((operand2_bits >> 5) & 0x3) as u8;
+                        if shift_imm == 0 && shift_type_bits == 0 {
+                            operands.push(Operand::Register(rm));
+                        } else if let Some(shift) = crate::operand::ShiftType::from_bits(shift_type_bits) {
                             operands.push(Operand::ShiftedRegister {
                                 reg: rm,
                                 shift,
@@ -424,8 +450,6 @@ impl ArmDecoder {
                         } else {
                             operands.push(Operand::Register(rm));
                         }
-                    } else {
-                        operands.push(Operand::Register(rm));
                     }
                 }
 

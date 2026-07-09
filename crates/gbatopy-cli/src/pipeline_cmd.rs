@@ -197,49 +197,17 @@ pub fn run_pipeline(
     let branch_targets: Vec<u32>;
     
     let instructions: Vec<gbatopy_disasm::DecodedInstruction>;
-    let is_large_rom = rom.len() > 1024 * 1024;
 
-    if is_large_rom {
-        eprintln!("Step 1: CFG-based Disassembly (large ROM)");
-        let mut cfg = CfgBuilder::new();
-        cfg.build_from_entry(&rom, 0x08000000);
-        reachable = cfg.get_reachable_addresses().to_vec();
-        branch_targets = cfg.branch_targets.clone();
-        eprintln!("  CFG found {} reachable addresses", reachable.len());
+    // Always use CFG-based disassembly to avoid decoding data sections as code
+    eprintln!("Step 1: CFG-based Disassembly");
+    let mut cfg = CfgBuilder::new();
+    cfg.build_from_entry(&rom, 0x08000000);
+    reachable = cfg.get_reachable_addresses().to_vec();
+    branch_targets = cfg.branch_targets.clone();
+    eprintln!("  CFG found {} reachable addresses", reachable.len());
 
-        // For large ROMs, use selective disassembly (only reachable addresses)
-        let mut disasm = Disassembler::new();
-        instructions = disasm.selective_disassemble(&rom, &reachable);
-    } else {
-        eprintln!("Step 1: Full Disassembly (small ROM)");
-        let mut disasm = Disassembler::new();
-        let all_instructions = disasm.disassemble(&rom, 0x08000000);
-        
-        // Follow branch targets to find actual entry point
-        // Some ROMs (like stripes.gba) start with a branch to the real code
-        let mut reachable_set: std::collections::HashSet<u32> = all_instructions.iter().map(|i| i.address).collect();
-        let mut branch_targets_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        
-        // Check first instruction - if it's a branch, follow it
-        if let Some(first_inst) = all_instructions.first() {
-            if first_inst.opcode.starts_with('B') && !first_inst.opcode.starts_with("BX") {
-                // Extract branch target from the instruction
-                if let Some(target) = extract_branch_target(first_inst) {
-                    eprintln!("  First instruction is branch to 0x{:08X}, following...", target);
-                    reachable_set.insert(target);
-                    branch_targets_set.insert(target);
-                }
-            }
-        }
-        
-        reachable = reachable_set.into_iter().collect();
-        branch_targets = branch_targets_set.into_iter().collect();
-        eprintln!("  Disassembled {} instructions", reachable.len());
-
-        // For small ROMs, use instructions directly from disassemble()
-        // (which has correct ModeTracker-based ARM/Thumb detection)
-        instructions = all_instructions;
-    }
+    let mut disasm = Disassembler::new();
+    instructions = disasm.selective_disassemble(&rom, &reachable);
     
     if reachable.len() < 10 {
         eprintln!("  DEBUG: reachable addresses:");
@@ -428,24 +396,6 @@ pub fn run_pipeline(
 
     // PPU mode is read from DISPCNT register at runtime, not hardcoded
     code.push_str("\n");
-
-use gbatopy_disasm::Operand;
-
-// Helper function to extract branch target from a branch instruction
-fn extract_branch_target(inst: &gbatopy_disasm::DecodedInstruction) -> Option<u32> {
-    // Branch instructions: B, BEQ, BNE, etc. have immediate offset
-    if inst.opcode.starts_with('B') && !inst.opcode.starts_with("BX") {
-        // Look for immediate operand
-        for op in &inst.operands {
-            if let gbatopy_disasm::Operand::Immediate(val) = op {
-                return Some(*val);
-            }
-        }
-    }
-    None
-}
-
-// Generate Python from disassembled instructions (runtime already embedded above)
 
     // Required imports
     code.push_str("import pygame\n");
@@ -1124,33 +1074,33 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         print(f"State loaded successfully")
                     else:
                         print(f"Warning: Failed to load state from {load_path}", file=sys.stderr)
-        # Execute instructions for this frame
+        # Execute instructions for this frame, stepping PPU scanlines
+        # Each scanline: run a batch of instructions, then advance VCount + fire HBlank DMA
         target_cycles_per_frame = int(gba_hz / 60.0)
-        inner_loop_stalls = 0
-        max_inner_stalls = 10  # Break inner loop after just 10 stalls - ROM is likely in a wait loop
-        for _ in range(target_cycles_per_frame // 4):
-            pc = registers[15]
-            idx = (pc - 0x08000000) >> 1
-            func = dispatch_table.get(idx)
-            if func is None: 
-                print(f"Unknown PC: 0x{pc:08X}")
-                break
-            func(registers, cpsr); ic += 1
-            # Track stalls within inner loop - break if PC doesn't change
-            if registers[15] == pc:
-                inner_loop_stalls += 1
-                if inner_loop_stalls > max_inner_stalls:
-                    # PC is stuck, break inner loop to allow frame rendering
+        instr_per_scanline = max(50, (target_cycles_per_frame // 4) // 160)
+        max_inner_stalls = 10
+        for _scanline in range(160):
+            inner_loop_stalls = 0
+            for _ in range(instr_per_scanline):
+                pc = registers[15]
+                idx = (pc - 0x08000000) >> 1
+                func = dispatch_table.get(idx)
+                if func is None:
+                    print(f"Unknown PC: 0x{pc:08X}")
                     break
-            else:
-                inner_loop_stalls = 0
-            # Check hooks (zero-overhead when no hooks registered)
-            if hook_manager and hook_manager.has_hooks():
-                if hook_manager.check_hooks(registers[15], 'instruction'):
-                    # Breakpoint hit - pause execution
-                    print("Execution paused at breakpoint")
-                    break
-        # Render frame (this sets VBlank flag and dispatches VBlank IRQ internally)
+                func(registers, cpsr); ic += 1
+                if registers[15] == pc:
+                    inner_loop_stalls += 1
+                    if inner_loop_stalls > max_inner_stalls:
+                        break
+                else:
+                    inner_loop_stalls = 0
+                if hook_manager and hook_manager.has_hooks():
+                    if hook_manager.check_hooks(registers[15], 'instruction'):
+                        print("Execution paused at breakpoint")
+                        break
+            ppu_instance.step_scanline()
+        # Render the completed frame
         ppu_instance.render_frame()
         # Update APU audio
         if apu_instance: apu_instance.update()

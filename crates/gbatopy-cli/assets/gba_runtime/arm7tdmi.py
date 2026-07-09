@@ -472,12 +472,21 @@ class ARM7TDMI:
         n_regs = bin(reg_list).count('1')
 
         # Compute start address honoring pre/post index
+        # ARM addressing modes (P=pre/post, U=up/down):
+        #   IA (P=0,U=1): start at base, increment after each access
+        #   IB (P=1,U=1): start at base+4, increment after each access
+        #   DA (P=0,U=0): start at base-4*(n-1), increment after each access
+        #   DB (P=1,U=0): start at base-4*n, increment after each access
         if p_bit:
-            # Pre-indexed: address is modified before first access
-            addr = base + 4 if is_up else base - 4
+            if is_up:
+                addr = base + 4
+            else:
+                addr = base - 4 * n_regs
         else:
-            # Post-indexed: address starts at base, modified after
-            addr = base
+            if is_up:
+                addr = base
+            else:
+                addr = base - 4 * (n_regs - 1)
 
         if is_load:
             for i in range(16):

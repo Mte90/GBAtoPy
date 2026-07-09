@@ -1,7 +1,79 @@
-use gbatopy_disasm::{operand::ShiftAmount, DecodedInstruction, Operand};
+use gbatopy_disasm::{operand::ShiftAmount, operand::ShiftType, DecodedInstruction, Operand};
 
 /// ARM: PC = instruction_address + 8 (pipeline offset)
 const ARM_PC_OFFSET: u32 = 8;
+
+/// Generate a Python expression for a shifted register operand.
+/// Handles both immediate and register-specified shift amounts,
+/// masks results to 32 bits, and handles GBA edge cases
+/// (LSR/ASR #0 → shift by 32, ROR #0 → RRX).
+fn shifted_reg_expr(reg: u8, shift: &ShiftType, amount: &ShiftAmount) -> String {
+    let r = format!("registers[{}]", reg);
+    match amount {
+        ShiftAmount::Immediate(amt) => {
+            let amt = *amt as u32;
+            match shift {
+                ShiftType::Lsl => {
+                    if amt == 0 {
+                        r
+                    } else {
+                        format!("({} << {}) & 0xFFFFFFFF", r, amt)
+                    }
+                }
+                ShiftType::Lsr => {
+                    let a = if amt == 0 { 32 } else { amt };
+                    format!("({} >> {}) & 0xFFFFFFFF", r, a)
+                }
+                ShiftType::Asr => {
+                    let a = if amt == 0 { 32 } else { amt };
+                    if a >= 32 {
+                        format!("(0xFFFFFFFF if {} & 0x80000000 else 0)", r)
+                    } else {
+                        format!("((({} - 0x100000000) if {} & 0x80000000 else {}) >> {}) & 0xFFFFFFFF", r, r, r, a)
+                    }
+                }
+                ShiftType::Ror => {
+                    if amt == 0 {
+                        format!("(({} >> 1) | ((1 if cpsr.get('c', 0) else 0) << 31)) & 0xFFFFFFFF", r)
+                    } else {
+                        format!("(({} >> {}) | ({} << (32 - {}))) & 0xFFFFFFFF", r, amt, r, amt)
+                    }
+                }
+            }
+        }
+        ShiftAmount::Register(rs) => {
+            let amt_expr = format!("(registers[{}] & 0xFF)", rs);
+            match shift {
+                ShiftType::Lsl => {
+                    // LSL #0 → Rm; LSL #1-31 → Rm << n; LSL #32+ → 0
+                    format!("0 if {a} >= 32 else (({r} << {a}) & 0xFFFFFFFF if {a} != 0 else {r})", r = r, a = amt_expr)
+                }
+                ShiftType::Lsr => {
+                    // LSR #0 → Rm; LSR #1-31 → Rm >> n; LSR #32+ → 0
+                    format!("0 if {a} >= 32 else (({r} >> {a}) & 0xFFFFFFFF if {a} != 0 else {r})", r = r, a = amt_expr)
+                }
+                ShiftType::Asr => {
+                    // ASR #0 → Rm; ASR #1-31 → arithmetic; ASR #32+ → sign-extend
+                    format!("(0xFFFFFFFF if {r} & 0x80000000 else 0) if {a} >= 32 else ((((({r}) - 0x100000000) if {r} & 0x80000000 else {r}) >> {a}) & 0xFFFFFFFF) if {a} != 0 else {r}", r = r, a = amt_expr)
+                }
+                ShiftType::Ror => {
+                    // ROR #0 → Rm; ROR #32 → Rm; ROR >32 → rotate by n & 0x1F
+                    format!("({r}) if {a} == 0 else ({r}) if ({a} & 0x1F) == 0 else (({r} >> ({a} & 0x1F)) | ({r} << (32 - ({a} & 0x1F)))) & 0xFFFFFFFF", r = r, a = amt_expr)
+                }
+            }
+        }
+    }
+}
+
+/// Resolve an operand to a Python expression string.
+fn operand_to_expr(op: &Operand) -> String {
+    match op {
+        Operand::Register(r) => format!("registers[{}]", r),
+        Operand::Immediate(i) => format!("{}", i),
+        Operand::ShiftedRegister { reg, shift, amount } => shifted_reg_expr(*reg, shift, amount),
+        _ => "0".to_string(),
+    }
+}
 
 /// Replace R15 (PC) **source** operands with the computed PC value as an Immediate.
 /// In ARM mode, PC = instruction_address + 8.
@@ -63,27 +135,7 @@ fn generate_mov(ops: &[Operand]) -> Option<String> {
                 }
             }
             
-            let src = if ops.len() >= 2 {
-                match &ops[1] {
-                    Operand::Register(rn) => format!("registers[{}]", rn),
-                    Operand::Immediate(imm) => format!("{}", imm),
-                    Operand::ShiftedRegister { reg, shift, amount } => {
-                        let amt = match amount {
-                            ShiftAmount::Immediate(n) => *n,
-                            _ => 0,
-                        };
-                        match shift {
-                            gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
-                            _ => format!("registers[{}]", reg),
-                        }
-                    }
-                    _ => "0".to_string(),
-                }
-            } else {
-                "0".to_string()
-            };
+            let src = if ops.len() >= 2 { operand_to_expr(&ops[1]) } else { "0".to_string() };
             return Some(format!("registers[{}] = {}", rd, src));
         }
     }
@@ -93,15 +145,7 @@ fn generate_mov(ops: &[Operand]) -> Option<String> {
 fn generate_mvn(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
-            let src = if ops.len() >= 2 {
-                match &ops[1] {
-                    Operand::Register(rn) => format!("registers[{}]", rn),
-                    Operand::Immediate(imm) => format!("{}", imm),
-                    _ => "0".to_string(),
-                }
-            } else {
-                "0".to_string()
-            };
+            let src = if ops.len() >= 2 { operand_to_expr(&ops[1]) } else { "0".to_string() };
             return Some(format!("registers[{}] = {} ^ 0xFFFFFFFF", rd, src));
         }
     }
@@ -114,23 +158,7 @@ fn generate_add(ops: &[Operand], op: &str) -> Option<String> {
             // Handle 2-operand form: ADD Rd, op2 (same as ADD Rd, Rd, op2)
             if ops.len() == 2 {
                 let rd_str = format!("registers[{}]", rd);
-                let op2 = match &ops[1] {
-                    Operand::Register(r) => format!("registers[{}]", r),
-                    Operand::Immediate(i) => format!("{}", i),
-                    Operand::ShiftedRegister { reg, shift, amount } => {
-                        let amt = match amount {
-                            ShiftAmount::Immediate(n) => *n,
-                            _ => 0,
-                        };
-                        match shift {
-                            gbatopy_disasm::operand::ShiftType::Lsl => format!("(registers[{}] << {})", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Lsr => format!("(registers[{}] >> {})", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Asr => format!("(registers[{}] >> {})", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
-                        }
-                    }
-                    _ => "0".to_string(),
-                };
+                let op2 = operand_to_expr(&ops[1]);
                 if op == "ADC" {
                     return Some(format!("{} = ({} + {} + (1 if cpsr['c'] else 0)) & 0xFFFFFFFF", rd_str, rd_str, op2));
                 }
@@ -138,28 +166,8 @@ fn generate_add(ops: &[Operand], op: &str) -> Option<String> {
             }
             // Handle 3-operand form: ADD Rd, Rn, op2
             if ops.len() >= 3 {
-                let rn = match &ops[1] {
-                    Operand::Register(r) => format!("registers[{}]", r),
-                    Operand::Immediate(i) => format!("{}", i),
-                    _ => "0".to_string(),
-                };
-                let op2 = match &ops[2] {
-                    Operand::Register(r) => format!("registers[{}]", r),
-                    Operand::Immediate(i) => format!("{}", i),
-                    Operand::ShiftedRegister { reg, shift, amount } => {
-                        let amt = match amount {
-                            ShiftAmount::Immediate(n) => *n,
-                            _ => 0,
-                        };
-                        match shift {
-                            gbatopy_disasm::operand::ShiftType::Lsl => format!("(registers[{}] << {})", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Lsr => format!("(registers[{}] >> {})", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Asr => format!("(registers[{}] >> {})", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
-                        }
-                    }
-                    _ => "0".to_string(),
-                };
+                let rn = operand_to_expr(&ops[1]);
+                let op2 = operand_to_expr(&ops[2]);
                 if op == "ADC" {
                     return Some(format!("registers[{}] = ({} + {} + (1 if cpsr['c'] else 0)) & 0xFFFFFFFF", rd, rn, op2));
                 }
@@ -175,11 +183,7 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
         if let Operand::Register(rd) = ops[0] {
             if ops.len() == 2 {
                 let rd_str = format!("registers[{}]", rd);
-                let op2 = match &ops[1] {
-                    Operand::Register(r) => format!("registers[{}]", r),
-                    Operand::Immediate(i) => format!("{}", i),
-                    _ => "0".to_string(),
-                };
+                let op2 = operand_to_expr(&ops[1]);
                 let result_var = format!("result_sub_{}", rd);
                 let sub_code = match op {
                     "RSB" => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, op2, rd_str),
@@ -198,16 +202,8 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
                 }
             }
             if ops.len() >= 3 {
-                let rn = match &ops[1] {
-                    Operand::Register(r) => format!("registers[{}]", r),
-                    Operand::Immediate(i) => format!("{}", i),
-                    _ => "0".to_string(),
-                };
-                let op2 = match &ops[2] {
-                    Operand::Register(r) => format!("registers[{}]", r),
-                    Operand::Immediate(i) => format!("{}", i),
-                    _ => "0".to_string(),
-                };
+                let rn = operand_to_expr(&ops[1]);
+                let op2 = operand_to_expr(&ops[2]);
                 let result_var = format!("result_sub_{}", rd);
                 let sub_code = match op {
                     "RSB" => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, op2, rn),
@@ -253,23 +249,7 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
             
             // Handle 2-operand form: ORR Rd, #imm or ORR Rd, Rm
             if ops.len() == 2 {
-                let src = match &ops[1] {
-                    Operand::Register(r) => format!("registers[{}]", r),
-                    Operand::Immediate(i) => format!("{}", i),
-                    Operand::ShiftedRegister { reg, shift, amount } => {
-                        let amt = match amount {
-                            ShiftAmount::Immediate(n) => *n,
-                            _ => 0,
-                        };
-                        match shift {
-                            gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
-                        }
-                    }
-                    _ => "0".to_string(),
-                };
+                let src = operand_to_expr(&ops[1]);
                 let py_op = match op {
                     "AND" => "&",
                     "EOR" => "^",
@@ -283,23 +263,7 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
             // Handle 3-operand form: ORR Rd, Rn, #imm/Rm/shifted
             if let Operand::Register(rn_reg) = ops[1] {
                 let rn = format!("registers[{}]", rn_reg);
-                let op2 = match &ops[2] {
-                    Operand::Register(r) => format!("registers[{}]", r),
-                    Operand::Immediate(i) => format!("{}", i),
-                    Operand::ShiftedRegister { reg, shift, amount } => {
-                        let amt = match amount {
-                            ShiftAmount::Immediate(n) => *n,
-                            _ => 0,
-                        };
-                        match shift {
-                            gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
-                            gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
-                        }
-                    }
-                    _ => "0".to_string(),
-                };
+                let op2 = operand_to_expr(&ops[2]);
                 let py_op = match op {
                     "AND" => "&",
                     "EOR" => "^",
@@ -357,28 +321,8 @@ fn generate_clz(ops: &[Operand]) -> Option<String> {
 
 fn generate_cmp(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 2 {
-        let rn = match &ops[0] {
-            Operand::Register(r) => format!("registers[{}]", r),
-            Operand::Immediate(i) => format!("{}", i),
-            _ => "0".to_string(),
-        };
-        let rm = match &ops[1] {
-            Operand::Register(r) => format!("registers[{}]", r),
-            Operand::Immediate(i) => format!("{}", i),
-            Operand::ShiftedRegister { reg, shift, amount } => {
-                let amt = match amount {
-                    ShiftAmount::Immediate(n) => *n,
-                    _ => 0,
-                };
-                match shift {
-                    gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
-                }
-            }
-            _ => "0".to_string(),
-        };
+        let rn = operand_to_expr(&ops[0]);
+        let rm = operand_to_expr(&ops[1]);
         
         return Some(format!(
             r#"result_cmp = ({rn} - {rm}) & 0xFFFFFFFF
@@ -396,28 +340,8 @@ else:
 
 fn generate_cmn(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 2 {
-        let rn = match &ops[0] {
-            Operand::Register(r) => format!("registers[{}]", r),
-            Operand::Immediate(i) => format!("{}", i),
-            _ => "0".to_string(),
-        };
-        let rm = match &ops[1] {
-            Operand::Register(r) => format!("registers[{}]", r),
-            Operand::Immediate(i) => format!("{}", i),
-            Operand::ShiftedRegister { reg, shift, amount } => {
-                let amt = match amount {
-                    ShiftAmount::Immediate(n) => *n,
-                    _ => 0,
-                };
-                match shift {
-                    gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
-                }
-            }
-            _ => "0".to_string(),
-        };
+        let rn = operand_to_expr(&ops[0]);
+        let rm = operand_to_expr(&ops[1]);
         
         return Some(format!(
             r#"result_cmn = ({rn} + {rm}) & 0xFFFFFFFF
@@ -437,28 +361,8 @@ else:
 
 fn generate_tst(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 2 {
-        let rn = match &ops[0] {
-            Operand::Register(r) => format!("registers[{}]", r),
-            Operand::Immediate(i) => format!("{}", i),
-            _ => "0".to_string(),
-        };
-        let rm = match &ops[1] {
-            Operand::Register(r) => format!("registers[{}]", r),
-            Operand::Immediate(i) => format!("{}", i),
-            Operand::ShiftedRegister { reg, shift, amount } => {
-                let amt = match amount {
-                    ShiftAmount::Immediate(n) => *n,
-                    _ => 0,
-                };
-                match shift {
-                    gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
-                }
-            }
-            _ => "0".to_string(),
-        };
+        let rn = operand_to_expr(&ops[0]);
+        let rm = operand_to_expr(&ops[1]);
         
         return Some(format!(
             r#"result_tst = {rn} & {rm}
@@ -473,28 +377,8 @@ cpsr['v'] = 0"#
 
 fn generate_teq(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 2 {
-        let rn = match &ops[0] {
-            Operand::Register(r) => format!("registers[{}]", r),
-            Operand::Immediate(i) => format!("{}", i),
-            _ => "0".to_string(),
-        };
-        let rm = match &ops[1] {
-            Operand::Register(r) => format!("registers[{}]", r),
-            Operand::Immediate(i) => format!("{}", i),
-            Operand::ShiftedRegister { reg, shift, amount } => {
-                let amt = match amount {
-                    ShiftAmount::Immediate(n) => *n,
-                    _ => 0,
-                };
-                match shift {
-                    gbatopy_disasm::operand::ShiftType::Lsl => format!("registers[{}] << {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Lsr => format!("registers[{}] >> {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Asr => format!("registers[{}] >> {}", reg, amt),
-                    gbatopy_disasm::operand::ShiftType::Ror => format!("(registers[{}] >> {}) | (registers[{}] << (32 - {})) & 0xFFFFFFFF", reg, amt, reg, amt),
-                }
-            }
-            _ => "0".to_string(),
-        };
+        let rn = operand_to_expr(&ops[0]);
+        let rm = operand_to_expr(&ops[1]);
         
         return Some(format!(
             r#"result_teq = {rn} ^ {rm}

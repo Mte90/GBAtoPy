@@ -77,6 +77,8 @@ class Memory:
         self._timers: Optional[object] = None
         self._input: Optional[object] = None
         self._interrupts: Optional[object] = None
+        self._last_vcount_read: int = -1
+        self._last_dispstat_read: int = -1
 
         self.bios[0x00] = 0xEA
         self.bios[0x01] = 0x00
@@ -197,8 +199,8 @@ class Memory:
         return None
 
     def _handle_dma_read(self, addr: int) -> int:
-        channel = (addr - 0x040000B0) // 0x10
-        reg_offset = (addr - 0x040000B0) % 0x10
+        channel = (addr - 0x040000B0) // 0x0C
+        reg_offset = (addr - 0x040000B0) % 0x0C
         if channel < 0 or channel > 3:
             return 0
         ch = self._dma.channels[channel]
@@ -209,29 +211,35 @@ class Memory:
             return ch.dst_addr
         elif reg_offset == 8:
             return ch.count
-        elif reg_offset == 12:
+        elif reg_offset == 10:
             return ch.control
         return 0
 
     def _handle_dma_write(self, addr: int, value: int):
-        channel = (addr - 0x040000B0) // 0x10
-        reg_offset = (addr - 0x040000B0) % 0x10
+        channel = (addr - 0x040000B0) // 0x0C
+        reg_offset = (addr - 0x040000B0) % 0x0C
         if channel < 0 or channel > 3:
             return
+        ch = self._dma.channels[channel]
+        was_enabled = ch.enabled
+        ch.read_from_memory()
         if reg_offset == 0:
-            self._dma.channels[channel].src_addr = value
+            ch.src_addr = value
         elif reg_offset == 4:
-            self._dma.channels[channel].dst_addr = value
+            ch.dst_addr = value
         elif reg_offset == 8:
-            self._dma.channels[channel].count = value
-        elif reg_offset == 12:
-            self._dma.channels[channel].control = value
-            was_enabled = self._dma.channels[channel].enabled
-            self._dma.channels[channel].enabled = (value & 0x80000000) != 0
-            # Trigger immediate DMA transfer when enabled
-            if self._dma.channels[channel].enabled and not was_enabled:
-                if self._dma.channels[channel].is_immediate():
-                    self._dma.start_transfer(channel)
+            if value > 0xFFFF:
+                ch.count = value & 0xFFFF
+                ch.control = (value >> 16) & 0xFFFF
+            else:
+                ch.count = value & 0xFFFF
+        elif reg_offset == 10:
+            ch.control = value & 0xFFFF
+        ch.write_to_memory()
+        ch.read_from_memory()
+        if ch.enabled and not was_enabled:
+            if ch.is_immediate():
+                self._dma.start_transfer(channel)
 
     def _handle_timer_write(self, addr: int, value: int):
         base = 0x04000100
@@ -457,7 +465,32 @@ class Memory:
         return None, 0
 
     def read_u16(self, addr: int) -> int:
-        buf, start = self._buffer_for_addr(addr & 0xFFFFFFFF)
+        addr &= 0xFFFFFFFF
+        mapped = self._map_address(addr)
+        # VCount polling detection: when the CPU reads REG_VCOUNT (0x04000006)
+        # and gets the same value as the last read, it's in a polling loop.
+        # Advance the scanline immediately so VCount changes and the loop exits.
+        if mapped == 0x04000006 and self._ppu is not None:
+            current = self.io[6]
+            if current == self._last_vcount_read:
+                self._ppu.step_scanline()
+                current = self.io[6]
+            self._last_vcount_read = current
+            return current
+        # DISPSTAT VBlank polling detection: when the CPU reads REG_DISPSTAT
+        # (0x04000004) and the VBlank bit (bit 0) is 0 with the same value
+        # as the last read, the ROM is spinning waiting for VBlank. Advance
+        # scanlines until VBlank fires so the loop exits.
+        if mapped == 0x04000004 and self._ppu is not None:
+            current = self.io[4] | (self.io[5] << 8)
+            if (current & 1) == 0 and current == self._last_dispstat_read:
+                for _ in range(228):
+                    self._ppu.step_scanline()
+                    if self.io[4] & 1:
+                        break
+            self._last_dispstat_read = current
+            return self.io[4] | (self.io[5] << 8)
+        buf, start = self._buffer_for_addr(addr)
         if buf:
             return int.from_bytes(buf[start:start + 2], 'little')
         return int.from_bytes(self.rom[addr - 0x08000000:(addr - 0x08000000) + 2], 'little')
@@ -465,26 +498,49 @@ class Memory:
     def read_32(self, addr: int) -> int:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
-        addr = self._map_address(addr)
-        buf, off = self._buffer_for_addr(addr)
+        mapped = self._map_address(addr)
+        if mapped == 0x04000004 and self._ppu is not None:
+            current = self.io[4] | (self.io[5] << 8)
+            if (current & 1) == 0 and current == self._last_dispstat_read:
+                for _ in range(228):
+                    self._ppu.step_scanline()
+                    if self.io[4] & 1:
+                        break
+            self._last_dispstat_read = current
+            lo = self.io[4] | (self.io[5] << 8)
+            hi = self.io[6] | (self.io[7] << 8)
+            return lo | (hi << 16)
+        buf, off = self._buffer_for_addr(mapped)
         if buf is not None and off + 4 <= len(buf):
             return int.from_bytes(buf[off:off + 4], 'little')
-        b0 = self.read_u8(addr)
-        b1 = self.read_u8(addr + 1)
-        b2 = self.read_u8(addr + 2)
-        b3 = self.read_u8(addr + 3)
+        b0 = self.read_u8(mapped)
+        b1 = self.read_u8(mapped + 1)
+        b2 = self.read_u8(mapped + 2)
+        b3 = self.read_u8(mapped + 3)
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     def read_u32(self, addr: int) -> int:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
-        addr = self._map_address(addr)
-        buf, off = self._buffer_for_addr(addr)
+        mapped = self._map_address(addr)
+        # DISPSTAT VBlank polling detection (same as read_u16 path).
+        if mapped == 0x04000004 and self._ppu is not None:
+            current = self.io[4] | (self.io[5] << 8)
+            if (current & 1) == 0 and current == self._last_dispstat_read:
+                for _ in range(228):
+                    self._ppu.step_scanline()
+                    if self.io[4] & 1:
+                        break
+            self._last_dispstat_read = current
+            lo = self.io[4] | (self.io[5] << 8)
+            hi = self.io[6] | (self.io[7] << 8)
+            return lo | (hi << 16)
+        buf, off = self._buffer_for_addr(mapped)
         if buf is not None and off + 4 <= len(buf):
             return int.from_bytes(buf[off:off + 4], 'little')
-        b0 = self.read_u8(addr)
-        b1 = self.read_u8(addr + 1)
-        b2 = self.read_u8(addr + 2)
-        b3 = self.read_u8(addr + 3)
+        b0 = self.read_u8(mapped)
+        b1 = self.read_u8(mapped + 1)
+        b2 = self.read_u8(mapped + 2)
+        b3 = self.read_u8(mapped + 3)
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     def write_u8(self, addr: int, value: int):
         addr &= 0xFFFFFFFF

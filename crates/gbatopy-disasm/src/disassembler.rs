@@ -722,14 +722,14 @@ impl Disassembler {
         let thumb_decoder = crate::thumb::ThumbDecoder::new();
 
         for &addr in addresses {
-            let rom_offset = (addr - 0x08000000) as usize;
+            let is_thumb = addr % 2 == 1;
+            let mode = if is_thumb { ArmMode::Thumb } else { ArmMode::Arm };
+            let decode_addr = if is_thumb { addr & !1 } else { addr };
+            let rom_offset = (decode_addr - 0x08000000) as usize;
             
             if rom_offset >= rom.len() {
                 continue;
             }
-
-            let is_thumb = addr % 2 == 0;
-            let mode = if is_thumb { ArmMode::Thumb } else { ArmMode::Arm };
 
             match mode {
                 ArmMode::Arm => {
@@ -742,7 +742,7 @@ impl Disassembler {
                         rom[rom_offset + 2],
                         rom[rom_offset + 3],
                     ]);
-                    let (opcode, operands, _) = arm_decoder.decode(word, addr);
+                    let (opcode, operands, _) = arm_decoder.decode(word, decode_addr);
                     
                     instructions.push(DecodedInstruction {
                         address: addr,
@@ -761,7 +761,7 @@ impl Disassembler {
                         continue;
                     }
                     let halfword = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                    let (opcode, operands, _) = thumb_decoder.decode(halfword, addr);
+                    let (opcode, operands, _) = thumb_decoder.decode(halfword, decode_addr);
                     
                     instructions.push(DecodedInstruction {
                         address: addr,

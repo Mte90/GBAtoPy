@@ -244,7 +244,11 @@ fn run_mgba_capture(mgba_path: &Path, rom_path: &str, lua_script: &Path) -> Resu
 }
 
 fn transpile_rom(rom_path: &str, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let bin = "target/debug/gbatopy-cli";
+    let bin = if Path::new("target/release/gbatopy-cli").exists() {
+        "target/release/gbatopy-cli"
+    } else {
+        "target/debug/gbatopy-cli"
+    };
     
     cmd!(bin, "pipeline", "--rom", rom_path, "--output", output.to_string_lossy().as_ref())
         .dir(".")
