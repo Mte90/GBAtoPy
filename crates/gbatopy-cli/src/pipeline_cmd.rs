@@ -313,9 +313,8 @@ pub fn run_pipeline(
     }
         code.push_str("# === End of Runtime ===\n\n");
         
-        // Initialize runtime objects
+        // Initialize runtime objects (ROM_DATA loaded later, after definition)
         code.push_str("memory = Memory()\n");
-        code.push_str("memory.load_rom_data(ROM_DATA)\n");
         code.push_str("ppu_instance = PPU(memory)\n");
         code.push_str("memory.attach_ppu(ppu_instance)\n");
 
@@ -491,7 +490,8 @@ pub fn run_pipeline(
             || opcode == "BL" 
             || opcode == "BX" 
             || opcode == "BLX"
-            || (opcode.starts_with('B') && opcode.len() == 3); // Conditional branches
+            || (opcode.starts_with('B') && opcode.len() == 3) // Conditional branches
+            || gbatopy_disasm::cfg::writes_to_pc(opcode, &inst.operands);
 
         // CRITICAL: Branch instructions ALWAYS start their own block and terminate it
         if is_branch {
@@ -571,7 +571,8 @@ pub fn run_pipeline(
     code.push_str("    \"\"\"Load ROM data from external .bin file\"\"\"\n");
     code.push_str(&format!("    with open('{}', 'rb') as f:\n", rom_bin_path));
     code.push_str("        return bytearray(f.read())\n\n");
-    code.push_str("ROM_DATA = load_rom_data()\n\n");
+    code.push_str("ROM_DATA = load_rom_data()\n");
+    code.push_str("memory.load_rom_data(ROM_DATA)\n\n");
 
     // Embed wave data (audio samples)
     code.push_str("# Wave data for APU CH3\n");
@@ -631,36 +632,7 @@ pub fn run_pipeline(
     }
     code.push_str("]\n\n");
 
-    // Copy extracted tilemap to VRAM (BG0 tilemap at 0x06000000 and 0x06008000)
-    code.push_str("if bg0_tilemap:\n");
-    code.push_str("    for i, v in enumerate(bg0_tilemap[:1024]):\n");
-    code.push_str("        if i * 2 < len(memory.vram):\n");
-    code.push_str("            memory.vram[i * 2] = v & 0xFF\n");
-    code.push_str("            memory.vram[i * 2 + 1] = (v >> 8) & 0xFF\n");
-    code.push_str("        if 0x8000 + i * 2 < len(memory.vram):\n");
-    code.push_str("            memory.vram[0x8000 + i * 2] = v & 0xFF\n");
-    code.push_str("            memory.vram[0x8000 + i * 2 + 1] = (v >> 8) & 0xFF\n");
-    code.push_str("    ppu_instance.bg0_tilemap = bg0_tilemap[:1024]\n");
-    
-    // Copy extracted tile data to VRAM (multiple possible offsets)
-    code.push_str("if tile_data:\n");
-    code.push_str("    for i, b in enumerate(tile_data):\n");
-    code.push_str("        if 0x4000 + i < len(memory.vram):\n");
-    code.push_str("            memory.vram[0x4000 + i] = b\n");
-    code.push_str("        if 0x6000 + i < len(memory.vram):\n");
-    code.push_str("            memory.vram[0x6000 + i] = b\n");
-    code.push_str("        if 0x10000 + i < len(memory.vram):\n");
-    code.push_str("            memory.vram[0x10000 + i] = b\n");
-    code.push_str("    ppu_instance.tiles_4bpp = list(tile_data)\n");
-    
-    // Copy extracted palette to Palette RAM (0x05000000)
-    code.push_str("if palette_data:\n");
-    code.push_str("    for i, c in enumerate(palette_data[:256]):\n");
-    code.push_str("        if i * 2 < len(memory.palette):\n");
-    code.push_str("            memory.palette[i * 2] = c & 0xFF\n");
-    code.push_str("            memory.palette[i * 2 + 1] = (c >> 8) & 0xFF\n");
-    code.push_str("    ppu_instance.palette_bg = [((c & 0x1F) * 8, ((c >> 5) & 0x1F) * 8, ((c >> 10) & 0x1F) * 8) for c in palette_data]\n");
-    code.push_str("\n");
+    // ROM manages its own VRAM/palette writes at runtime; do not pre-load extracted assets
 
     // Generate sample playback function
     code.push_str("# Sample playback helper\n");

@@ -28,8 +28,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
+                        String::new()
                     }
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                         if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
@@ -73,8 +73,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
+                        String::new()
                     }
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                         if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
@@ -118,8 +118,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
+                        String::new()
                     }
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                         if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
@@ -163,8 +163,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
+                        String::new()
                     }
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                         if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
@@ -208,8 +208,11 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
+                        String::new()
+                    }
+                    gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { .. } => {
+                        String::new()
                     }
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                         if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
@@ -226,6 +229,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             let increment = *offset;
                             code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                        }
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
+                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
@@ -253,8 +259,11 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
+                        String::new()
+                    }
+                    gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { .. } => {
+                        String::new()
                     }
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                         if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
@@ -272,6 +281,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                             // Post-increment: add the offset after the store
                             let increment = *offset;
                             code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                        }
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
+                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             // Pre-increment writeback: the address was already adjusted before the store

@@ -148,7 +148,7 @@ class Memory:
                 self._ppu.write_register(addr, value)
         if 0x04000048 <= addr <= 0x0400004F:
             self._handle_window_write(addr, value)
-        if 0x04000020 <= addr <= 0x0400003C:
+        if 0x04000020 <= addr <= 0x0400002E:
             self._handle_affine_bg_write(addr, value)
         if 0x04000060 <= addr <= 0x0400007F:
             self._handle_sound_write(addr, value)
@@ -169,7 +169,7 @@ class Memory:
         # Window registers (0x04000048-0x0400004F)
         if 0x04000048 <= addr <= 0x0400004F:
             return self._handle_window_read(addr)
-        if 0x04000020 <= addr <= 0x0400003C:
+        if 0x04000020 <= addr <= 0x0400002E:
             return self._handle_affine_bg_read(addr)
         # Sound registers (0x04000060-0x0400008F, exclusive of affine range)
         if 0x04000060 <= addr <= 0x0400008F:
@@ -300,22 +300,22 @@ class Memory:
 
     def _handle_affine_bg_read(self, addr: int) -> int:
         """Read affine background parameter (byte read - 8-bit only)."""
-        # Each affine param is 16-bit across two consecutive bytes
-        base = MemoryMap.IO_START + 0x80
+        base = MemoryMap.IO_START + 0x20
         byte_offset = addr - base
-        byte_idx = byte_offset % 2  # 0 = low byte, 1 = high byte
-        param_idx = byte_offset // 2
-        return self._affine_params[param_idx * 2 + byte_idx]
+        if 0 <= byte_offset < 16:
+            byte_idx = byte_offset % 2
+            param_idx = byte_offset // 2
+            return self._affine_params[param_idx * 2 + byte_idx]
+        return 0
 
     def _handle_affine_bg_write(self, addr: int, value: int):
         """Write affine background parameter (16-bit)."""
-        # BG2PA/BG2PB/BG2PC/BG2PD at offsets 0x80, 0x82, 0x84, 0x86
-        # BG3PA/BG3PB/BG3PC/BG3PD at offsets 0x88, 0x8A, 0x8C, 0x8E (from IO_START)
-        base = MemoryMap.IO_START + 0x80
+        base = MemoryMap.IO_START + 0x20
         byte_offset = addr - base
-        param_idx = byte_offset // 2
-        self._affine_params[param_idx * 2] = value & 0xFF
-        self._affine_params[param_idx * 2 + 1] = (value >> 8) & 0xFF
+        if 0 <= byte_offset < 16:
+            param_idx = byte_offset // 2
+            self._affine_params[param_idx * 2] = value & 0xFF
+            self._affine_params[param_idx * 2 + 1] = (value >> 8) & 0xFF
 
     def _handle_sound_write(self, addr: int, value: int):
         """Write sound register - route to APU."""
@@ -408,9 +408,6 @@ class Memory:
         if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
             offset = addr - MemoryMap.PALETTE_START
             value = self.palette[offset]
-            # DEBUG: print palette reads
-            if offset < 10:
-                print(f"DEBUG read_u8 palette: offset={offset}, value={hex(value)}, addr={hex(addr)}")
             self.open_bus = value
             return value
 
@@ -612,11 +609,8 @@ class Memory:
         addr &= 0xFFFFFFFF
         value &= 0xFFFF
         mapped_addr = self._map_address(addr)
-        # Handle affine parameters directly to avoid split across two addresses
-        # Affine params are at even offsets: 0x80, 0x82, 0x84, 0x86, 0x88, 0x8A, 0x8C, 0x8E
-        # Each is 16-bit, so we write both bytes to the dedicated storage
-        if 0x04000080 <= mapped_addr <= 0x0400008E and mapped_addr % 2 == 0:
-            base = MemoryMap.IO_START + 0x80
+        if 0x04000020 <= mapped_addr <= 0x0400002E and mapped_addr % 2 == 0:
+            base = MemoryMap.IO_START + 0x20
             byte_offset = mapped_addr - base
             param_idx = byte_offset // 2
             self._affine_params[param_idx * 2] = value & 0xFF

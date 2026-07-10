@@ -110,11 +110,14 @@ impl ArmDecoder {
         // with bit 7 = 1 and bit 4 = 1. Regular load/store has bits 27-26 = 01.
         // Data processing with register operand has bits 27-26 = 00, bit 25 = 0,
         // and bit 4 may be 0 (immediate shift) or 1 (register shift).
+        // In ARMv4T, bit 7 = 0 for data-processing register shifts, so bit_7=1 && bit_4=1
+        // unambiguously identifies halfword/signed transfers. The STRH/LDRH decode logic
+        // lives in decode_data_processing (lines 176-224), NOT in decode_load_store.
         if bits_27_26 == 0b00 && bit_25 == 0 {
             let bit_7 = (word >> 7) & 0x1;
             let bit_4 = (word >> 4) & 0x1;
             if bit_7 == 1 && bit_4 == 1 {
-                return self.decode_load_store(word, address);
+                return self.decode_data_processing(word, address);
             }
         }
 
@@ -178,7 +181,11 @@ impl ArmDecoder {
         let bit_7_4 = (word >> 4) & 0xF;
         let bit_7 = (word >> 7) & 1;
         let bit_4 = (word >> 4) & 1;
-        if bits_27_24 == 0x1 && bit_7 == 1 && bit_4 == 1 {
+        let i_bit = (word >> 25) & 1;
+        // Halfword/signed transfers only exist when I-bit (bit 25) = 0.
+        // When I=1, bits 7-0 are the immediate value of a data-processing op,
+        // and bit_7/bit_4 being set is just part of the immediate, not a halfword indicator.
+        if i_bit == 0 && bit_7 == 1 && bit_4 == 1 && (bit_7_4 == 0xB || bit_7_4 == 0xD || bit_7_4 == 0xF) {
             let l_bit = (word >> 20) & 1 != 0;
             let rn = ((word >> 16) & 0xF) as u8;
             let rd = ((word >> 12) & 0xF) as u8;
@@ -192,30 +199,35 @@ impl ArmDecoder {
                 _ => "UNDEFINED",
             };
 
-            // bit 22 = I: 0 = register offset (Rm), 1 = immediate offset (imm5:imm4H)
-            // According to ARM ARM: imm4H is bits 11-8, imm5 is bits 7-3
             let imm_offset = (word >> 22) & 1 != 0;
-            let offset = if imm_offset {
-                let imm4h = (word >> 8) & 0xF;  // bits 11-8
-                let imm4l = word & 0xF;         // bits 3-0
-                // Correct formula for halfword immediate offset: imm4H is high nibble, imm4l is low nibble
-                let imm = (imm4h << 4) | imm4l;
-                Operand::Immediate(imm as u32)
+            let w_bit = (word >> 21) & 1 != 0;
+            let up_bit = (word >> 23) & 1 != 0;
+            let p_bit = (word >> 24) & 1 != 0;
+
+            let addressing_mode = if imm_offset {
+                let imm4h = (word >> 8) & 0xF;
+                let imm4l = word & 0xF;
+                let imm = ((imm4h << 4) | imm4l) as i32;
+                let signed_imm = if up_bit { imm } else { -imm };
+                if !p_bit {
+                    AddressingMode::PostIndexed { base: rn, offset: signed_imm, writeback: w_bit }
+                } else if w_bit {
+                    AddressingMode::PreIndexed { base: rn, offset: signed_imm, writeback: true }
+                } else {
+                    AddressingMode::ImmediateOffset(signed_imm)
+                }
             } else {
-                Operand::Register(rm)
+                if !p_bit {
+                    AddressingMode::PostIndexedRegister { base: rn, reg: rm }
+                } else {
+                    AddressingMode::RegisterOffset(rm)
+                }
             };
 
-            let w_bit = (word >> 21) & 1 != 0;
             let mem_op = Operand::MemoryAddress {
                 base: rn,
-                offset: crate::operand::AddressingMode::ImmediateOffset(
-                    if (word & (1 << 23)) != 0 {
-                        offset.immediate_value()
-                    } else {
-                        -offset.immediate_value()
-                    },
-                ),
-                writeback: w_bit,
+                offset: addressing_mode,
+                writeback: w_bit || !p_bit,
             };
 
             (
@@ -311,7 +323,9 @@ impl ArmDecoder {
                 vec![Operand::Register(rd), Operand::Immediate(sr as u32)],
                 false,
             )
-        } else if bits_27_24 == 0x1 && ((word >> 20) & 0x3) == 0x2 && bits_7_4 == 0x0 {
+        } else if bits_27_24 == 0x1 && ((word >> 20) & 0x3) == 0x2 && bits_7_4 == 0x0
+            && ((word >> 23) & 1) == 0 && ((word >> 12) & 0xF) == 0xF
+        {
             let s_bit = (word >> 20) & 1 != 0;
             let flags = (word >> 16) & 0xF;
             let _rd = ((word >> 12) & 0xF) as u8;
@@ -747,19 +761,6 @@ impl ArmDecoder {
 impl Default for ArmDecoder {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-trait ImmediateValue {
-    fn immediate_value(&self) -> i32;
-}
-
-impl ImmediateValue for Operand {
-    fn immediate_value(&self) -> i32 {
-        match self {
-            Operand::Immediate(v) => *v as i32,
-            _ => 0,
-        }
     }
 }
 

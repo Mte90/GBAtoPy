@@ -6,8 +6,29 @@
 
 use crate::arm::ArmDecoder;
 use crate::thumb::ThumbDecoder;
-use crate::{ArmMode, Operand};
+use crate::{AddressingMode, ArmMode, Operand};
 use std::collections::{HashMap, HashSet};
+
+/// Detects instructions that write to R15 (PC), making them indirect branches.
+/// This covers LDM with R15 in register list (POP {PC}) — the instruction
+/// loads PC from the stack, so execution does NOT fall through to the next
+/// address. The CFG must not add the fall-through as reachable code.
+pub fn writes_to_pc(opcode: &str, operands: &[Operand]) -> bool {
+    if opcode.starts_with("LDM") {
+        for op in operands {
+            if let Operand::MemoryAddress {
+                offset: AddressingMode::Multi { registers, .. },
+                ..
+            } = op
+            {
+                if registers.contains(&15) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 
 /// Tracks constant values in registers for indirect jump resolution.
 /// Only tracks simple cases: MOV rN, #imm and LDR rN, =imm
@@ -93,6 +114,8 @@ impl CfgBuilder {
             }
             visited.insert(addr);
 
+            instruction_count += 1;
+
             // Progress reporting every 100K instructions
             if instruction_count % 100_000 == 0 {
                 eprintln!("  CFG progress: {} visited, {} branch targets", 
@@ -156,7 +179,9 @@ impl CfgBuilder {
             // the branch might not be taken - but we need to be careful
             // Actually, for accurate CFG, we should add fall-through for ALL branches
             // because we don't know if they'll be taken at runtime
-let is_uncond_branch = opcode_str == "B" || opcode_str == "BX";
+let is_uncond_branch = opcode_str == "B"
+            || opcode_str == "BX"
+            || writes_to_pc(&opcode_str, &operands);
         
         if !is_uncond_branch {
             let next_addr = addr + instr_width;

@@ -63,6 +63,10 @@ pub enum AddressingMode {
         offset: i32,
         writeback: bool,
     },
+    PostIndexedRegister {
+        base: u8,
+        reg: u8,
+    },
     Multi {
         base: u8,
         registers: Vec<u8>,

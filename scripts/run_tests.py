@@ -1,141 +1,380 @@
 #!/usr/bin/env python3
-"""Optimized test runner for GBAtoPy - parallel execution with timeout.
+"""Unified 3-level test runner for GBAtoPy.
 
 Test Levels:
-  Level 1 (syntax): Transpile + py_compile (default)
-  Level 2 (execution): Run script, check for crashes
-  Level 3 (visual): Screenshot comparison with golden
+  Level 1 (syntax):     Transpile ROM + py_compile          — always runs
+  Level 2 (execution):  Run generated script --headless      — runs if L1 passes
+  Level 3 (visual):     Screenshot comparison with golden     — runs if L2 passes
+
+Usage:
+  python3 scripts/run_tests.py                          # Level 1 (default)
+  python3 scripts/run_tests.py --level 2                # Levels 1+2
+  python3 scripts/run_tests.py --level 3                 # Levels 1+2+3
+  python3 scripts/run_tests.py --rom hello              # Single ROM
+  python3 scripts/run_tests.py --filter stripes          # Filter by name
+  python3 scripts/run_tests.py --workers 8               # Parallel workers
+  python3 scripts/run_tests.py --frame 60                # Execution frame count
+  python3 scripts/run_tests.py --json test-reports/report.json
+
+Exit codes:
+  0 = all passed
+  1 = at least one ROM failed (or errored)
 """
 
-import subprocess, tempfile, os, sys, argparse, shutil
-from pathlib import Path
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
 from time import time
 
-def transpile_rom(rom_path):
-    """Transpile single ROM and verify syntax."""
-    with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
-        output = f.name
-    try:
-        result = subprocess.run(
-            ["cargo", "run", "--release", "-p", "gbatopy-cli", "--",
-             "pipeline", "--rom", str(rom_path), "--output", output],
-            capture_output=True, text=True, timeout=600
-        )
-        if result.returncode != 0:
-            return (rom_path.name, False, "transpile_failed", output)
-        compile_result = subprocess.run(
-            ["python3", "-m", "py_compile", output],
-            capture_output=True, timeout=30
-        )
-        return (rom_path.name, compile_result.returncode == 0, 
-                "ok" if compile_result.returncode == 0 else "syntax_error", output)
-    except subprocess.TimeoutExpired:
-        return (rom_path.name, False, "timeout", output)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ROMS_DIR = PROJECT_ROOT / "test_roms" / "roms"
+GOLDEN_DIR = PROJECT_ROOT / "scripts" / "screenshot" / "golden"
+GBATOPY_BIN = PROJECT_ROOT / "target" / "release" / "gbatopy-cli"
+COMPARE_SCRIPT = PROJECT_ROOT / "scripts" / "verify" / "compare_screenshots.py"
+OUTPUT_DIR = PROJECT_ROOT / "test-reports" / "artifacts"
 
-def execute_rom(output_path, frame=60):
-    """Execute generated script and capture screenshot."""
-    screenshot_path = output_path.replace('.py', '_frame{}.png'.format(frame))
-    try:
-        result = subprocess.run(
-            ["python3", output_path, "--headless", "--frame={}".format(frame),
-             "--screenshot", screenshot_path],
-            capture_output=True, text=True, timeout=60
-        )
-        if result.returncode != 0:
-            return False, "execution_failed", screenshot_path
-        if not os.path.exists(screenshot_path):
-            return False, "no_screenshot", screenshot_path
-        return True, "ok", screenshot_path
-    except subprocess.TimeoutExpired:
-        return False, "timeout", screenshot_path
 
-def compare_screenshot(transpiled_screenshot, rom_name):
-    """Compare transpiled screenshot with golden."""
-    golden_dir = Path("scripts/screenshot/golden")
-    golden_pattern = "golden_{}_frame_*.png".format(rom_name.replace('.gba', ''))
-    golden_files = list(golden_dir.glob(golden_pattern))
-    
-    if not golden_files:
-        return None, "no_golden_screenshot"
-    
-    golden_path = golden_files[0]
+def build_transpiler():
+    """Build the transpiler once before running tests."""
+    print("Building gbatopy-cli (release)...")
     result = subprocess.run(
-        ["python3", "scripts/verify/compare_screenshots.py",
-         "--golden", str(golden_path),
-         "--transpiled", str(transpiled_screenshot),
-         "--threshold", "30"],
-        capture_output=True, text=True
+        ["cargo", "build", "--release", "-p", "gbatopy-cli"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
-    
+    if result.returncode != 0:
+        print("ERROR: Build failed")
+        print(result.stderr[-2000:])
+        sys.exit(1)
+    print(f"Build complete: {GBATOPY_BIN}")
+    print()
+
+
+def transpile_rom(rom_path, output_path, timeout=600):
+    """Transpile a single ROM. Returns (success, error_msg)."""
+    result = subprocess.run(
+        [str(GBATOPY_BIN), "pipeline", "--rom", str(rom_path), "--output", str(output_path)],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        stderr_tail = result.stderr[-500:] if result.stderr else ""
+        return False, f"transpile_failed: {stderr_tail}"
+    return True, None
+
+
+def check_syntax(output_path):
+    """Check Python syntax with py_compile. Returns (success, error_msg)."""
+    try:
+        result = subprocess.run(
+            ["python3", "-m", "py_compile", str(output_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            return False, result.stderr.strip().split('\n')[-1] if result.stderr else "syntax_error"
+        return True, None
+    except subprocess.TimeoutExpired:
+        return False, "syntax_check_timeout"
+
+
+def execute_rom(output_path, frame=60, timeout=30):
+    """Run generated script headless. Returns (success, screenshot_path, error_msg)."""
+    screenshot_path = output_path.replace('.py', f'_frame{frame}.png')
+    try:
+        result = subprocess.run(
+            ["python3", str(output_path), "--headless", f"--frame={frame}",
+             "--screenshot", str(screenshot_path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            stderr_tail = result.stderr[-300:] if result.stderr else ""
+            return False, None, f"execution_failed: {stderr_tail}"
+        if not os.path.exists(screenshot_path):
+            return False, None, "no_screenshot_produced"
+        return True, screenshot_path, None
+    except subprocess.TimeoutExpired:
+        return False, None, "execution_timeout"
+    except Exception as e:
+        return False, None, f"execution_error: {e}"
+
+
+def compare_screenshot(transpiled_screenshot, rom_name, frame=60):
+    """Compare transpiled screenshot with golden. Returns (status, details)."""
+    rom_base = rom_name.replace('.gba', '')
+    golden_path = GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}.png"
+
+    if not golden_path.exists():
+        # Try frame 10 as fallback
+        golden_path = GOLDEN_DIR / f"golden_{rom_base}_frame_10.png"
+        if not golden_path.exists():
+            return "no_golden", "No golden screenshot available"
+
+    result = subprocess.run(
+        ["python3", str(COMPARE_SCRIPT), "-s", str(golden_path), str(transpiled_screenshot)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    if "INCONCLUSIVE" in result.stdout:
+        return "inconclusive", result.stdout[-500:]
     if result.returncode == 0:
-        return True, "pass", result.stdout
-    else:
-        return False, "fail", result.stdout[:200]
+        return "pass", result.stdout[-300:]
+    return "fail", result.stdout[-500:]
 
-def test_rom_level2(rom_path):
-    """Level 2: Transpile + Execute."""
-    rom_name = rom_path.name
-    success, status, output = transpile_rom(rom_path)
-    if not success:
-        return (rom_name, False, "level1_{}".format(status))
-    
-    exec_success, exec_status, _ = execute_rom(output)
-    if not exec_success:
-        return (rom_name, False, "level2_{}".format(exec_status))
-    
-    return (rom_name, True, "level2_ok")
 
-def test_rom_level3(rom_path):
-    """Level 3: Transpile + Execute + Visual Compare."""
+def test_rom_worker(rom_path, max_level, frame):
+    """
+    Run all applicable test levels for a single ROM.
+
+    Returns dict:
+      {name, level1, level1_status, level2, level2_status,
+       level3, level3_status, level3_detail, elapsed}
+    """
     rom_name = rom_path.name
-    success, status, output = transpile_rom(rom_path)
+    result = {
+        "name": rom_name,
+        "level1": False,
+        "level1_status": "skipped",
+        "level2": False,
+        "level2_status": "skipped",
+        "level3": False,
+        "level3_status": "skipped",
+        "level3_detail": None,
+        "elapsed": 0.0,
+    }
+
+    start = time()
+    rom_output_dir = OUTPUT_DIR / rom_name.replace('.gba', '')
+    rom_output_dir.mkdir(parents=True, exist_ok=True)
+    output_py = str(rom_output_dir / "output.py")
+
+    # --- Level 1: Transpile + Syntax ---
+    success, err = transpile_rom(rom_path, output_py)
     if not success:
-        return (rom_name, False, "level1_{}".format(status))
-    
-    exec_success, exec_status, screenshot = execute_rom(output)
-    if not exec_success:
-        return (rom_name, False, "level2_{}".format(exec_status))
-    
-    compare_result, compare_status, details = compare_screenshot(screenshot, rom_name)
-    if compare_result is None:
-        return (rom_name, True, "level3_no_golden")
-    elif compare_result:
-        return (rom_name, True, "level3_pass")
-    else:
-        return (rom_name, False, "level3_fail: {}".format(details))
+        result["level1"] = False
+        result["level1_status"] = err or "transpile_failed"
+        result["elapsed"] = round(time() - start, 2)
+        return result
+
+    success, err = check_syntax(output_py)
+    if not success:
+        result["level1"] = False
+        result["level1_status"] = err or "syntax_error"
+        result["elapsed"] = round(time() - start, 2)
+        return result
+
+    result["level1"] = True
+    result["level1_status"] = "pass"
+
+    if max_level < 2:
+        result["elapsed"] = round(time() - start, 2)
+        return result
+
+    # --- Level 2: Execution ---
+    success, screenshot_path, err = execute_rom(output_py, frame=frame)
+    if not success:
+        result["level2"] = False
+        result["level2_status"] = err or "execution_failed"
+        result["elapsed"] = round(time() - start, 2)
+        return result
+
+    result["level2"] = True
+    result["level2_status"] = "pass"
+
+    if max_level < 3:
+        result["elapsed"] = round(time() - start, 2)
+        return result
+
+    # --- Level 3: Visual Comparison ---
+    status, detail = compare_screenshot(screenshot_path, rom_name, frame=frame)
+    result["level3_status"] = status
+    result["level3_detail"] = detail if status != "pass" else None
+    result["level3"] = (status == "pass")
+
+    result["elapsed"] = round(time() - start, 2)
+    return result
+
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--rom", type=str)
+    parser = argparse.ArgumentParser(
+        description="GBAtoPy unified 3-level test runner"
+    )
+    parser.add_argument(
+        "--level", type=int, default=1, choices=[1, 2, 3],
+        help="Max test level to run (1=syntax, 2=execution, 3=visual). Default: 1"
+    )
+    parser.add_argument("--rom", type=str, help="Run single ROM by name")
+    parser.add_argument("--filter", type=str, help="Filter ROMs by name substring")
+    parser.add_argument("--workers", type=int, default=4, help="Parallel workers")
+    parser.add_argument("--frame", type=int, default=60, help="Frame count for execution")
+    parser.add_argument("--json", type=Path, help="Save JSON report to this path")
+    parser.add_argument("--no-build", action="store_true", help="Skip building transpiler")
     args = parser.parse_args()
-    
-    roms_dir = Path("test_roms/roms")
-    if not roms_dir.exists():
-        print("ERROR: test_roms/roms not found"); sys.exit(1)
-    
-    roms = [roms_dir / args.rom] if args.rom else list(roms_dir.glob("*.gba"))
-    print(f"Testing {len(roms)} ROMs with {args.workers} workers...")
-    
+
+    if not args.no_build:
+        build_transpiler()
+
+    if not ROMS_DIR.exists():
+        print(f"ERROR: {ROMS_DIR} not found")
+        sys.exit(1)
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Collect ROMs
+    if args.rom:
+        rom_base = args.rom.replace('.gba', '')
+        rom_path = ROMS_DIR / f"{rom_base}.gba"
+        if not rom_path.exists():
+            print(f"ERROR: ROM not found: {rom_path}")
+            sys.exit(1)
+        roms = [rom_path]
+    else:
+        roms = sorted(ROMS_DIR.glob("*.gba"))
+        if args.filter:
+            roms = [r for r in roms if args.filter.lower() in r.name.lower()]
+
+    if not roms:
+        print("ERROR: No ROMs to test")
+        sys.exit(1)
+
+    print(f"Testing {len(roms)} ROM(s) at Level {args.level} with {args.workers} workers")
+    print(f"  Levels: {'syntax' if args.level == 1 else 'syntax+execution' if args.level == 2 else 'syntax+execution+visual'}")
+    print()
+
     start = time()
-    passed, failed = 0, 0
     results = []
-    
-    with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        futures = {ex.submit(transpile_rom, rom): rom for rom in roms}
-        for future in as_completed(futures):
-            name, success, status = future.result()
-            results.append((name, success, status))
-            if success: passed += 1
-            else: failed += 1
-            print(f"{'✓' if success else '✗'} {name}: {status}")
-    
+
+    with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        futures = {
+            executor.submit(test_rom_worker, rom, args.level, args.frame): rom
+            for rom in roms
+        }
+
+        for i, future in enumerate(as_completed(futures), 1):
+            result = future.result()
+            results.append(result)
+
+            # Print per-ROM status
+            name = result["name"]
+            l1 = "PASS" if result["level1"] else "FAIL"
+            l2 = "PASS" if result["level2"] else ("SKIP" if result["level2_status"] == "skipped" else "FAIL")
+            l3 = ("PASS" if result["level3"] else
+                  "SKIP" if result["level3_status"] == "skipped" else
+                  result["level3_status"].upper())
+
+            l1_icon = "L1:PASS" if result["level1"] else f"L1:FAIL"
+            l2_icon = f"L2:{l2}" if args.level >= 2 else ""
+            l3_icon = f"L3:{l3}" if args.level >= 3 else ""
+
+            print(f"[{i:3d}/{len(roms)}] {name:30s} {l1_icon:10s} {l2_icon:10s} {l3_icon:12s} ({result['elapsed']:.1f}s)")
+
+    results.sort(key=lambda r: r["name"])
     elapsed = time() - start
-    print(f"\n{'='*50}")
-    print(f"Passed: {passed}/{passed+failed} ({100*passed/(passed+failed):.1f}%)")
-    print(f"Time: {elapsed:.1f}s ({elapsed/len(roms):.1f}s/ROM)")
-    sys.exit(0 if failed == 0 else 1)
+
+    # --- Summary ---
+    print()
+    print("=" * 60)
+    print("TEST SUMMARY")
+    print("=" * 60)
+    print(f"Level:      {args.level}")
+    print(f"Total ROMs: {len(results)}")
+    print(f"Time:       {elapsed:.1f}s ({elapsed/len(results):.1f}s/ROM)")
+    print()
+
+    # Level 1
+    l1_pass = sum(1 for r in results if r["level1"])
+    l1_fail = len(results) - l1_pass
+    print(f"Level 1 (syntax):     {l1_pass}/{len(results)} passed, {l1_fail} failed")
+
+    if args.level >= 2:
+        l2_run = [r for r in results if r["level2_status"] != "skipped"]
+        l2_pass = sum(1 for r in l2_run if r["level2"])
+        l2_fail = len(l2_run) - l2_pass
+        print(f"Level 2 (execution):  {l2_pass}/{len(l2_run)} passed, {l2_fail} failed")
+
+    if args.level >= 3:
+        l3_run = [r for r in results if r["level3_status"] not in ("skipped", "no_golden")]
+        l3_pass = sum(1 for r in l3_run if r["level3"])
+        l3_fail = sum(1 for r in l3_run if r["level3_status"] == "fail")
+        l3_inc = sum(1 for r in l3_run if r["level3_status"] == "inconclusive")
+        l3_nog = sum(1 for r in results if r["level3_status"] == "no_golden")
+        print(f"Level 3 (visual):     {l3_pass}/{len(l3_run)} passed, {l3_fail} failed, {l3_inc} inconclusive")
+        if l3_nog:
+            print(f"                      ({l3_nog} ROMs without golden screenshots)")
+
+    # Failed ROMs detail
+    failed = [r for r in results if not r["level1"] or
+              (args.level >= 2 and r["level2_status"] not in ("skipped", "pass") and r["level1"]) or
+              (args.level >= 3 and r["level3_status"] == "fail")]
+    if failed:
+        print()
+        print("-" * 60)
+        print("FAILED ROMs:")
+        for r in failed:
+            reasons = []
+            if not r["level1"]:
+                reasons.append(f"L1:{r['level1_status']}")
+            elif args.level >= 2 and r["level2_status"] not in ("skipped", "pass"):
+                reasons.append(f"L2:{r['level2_status']}")
+            elif args.level >= 3 and r["level3_status"] == "fail":
+                reasons.append(f"L3:{r['level3_detail'][:80] if r['level3_detail'] else 'fail'}")
+            print(f"  {r['name']:30s} {' | '.join(reasons)}")
+        print("-" * 60)
+
+    # JSON report
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "level": args.level,
+        "frame": args.frame,
+        "total_roms": len(results),
+        "elapsed_seconds": round(elapsed, 2),
+        "summary": {
+            "level1_pass": l1_pass,
+            "level1_fail": l1_fail,
+        },
+        "roms": results,
+    }
+    if args.level >= 2:
+        report["summary"]["level2_pass"] = l2_pass
+        report["summary"]["level2_fail"] = l2_fail
+    if args.level >= 3:
+        report["summary"]["level3_pass"] = l3_pass
+        report["summary"]["level3_fail"] = l3_fail
+        report["summary"]["level3_inconclusive"] = l3_inc
+
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump(report, f, indent=2)
+        print(f"\nJSON report: {args.json}")
+    else:
+        default_report = PROJECT_ROOT / "test-reports" / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        default_report.parent.mkdir(parents=True, exist_ok=True)
+        with open(default_report, "w") as f:
+            json.dump(report, f, indent=2)
+        print(f"\nJSON report: {default_report}")
+
+    # Exit code: fail if any L1 failed, or any L2/L3 failed at the requested level
+    has_failures = l1_fail > 0
+    if args.level >= 2:
+        has_failures = has_failures or l2_fail > 0
+    if args.level >= 3:
+        has_failures = has_failures or l3_fail > 0
+    sys.exit(1 if has_failures else 0)
+
 
 if __name__ == "__main__":
     main()

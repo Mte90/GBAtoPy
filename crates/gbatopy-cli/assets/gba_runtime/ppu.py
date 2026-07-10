@@ -706,6 +706,7 @@ class PPU:
         self.win1_enable = False
         self.obj_window_enable = False
         self.dispcnt = 0x0403
+        self._obj_window_rects = []
         
         # Numba JIT control for PPU
         self.numba_ppu_enabled = is_numba_ppu_enabled()
@@ -1390,35 +1391,9 @@ class PPU:
         return in_h and in_v
 
     def _is_in_obj_window(self, x: int, y: int) -> bool:
-        OAM_BASE = 0x07000000
-        NUM_SPRITES = 128
-
-        for sprite_idx in range(NUM_SPRITES):
-            sprite_addr = OAM_BASE + (sprite_idx * 8)
-            try:
-                attr0 = self.memory.read_u16(sprite_addr + 0)
-                attr1 = self.memory.read_u16(sprite_addr + 2)
-            except:
-                continue
-
-            obj_mode = (attr0 >> 10) & 3
-            if obj_mode != 3:
-                continue
-
-            sprite_y = attr0 & 0xFF
-            sprite_x = attr1 & 0x1FF
-            height = ((attr0 >> 12) & 7) * 8 + 8
-            width = ((attr1 >> 8) & 0x3) * 8 + 8
-
-            if width > 64:
-                width = 64
-            if height > 64:
-                height = 64
-
-            if sprite_y <= y < sprite_y + height:
-                if sprite_x <= x < sprite_x + width:
-                    return True
-
+        for sx, sy, w, h in self._obj_window_rects:
+            if sy <= y < sy + h and sx <= x < sx + w:
+                return True
         return False
 
     def _get_window_layer_enable(self, x: int, y: int) -> int:
@@ -1431,7 +1406,7 @@ class PPU:
         if self.win1_enable and self._is_in_window(x, y, 1):
             return self.win1_in_enable
 
-        if self.obj_window_enable:
+        if self.obj_window_enable and self._obj_window_rects:
             if self._is_in_obj_window(x, y):
                 return 0x10 if self.winout_obj_enable else 0
             else:
@@ -1503,6 +1478,29 @@ class PPU:
             self._write_bg_control(bg, bg_cnt)
             self.bg_hofs[bg] = self.memory.read_u16(self.REG_BG0HOFS + bg * 4) & 0x1FF
             self.bg_vofs[bg] = self.memory.read_u16(self.REG_BG0VOFS + bg * 4) & 0x1FF
+
+        # Pre-scan OAM for OBJ window sprites (obj_mode == 3) once per frame
+        self._obj_window_rects = []
+        if self.obj_window_enable:
+            OAM_BASE = 0x07000000
+            for sprite_idx in range(128):
+                sprite_addr = OAM_BASE + (sprite_idx * 8)
+                try:
+                    attr0 = self.memory.read_u16(sprite_addr)
+                    attr1 = self.memory.read_u16(sprite_addr + 2)
+                except Exception:
+                    continue
+                if ((attr0 >> 10) & 3) != 3:
+                    continue
+                sy = attr0 & 0xFF
+                sx = attr1 & 0x1FF
+                h = ((attr0 >> 12) & 7) * 8 + 8
+                w = ((attr1 >> 8) & 0x3) * 8 + 8
+                if w > 64:
+                    w = 64
+                if h > 64:
+                    h = 64
+                self._obj_window_rects.append((sx, sy, w, h))
 
     def step_scanline(self):
         """Advance one scanline during instruction execution.
@@ -1588,6 +1586,10 @@ class PPU:
 
     def _render_mode0(self):
         """Render Mode 0: Text backgrounds (BG0-3) with priority-based compositing"""
+        # Fast path: if no BGs and no OBJ enabled, framebuffer already has backdrop
+        any_bg = self.bg0_enable or self.bg1_enable or self.bg2_enable or self.bg3_enable
+        if not any_bg and not self.obj_enable:
+            return
         for y in range(self.screen_height):
             for x in range(self.screen_width):
                 # Check window enable
@@ -1911,31 +1913,50 @@ class PPU:
 
     def _render_mode4(self):
         """Render Mode 4: 240x160 8BPP bitmap with double buffering and mosaic support"""
-        # Mode 4: 8BPP bitmap, each pixel = 1 byte palette index
-        # Page 0: 0x06000000 (0x6000 bytes = 240*160)
-        # Page 1: 0x0600A000
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
 
-        for y in range(self.screen_height):
-            for x in range(self.screen_width):
-                # Apply mosaic if enabled (snap to mosaic block)
-                mosaic_x, mosaic_y = self._apply_mosaic(x, y, is_obj=False)
-
-                # Mode 4: 1 byte per pixel (8-bit palette index)
-                offset = mosaic_y * 240 + mosaic_x
-                addr = vram_base + offset
-
-                try:
-                    palette_idx = self.memory.read_u8(addr)
-                    if is_numba_ppu_enabled():
-                        color = self._get_palette_color_256_jit(palette_idx)
-                    else:
-                        color = self._get_palette_color_256(palette_idx)
-                    self.framebuffer[y][x] = color
-                    self.layer_origin[y][x] = 2
-                except:
-                    self.framebuffer[y][x] = (0, 0, 0)
+        try:
+            vram_arr, vram_off = self.memory._buffer_for_addr(vram_base)
+            vram_bytes = bytes(vram_arr[vram_off:vram_off + self.screen_height * self.screen_width])
+        except Exception:
+            vram_bytes = bytes(self.screen_height * self.screen_width)
+        try:
+            pal_arr, pal_off = self.memory._buffer_for_addr(0x05000000)
+            palette_bytes = bytes(pal_arr[pal_off:pal_off + 512])
+        except Exception:
+            palette_bytes = bytes(512)
+        palette_rgb = []
+        for i in range(256):
+            cv = palette_bytes[i * 2] | (palette_bytes[i * 2 + 1] << 8)
+            palette_rgb.append((
+                _c5to8((cv >> 0) & 0x1F),
+                _c5to8((cv >> 5) & 0x1F),
+                _c5to8((cv >> 10) & 0x1F),
+            ))
+        mosaic_enabled = self.mosaic_enabled
+        fb = self.framebuffer
+        lo = self.layer_origin
+        sw = self.screen_width
+        if not mosaic_enabled:
+            idx = 0
+            for y in range(self.screen_height):
+                row_fb = fb[y]
+                row_lo = lo[y]
+                for x in range(sw):
+                    pi = vram_bytes[idx]
+                    idx += 1
+                    row_fb[x] = palette_rgb[pi]
+                    row_lo[x] = 2
+        else:
+            for y in range(self.screen_height):
+                row_fb = fb[y]
+                row_lo = lo[y]
+                for x in range(sw):
+                    mx, my = self._apply_mosaic(x, y, is_obj=False)
+                    pi = vram_bytes[my * sw + mx]
+                    row_fb[x] = palette_rgb[pi]
+                    row_lo[x] = 2
 
         if self.obj_enable:
             self._render_sprites(0x3F)

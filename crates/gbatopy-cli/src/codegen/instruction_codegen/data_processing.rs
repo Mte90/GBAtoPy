@@ -46,19 +46,19 @@ fn shifted_reg_expr(reg: u8, shift: &ShiftType, amount: &ShiftAmount) -> String 
             match shift {
                 ShiftType::Lsl => {
                     // LSL #0 → Rm; LSL #1-31 → Rm << n; LSL #32+ → 0
-                    format!("0 if {a} >= 32 else (({r} << {a}) & 0xFFFFFFFF if {a} != 0 else {r})", r = r, a = amt_expr)
+                    format!("(0 if {a} >= 32 else (({r} << {a}) & 0xFFFFFFFF if {a} != 0 else {r}))", r = r, a = amt_expr)
                 }
                 ShiftType::Lsr => {
                     // LSR #0 → Rm; LSR #1-31 → Rm >> n; LSR #32+ → 0
-                    format!("0 if {a} >= 32 else (({r} >> {a}) & 0xFFFFFFFF if {a} != 0 else {r})", r = r, a = amt_expr)
+                    format!("(0 if {a} >= 32 else (({r} >> {a}) & 0xFFFFFFFF if {a} != 0 else {r}))", r = r, a = amt_expr)
                 }
                 ShiftType::Asr => {
                     // ASR #0 → Rm; ASR #1-31 → arithmetic; ASR #32+ → sign-extend
-                    format!("(0xFFFFFFFF if {r} & 0x80000000 else 0) if {a} >= 32 else ((((({r}) - 0x100000000) if {r} & 0x80000000 else {r}) >> {a}) & 0xFFFFFFFF) if {a} != 0 else {r}", r = r, a = amt_expr)
+                    format!("((0xFFFFFFFF if {r} & 0x80000000 else 0) if {a} >= 32 else ((((({r}) - 0x100000000) if {r} & 0x80000000 else {r}) >> {a}) & 0xFFFFFFFF) if {a} != 0 else {r})", r = r, a = amt_expr)
                 }
                 ShiftType::Ror => {
                     // ROR #0 → Rm; ROR #32 → Rm; ROR >32 → rotate by n & 0x1F
-                    format!("({r}) if {a} == 0 else ({r}) if ({a} & 0x1F) == 0 else (({r} >> ({a} & 0x1F)) | ({r} << (32 - ({a} & 0x1F)))) & 0xFFFFFFFF", r = r, a = amt_expr)
+                    format!("(({r}) if {a} == 0 else ({r}) if ({a} & 0x1F) == 0 else (({r} >> ({a} & 0x1F)) | ({r} << (32 - ({a} & 0x1F)))) & 0xFFFFFFFF)", r = r, a = amt_expr)
                 }
             }
         }

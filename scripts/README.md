@@ -5,7 +5,7 @@
 ```
 scripts/
 ├── README.md                  ← This file
-├── run-all-tests.sh           ← Smoke test: transpile + syntax check for all 66 ROMs
+├── run-all-tests.sh           ← Smoke test: transpile + syntax check for all 68 ROMs
 ├── run-parallel-tests.sh      ← Parallel variant of run-all-tests.sh
 ├── quick_test.sh              ← Quick single-ROM transpile and syntax check
 ├── run_tests.py               ← Python test runner (alternative to run-all-tests.sh)

@@ -29,14 +29,19 @@ fn is_likely_tilemap(data: &[u8]) -> bool {
     if data.len() < 4 || data.len() % 2 != 0 {
         return false;
     }
-    let valid_entries = data
-        .chunks_exact(2)
-        .filter(|pair| {
-            let entry = u16::from_le_bytes([pair[0], pair[1]]);
-            (entry & 0x3FF) <= 1023
-        })
-        .count();
-    valid_entries * 4 >= data.len() / 2
+    let mut valid_entries = 0usize;
+    let total = data.len() / 2;
+    for pair in data.chunks_exact(2) {
+        let entry = u16::from_le_bytes([pair[0], pair[1]]);
+        let tile_num = entry & 0x3FF;
+        let palette = (entry >> 12) & 0xF;
+        // Real tilemap entries: tile 0-511, palette 0-15, flip bits 10-11
+        // Reject ARM code patterns: condition 0xE in upper bits means palette=0xE
+        if tile_num < 512 && palette <= 15 && palette != 0xE && palette != 0xF {
+            valid_entries += 1;
+        }
+    }
+    valid_entries * 3 >= total * 2
 }
 pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
     let mut assets = ExtractedAssets::default();
