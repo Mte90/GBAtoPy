@@ -83,8 +83,11 @@ impl CfgBuilder {
 
     pub fn build_from_entry(&mut self, rom: &[u8], entry_point: u32) {
         let mut visited: HashSet<u32> = HashSet::new();
-        let mut to_visit = vec![entry_point];
-        
+        // BFS queue stores (address, mode) so we propagate the execution mode
+        // instead of guessing from address parity. Thumb branch targets can be
+        // even addresses, and the parity heuristic decodes them as ARM.
+        let mut to_visit: Vec<(u32, ArmMode)> = vec![(entry_point, ArmMode::Arm)];
+
         let common_entry_points = [
             0x080000A0,
             0x08000100,
@@ -93,39 +96,41 @@ impl CfgBuilder {
             0x08000400,
             0x08000500,
         ];
-        
+
         for &addr in &common_entry_points {
             let rom_offset = (addr - 0x08000000) as usize;
-            if rom_offset < rom.len() && !to_visit.contains(&addr) {
-                to_visit.push(addr);
+            if rom_offset < rom.len() && !to_visit.iter().any(|(a, _)| *a == addr) {
+                to_visit.push((addr, ArmMode::Arm));
             }
         }
-        
+
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
-        // Safety limit to prevent infinite loops on corrupted ROMs
+
         const MAX_INSTRUCTIONS: usize = 500_000;
         let mut instruction_count = 0;
 
-        while let Some(addr) = to_visit.pop() {
+        while let Some((addr, current_mode)) = to_visit.pop() {
             if visited.contains(&addr) {
                 continue;
             }
             visited.insert(addr);
 
             instruction_count += 1;
+            if instruction_count > MAX_INSTRUCTIONS {
+                eprintln!("  CFG: safety limit reached, stopping");
+                break;
+            }
 
-            // Progress reporting every 100K instructions
             if instruction_count % 100_000 == 0 {
-                eprintln!("  CFG progress: {} visited, {} branch targets", 
+                eprintln!("  CFG progress: {} visited, {} branch targets",
                           instruction_count, self.branch_targets.len());
             }
 
-            // Determine mode for this specific address
-            let current_mode = if addr % 2 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
             let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
-
+            if decode_addr < 0x08000000 {
+                continue;
+            }
             let rom_offset = (decode_addr - 0x08000000) as usize;
             if rom_offset >= rom.len() {
                 continue;
@@ -158,49 +163,45 @@ impl CfgBuilder {
             self.instruction_addresses.push(addr);
             self.mode_map.push((addr, current_mode));
 
-            // Track register values for indirect jump resolution
-            self.track_register_values(&opcode_str, &operands);
+            self.track_register_values(&opcode_str, &operands, addr, current_mode);
 
             let targets = self.extract_branch_targets(&opcode_str, &operands);
-            
-            // Determine instruction width based on current mode
+
             let instr_width = if current_mode == ArmMode::Thumb { 2 } else { 4 };
-            
-            // Check if this is ANY branch (unconditional or conditional)
-            // Branches should NOT add fall-through because they may not execute
-            // We still add the branch target separately, so we need to be selective about fall-through
-            let is_branch = opcode_str.starts_with('B') 
-                && !opcode_str.starts_with("BIT")  // Exclude BIT, BIC, etc.
-                && opcode_str != "BKPT"  // Not a branch
-                && opcode_str != "BLX";  // Handled separately below
-            
-            // For unconditional branches (B, BL, BX without condition), no fall-through
-            // For conditional branches (BEQ, BNE, etc.), we add fall-through because 
-            // the branch might not be taken - but we need to be careful
-            // Actually, for accurate CFG, we should add fall-through for ALL branches
-            // because we don't know if they'll be taken at runtime
-let is_uncond_branch = opcode_str == "B"
-            || opcode_str == "BX"
-            || writes_to_pc(&opcode_str, &operands);
-        
-        if !is_uncond_branch {
-            let next_addr = addr + instr_width;
-            if !visited.contains(&next_addr) && ((next_addr - 0x08000000) as usize) < rom.len() {
-                to_visit.push(next_addr);
+
+            let is_uncond_branch = opcode_str == "B"
+                || opcode_str == "BX"
+                || opcode_str == "BL_SUFFIX"
+                || writes_to_pc(&opcode_str, &operands);
+
+            if !is_uncond_branch {
+                let next_addr = addr + instr_width;
+                if !visited.contains(&next_addr)
+                    && next_addr >= 0x08000000
+                    && ((next_addr - 0x08000000) as usize) < rom.len()
+                {
+                    to_visit.push((next_addr, current_mode));
+                }
             }
-        }
 
             for target in targets {
+                if target < 0x08000000 || (target - 0x08000000) as usize >= rom.len() {
+                    continue;
+                }
                 if !visited.contains(&target) {
-                    to_visit.push(target);
+                    let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
+                        if target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
+                    } else {
+                        current_mode
+                    };
+                    to_visit.push((target, target_mode));
                 }
                 if !self.branch_targets.contains(&target) {
                     self.branch_targets.push(target);
                 }
             }
 
-            // Invalidate register tracker after BL/BLX (function call)
-            if opcode_str == "BL" || opcode_str == "BLX" {
+            if opcode_str == "BL" || opcode_str == "BLX" || opcode_str == "BL_SUFFIX" {
                 self.register_tracker.invalidate_all();
             }
         }
@@ -210,8 +211,25 @@ let is_uncond_branch = opcode_str == "B"
         self.mode_map.sort_by_key(|(a, _)| *a);
     }
 
-    /// Track register values for MOV rN, #imm and LDR rN, =imm patterns
-    fn track_register_values(&mut self, opcode: &str, operands: &[Operand]) {
+    /// Track register values for MOV rN, #imm, LDR rN, =imm, and
+    /// ADD/SUB Rd, PC, #imm patterns (the ARM ADR pseudo-instruction and
+    /// the standard ARM->Thumb switch idiom: ADD Rd, PC, #1; BX Rd).
+    fn track_register_values(
+        &mut self,
+        opcode: &str,
+        operands: &[Operand],
+        addr: u32,
+        mode: ArmMode,
+    ) {
+        // BL_PREFIX stores the upper target in LR (r14). BL_SUFFIX will add the
+        // lower offset and branch to the combined address.
+        if opcode == "BL_PREFIX" {
+            if let Some(Operand::Immediate(target)) = operands.first() {
+                self.register_tracker.track_mov_immediate(14, *target);
+            }
+            return;
+        }
+
         // MOV rN, #imm
         if opcode.starts_with("MOV") && operands.len() >= 2 {
             if let Operand::Register(rd) = operands[0] {
@@ -224,10 +242,31 @@ let is_uncond_branch = opcode_str == "B"
         else if opcode.starts_with("LDR") && operands.len() >= 2 {
             if let Operand::Register(rd) = operands[0] {
                 if let Operand::Immediate(imm) = operands[1] {
-                    // Check if this looks like a PC-relative literal load
                     if imm >= 0x08000000 && imm < 0x0A000000 {
                         self.register_tracker.track_ldr_literal(rd, imm);
                     }
+                }
+            }
+        }
+
+        // ADD Rd, PC, #imm / SUB Rd, PC, #imm (ADR pseudo-instruction).
+        // ARM pipeline: PC = current_instruction + 8.
+        // Thumb pipeline: PC = current_instruction + 4.
+        if (opcode.starts_with("ADD") || opcode.starts_with("SUB")) && operands.len() >= 3 {
+            if let (Operand::Register(rd), Operand::Register(rn), Operand::Immediate(imm)) =
+                (&operands[0], &operands[1], &operands[2])
+            {
+                if *rn == 15 {
+                    let pipeline_pc = match mode {
+                        ArmMode::Thumb => (addr & !1) + 4,
+                        ArmMode::Arm => addr + 8,
+                    };
+                    let target = if opcode.starts_with("ADD") {
+                        pipeline_pc.wrapping_add(*imm)
+                    } else {
+                        pipeline_pc.wrapping_sub(*imm)
+                    };
+                    self.register_tracker.track_mov_immediate(*rd, target);
                 }
             }
         }
@@ -236,21 +275,36 @@ let is_uncond_branch = opcode_str == "B"
     fn extract_branch_targets(&mut self, opcode: &str, operands: &[Operand]) -> Vec<u32> {
         let mut targets = Vec::new();
         let upper_op = opcode.to_uppercase();
-        let is_branch = upper_op.starts_with("B") && !upper_op.starts_with("BIT") && !upper_op.starts_with("BIC") && upper_op != "BKPT";
+
+        // BL_PREFIX just stores the upper target in LR — not a branch itself.
+        // BL_SUFFIX combines LR (from BL_PREFIX) with the lower offset to form
+        // the final BL target. Both must be excluded from the generic branch
+        // check below, which would otherwise push garbage targets.
+        if opcode == "BL_SUFFIX" {
+            if let Some(Operand::Immediate(offset)) = operands.first() {
+                if let Some(lr) = self.register_tracker.get(14) {
+                    targets.push(lr.wrapping_add(*offset));
+                }
+            }
+            return targets;
+        }
+        if opcode == "BL_PREFIX" {
+            return targets;
+        }
+
+        let is_branch = upper_op.starts_with("B")
+            && !upper_op.starts_with("BIT")
+            && !upper_op.starts_with("BIC")
+            && upper_op != "BKPT";
 
         if is_branch {
-            // Handle direct branches with immediate target
             if let Some(Operand::Immediate(target)) = operands.first() {
                 targets.push(*target);
-            }
-            // Handle indirect branches: BX rN or BLX rN
-            else if opcode == "BX" || opcode == "BLX" {
+            } else if opcode == "BX" || opcode == "BLX" {
                 if let Some(Operand::Register(rn)) = operands.first() {
-                    // Try to resolve the target from register tracker
                     if let Some(target) = self.register_tracker.get(*rn) {
                         targets.push(target);
                     }
-                    // If we can't resolve it, we can't determine the target statically
                 }
             }
         }

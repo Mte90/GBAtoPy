@@ -716,15 +716,29 @@ impl Disassembler {
     ///
     /// # Returns
     /// Vector of decoded instructions, sorted by address
-    pub fn selective_disassemble(&mut self, rom: &[u8], addresses: &[u32]) -> Vec<DecodedInstruction> {
+    pub fn selective_disassemble(
+        &mut self,
+        rom: &[u8],
+        addresses: &[u32],
+        mode_map: &[(u32, ArmMode)],
+    ) -> Vec<DecodedInstruction> {
         let mut instructions = Vec::new();
         let arm_decoder = crate::arm::ArmDecoder::new();
         let thumb_decoder = crate::thumb::ThumbDecoder::new();
 
         for &addr in addresses {
-            let is_thumb = addr % 2 == 1;
-            let mode = if is_thumb { ArmMode::Thumb } else { ArmMode::Arm };
-            let decode_addr = if is_thumb { addr & !1 } else { addr };
+            // Look up the mode from the CFG's mode_map. Fall back to the parity
+            // heuristic for addresses not in the map (e.g. common entry points).
+            let mode = mode_map
+                .iter()
+                .find(|(a, _)| *a == addr)
+                .map(|(_, m)| *m)
+                .unwrap_or(if addr % 2 == 1 {
+                    ArmMode::Thumb
+                } else {
+                    ArmMode::Arm
+                });
+            let decode_addr = if mode == ArmMode::Thumb { addr & !1 } else { addr };
             let rom_offset = (decode_addr - 0x08000000) as usize;
             
             if rom_offset >= rom.len() {
@@ -742,7 +756,7 @@ impl Disassembler {
                         rom[rom_offset + 2],
                         rom[rom_offset + 3],
                     ]);
-                    let (opcode, operands, _) = arm_decoder.decode(word, decode_addr);
+                    let (opcode, operands, sets_flags) = arm_decoder.decode(word, decode_addr);
                     
                     instructions.push(DecodedInstruction {
                         address: addr,
@@ -750,7 +764,7 @@ impl Disassembler {
                         operands,
                         condition: None,
                         raw: word,
-                        sets_flags: false,
+                        sets_flags,
                         width: 4,
                         mode: ArmMode::Arm,
                         is_data: false,
@@ -761,7 +775,7 @@ impl Disassembler {
                         continue;
                     }
                     let halfword = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                    let (opcode, operands, _) = thumb_decoder.decode(halfword, decode_addr);
+                    let (opcode, operands, sets_flags) = thumb_decoder.decode(halfword, decode_addr);
                     
                     instructions.push(DecodedInstruction {
                         address: addr,
@@ -769,7 +783,7 @@ impl Disassembler {
                         operands,
                         condition: None,
                         raw: halfword as u32,
-                        sets_flags: false,
+                        sets_flags,
                         width: 2,
                         mode: ArmMode::Thumb,
                         is_data: false,

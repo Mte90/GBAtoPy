@@ -207,7 +207,7 @@ pub fn run_pipeline(
     eprintln!("  CFG found {} reachable addresses", reachable.len());
 
     let mut disasm = Disassembler::new();
-    instructions = disasm.selective_disassemble(&rom, &reachable);
+    instructions = disasm.selective_disassemble(&rom, &reachable, &cfg.mode_map);
     
     if reachable.len() < 10 {
         eprintln!("  DEBUG: reachable addresses:");
@@ -556,22 +556,17 @@ pub fn run_pipeline(
 
     // Helper function to generate Python from ARM instruction
 
-    // ROM data will be loaded from external .bin file instead of embedded
-    // This keeps the Python script smaller and cleaner
-    let rom_basename = Path::new(&rom_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("rom");
-    let rom_bin_path = format!("{}.bin", rom_basename);
+    // Embed ROM data inline as base64 so the generated .py is fully standalone
+    // (per AGENTS.md: "Standalone — zero external imports except pygame").
+    // base64 keeps the source ~1.33x the ROM size, vs ~5x for a bytearray literal.
+    use base64::Engine;
+    let rom_b64 = base64::engine::general_purpose::STANDARD.encode(&rom);
+    code.push_str("# ROM data (base64-encoded; decoded at runtime via stdlib base64)\n");
+    code.push_str("import base64 as _b64\n");
     code.push_str(&format!(
-        "# ROM data loaded from external file: {}\n",
-        rom_bin_path
+        "ROM_DATA = bytearray(_b64.b64decode({:?}))\n",
+        rom_b64
     ));
-    code.push_str("def load_rom_data():\n");
-    code.push_str("    \"\"\"Load ROM data from external .bin file\"\"\"\n");
-    code.push_str(&format!("    with open('{}', 'rb') as f:\n", rom_bin_path));
-    code.push_str("        return bytearray(f.read())\n\n");
-    code.push_str("ROM_DATA = load_rom_data()\n");
     code.push_str("memory.load_rom_data(ROM_DATA)\n\n");
 
     // Embed wave data (audio samples)
@@ -925,23 +920,11 @@ pub fn run_pipeline(
 
     fs::write(output_path, &code).map_err(|e| format!("Failed to write output: {}", e))?;
 
-    // Write ROM data to external .bin file
-    let rom_basename = Path::new(&rom_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("rom");
-    let rom_bin_path = format!("{}.bin", rom_basename);
-    let output_dir = Path::new(&output_path).parent().unwrap_or(Path::new("."));
-    let bin_full_path = output_dir.join(&rom_bin_path);
-    fs::write(&bin_full_path, &rom)
-        .map_err(|e| format!("Failed to write ROM data to {}: {}", rom_bin_path, e))?;
-
     println!(
         "Generated {} lines of Python to {}",
         code.lines().count(),
         output_path
     );
-    println!("Wrote ROM data to {}", bin_full_path.display());
     Ok(())
 }
 
@@ -1096,6 +1079,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         else:
             print(f"Warning: Failed to save state to {save_state}", file=sys.stderr)
     
+    pygame.mixer.quit()
     pygame.quit()
     
     # Dump memory if requested
@@ -1144,6 +1128,7 @@ if __name__ == "__main__":
         hook_file=args.hook_file
     )
     print(f"{frames} frames")
+    import os; os._exit(0)
 "#
     .to_string()
 }

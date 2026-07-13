@@ -1,92 +1,113 @@
 pub fn generate_thumb_cbnz_instruction(ops: &[String]) -> String {
-    // CBNZ Rn, target - Compare and Branch if Not Zero
-    // ops[0] = register number (e.g., "5" for R5)
-    // ops[1] = target address (e.g., "0x08000100")
     format!("if registers[{}] != 0: registers[15] = {}", ops[0], ops[1])
 }
 
 pub fn generate_thumb_cbz_instruction(ops: &[String]) -> String {
-    // CBZ Rn, target - Compare and Branch if Zero
-    // ops[0] = register number (e.g., "5" for R5)
-    // ops[1] = target address (e.g., "0x08000100")
     format!("if registers[{}] == 0: registers[15] = {}", ops[0], ops[1])
 }
 
-// Conditional branches (14 variants) - use CPSR flags (placeholders for now, to be implemented in Tasks 14-17)
 pub fn generate_thumb_beq_instruction(ops: &[String]) -> String {
-    // BEQ target - Branch if Equal (Z=1)
-    format!("if registers[17] == 1: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('EQ'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bne_instruction(ops: &[String]) -> String {
-    // BNE target - Branch if Not Equal (Z=0)
-    format!("if registers[17] == 0: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('NE'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bcs_instruction(ops: &[String]) -> String {
-    // BCS target - Branch if Carry Set (C=1)
-    format!("if registers[18] == 1: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('CS'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bcc_instruction(ops: &[String]) -> String {
-    // BCC target - Branch if Carry Clear (C=0)
-    format!("if registers[18] == 0: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('CC'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bmi_instruction(ops: &[String]) -> String {
-    // BMI target - Branch if Minus (N=1)
-    format!("if registers[16] == 1: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('MI'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bpl_instruction(ops: &[String]) -> String {
-    // BPL target - Branch if Plus (N=0)
-    format!("if registers[16] == 0: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('PL'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bvs_instruction(ops: &[String]) -> String {
-    // BVS target - Branch if Overflow Set (V=1)
-    format!("if registers[19] == 1: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('VS'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bvc_instruction(ops: &[String]) -> String {
-    // BVC target - Branch if Overflow Clear (V=0)
-    format!("if registers[19] == 0: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('VC'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bhi_instruction(ops: &[String]) -> String {
-    // BHI target - Branch if Higher (C=1 and Z=0)
-    format!("if registers[18] == 1 and registers[17] == 0: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('HI'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bls_instruction(ops: &[String]) -> String {
-    // BLS target - Branch if Lower or Same (C=0 or Z=1)
-    format!("if registers[18] == 0 or registers[17] == 1: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('LS'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bge_instruction(ops: &[String]) -> String {
-    // BGE target - Branch if Greater or Equal (N==V)
-    format!("if registers[16] == registers[19]: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('GE'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_blt_instruction(ops: &[String]) -> String {
-    // BLT target - Branch if Less Than (N!=V)
-    format!("if registers[16] != registers[19]: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('LT'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_bgt_instruction(ops: &[String]) -> String {
-    // BGT target - Branch if Greater Than (Z=0 and N==V)
-    format!("if registers[17] == 0 and registers[16] == registers[19]: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('GT'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate_thumb_ble_instruction(ops: &[String]) -> String {
-    // BLE target - Branch if Less or Equal (Z=1 or N!=V)
-    format!("if registers[17] == 1 or registers[16] != registers[19]: registers[15] = {}", ops[0])
+    format!(
+        "if cpsr_check('LE'):\n    registers[15] = {}\nelse:\n    registers[15] = (registers[15] + 2) & 0xFFFFFFFF",
+        ops[0]
+    )
 }
 
 pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
     let opcode = &inst.opcode.to_uppercase();
     let ops: Vec<String> = inst.operands.iter().map(|op| op.to_codegen()).collect();
-    
+
     match opcode.as_str() {
         "CBNZ" => Some(generate_thumb_cbnz_instruction(&ops)),
         "CBZ" => Some(generate_thumb_cbz_instruction(&ops)),
