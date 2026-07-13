@@ -171,7 +171,6 @@ impl CfgBuilder {
 
             let is_uncond_branch = opcode_str == "B"
                 || opcode_str == "BX"
-                || opcode_str == "BL_SUFFIX"
                 || writes_to_pc(&opcode_str, &operands);
 
             if !is_uncond_branch {
@@ -203,6 +202,18 @@ impl CfgBuilder {
 
             if opcode_str == "BL" || opcode_str == "BLX" || opcode_str == "BL_SUFFIX" {
                 self.register_tracker.invalidate_all();
+            }
+
+            // After a BL/BLX/BL_SUFFIX, set LR to the return address so that
+            // BX LR at the end of the subroutine can be resolved by the CFG.
+            // Thumb BL: LR = (addr + 2) | 1 (return addr with Thumb bit).
+            // ARM BL/BLX: LR = addr + 4 (return addr, ARM mode — no Thumb bit).
+            if opcode_str == "BL_SUFFIX" {
+                self.register_tracker
+                    .track_mov_immediate(14, (addr + 2) | 1);
+            } else if opcode_str == "BL" || opcode_str == "BLX" {
+                self.register_tracker
+                    .track_mov_immediate(14, addr + 4);
             }
         }
 

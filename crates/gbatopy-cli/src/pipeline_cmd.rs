@@ -112,9 +112,6 @@ impl FeatureFlags {
         // Also check for SWI calls that might indicate feature usage
         for inst in instructions {
             let opcode = inst.opcode.as_str();
-            if inst.address >= 0x080000D8 && inst.address <= 0x080000E0 {
-                eprintln!("DEBUG: Instruction at 0x{:08X}: opcode={}, operands={:?}", inst.address, opcode, inst.operands);
-            }
             if opcode == "SWI" || opcode == "svc" {
                 // SWI numbers can indicate BIOS function usage
                 // Common SWI numbers: 0x00-0x1F are common, but we conservatively
@@ -194,7 +191,6 @@ pub fn run_pipeline(
     let rom = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
     let reachable: Vec<u32>;
-    let branch_targets: Vec<u32>;
     
     let instructions: Vec<gbatopy_disasm::DecodedInstruction>;
 
@@ -203,22 +199,10 @@ pub fn run_pipeline(
     let mut cfg = CfgBuilder::new();
     cfg.build_from_entry(&rom, 0x08000000);
     reachable = cfg.get_reachable_addresses().to_vec();
-    branch_targets = cfg.branch_targets.clone();
     eprintln!("  CFG found {} reachable addresses", reachable.len());
 
     let mut disasm = Disassembler::new();
     instructions = disasm.selective_disassemble(&rom, &reachable, &cfg.mode_map);
-    
-    if reachable.len() < 10 {
-        eprintln!("  DEBUG: reachable addresses:");
-        for a in reachable.iter().take(20) {
-            eprintln!("    0x{:08X}", a);
-        }
-        eprintln!("  DEBUG: branch targets:");
-        for t in branch_targets.iter().take(20) {
-            eprintln!("    0x{:08X}", t);
-        }
-    }
     
     eprintln!("  Disassembled {} reachable instructions", instructions.len());
 
@@ -437,7 +421,7 @@ pub fn run_pipeline(
             || opcode == "BL" 
             || opcode == "BX" 
             || opcode == "BLX"
-            || opcode.starts_with('B') && opcode.len() == 3; // Conditional branches: BEQ, BNE, etc.
+            || is_conditional_branch(opcode);
         
         // Also check for instructions that write to R15 (PC)
         let writes_to_pc = opcode == "MOV" && inst.operands.iter().any(|op| {
@@ -486,16 +470,15 @@ pub fn run_pipeline(
         let instr_size = inst.width as u64;
         let next_expected = prev_addr.map(|a| a + instr_size);
         let opcode = inst.opcode.as_str();
-        let is_branch = opcode == "B" 
-            || opcode == "BL" 
-            || opcode == "BX" 
+        let is_branch = opcode == "B"
+            || opcode == "BL"
+            || opcode == "BX"
             || opcode == "BLX"
-            || (opcode.starts_with('B') && opcode.len() == 3) // Conditional branches
+            || is_conditional_branch(opcode)
             || gbatopy_disasm::cfg::writes_to_pc(opcode, &inst.operands);
 
         // CRITICAL: Branch instructions ALWAYS start their own block and terminate it
         if is_branch {
-            eprintln!("DEBUG: Branch at 0x{:08X} ({}) - new block and terminates it", addr, opcode);
             // Start a new block for this branch instruction
             current_block_start = Some(addr);
             // Add this instruction to its own block
@@ -521,11 +504,6 @@ pub fn run_pipeline(
             });
 
         if should_start_new_block {
-            eprintln!("DEBUG: 0x{:08X} ({}) - starting new block (branch_target={}, prev_was_branch={}, sequential={})", 
-                addr, opcode, 
-                branch_targets.contains(&addr), 
-                prev_was_branch,
-                next_expected == Some(addr));
             current_block_start = Some(addr);
             prev_was_branch = false;  // Reset after starting new block
         }
@@ -694,14 +672,25 @@ pub fn run_pipeline(
     //   - LDM/STM with PC (R15) in the register list (function return / long jump)
     //   - LDR with Rd = PC (PC-relative load into the program counter)
     //   - Data-processing instructions with Rd = PC (e.g. MOV PC, R14)
+
+    /// Returns true for ARM conditional branch mnemonics (BEQ, BNE, BCS, etc.).
+    /// Uses an explicit set instead of a prefix+length heuristic to avoid
+    /// false positives like BIC (bit-clear) which also starts with 'B' and
+    /// has length 3.
+    fn is_conditional_branch(op: &str) -> bool {
+        matches!(
+            op,
+            "BEQ" | "BNE" | "BCS" | "BCC" | "BMI" | "BPL" | "BVS" | "BVC"
+                | "BHI" | "BLS" | "BGE" | "BLT" | "BGT" | "BLE" | "BAL" | "BNV"
+        )
+    }
+
     fn writes_r15(inst: &gbatopy_disasm::DecodedInstruction) -> bool {
         let op = inst.opcode.as_str();
 
-        // Branch family. Unconditional forms (B/BL/BX/BLX/CBZ/CBNZ) and 3-letter
-        // conditional forms (BNE, BEQ, BGT, BLT, BGE, BLE, ...). Note BL/BLX are
-        // 2-3 chars so the len()==3 check covers Bcc only; BL/BLX handled above.
+        // Branch family: unconditional (B/BL/BX/BLX/CBZ/CBNZ) and conditional (BEQ, BNE, ...).
         if matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ")
-            || (op.starts_with('B') && op.len() == 3 && op != "BLX")
+            || is_conditional_branch(op)
         {
             return true;
         }
