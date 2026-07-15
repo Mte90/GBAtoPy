@@ -304,6 +304,7 @@ pub fn run_pipeline(
 
     if flags.audio {
         code.push_str("apu_instance = APU()\n");
+        code.push_str("memory.attach_apu(apu_instance)\n");
     } else {
         code.push_str("apu_instance = None\n");
     }
@@ -323,6 +324,7 @@ pub fn run_pipeline(
     // Create timer instance if enabled
     if flags.timers {
         code.push_str("timers_instance = Timers()\n");
+        code.push_str("memory.attach_timers(timers_instance)\n");
         if flags.irq {
             code.push_str("timers_instance.attach_interrupts(interrupts_instance)\n");
         }
@@ -334,6 +336,7 @@ pub fn run_pipeline(
     if flags.dma {
         code.push_str("dma_instance = DMA()\n");
         code.push_str("dma_instance.attach_memory(memory)\n");
+        code.push_str("memory.attach_dma(dma_instance)\n");
         if flags.irq {
             code.push_str("dma_instance.attach_interrupts(interrupts_instance)\n");
         }
@@ -343,6 +346,7 @@ pub fn run_pipeline(
     
     // Create input instance
     code.push_str("input_instance = Input()\n");
+    code.push_str("memory.attach_input(input_instance)\n");
     if !flags.numba {
         code.push_str("set_numba_enabled(False)\n");
     } else {
@@ -413,41 +417,22 @@ pub fn run_pipeline(
     // Collect all branch targets
     for inst in &instructions {
         let addr = inst.address as u64;
-        let opcode = inst.opcode.as_str();
 
-        // Check if this is a branch instruction - extract target address from operands
-        // Include conditional branches (BEQ, BNE, BGT, BLT, etc.)
-        let is_branch = opcode == "B" 
-            || opcode == "BL" 
-            || opcode == "BX" 
-            || opcode == "BLX"
-            || is_conditional_branch(opcode);
-        
-        // Also check for instructions that write to R15 (PC)
-        let writes_to_pc = opcode == "MOV" && inst.operands.iter().any(|op| {
-            if let Operand::Register(15) = op { true } else { false }
-        }) || opcode == "ADD" && inst.operands.iter().any(|op| {
-            if let Operand::Register(15) = op { true } else { false }
-        });
-        
-        if is_branch {
+        if writes_r15(inst) {
             for op in &inst.operands {
                 if let Operand::Immediate(target) = op {
                     branch_targets.insert(*target as u64);
-                    eprintln!("  Branch from 0x{:08X} -> target 0x{:08X}", addr, *target);
                 }
             }
         }
-        
-        // Also add target if this instruction writes to PC with an immediate value
-        if writes_to_pc {
-            for op in &inst.operands {
-                if let Operand::Immediate(target) = op {
-                    branch_targets.insert(*target as u64);
-                    eprintln!("  PC write from 0x{:08X} -> target 0x{:08X}", addr, *target);
-                }
-            }
-        }
+    }
+    // Merge CFG-computed branch targets. The CFG correctly handles Thumb BL
+    // (BL_PREFIX/BL_SUFFIX) targets, which the operand-based extraction above
+    // misses because the BL target is computed from LR + offset, not a single
+    // immediate operand. Without this, BL return addresses don't start new
+    // blocks and instructions after BL merge into the caller's block.
+    for &t in &cfg.branch_targets {
+        branch_targets.insert(t as u64);
     }
     // First instruction is always a block start
     branch_targets.insert(0x08000000);
@@ -469,13 +454,7 @@ pub fn run_pipeline(
         let addr = inst.address as u64;
         let instr_size = inst.width as u64;
         let next_expected = prev_addr.map(|a| a + instr_size);
-        let opcode = inst.opcode.as_str();
-        let is_branch = opcode == "B"
-            || opcode == "BL"
-            || opcode == "BX"
-            || opcode == "BLX"
-            || is_conditional_branch(opcode)
-            || gbatopy_disasm::cfg::writes_to_pc(opcode, &inst.operands);
+        let is_branch = writes_r15(inst);
 
         // CRITICAL: Branch instructions ALWAYS start their own block and terminate it
         if is_branch {
@@ -689,17 +668,20 @@ pub fn run_pipeline(
         let op = inst.opcode.as_str();
 
         // Branch family: unconditional (B/BL/BX/BLX/CBZ/CBNZ) and conditional (BEQ, BNE, ...).
-        if matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ")
+        // BL_SUFFIX is the Thumb BL branch half that writes PC.
+        if matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ" | "BL_SUFFIX")
             || is_conditional_branch(op)
         {
             return true;
         }
 
         // Store instructions: first operand is a source, not a destination.
+        // STM* covers STMFD, STMIA, STMDB, STMDA, STMEA, STMED, STMFA, STMIB,
+        // and their '!' (writeback) variants. PUSH is the Thumb alias.
         let is_store = matches!(
             op,
-            "STR" | "STRH" | "STRB" | "STRD" | "STM" | "STMIA" | "STMIB" | "STMDA" | "PUSH"
-        );
+            "STR" | "STRH" | "STRB" | "STRD" | "PUSH"
+        ) || op.starts_with("STM");
         // Comparison instructions: only set flags, no Rd write.
         let is_comparison = matches!(op, "CMP" | "CMN" | "TST" | "TEQ");
 

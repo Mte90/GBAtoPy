@@ -35,93 +35,71 @@ pub fn generate_strd_instruction(ops: &[String]) -> String {
 
 pub fn generate_thumb_ldmia_instruction(ops: &[String]) -> String {
     // LDMIA Rn!, {reglist} - Load Multiple Increment After
-    // ops[0] = register number (base)
-    // ops[1..] = individual register names (e.g., "r0", "r1", "r2")
+    // Each register loaded advances the address by 4; writeback = base + 4*count.
     let base_reg = &ops[0];
 
-    let mut code = format!("addr = registers[{}]
-", base_reg);
+    let mut code = format!("addr = registers[{}]\n", base_reg);
     if ops.len() > 1 {
-        for (i, reg) in ops[1..].iter().enumerate() {
+        for reg in ops[1..].iter() {
             let reg_num = reg.trim_start_matches('r');
             code.push_str(&format!(
-                "registers[{}] = memory.read_u32(addr) & 0xFFFFFFFF
-",
+                "registers[{}] = memory.read_u32(addr) & 0xFFFFFFFF\naddr += 4\n",
                 reg_num
             ));
-            if i < ops.len() - 2 {
-                code.push_str("addr += 4\n");
-            }
         }
     }
-    code.push_str(&format!("registers[{}] = addr\n", base_reg)); // Writeback
+    code.push_str(&format!("registers[{}] = addr\n", base_reg));
     code
 }
 
 pub fn generate_thumb_stmia_instruction(ops: &[String]) -> String {
     // STMIA Rn!, {reglist} - Store Multiple Increment After
-    // ops[0] = register number (base)
-    // ops[1..] = individual register names (e.g., "r0", "r1", "r2")
+    // Each register stored advances the address by 4; writeback = base + 4*count.
     let base_reg = &ops[0];
 
-    let mut code = format!("addr = registers[{}]
-", base_reg);
+    let mut code = format!("addr = registers[{}]\n", base_reg);
     if ops.len() > 1 {
-        for (i, reg) in ops[1..].iter().enumerate() {
+        for reg in ops[1..].iter() {
             let reg_num = reg.trim_start_matches('r');
             code.push_str(&format!(
-                "memory.write_u32(addr, registers[{}] & 0xFFFFFFFF)
-",
+                "memory.write_u32(addr, registers[{}] & 0xFFFFFFFF)\naddr += 4\n",
                 reg_num
             ));
-            if i < ops.len() - 2 {
-                code.push_str("addr += 4\n");
-            }
         }
     }
-    code.push_str(&format!("registers[{}] = addr\n", base_reg)); // Writeback
+    code.push_str(&format!("registers[{}] = addr\n", base_reg));
     code
 }
 
 pub fn generate_thumb_pop_instruction(ops: &[String]) -> String {
     // POP {reglist} - Load from stack (LDMIA SP!, {reglist})
-    // ops[0..] = individual register names (e.g., "r0", "r1", "r2")
+    // Each register loaded advances the address by 4; SP += 4*count.
     let mut code = String::new();
-    code.push_str("addr = r13\n"); // SP
-    for (i, reg) in ops.iter().enumerate() {
+    code.push_str("addr = registers[13]\n");
+    for reg in ops.iter() {
         let reg_num = reg.trim_start_matches('r');
         code.push_str(&format!(
-            "registers[{}] = memory.read_u32(addr) & 0xFFFFFFFF
-",
+            "registers[{}] = memory.read_u32(addr) & 0xFFFFFFFF\naddr += 4\n",
             reg_num
         ));
-        if i < ops.len() - 1 {
-            code.push_str("addr += 4\n");
-        }
     }
-    code.push_str("registers[13] = addr
-"); // Update SP
+    code.push_str("registers[13] = addr\n");
     code
 }
 
 pub fn generate_thumb_push_instruction(ops: &[String]) -> String {
-    // PUSH {reglist} - Store to stack (STMIA SP!, {reglist})
-    // ops[0..] = individual register names (e.g., "r0", "r1", "r2")
-    let mut code = String::new();
-    code.push_str("addr = r13\n"); // SP
-    for (i, reg) in ops.iter().enumerate() {
+    // PUSH {reglist} - Store to stack (STMDB SP!, {reglist})
+    // SP pre-decremented by 4*count; lowest reg at lowest address; SP -= 4*count.
+    let count = ops.len();
+    let mut code = format!("addr = registers[13] - {}\n", count * 4);
+    for reg in ops.iter() {
         let reg_num = reg.trim_start_matches('r');
         code.push_str(&format!(
-            "memory.write_u32(addr, registers[{}] & 0xFFFFFFFF)
-",
+            "memory.write_u32(addr, registers[{}] & 0xFFFFFFFF)\naddr += 4\n",
             reg_num
         ));
-            if i < ops.len() - 1 {
-            code.push_str("addr += 4\n");
-        }
     }
-    code.push_str("registers[13] = addr
-"); // Update SP
+    code.push_str(&format!("registers[13] = registers[13] - {}\n", count * 4));
     code
 }
 

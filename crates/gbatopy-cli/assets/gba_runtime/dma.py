@@ -102,19 +102,27 @@ class DMAChannel:
         return 0x040000B0 + (self.channel_id * DMA_CHANNEL_SPACING)
 
     def read_from_memory(self):
-        b = self._base()
-        self.src_addr = self.mem.read_u32(b)
-        self.dst_addr = self.mem.read_u32(b + 4)
-        self.count = self.mem.read_u16(b + 8)
-        self.control = self.mem.read_u16(b + 10)
+        b = self._base() - 0x04000000
+        self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
+        self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
+        self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
+        self.control = self.mem.io[b+10] | (self.mem.io[b+11] << 8)
         self.enabled = (self.control & DMA_ENABLE) != 0
 
     def write_to_memory(self):
-        b = self._base()
-        self.mem.write_u32(b, self.src_addr)
-        self.mem.write_u32(b + 4, self.dst_addr)
-        self.mem.write_u16(b + 8, self.count & 0xFFFF)
-        self.mem.write_u16(b + 10, self.control & 0xFFFF)
+        b = self._base() - 0x04000000
+        self.mem.io[b] = self.src_addr & 0xFF
+        self.mem.io[b+1] = (self.src_addr >> 8) & 0xFF
+        self.mem.io[b+2] = (self.src_addr >> 16) & 0xFF
+        self.mem.io[b+3] = (self.src_addr >> 24) & 0xFF
+        self.mem.io[b+4] = self.dst_addr & 0xFF
+        self.mem.io[b+5] = (self.dst_addr >> 8) & 0xFF
+        self.mem.io[b+6] = (self.dst_addr >> 16) & 0xFF
+        self.mem.io[b+7] = (self.dst_addr >> 24) & 0xFF
+        self.mem.io[b+8] = self.count & 0xFF
+        self.mem.io[b+9] = (self.count >> 8) & 0xFF
+        self.mem.io[b+10] = self.control & 0xFF
+        self.mem.io[b+11] = (self.control >> 8) & 0xFF
 
     def get_count_value(self) -> int:
         if self.count == 0:

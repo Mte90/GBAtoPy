@@ -332,7 +332,7 @@ impl ThumbDecoder {
     fn format_16_cond_branch(&self, hw: u16, address: u32) -> (String, Vec<crate::Operand>, bool) {
         let cond = (hw >> 8) & 0xF;
         let offset = (hw & 0xFF) as i32;
-        let signed_offset = (offset << 24) >> 23;
+        let signed_offset = (offset << 24) >> 24;
         let target = address
             .wrapping_add(4)
             .wrapping_add((signed_offset as u32).wrapping_mul(2));
@@ -369,7 +369,7 @@ impl ThumbDecoder {
         address: u32,
     ) -> (String, Vec<crate::Operand>, bool) {
         let offset = (hw & 0x3FF) as i32;
-        let signed_offset = (offset << 22) >> 21;
+        let signed_offset = (offset << 22) >> 22;
         let target = address
             .wrapping_add(4)
             .wrapping_add((signed_offset as u32).wrapping_mul(2));
@@ -380,7 +380,7 @@ impl ThumbDecoder {
         let h_flag = (hw >> 11) & 1;
         let offset = (hw & 0x7FF) as u32;
         if h_flag == 0 {
-            let off = ((offset << 21) as i32) >> 20;
+            let off = ((offset << 21) as i32) >> 21;
             let target = (address as i32 + 4 + (off << 12)) as u32;
             ("BL_PREFIX".to_string(), vec![self.imm(target)], false)
         } else {

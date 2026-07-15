@@ -47,11 +47,6 @@ impl RegisterTracker {
         self.values.insert(rd, imm);
     }
 
-    /// Track an LDR rN, =imm pseudo-instruction
-    pub fn track_ldr_literal(&mut self, rd: u8, imm: u32) {
-        self.values.insert(rd, imm);
-    }
-
     /// Get the tracked value for a register, if any
     pub fn get(&self, rn: u8) -> Option<u32> {
         self.values.get(&rn).copied()
@@ -74,6 +69,14 @@ pub struct CfgBuilder {
     pub branch_targets: Vec<u32>,
     pub mode_map: Vec<(u32, ArmMode)>,
     register_tracker: RegisterTracker,
+    /// All (register, literal_value) pairs from LDR rN, =literal where the
+    /// loaded value is a ROM address. Used by the post-processing sweep to
+    /// resolve indirect branches that the context-insensitive tracker missed
+    /// (e.g., a BX rN thunk called from multiple sites with different rN values).
+    ldr_literals: Vec<(u8, u32)>,
+    /// Registers used in BX/BLX instructions. The post-processing sweep adds
+    /// all literal-pool values loaded into these registers as branch targets.
+    bx_registers: HashSet<u8>,
 }
 
 impl CfgBuilder {
@@ -163,9 +166,13 @@ impl CfgBuilder {
             self.instruction_addresses.push(addr);
             self.mode_map.push((addr, current_mode));
 
-            self.track_register_values(&opcode_str, &operands, addr, current_mode);
+            // Extract branch targets BEFORE track_register_values, because
+            // track_register_values invalidates LR for BL_SUFFIX and replaces
+            // it with the return address. extract_branch_targets needs the old
+            // LR (set by BL_PREFIX) to compute the BL target.
+            let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
 
-            let targets = self.extract_branch_targets(&opcode_str, &operands);
+            self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
 
             let instr_width = if current_mode == ArmMode::Thumb { 2 } else { 4 };
 
@@ -183,16 +190,25 @@ impl CfgBuilder {
                 }
             }
 
-            for target in targets {
-                if target < 0x08000000 || (target - 0x08000000) as usize >= rom.len() {
+            for raw_target in targets {
+                if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
                     continue;
                 }
+                let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
+                    if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
+                } else {
+                    current_mode
+                };
+                // Normalize: clear the mode-encoding bit(s) so blocks are recorded
+                // at the actual instruction address, not the Thumb-bit-set target.
+                // Without this, both 0x...66 and 0x...67 become separate blocks and
+                // the dispatch table collides (idx = addr>>1 is identical for both).
+                let target = if target_mode == ArmMode::Thumb {
+                    raw_target & !1
+                } else {
+                    raw_target & !3
+                };
                 if !visited.contains(&target) {
-                    let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
-                        if target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
-                    } else {
-                        current_mode
-                    };
                     to_visit.push((target, target_mode));
                 }
                 if !self.branch_targets.contains(&target) {
@@ -200,9 +216,16 @@ impl CfgBuilder {
                 }
             }
 
-            if opcode_str == "BL" || opcode_str == "BLX" || opcode_str == "BL_SUFFIX" {
-                self.register_tracker.invalidate_all();
-            }
+            // Note: we deliberately do NOT invalidate tracked registers after
+            // BL/BLX/BL_SUFFIX. While the called function may clobber caller-
+            // saved registers (r0-r3, r12), invalidating would lose branch-
+            // target resolution for patterns like:
+            //   LDR r3, =func_ptr
+            //   BL some_function
+            //   BX r3          ← r3 lost if we invalidated
+            // Completeness (no missing dispatch entries) matters more than
+            // soundness here — a wrong tracked value adds dead code at worst,
+            // but a missing target crashes the runtime with "Unknown PC".
 
             // After a BL/BLX/BL_SUFFIX, set LR to the return address so that
             // BX LR at the end of the subroutine can be resolved by the CFG.
@@ -214,6 +237,125 @@ impl CfgBuilder {
             } else if opcode_str == "BL" || opcode_str == "BLX" {
                 self.register_tracker
                     .track_mov_immediate(14, addr + 4);
+            }
+        }
+
+        // Post-processing sweep: resolve indirect branches that the context-
+        // insensitive tracker missed. When a BX rN thunk is called from
+        // multiple call sites with different rN values, the main pass only
+        // visits the thunk once and resolves rN to a single value. This sweep
+        // adds all literal-pool values loaded into BX-target registers as
+        // branch targets, ensuring no indirect-branch destination is missing.
+        let mut new_targets: Vec<(u32, ArmMode)> = Vec::new();
+        for (rn, value) in &self.ldr_literals {
+            if !self.bx_registers.contains(rn) {
+                continue;
+            }
+            // Normalize Thumb-bit: the literal may have bit 0 set.
+            let target = if value & 1 == 1 {
+                (*value & !1, ArmMode::Thumb)
+            } else if value & 3 != 0 {
+                // Unaligned ARM literal — treat as Thumb.
+                (*value & !1, ArmMode::Thumb)
+            } else {
+                (*value, ArmMode::Arm)
+            };
+            let (taddr, tmode) = target;
+            if taddr < 0x08000000 || (taddr - 0x08000000) as usize >= rom.len() {
+                continue;
+            }
+            if !self.branch_targets.contains(&taddr) {
+                self.branch_targets.push(taddr);
+                new_targets.push((taddr, tmode));
+            }
+        }
+
+        // If new targets were discovered, run a mini-CFG pass from them to
+        // collect their instruction addresses and any further branches.
+        if !new_targets.is_empty() {
+            let mut mini_visited: HashSet<u32> = HashSet::new();
+            let mut mini_queue: Vec<(u32, ArmMode)> = new_targets;
+            while let Some((addr, current_mode)) = mini_queue.pop() {
+                if mini_visited.contains(&addr) || visited.contains(&addr) {
+                    continue;
+                }
+                mini_visited.insert(addr);
+
+                let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
+                if decode_addr < 0x08000000 {
+                    continue;
+                }
+                let rom_offset = (decode_addr - 0x08000000) as usize;
+                if rom_offset >= rom.len() {
+                    continue;
+                }
+
+                let (opcode_str, operands, instr_width) = match current_mode {
+                    ArmMode::Arm => {
+                        if rom_offset + 4 > rom.len() { continue; }
+                        let opcode = u32::from_le_bytes([
+                            rom[rom_offset], rom[rom_offset + 1],
+                            rom[rom_offset + 2], rom[rom_offset + 3],
+                        ]);
+                        let (op, ops, _) = arm_decoder.decode(opcode, decode_addr);
+                        (op, ops, 4)
+                    }
+                    ArmMode::Thumb => {
+                        if rom_offset + 2 > rom.len() { continue; }
+                        let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
+                        let (op, ops, _) = thumb_decoder.decode(opcode, decode_addr);
+                        (op, ops, 2)
+                    }
+                };
+
+                self.instruction_addresses.push(addr);
+                self.mode_map.push((addr, current_mode));
+
+                let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
+                self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
+
+                let is_uncond_branch = opcode_str == "B"
+                    || opcode_str == "BX"
+                    || writes_to_pc(&opcode_str, &operands);
+
+                if !is_uncond_branch {
+                    let next_addr = addr + instr_width;
+                    if !mini_visited.contains(&next_addr)
+                        && !visited.contains(&next_addr)
+                        && next_addr >= 0x08000000
+                        && ((next_addr - 0x08000000) as usize) < rom.len()
+                    {
+                        mini_queue.push((next_addr, current_mode));
+                    }
+                }
+
+                for raw_target in targets {
+                    if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
+                        continue;
+                    }
+                    let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
+                        if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
+                    } else {
+                        current_mode
+                    };
+                    let target = if target_mode == ArmMode::Thumb {
+                        raw_target & !1
+                    } else {
+                        raw_target & !3
+                    };
+                    if !mini_visited.contains(&target) && !visited.contains(&target) {
+                        mini_queue.push((target, target_mode));
+                    }
+                    if !self.branch_targets.contains(&target) {
+                        self.branch_targets.push(target);
+                    }
+                }
+
+                if opcode_str == "BL_SUFFIX" {
+                    self.register_tracker.track_mov_immediate(14, (addr + 2) | 1);
+                } else if opcode_str == "BL" || opcode_str == "BLX" {
+                    self.register_tracker.track_mov_immediate(14, addr + 4);
+                }
             }
         }
 
@@ -231,6 +373,7 @@ impl CfgBuilder {
         operands: &[Operand],
         addr: u32,
         mode: ArmMode,
+        rom: &[u8],
     ) {
         // BL_PREFIX stores the upper target in LR (r14). BL_SUFFIX will add the
         // lower offset and branch to the combined address.
@@ -254,7 +397,23 @@ impl CfgBuilder {
             if let Operand::Register(rd) = operands[0] {
                 if let Operand::Immediate(imm) = operands[1] {
                     if imm >= 0x08000000 && imm < 0x0A000000 {
-                        self.register_tracker.track_ldr_literal(rd, imm);
+                        let rom_offset = (imm - 0x08000000) as usize;
+                        if rom_offset + 4 <= rom.len() {
+                            let value = u32::from_le_bytes([
+                                rom[rom_offset],
+                                rom[rom_offset + 1],
+                                rom[rom_offset + 2],
+                                rom[rom_offset + 3],
+                            ]);
+                            self.register_tracker.track_mov_immediate(rd, value);
+                            // Collect for the post-processing sweep: this pair
+                            // may resolve an indirect branch that the context-
+                            // insensitive tracker can't follow (BX thunk called
+                            // from multiple sites with different rN values).
+                            if value >= 0x08000000 && value < 0x0A000000 {
+                                self.ldr_literals.push((rd, value));
+                            }
+                        }
                     }
                 }
             }
@@ -283,7 +442,7 @@ impl CfgBuilder {
         }
     }
 
-    fn extract_branch_targets(&mut self, opcode: &str, operands: &[Operand]) -> Vec<u32> {
+    fn extract_branch_targets(&mut self, opcode: &str, operands: &[Operand], addr: u32) -> Vec<u32> {
         let mut targets = Vec::new();
         let upper_op = opcode.to_uppercase();
 
@@ -294,7 +453,8 @@ impl CfgBuilder {
         if opcode == "BL_SUFFIX" {
             if let Some(Operand::Immediate(offset)) = operands.first() {
                 if let Some(lr) = self.register_tracker.get(14) {
-                    targets.push(lr.wrapping_add(*offset));
+                    let target = lr.wrapping_add(*offset);
+                    targets.push(target);
                 }
             }
             return targets;
@@ -313,6 +473,8 @@ impl CfgBuilder {
                 targets.push(*target);
             } else if opcode == "BX" || opcode == "BLX" {
                 if let Some(Operand::Register(rn)) = operands.first() {
+                    // Record this register for the post-processing sweep.
+                    self.bx_registers.insert(*rn);
                     if let Some(target) = self.register_tracker.get(*rn) {
                         targets.push(target);
                     }

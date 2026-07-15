@@ -19,8 +19,11 @@ pub fn generate_thumb_bl_prefix_instruction(ops: &[String]) -> String {
 }
 
 pub fn generate_thumb_bl_suffix_instruction(ops: &[String]) -> String {
-    // BL_SUFFIX - combines with LR to form full target and branches
-    format!("registers[15] = (registers[14] + {}) & 0xFFFFFFFF; registers[14] = (registers[15] + 4) | 1;", ops[0])
+    // BL_SUFFIX - combines with LR (from BL_PREFIX) to form full target and branches.
+    // Must compute target from OLD LR before overwriting LR with return address.
+    // Return address = current PC + 2 (Thumb: BL_SUFFIX is 2 bytes, next insn is +2).
+    // LR gets Thumb bit (| 1) so BX LR returns to Thumb mode.
+    format!("_bl_target = (registers[14] + {}) & 0xFFFFFFFF; registers[14] = (registers[15] + 2) | 1; registers[15] = _bl_target;", ops[0])
 }
 
 pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {

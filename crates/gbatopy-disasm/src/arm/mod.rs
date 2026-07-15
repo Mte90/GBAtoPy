@@ -484,15 +484,11 @@ impl ArmDecoder {
         let rn = ((word >> 16) & 0xF) as u8;
         let rd = ((word >> 12) & 0xF) as u8;
         
-        // Check for halfword instructions (STRH/LDRH) - bits 5-4 = 0b01 (S=0, H=1)
-        let h_bit = (word >> 4) & 1 != 0;
-        let s_bit = (word >> 5) & 1 != 0;
-        let is_halfword = !s_bit && h_bit;
-        
-        // Determine instruction name
-        let op_name = if is_halfword {
-            if l_bit { "LDRH" } else { "STRH" }
-        } else if b_bit {
+        // Halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH) have bits 27-25 = 000
+        // and are decoded by decode_data_processing (lines 116-237). This function
+        // only handles word/byte transfers (bits 27-26 = 01), so the B bit alone
+        // distinguishes LDR/STR (word) from LDRB/STRB (byte).
+        let op_name = if b_bit {
             if l_bit { "LDRB" } else { "STRB" }
         } else {
             if l_bit { "LDR" } else { "STR" }
@@ -514,18 +510,8 @@ impl ArmDecoder {
                 false,
             );
         }
-        // For halfword instructions, offset extraction is different
-        let offset = if is_halfword {
-            // Halfword instructions use bits 11-8 and 3-0 for immediate offset
-            let h2 = (word >> 8) & 0xF;
-            let h0 = word & 0xF;
-            let imm = (h2 << 4) | h0;
-            if u_bit {
-                Operand::Immediate(imm)
-            } else {
-                Operand::Immediate((-(imm as i32)) as u32)
-            }
-        } else if i_bit {
+        // Offset extraction: bit 25 (I) selects immediate (0) or register (1)
+        let offset = if i_bit {
             let rm = (word & 0xF) as u8;
             // Check if this is a register offset (no shift) or shifted register
             let shift_bits = (word >> 5) & 0x3;
