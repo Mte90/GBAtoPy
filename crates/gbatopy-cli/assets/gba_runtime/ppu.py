@@ -927,9 +927,20 @@ class PPU:
         elif addr == self.REG_BG2PD:
             self.bg2_pd = value
         elif addr == self.REG_BG2X:
-            self.bg2_x = value & 0x0FFFFFFF  # 28-bit
+            self.bg2_x = (self.bg2_x & 0xFFFF0000) | (value & 0xFFFF)
+        elif addr == self.REG_BG2X + 2:
+            self.bg2_x = (self.bg2_x & 0x0000FFFF) | (value << 16)
+            # Sign-extend from 28 bits
+            self.bg2_x &= 0x0FFFFFFF
+            if self.bg2_x & 0x08000000:
+                self.bg2_x -= 0x10000000
         elif addr == self.REG_BG2Y:
-            self.bg2_y = value & 0x0FFFFFFF
+            self.bg2_y = (self.bg2_y & 0xFFFF0000) | (value & 0xFFFF)
+        elif addr == self.REG_BG2Y + 2:
+            self.bg2_y = (self.bg2_y & 0x0000FFFF) | (value << 16)
+            self.bg2_y &= 0x0FFFFFFF
+            if self.bg2_y & 0x08000000:
+                self.bg2_y -= 0x10000000
 
         # Handle affine matrix registers for BG3
         elif addr == self.REG_BG3PA:
@@ -941,9 +952,19 @@ class PPU:
         elif addr == self.REG_BG3PD:
             self.bg3_pd = value
         elif addr == self.REG_BG3X:
-            self.bg3_x = value & 0x0FFFFFFF
+            self.bg3_x = (self.bg3_x & 0xFFFF0000) | (value & 0xFFFF)
+        elif addr == self.REG_BG3X + 2:
+            self.bg3_x = (self.bg3_x & 0x0000FFFF) | (value << 16)
+            self.bg3_x &= 0x0FFFFFFF
+            if self.bg3_x & 0x08000000:
+                self.bg3_x -= 0x10000000
         elif addr == self.REG_BG3Y:
-            self.bg3_y = value & 0x0FFFFFFF
+            self.bg3_y = (self.bg3_y & 0xFFFF0000) | (value & 0xFFFF)
+        elif addr == self.REG_BG3Y + 2:
+            self.bg3_y = (self.bg3_y & 0x0000FFFF) | (value << 16)
+            self.bg3_y &= 0x0FFFFFFF
+            if self.bg3_y & 0x08000000:
+                self.bg3_y -= 0x10000000
 
         # Window registers
         elif addr == self.REG_WIN0H:
@@ -1735,85 +1756,131 @@ class PPU:
                     else:
                         # BG2/3 affine rendering not yet implemented for Mode 1
                         pass
+
     def _render_mode2(self):
         """Render Mode 2: Affine BG2/3 only"""
+        any_bg = self.bg2_enable or self.bg3_enable
+        if not any_bg and not self.obj_enable:
+            return
+
+        # Cache BG control registers per BG (only BG2/3 are affine in mode 2)
+        bg_enabled = [False, False, self.bg2_enable, self.bg3_enable]
+        bg_priority = [0, 0, 0, 0]
+        bg_bpp8 = [False, False, False, False]
+        bg_char_block = [0, 0, 0, 0]
+        bg_screen_block = [0, 0, 0, 0]
+        for bg in range(2, 4):
+            if not bg_enabled[bg]:
+                continue
+            cnt = self.memory.read_u16(0x04000008 + bg * 2)
+            bg_priority[bg] = cnt & 0x03
+            bg_bpp8[bg] = bool((cnt >> 7) & 1)
+            bg_char_block[bg] = self.bg_char_block[bg]
+            bg_screen_block[bg] = self.bg_screen_block[bg]
+
+        # Tile decode cache: key=(tile_index, char_block, bpp8) -> palette_indices list
+        tile_cache = {}
+
+        def get_tile(tile_index, char_block, bpp8):
+            key = (tile_index, char_block, bpp8)
+            cached = tile_cache.get(key)
+            if cached is not None:
+                return cached
+            if bpp8:
+                decoded = self._decode_tile_8bpp(tile_index, char_block)
+            else:
+                decoded = self._decode_tile_4bpp(tile_index, char_block)
+            tile_cache[key] = decoded
+            return decoded
+
+        palette_colors = [self._get_palette_color(i) for i in range(256)]
+        win_active = self.win0_enable or self.win1_enable or self.obj_window_enable
+
         for y in range(self.screen_height):
             for x in range(self.screen_width):
-                layer_enable = self._get_window_layer_enable(x, y)
+                if win_active:
+                    layer_enable = self._get_window_layer_enable(x, y)
+                else:
+                    layer_enable = 0x0F
 
-                for bg in range(4):
-                    if not getattr(self, f"bg{bg}_enable"):  # DISABLED: render even if bg disabled
+                best_priority = 99
+                best_color = None
+
+                for bg in range(2, 4):
+                    if not bg_enabled[bg]:
                         continue
                     if not (layer_enable & (1 << bg)):
                         continue
 
                     aff_x, aff_y = self._apply_affine_transform(bg, x, y)
                     mx, my = self._apply_mosaic(int(aff_x), int(aff_y), is_obj=False)
-
                     tile_x = mx % 256
                     tile_y = my % 256
 
-                    # Read tilemap from VRAM instead of static array
-                    screen_block = self.bg_screen_block[bg]
+                    screen_block = bg_screen_block[bg]
                     tilemap_base = 0x06000000 + (screen_block * 0x0800)
                     tilemap_x = tile_x // 8
                     tilemap_y = tile_y // 8
                     tilemap_index = tilemap_y * 32 + tilemap_x
                     tilemap_addr = tilemap_base + (tilemap_index * 2)
 
-                    # Read tilemap entry from VRAM
                     tilemap_entry = self.memory.read_u16(tilemap_addr)
                     tile_index = tilemap_entry & 0x03FF
-                    palette_num = (tilemap_entry >> 12) & 0x0F
 
-                    # Calculate pixel offset within tile
                     pixel_x = tile_x % 8
                     pixel_y = tile_y % 8
-
-                    # Decode tile using _decode_tile_4bpp
-                    char_block_base = self.bg_char_block[bg]
-                    # Check if BG is in 8BPP mode (bit 7 of BGxCNT)
-                    bg_cnt_addr = 0x04000008 + bg * 2  # BG0CNT=0x04000008, BG1CNT=0x0400000A, etc.
-                    bg_cnt = self.memory.read_u16(bg_cnt_addr)
-                    bpp_mode = (bg_cnt >> 7) & 0x01  # Bit 7: 0=4BPP, 1=8BPP
-
-                    if bpp_mode == 1:  # 8BPP mode
-                        if is_numba_ppu_enabled():
-                            palette_indices = self._decode_tile_8bpp_jit_wrapper(tile_index, char_block_base)
-                        else:
-                            palette_indices = self._decode_tile_8bpp(tile_index, char_block_base)
-                    else:  # 4BPP mode
-                        if is_numba_ppu_enabled():
-                            palette_indices = self._decode_tile_4bpp_jit_wrapper(tile_index, char_block_base)
-                        else:
-                            palette_indices = self._decode_tile_4bpp(tile_index, char_block_base)
-
-                    # Calculate linear index in 8x8 tile
                     pixel_index = pixel_y * 8 + pixel_x
 
-                    if pixel_index < len(palette_indices):
-                        color_idx = palette_indices[pixel_index]
+                    palette_indices = get_tile(tile_index, bg_char_block[bg], bg_bpp8[bg])
+                    if pixel_index >= len(palette_indices):
+                        continue
+                    color_idx = palette_indices[pixel_index]
+                    if color_idx == 0:
+                        continue
 
-                        # Get color from palette using JIT-accelerated lookup
-                        if is_numba_ppu_enabled():
-                            color = self._get_palette_color_jit(color_idx)
-                        else:
-                            color = self._get_palette_color(color_idx)
-                        # Only add non-transparent pixels (color_idx != 0)
-                        if color_idx != 0:
-                            # Get priority from BGxCNT (bits 0-1)
-                            priority = bg_cnt & 0x03
-                            candidates.append((priority, color))
-                        continue  # Skip the rest of the loop since we already handled it
+                    if bg_priority[bg] < best_priority:
+                        best_priority = bg_priority[bg]
+                        best_color = palette_colors[color_idx]
 
-                    # If we get here, there was an error reading the tilemap
-                    continue
+                if best_color is not None:
+                    self.framebuffer[y][x] = best_color
 
         if self.obj_enable:
             self._render_sprites(0x3F)
 
+    def _read_affine_bg2_params(self):
+        """Read and sign-extend BG2 affine parameters from _affine_params.
+        Returns (dx, dmx, dy, dmy, refx, refy, overflow).
+        Matches mGBA's GBAVideoSoftwareBackground layout.
+        """
+        ap = self.memory._affine_params
+
+        def _s16(lo, hi):
+            v = lo | (hi << 8)
+            return v - 0x10000 if v & 0x8000 else v
+
+        dx = _s16(ap[0], ap[1])    # BG2PA: per-pixel X increment
+        dmx = _s16(ap[2], ap[3])   # BG2PB: per-scanline X increment
+        dy = _s16(ap[4], ap[5])    # BG2PC: per-pixel Y increment
+        dmy = _s16(ap[6], ap[7])   # BG2PD: per-scanline Y increment
+
+        raw_refx = (ap[8] | (ap[9] << 8) | (ap[10] << 16) | (ap[11] << 24)) & 0x0FFFFFFF
+        refx = raw_refx - 0x10000000 if raw_refx & 0x08000000 else raw_refx
+        raw_refy = (ap[12] | (ap[13] << 8) | (ap[14] << 16) | (ap[15] << 24)) & 0x0FFFFFFF
+        refy = raw_refy - 0x10000000 if raw_refy & 0x08000000 else raw_refy
+
+        overflow = self.bg_affine[2]
+        return dx, dmx, dy, dmy, refx, refy, overflow
+
     def _render_mode3(self):
-        """Render Mode 3: 240x160 16-bit bitmap with double buffering"""
+        """Render Mode 3: 240x160 16-bit bitmap via affine BG2 transformation.
+
+        Matches mGBA's GBAVideoSoftwareRendererDrawBackgroundMode3:
+        - Frame start: sx=BG2X, sy=BG2Y
+        - Per scanline: x=sx-dx, y=sy-dy, then per pixel x+=dx, y+=dy
+        - After scanline: sx+=dmx(BG2PB), sy+=dmy(BG2PD)
+        - Out-of-bounds: backdrop if no overflow, wrap if overflow set
+        """
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
         try:
@@ -1821,43 +1888,57 @@ class PPU:
             vram_bytes = bytes(vram_arr[vram_off:vram_off + self.screen_height * self.screen_width * 2])
         except Exception:
             vram_bytes = bytes(self.screen_height * self.screen_width * 2)
-        mosaic_enabled = self.mosaic_enabled
+
+        dx, dmx, dy, dmy, refx, refy, overflow = self._read_affine_bg2_params()
+
+        sx = refx
+        sy = refy
         fb = self.framebuffer
         lo = self.layer_origin
         sw = self.screen_width
-        if not mosaic_enabled:
-            idx = 0
-            for y in range(self.screen_height):
-                row_fb = fb[y]
-                row_lo = lo[y]
-                for x in range(sw):
-                    color_val = vram_bytes[idx] | (vram_bytes[idx + 1] << 8)
-                    idx += 2
-                    row_fb[x] = (
-                        _c5to8((color_val >> 0) & 0x1F),
-                        _c5to8((color_val >> 5) & 0x1F),
-                        _c5to8((color_val >> 10) & 0x1F),
-                    )
-                    row_lo[x] = 2
-        else:
-            for y in range(self.screen_height):
-                row_fb = fb[y]
-                row_lo = lo[y]
-                for x in range(sw):
-                    mx, my = self._apply_mosaic(x, y, is_obj=False)
-                    offset = (my * sw + mx) * 2
+        sh = self.screen_height
+        vlen = len(vram_bytes)
+
+        for y in range(sh):
+            row_fb = fb[y]
+            row_lo = lo[y]
+            x = sx - dx
+            y_coord = sy - dy
+            for px in range(sw):
+                x += dx
+                y_coord += dy
+                tx = x >> 8
+                ty = y_coord >> 8
+                if overflow:
+                    tx &= sw - 1
+                    ty &= sh - 1
+                elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
+                    row_fb[px] = (0, 0, 0)
+                    row_lo[px] = 0
+                    continue
+                offset = (tx + ty * sw) * 2
+                if offset + 1 < vlen:
                     color_val = vram_bytes[offset] | (vram_bytes[offset + 1] << 8)
-                    row_fb[x] = (
+                    row_fb[px] = (
                         _c5to8((color_val >> 0) & 0x1F),
                         _c5to8((color_val >> 5) & 0x1F),
                         _c5to8((color_val >> 10) & 0x1F),
                     )
-                    row_lo[x] = 2
+                    row_lo[px] = 2
+                else:
+                    row_fb[px] = (0, 0, 0)
+                    row_lo[px] = 0
+            sx += dmx
+            sy += dmy
+
         if self.obj_enable:
             self._render_sprites(0x3F)
 
     def _render_mode4(self):
-        """Render Mode 4: 240x160 8BPP bitmap with double buffering and mosaic support"""
+        """Render Mode 4: 240x160 8BPP bitmap via affine BG2 transformation.
+
+        Same affine pipeline as Mode 3, but pixels are palette-indexed (1 byte each).
+        """
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
 
@@ -1879,29 +1960,43 @@ class PPU:
                 _c5to8((cv >> 5) & 0x1F),
                 _c5to8((cv >> 10) & 0x1F),
             ))
-        mosaic_enabled = self.mosaic_enabled
+
+        dx, dmx, dy, dmy, refx, refy, overflow = self._read_affine_bg2_params()
+
+        sx = refx
+        sy = refy
         fb = self.framebuffer
         lo = self.layer_origin
         sw = self.screen_width
-        if not mosaic_enabled:
-            idx = 0
-            for y in range(self.screen_height):
-                row_fb = fb[y]
-                row_lo = lo[y]
-                for x in range(sw):
-                    pi = vram_bytes[idx]
-                    idx += 1
-                    row_fb[x] = palette_rgb[pi]
-                    row_lo[x] = 2
-        else:
-            for y in range(self.screen_height):
-                row_fb = fb[y]
-                row_lo = lo[y]
-                for x in range(sw):
-                    mx, my = self._apply_mosaic(x, y, is_obj=False)
-                    pi = vram_bytes[my * sw + mx]
-                    row_fb[x] = palette_rgb[pi]
-                    row_lo[x] = 2
+        sh = self.screen_height
+        vlen = len(vram_bytes)
+
+        for y in range(sh):
+            row_fb = fb[y]
+            row_lo = lo[y]
+            x = sx - dx
+            y_coord = sy - dy
+            for px in range(sw):
+                x += dx
+                y_coord += dy
+                tx = x >> 8
+                ty = y_coord >> 8
+                if overflow:
+                    tx &= sw - 1
+                    ty &= sh - 1
+                elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
+                    row_fb[px] = (0, 0, 0)
+                    row_lo[px] = 0
+                    continue
+                offset = tx + ty * sw
+                if offset < vlen:
+                    row_fb[px] = palette_rgb[vram_bytes[offset]]
+                    row_lo[px] = 2
+                else:
+                    row_fb[px] = (0, 0, 0)
+                    row_lo[px] = 0
+            sx += dmx
+            sy += dmy
 
         if self.obj_enable:
             self._render_sprites(0x3F)
@@ -1922,7 +2017,10 @@ class PPU:
             return (0, 0, 0)
 
     def _render_mode5(self):
-        """Render Mode 5: 160x128 16-bit bitmap with double buffering"""
+        """Render Mode 5: 160x128 16-bit bitmap via affine BG2 transformation.
+
+        Same affine pipeline as Mode 3, but dimensions are 160x128.
+        """
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
         try:
@@ -1930,37 +2028,49 @@ class PPU:
             vram_bytes = bytes(vram_arr[vram_off:vram_off + 128 * 160 * 2])
         except Exception:
             vram_bytes = bytes(128 * 160 * 2)
-        mosaic_enabled = self.mosaic_enabled
+
+        dx, dmx, dy, dmy, refx, refy, overflow = self._read_affine_bg2_params()
+
+        sx = refx
+        sy = refy
         fb = self.framebuffer
         lo = self.layer_origin
-        if not mosaic_enabled:
-            idx = 0
-            for y in range(128):
-                row_fb = fb[y]
-                row_lo = lo[y]
-                for x in range(160):
-                    color_val = vram_bytes[idx] | (vram_bytes[idx + 1] << 8)
-                    idx += 2
-                    row_fb[x] = (
-                        _c5to8((color_val >> 0) & 0x1F),
-                        _c5to8((color_val >> 5) & 0x1F),
-                        _c5to8((color_val >> 10) & 0x1F),
-                    )
-                    row_lo[x] = 2
-        else:
-            for y in range(128):
-                row_fb = fb[y]
-                row_lo = lo[y]
-                for x in range(160):
-                    mx, my = self._apply_mosaic(x, y, is_obj=False)
-                    offset = (my * 160 + mx) * 2
+        bw = 160
+        bh = 128
+        vlen = len(vram_bytes)
+
+        for y in range(bh):
+            row_fb = fb[y]
+            row_lo = lo[y]
+            x = sx - dx
+            y_coord = sy - dy
+            for px in range(bw):
+                x += dx
+                y_coord += dy
+                tx = x >> 8
+                ty = y_coord >> 8
+                if overflow:
+                    tx &= bw - 1
+                    ty &= bh - 1
+                elif tx < 0 or ty < 0 or tx >= bw or ty >= bh:
+                    row_fb[px] = (0, 0, 0)
+                    row_lo[px] = 0
+                    continue
+                offset = (tx + ty * bw) * 2
+                if offset + 1 < vlen:
                     color_val = vram_bytes[offset] | (vram_bytes[offset + 1] << 8)
-                    row_fb[x] = (
+                    row_fb[px] = (
                         _c5to8((color_val >> 0) & 0x1F),
                         _c5to8((color_val >> 5) & 0x1F),
                         _c5to8((color_val >> 10) & 0x1F),
                     )
-                    row_lo[x] = 2
+                    row_lo[px] = 2
+                else:
+                    row_fb[px] = (0, 0, 0)
+                    row_lo[px] = 0
+            sx += dmx
+            sy += dmy
+
         if self.obj_enable:
             self._render_sprites(0x3F)
 

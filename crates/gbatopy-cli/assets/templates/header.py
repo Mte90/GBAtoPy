@@ -27,3 +27,4 @@ vram = None
 palette_ram = None
 oam = None
 ewram = None
+_cpu_halted = False

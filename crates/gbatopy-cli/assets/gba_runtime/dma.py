@@ -1,40 +1,39 @@
 """GBA DMA Controller
 
-Register layout (GBATEK):
+Register layout (GBATEK / mGBA dma.h):
   Each channel is 12 bytes (0x0C spacing):
     +0: Source Address      (32-bit)
     +4: Destination Address (32-bit)
     +8: Word Count          (16-bit)
     +A: Control             (16-bit)
 
-  Control bits (16-bit):
-    15:    Enable
-    14:    IRQ on completion
-    13-12: Dest control (0=inc, 1=dec, 2=fixed, 3=reload)
-    11-10: Source control (0=inc, 1=dec, 2=fixed, 3=prohibited)
-    8:     16-bit(0) / 32-bit(1)
-    4:     Repeat
-    3-2:   Start timing (DMA3)
-    1-0:   Start timing (DMA0/1/2): 0=immediate, 1=VBlank, 2=HBlank, 3=special
+  Control bits (16-bit) — verified against mGBA dma.h:
+    15:     Enable
+    14:     IRQ on completion (DoIRQ)
+    13-12:  Start timing (0=immediate, 1=VBlank, 2=HBlank, 3=special)
+    11:     DRQ (DMA3 only)
+    10:     Transfer width (0=16-bit, 1=32-bit)
+    9:      Repeat
+    8-7:    Source control (0=increment, 1=decrement, 2=fixed, 3=prohibited)
+    6-5:    Destination control (0=increment, 1=decrement, 2=fixed, 3=reload)
+    4-0:    Reserved
 """
 
 from typing import List, Optional
 
 
-DMA_ENABLE = 0x8000
-DMA_IRQ_ENABLE = 0x4000
-DMA_TIMING_MASK = 0x0003
+DMA_ENABLE         = 0x8000  # bit 15
+DMA_IRQ_ENABLE     = 0x4000  # bit 14
+DMA_TIMING_MASK    = 0x3000  # bits 13-12
 DMA_TIMING_IMMEDIATE = 0x0000
-DMA_TIMING_VBLANK = 0x0001
-DMA_TIMING_HBLANK = 0x0002
-DMA_TIMING_SPECIAL = 0x0003
-DMA3_TIMING_MASK = 0x000C
-DMA3_TRIGGER_MASK = 0x0060
-
-DMA_SRC_CTRL_MASK = 0x0C00
-DMA_DST_CTRL_MASK = 0x3000
-DMA_REPEAT = 0x0010
-DMA_32BIT = 0x0100
+DMA_TIMING_VBLANK    = 0x1000
+DMA_TIMING_HBLANK     = 0x2000
+DMA_TIMING_SPECIAL    = 0x3000
+DMA_DRQ            = 0x0800  # bit 11 (DMA3 only)
+DMA_32BIT          = 0x0400  # bit 10
+DMA_REPEAT          = 0x0200  # bit 9
+DMA_SRC_CTRL_MASK   = 0x0180  # bits 8-7
+DMA_DST_CTRL_MASK   = 0x0060  # bits 6-5
 
 DMA_CHANNEL_SPACING = 0x0C
 
@@ -42,6 +41,11 @@ DMA0_SRC_ADDR = 0x040000B0
 DMA1_SRC_ADDR = 0x040000BC
 DMA2_SRC_ADDR = 0x040000C8
 DMA3_SRC_ADDR = 0x040000D4
+
+# DMA_OFFSET[] = { +1, -1, 0, +1 } — matches mGBA dma.c
+# Indexed by SrcControl/DestControl value:
+#   0=increment, 1=decrement, 2=fixed, 3=reload(same as increment during transfer)
+_DMA_OFFSET = {0: 1, 1: -1, 2: 0, 3: 1}
 
 
 class DMAChannel:
@@ -67,9 +71,7 @@ class DMAChannel:
         return (self.control & DMA_IRQ_ENABLE) != 0
 
     def _timing_bits(self) -> int:
-        if self.channel_id == 3:
-            return (self.control >> 2) & 0x3
-        return self.control & DMA_TIMING_MASK
+        return (self.control >> 12) & 0x3
 
     def is_immediate(self) -> bool:
         return self._timing_bits() == 0
@@ -84,10 +86,10 @@ class DMAChannel:
         return self._timing_bits() == 3
 
     def get_src_increment(self) -> int:
-        return (self.control >> 10) & 0x3
+        return (self.control >> 7) & 0x3
 
     def get_dst_increment(self) -> int:
-        return (self.control >> 12) & 0x3
+        return (self.control >> 5) & 0x3
 
     def is_32bit(self) -> bool:
         return (self.control & DMA_32BIT) != 0
@@ -179,19 +181,27 @@ class DMA:
             return
         self._do_transfer(ch)
 
+    def _step_for(self, ctrl: int, width: int) -> int:
+        return _DMA_OFFSET.get(ctrl, 0) * width
+
     def _do_transfer(self, ch: DMAChannel):
         if ch.busy:
             return
 
         ch.busy = True
 
-        src_inc = ch.get_src_increment()
-        dst_inc = ch.get_dst_increment()
+        src_ctrl = ch.get_src_increment()
+        dst_ctrl = ch.get_dst_increment()
         count = ch.get_count_value()
         transfer_size = ch.get_transfer_size()
 
+        src_step = self._step_for(src_ctrl, transfer_size)
+        dst_step = self._step_for(dst_ctrl, transfer_size)
+
         src = ch.src_addr
         dst = ch.dst_addr
+        orig_dst = ch.dst_addr
+        orig_src = ch.src_addr
 
         for _ in range(count):
             if transfer_size == 4:
@@ -210,8 +220,6 @@ class DMA:
                         self._apu.fifo_b.write((value >> 24) & 0xFF)
                 else:
                     self.mem.write_u32(dst, value)
-                src += 4
-                dst += 4
             else:
                 value = self.mem.read_u16(src)
                 if dst == DMA.FIFO_A_ADDR and self._apu:
@@ -222,11 +230,17 @@ class DMA:
                     self._apu.fifo_b.write((value >> 8) & 0xFF)
                 else:
                     self.mem.write_u16(dst, value)
-                src += 2
-                dst += 2
+            src += src_step
+            dst += dst_step
 
-        ch.src_addr = self._adjust_address(ch.src_addr, src_inc, count * transfer_size)
-        ch.dst_addr = self._adjust_address(ch.dst_addr, dst_inc, count * transfer_size)
+        if ch.is_repeat() and dst_ctrl == 3:
+            ch.dst_addr = orig_dst
+        else:
+            ch.dst_addr = dst
+        if ch.is_repeat() and src_ctrl == 3:
+            ch.src_addr = orig_src
+        else:
+            ch.src_addr = src
 
         if ch.is_repeat():
             ch.count = ch.get_count_value()
@@ -241,15 +255,6 @@ class DMA:
 
         if ch.irq_enabled and self._interrupts:
             self._interrupts.dma_irq(ch.channel_id)
-
-    def _adjust_address(self, addr: int, increment_mode: int, transfer_bytes: int) -> int:
-        if increment_mode == 0:
-            return addr + transfer_bytes
-        elif increment_mode == 1:
-            return addr - transfer_bytes
-        elif increment_mode == 3:
-            return addr  # Reload mode (destination only): keep original
-        return addr  # Fixed (2)
 
     def step(self):
         for ch in self.channels:
@@ -298,22 +303,18 @@ class DMA:
                 ch.pending = False
 
     def fifo_a_empty_fire(self):
-        for ch in self.channels:
-            ch.read_from_memory()
-            if not ch.enabled or ch.busy:
-                continue
-            if ch.channel_id == 3 and (ch.control & 0x0060) == 0x0020 and ch.pending:
-                self._do_transfer(ch)
-                ch.pending = False
+        ch = self.channels[1]
+        ch.read_from_memory()
+        if ch.enabled and not ch.busy and ch.is_special() and ch.pending:
+            self._do_transfer(ch)
+            ch.pending = False
 
     def fifo_b_empty_fire(self):
-        for ch in self.channels:
-            ch.read_from_memory()
-            if not ch.enabled or ch.busy:
-                continue
-            if ch.channel_id == 3 and (ch.control & 0x0060) == 0x0040 and ch.pending:
-                self._do_transfer(ch)
-                ch.pending = False
+        ch = self.channels[2]
+        ch.read_from_memory()
+        if ch.enabled and not ch.busy and ch.is_special() and ch.pending:
+            self._do_transfer(ch)
+            ch.pending = False
 
     def fifo_a_step(self):
         if not self._apu:

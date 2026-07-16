@@ -921,30 +921,191 @@ def calibrate_gba_timing(measure_cycles=100000):
     calibrated_delay = 1.0 / cycles_per_second * target_cycles_per_frame
     return speed_ratio, calibrated_delay, cycles_per_second, gba_hz
 
+_interp_cpu = None
+
+def swi_handler(swi_field):
+    """Handle BIOS SWI calls using the global registers/memory.
+    The GBA BIOS uses the low 8 bits of the 24-bit SWI comment field
+    as the function number. Upper bits are ignored (comment/checksum)."""
+    global _cpu_halted
+    swi_num = swi_field & 0xFF
+    if swi_num == 0x00:  # SoftReset
+        registers[0] = 0
+        registers[13] = 0x03007F00
+        registers[14] = 0x00000000
+        registers[15] = 0x08000000
+    elif swi_num == 0x01:  # RegisterRamReset
+        flags = registers[0] & 0xFF
+        if flags & 0x01:
+            for addr in range(0x02000000, 0x02040000, 4):
+                memory.write_u32(addr, 0)
+        if flags & 0x02:
+            for addr in range(0x03000000, 0x03008000, 4):
+                memory.write_u32(addr, 0)
+        if flags & 0x04:
+            for addr in range(0x05000000, 0x05000400, 2):
+                memory.write_u16(addr, 0)
+        if flags & 0x08:
+            for addr in range(0x06000000, 0x06018000, 2):
+                memory.write_u16(addr, 0)
+        if flags & 0x10:
+            for addr in range(0x07000000, 0x07000400, 2):
+                memory.write_u16(addr, 0)
+    elif swi_num == 0x02:  # Halt
+        _cpu_halted = True
+        return
+    elif swi_num == 0x03 or swi_num == 0x04:  # IntrWait
+        _cpu_halted = True
+        return
+    elif swi_num == 0x05:  # VBlankIntrWait
+        _cpu_halted = True
+        return
+    elif swi_num == 0x06:  # Div (signed)
+        dividend = registers[0]
+        divisor = registers[1]
+        if divisor != 0:
+            # Interpret as signed 32-bit
+            sd = dividend - 0x100000000 if dividend & 0x80000000 else dividend
+            sv = divisor - 0x100000000 if divisor & 0x80000000 else divisor
+            q = int(sd / sv) if sv != 0 else 0
+            r = sd - q * sv
+            registers[0] = q & 0xFFFFFFFF
+            registers[1] = r & 0xFFFFFFFF
+            registers[3] = abs(sd) & 0xFFFFFFFF
+    elif swi_num == 0x07:  # DivArm (unsigned)
+        dividend = registers[0] & 0xFFFFFFFF
+        divisor = registers[1] & 0xFFFFFFFF
+        if divisor != 0:
+            registers[0] = (dividend // divisor) & 0xFFFFFFFF
+            registers[1] = (dividend % divisor) & 0xFFFFFFFF
+            registers[3] = dividend & 0xFFFFFFFF
+    elif swi_num == 0x08:  # Sqrt
+        val = registers[0] & 0xFFFFFFFF
+        registers[0] = int(val ** 0.5) & 0xFFFFFFFF
+    elif swi_num == 0x0B:  # CpuSet
+        src = registers[0]
+        dst = registers[1]
+        n = registers[2] & 0x1FFFFF
+        units = (registers[2] >> 26) & 1  # 0=16-bit, 1=32-bit
+        if units:
+            for i in range(n):
+                memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
+        else:
+            for i in range(n):
+                memory.write_u16(dst + i*2, memory.read_u16(src + i*2))
+    elif swi_num == 0x0C:  # CpuFastSet
+        src = registers[0]
+        dst = registers[1]
+        n = registers[2] & 0x1FFFFF
+        for i in range(n):
+            memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
+    # Other SWIs (0x09 ArcTan, 0x0A ArcTan2, 0x0E BgAffineSet,
+    # 0x0F ObjAffineSet, 0x11/0x12 LZ77) are not commonly needed for
+    # ROM startup; left as no-ops.
+
+def _interp_fallback(registers, cpsr):
+    global _interp_cpu
+    if _interp_cpu is None:
+        _interp_cpu = CPU(memory)
+    for i in range(16):
+        _interp_cpu.registers[i] = registers[i]
+    _interp_cpu.flag_n = bool(cpsr.get('n', 0))
+    _interp_cpu.flag_z = bool(cpsr.get('z', 0))
+    _interp_cpu.flag_c = bool(cpsr.get('c', 0))
+    _interp_cpu.flag_v = bool(cpsr.get('v', 0))
+    _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
+    _step_count = 0
+    _trace = []
+    while _step_count < 50000:
+        _pc = _interp_cpu.registers[15]
+        if 0x08000000 <= _pc < 0x0A000000:
+            _idx = (_pc - 0x08000000) >> 1
+            if _idx in dispatch_table:
+                break
+        if _pc == 0x03000128:
+            irq = memory._interrupts
+            if irq is not None:
+                ie = irq.ie_reg
+                iff = irq.if_reg
+                ime = irq.ime_reg
+            else:
+                ie = iff = ime = 0
+            if not getattr(_interp_fallback, '_irq_dumped', False):
+                _interp_fallback._irq_dumped = True
+                iw = [memory.read_u32(0x03000128 + i*4) for i in range(8)]
+                print(f"  [irq] IE=0x{ie:04X} IF=0x{iff:04X} IME=0x{ime:04X} R14=0x{_interp_cpu.registers[14]:08X}")
+                print(f"  [irq] IWRAM@0x03000128: {' '.join(f'{w:08X}' for w in iw)}")
+                vt = memory.read_u32(0x03007FFC)
+                print(f"  [irq] vector@0x03007FFC=0x{vt:08X}")
+            pending = ie & iff
+            if pending and ime:
+                handler_addr = memory.read_u32(0x03007FFC)
+                if 0x08000000 <= handler_addr < 0x0A000000:
+                    irq.if_reg &= ~pending
+                    _interp_cpu.registers[15] = handler_addr & 0xFFFFFFFE
+                    _interp_cpu.thumb_mode = bool(handler_addr & 1)
+                    _step_count += 1
+                    continue
+            _ret = _interp_cpu.registers[14]
+            if 0x08000000 <= _ret < 0x0A000000:
+                _interp_cpu.registers[15] = _ret & 0xFFFFFFFE
+                _interp_cpu.thumb_mode = bool(_ret & 1)
+            else:
+                _interp_cpu.registers[15] = 0x08000000
+                _interp_cpu.thumb_mode = False
+            _step_count += 1
+            continue
+        if _step_count < 100:
+            _trace.append(f"  step {_step_count}: PC=0x{_pc:08X} R13=0x{_interp_cpu.registers[13]:08X} R14=0x{_interp_cpu.registers[14]:08X}")
+        _interp_cpu.step()
+        _step_count += 1
+    if _step_count >= 50000:
+        print(f"  [interp] exhausted 50000 steps, final PC=0x{_interp_cpu.registers[15]:08X}")
+        for line in _trace:
+            print(line)
+    for i in range(16):
+        registers[i] = _interp_cpu.registers[i]
+    cpsr['n'] = 1 if _interp_cpu.flag_n else 0
+    cpsr['z'] = 1 if _interp_cpu.flag_z else 0
+    cpsr['c'] = 1 if _interp_cpu.flag_c else 0
+    cpsr['v'] = 1 if _interp_cpu.flag_v else 0
+    cpsr['t'] = 1 if _interp_cpu.thumb_mode else 0
+
 def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):
+    global _cpu_halted
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     def ror(v, a):
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
+    _recent_pcs = []
     while ic < mi:
+        if _cpu_halted:
+            for _ in range(228):
+                ppu_instance.step_scanline()
+                if ppu_instance.vblank:
+                    _cpu_halted = False
+                    break
+            continue
         pc = registers[15]
         idx = (pc - 0x08000000) >> 1
         func = dispatch_table.get(idx)
-        if func is None: 
-            print(f"Unknown PC: 0x{pc:08X}")
-            break
+        if func is None:
+            _interp_fallback(registers, cpsr); ic += 1
+            continue
         func(registers, cpsr); ic += 1
-        if registers[15] == pc: 
+        _recent_pcs.append(pc)
+        if len(_recent_pcs) > 50:
+            _recent_pcs.pop(0)
+        if registers[15] == pc:
             break
-    # print(f"Done: {ic} instrs")
-        # if ic % 10000 == 0: print(f"{ic} instrs")
         if frame_limit and fc >= frame_limit: break
         if ic % 1000 == 0: fc += 1
     # print(f"Done: {ic} instrs")
     return fc
 
 def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None):
+    global _cpu_halted
     # Initialize HookManager if hook file provided
     hook_manager = HookManager() if hook_file else None
     if hook_file:
@@ -976,6 +1137,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen = pygame.Surface((240 * scale, 160 * scale))
     clock = pygame.time.Clock()
     fc = 0; running = True; mi = 1000000; ic = 0
+    _recent_pcs = []
     loop_stall_count = 0
     max_loop_stalls = 10000
     # print(f"PC=0x{registers[15]:08X}")
@@ -1008,13 +1170,18 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         for _scanline in range(160):
             inner_loop_stalls = 0
             for _ in range(instr_per_scanline):
+                if _cpu_halted:
+                    break
                 pc = registers[15]
                 idx = (pc - 0x08000000) >> 1
                 func = dispatch_table.get(idx)
                 if func is None:
-                    print(f"Unknown PC: 0x{pc:08X}")
-                    break
+                    _interp_fallback(registers, cpsr); ic += 1
+                    continue
                 func(registers, cpsr); ic += 1
+                _recent_pcs.append(pc)
+                if len(_recent_pcs) > 50:
+                    _recent_pcs.pop(0)
                 if registers[15] == pc:
                     inner_loop_stalls += 1
                     if inner_loop_stalls > max_inner_stalls:
@@ -1026,6 +1193,8 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         print("Execution paused at breakpoint")
                         break
             ppu_instance.step_scanline()
+            if ppu_instance.vblank:
+                _cpu_halted = False
         # Render the completed frame
         ppu_instance.render_frame()
         # Update APU audio

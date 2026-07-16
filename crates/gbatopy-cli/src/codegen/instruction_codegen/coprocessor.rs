@@ -21,9 +21,13 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         return Some("pass  # CDP coprocessor data operation".to_string());
     }
     if base_opcode == "SWI" || base_opcode == "SVC" {
-        // SWI/SVC: software interrupt - increment PC and continue
-        // The actual SWI handler is called by the runtime at the appropriate time
-        return Some("pass  # SWI/SVC software interrupt (handled by runtime)".to_string());
+        // SWI/SVC: software interrupt - call the global swi_handler(swi_num)
+        // with the 24-bit immediate SWI number embedded in the instruction.
+        let swi_num = match ops.first() {
+            Some(Operand::Immediate(n)) => *n & 0xFFFFFF,
+            _ => 0,
+        };
+        return Some(format!("swi_handler({:#X})", swi_num));
     }
     if base_opcode == "MSR" {
         if ops.len() >= 2 {
