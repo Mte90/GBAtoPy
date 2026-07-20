@@ -174,7 +174,7 @@ class CPU:
         """Check if ARM condition is satisfied (cond: 0-15) — O(1) lookup"""
         if cond < 0 or cond > 15:
             raise ValueError(f"Invalid condition code: {cond}. Must be 0-15")
-        entry = CONDITIONS[cond]
+        entry = self.CONDITIONS[cond]
         src, op = entry
         if src is True or src is False:
             return src
@@ -219,30 +219,84 @@ class CPU:
 
     def _execute_arm(self, opcode: int) -> bool:
         """Execute one ARM instruction. Returns False to halt."""
-        if opcode == 0 or opcode == 0xE1200070:  # NOP / reserved
+        if opcode == 0 or opcode == 0xE1200070:
             return True
 
         cond = (opcode >> 28) & 0xF
         if not self.check_condition(cond):
             return True
 
-        # Check for B/BL
-        if (opcode & 0xE000000) == 0xA000000:
+        # B/BL (bits 27-25 = 101)
+        if (opcode & 0x0E000000) == 0x0A000000:
             offset = opcode & 0xFFFFFF
             if offset & 0x800000:
                 offset = -((~offset + 1) & 0xFFFFFF)
             target = self.registers[self.PC] + 4 + (offset << 2)
-            if opcode & 0x01000000:  # BL
+            if opcode & 0x01000000:
                 self.registers[self.LR] = self.registers[self.PC]
             self.registers[self.PC] = target & 0xFFFFFFFF
             return True
 
-        # Check for BX
-        if (opcode & 0xFFFFFFF) == 0xE12FFF10:
+        # BX (bits 27-4 = 0001 0010 1111 1111 1111 0001)
+        if (opcode & 0x0FFFFFF0) == 0x012FFF10:
             target = self.registers[opcode & 0xF]
             self.thumb_mode = bool(target & 1)
             self.registers[self.PC] = target & 0xFFFFFFFE
             return True
+
+        # SWI (bits 27-24 = 1111)
+        if (opcode >> 24) & 0xF == 0xF:
+            return self._arm_swi(opcode)
+
+        # Block transfer LDM/STM (bits 27-25 = 100)
+        if (opcode >> 25) & 0x7 == 4:
+            return self._arm_block_transfer(opcode)
+
+        # Multiply (bits 27-22 = 000000, bits 7-4 = 1001)
+        if (opcode & 0x0FC000F0) == 0x00000090:
+            return self._arm_multiply(opcode)
+
+        # MRS Rd, CPSR
+        if (opcode & 0x0FFF0FFF) == 0x010F0000:
+            rd = (opcode >> 12) & 0xF
+            cpsr_val = 0
+            if self.flag_n:
+                cpsr_val |= 0x80000000
+            if self.flag_z:
+                cpsr_val |= 0x40000000
+            if self.flag_c:
+                cpsr_val |= 0x20000000
+            if self.flag_v:
+                cpsr_val |= 0x10000000
+            if self.thumb_mode:
+                cpsr_val |= 0x20
+            self.registers[rd] = cpsr_val
+            return True
+
+        # MRS Rd, SPSR
+        if (opcode & 0x0FFF0FFF) == 0x014F0000:
+            rd = (opcode >> 12) & 0xF
+            self.registers[rd] = 0
+            return True
+
+        # MSR CPSR, Rm
+        if (opcode & 0x0FB0FFF0) == 0x0120F000:
+            rm = opcode & 0xF
+            val = self.registers[rm]
+            if opcode & 0x00080000:
+                self.flag_n = bool(val & 0x80000000)
+                self.flag_z = bool(val & 0x40000000)
+                self.flag_c = bool(val & 0x20000000)
+                self.flag_v = bool(val & 0x10000000)
+            return True
+
+        # MSR SPSR, Rm
+        if (opcode & 0x0FB0FFF0) == 0x0160F000:
+            return True
+
+        # Half-word load/store (bits 27-25 = 000, bits 7-4 in {B,D,F})
+        if (opcode >> 25) & 0x7 == 0 and (opcode >> 4) & 0xF in (0xB, 0xD, 0xF):
+            return self._arm_halfword_transfer(opcode)
 
         # Data processing: bits 27-26 = 00
         if (opcode >> 26) & 3 == 0:
@@ -251,10 +305,6 @@ class CPU:
         # Load/Store
         if (opcode >> 26) & 0x3 == 1:
             return self._arm_load_store(opcode)
-
-        # Multiply
-        if (opcode & 0xFC000F0) == 0x0:
-            return self._arm_multiply(opcode)
 
         return True
 
@@ -388,19 +438,22 @@ class CPU:
         load = (opcode >> 20) & 1
         byte = (opcode >> 22) & 1
 
-        # Calculate address
-        if imm:
+        # I-bit (bit 25): 0 = immediate offset, 1 = register offset
+        if not imm:
             offset = opcode & 0xFFF
         elif (opcode >> 4) & 1:  # Register shift (bit 4 = 1)
             rm = opcode & 0xF
             offset = self.registers[rm]
-        elif (opcode & 0xF) == 0:  # No register specified = no offset
-            offset = 0
+        elif (opcode & 0xF) == 0:  # Rm = R0
+            offset = self.registers[0]
         else:
             rm = opcode & 0xF
             offset = self.registers[rm]
 
-        addr = self.registers[rn]
+        if rn == 15:
+            addr = (self.registers[self.PC] + 4) & 0xFFFFFFFF
+        else:
+            addr = self.registers[rn]
 
         # Pre/post indexing
         add = (opcode >> 23) & 1
@@ -425,10 +478,11 @@ class CPU:
                 self.memory.write_u32(addr, val)
 
         if write_back:
+            base = (self.registers[self.PC] + 4) if rn == 15 else self.registers[rn]
             if add:
-                self.registers[rn] = (self.registers[rn] + offset) & 0xFFFFFFFF
+                self.registers[rn] = (base + offset) & 0xFFFFFFFF
             else:
-                self.registers[rn] = (self.registers[rn] - offset) & 0xFFFFFFFF
+                self.registers[rn] = (base - offset) & 0xFFFFFFFF
 
         return True
 
@@ -451,6 +505,101 @@ class CPU:
         if s:
             self.flag_n = bool(result & 0x80000000)
             self.flag_z = result == 0
+
+        return True
+
+    def _arm_block_transfer(self, opcode: int) -> bool:
+        """Execute ARM block transfer (LDM/STM)"""
+        rn = (opcode >> 16) & 0xF
+        register_list = opcode & 0xFFFF
+        load = (opcode >> 20) & 1
+        write_back = (opcode >> 21) & 1
+        pre = (opcode >> 24) & 1
+        add = (opcode >> 23) & 1
+        base = self.registers[rn]
+
+        count = bin(register_list).count('1')
+
+        if add:
+            addr = base + (4 if pre else 0)
+        else:
+            addr = base - (count * 4) + (0 if pre else 4)
+
+        if load:
+            for i in range(16):
+                if register_list & (1 << i):
+                    self.registers[i] = self.memory.read_u32(addr & 0xFFFFFFFF)
+                    addr += 4
+            if write_back and not (register_list & (1 << rn)):
+                if add:
+                    self.registers[rn] = (base + count * 4) & 0xFFFFFFFF
+                else:
+                    self.registers[rn] = (base - count * 4) & 0xFFFFFFFF
+        else:
+            for i in range(16):
+                if register_list & (1 << i):
+                    val = self.registers[i] + (8 if i == 15 else 0)
+                    self.memory.write_u32(addr & 0xFFFFFFFF, val & 0xFFFFFFFF)
+                    addr += 4
+            if write_back:
+                if add:
+                    self.registers[rn] = (base + count * 4) & 0xFFFFFFFF
+                else:
+                    self.registers[rn] = (base - count * 4) & 0xFFFFFFFF
+
+        return True
+
+    def _arm_swi(self, opcode: int) -> bool:
+        """Execute ARM SWI instruction (no-op in interpreter fallback)"""
+        return True
+
+    def _arm_halfword_transfer(self, opcode: int) -> bool:
+        """Execute ARM half-word/signed load/store (LDRH, STRH, LDRSB, LDRSH)"""
+        rd = (opcode >> 12) & 0xF
+        rn = (opcode >> 16) & 0xF
+        load = (opcode >> 20) & 1
+        write_back = (opcode >> 21) & 1
+        pre = (opcode >> 24) & 1
+        add = (opcode >> 23) & 1
+        op = (opcode >> 5) & 0x3
+
+        if (opcode >> 22) & 1:
+            offset = ((opcode >> 8) & 0xF) << 4 | (opcode & 0xF)
+        else:
+            rm = opcode & 0xF
+            offset = self.registers[rm]
+
+        if rn == 15:
+            addr = (self.registers[self.PC] + 4) & 0xFFFFFFFF
+        else:
+            addr = self.registers[rn]
+        if pre:
+            addr = (addr + offset) if add else (addr - offset)
+            addr &= 0xFFFFFFFF
+
+        if load:
+            if op == 1:
+                self.registers[rd] = self.memory.read_u16(addr)
+            elif op == 2:
+                val = self.memory.read_u8(addr)
+                if val & 0x80:
+                    val |= 0xFFFFFF00
+                self.registers[rd] = val
+            elif op == 3:
+                val = self.memory.read_u16(addr)
+                if val & 0x8000:
+                    val |= 0xFFFF0000
+                self.registers[rd] = val
+        else:
+            if op == 1:
+                self.memory.write_u16(addr, self.registers[rd] & 0xFFFF)
+
+        if write_back or not pre:
+            base = (self.registers[self.PC] + 4) if rn == 15 else self.registers[rn]
+            if add:
+                self.registers[rn] = (base + offset) & 0xFFFFFFFF
+            else:
+                self.registers[rn] = (base - offset) & 0xFFFFFFFF
 
         return True
 

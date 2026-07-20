@@ -502,12 +502,6 @@ class Memory:
             offset = addr - MemoryMap.IWRAM_START
             self.iwram[offset] = value
             self.open_bus = value
-            if offset + 1 < len(self.iwram):
-                self.iwram[offset + 1] = value
-            if offset + 2 < len(self.iwram):
-                self.iwram[offset + 2] = value
-            if offset + 3 < len(self.iwram):
-                self.iwram[offset + 3] = value
             return
 
         if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
@@ -3359,14 +3353,14 @@ class CPU:
         load = (opcode >> 20) & 1
         byte = (opcode >> 22) & 1
 
-        # Calculate address
-        if imm:
+        # I-bit (bit 25): 0 = immediate offset, 1 = register offset
+        if not imm:
             offset = opcode & 0xFFF
         elif (opcode >> 4) & 1:  # Register shift (bit 4 = 1)
             rm = opcode & 0xF
             offset = self.registers[rm]
-        elif (opcode & 0xF) == 0:  # No register specified = no offset
-            offset = 0
+        elif (opcode & 0xF) == 0:  # Rm = R0
+            offset = self.registers[0]
         else:
             rm = opcode & 0xF
             offset = self.registers[rm]

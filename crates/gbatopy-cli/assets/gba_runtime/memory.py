@@ -562,12 +562,6 @@ class Memory:
             offset = addr - MemoryMap.IWRAM_START
             self.iwram[offset] = value
             self.open_bus = value
-            if offset + 1 < len(self.iwram):
-                self.iwram[offset + 1] = value
-            if offset + 2 < len(self.iwram):
-                self.iwram[offset + 2] = value
-            if offset + 3 < len(self.iwram):
-                self.iwram[offset + 3] = value
             return
 
         if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:

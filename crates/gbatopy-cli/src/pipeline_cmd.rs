@@ -1016,7 +1016,7 @@ def _interp_fallback(registers, cpsr):
     _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
     _step_count = 0
     _trace = []
-    while _step_count < 50000:
+    while _step_count < 10000000:
         _pc = _interp_cpu.registers[15]
         if 0x08000000 <= _pc < 0x0A000000:
             _idx = (_pc - 0x08000000) >> 1
@@ -1059,8 +1059,8 @@ def _interp_fallback(registers, cpsr):
             _trace.append(f"  step {_step_count}: PC=0x{_pc:08X} R13=0x{_interp_cpu.registers[13]:08X} R14=0x{_interp_cpu.registers[14]:08X}")
         _interp_cpu.step()
         _step_count += 1
-    if _step_count >= 50000:
-        print(f"  [interp] exhausted 50000 steps, final PC=0x{_interp_cpu.registers[15]:08X}")
+    if _step_count >= 10000000:
+        print(f"  [interp] exhausted 10000000 steps, final PC=0x{_interp_cpu.registers[15]:08X}")
         for line in _trace:
             print(line)
     for i in range(16):
@@ -1078,7 +1078,6 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
-    _recent_pcs = []
     while ic < mi:
         if _cpu_halted:
             for _ in range(228):
@@ -1094,9 +1093,6 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             _interp_fallback(registers, cpsr); ic += 1
             continue
         func(registers, cpsr); ic += 1
-        _recent_pcs.append(pc)
-        if len(_recent_pcs) > 50:
-            _recent_pcs.pop(0)
         if registers[15] == pc:
             break
         if frame_limit and fc >= frame_limit: break
@@ -1137,7 +1133,6 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         screen = pygame.Surface((240 * scale, 160 * scale))
     clock = pygame.time.Clock()
     fc = 0; running = True; mi = 1000000; ic = 0
-    _recent_pcs = []
     loop_stall_count = 0
     max_loop_stalls = 10000
     # print(f"PC=0x{registers[15]:08X}")
@@ -1179,9 +1174,6 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     _interp_fallback(registers, cpsr); ic += 1
                     continue
                 func(registers, cpsr); ic += 1
-                _recent_pcs.append(pc)
-                if len(_recent_pcs) > 50:
-                    _recent_pcs.pop(0)
                 if registers[15] == pc:
                     inner_loop_stalls += 1
                     if inner_loop_stalls > max_inner_stalls:
