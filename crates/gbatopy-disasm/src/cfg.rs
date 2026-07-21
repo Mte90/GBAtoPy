@@ -89,7 +89,14 @@ impl CfgBuilder {
         // BFS queue stores (address, mode) so we propagate the execution mode
         // instead of guessing from address parity. Thumb branch targets can be
         // even addresses, and the parity heuristic decodes them as ARM.
-        let mut to_visit: Vec<(u32, ArmMode)> = vec![(entry_point, ArmMode::Arm)];
+        //
+        // The main entry point is pushed LAST so it is popped FIRST (LIFO).
+        // This ensures addresses reachable from the entry point are visited with
+        // the correct mode (propagated through BX/BLX) before the heuristic
+        // common_entry_points can override them. Without this ordering, a
+        // common_entry_point at 0x08000500 (ARM) would visit 0x08000504 in ARM
+        // mode before the main BFS reaches it in Thumb mode via a BX.
+        let mut to_visit: Vec<(u32, ArmMode)> = Vec::new();
 
         let common_entry_points = [
             0x080000A0,
@@ -102,10 +109,11 @@ impl CfgBuilder {
 
         for &addr in &common_entry_points {
             let rom_offset = (addr - 0x08000000) as usize;
-            if rom_offset < rom.len() && !to_visit.iter().any(|(a, _)| *a == addr) {
+            if rom_offset < rom.len() {
                 to_visit.push((addr, ArmMode::Arm));
             }
         }
+        to_visit.push((entry_point, ArmMode::Arm));
 
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();

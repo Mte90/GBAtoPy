@@ -235,44 +235,49 @@ impl ArmDecoder {
                 vec![Operand::Register(rd), mem_op],
                 false,
             )
-        } else if bits_27_24 == 0x0 && bits_23_21 == 0x1 && bits_7_4 == 0x9 {
-            let is_mla = (word >> 20) & 1 != 0;
+        } else if bits_27_24 == 0x0 && bits_23_21 == 0x0 && bits_7_4 == 0x9 {
+            // MUL: cond 0000 000S Rd 0000 Rs 1001 Rm
+            let s_bit = (word >> 20) & 1 != 0;
             let rd = ((word >> 16) & 0xF) as u8;
             let rs = ((word >> 8) & 0xF) as u8;
             let rm = (word & 0xF) as u8;
-
-            if is_mla {
-                let ra = ((word >> 12) & 0xF) as u8;
-                (
-                    "MLA".to_string(),
-                    vec![
-                        Operand::Register(rd),
-                        Operand::Register(rm),
-                        Operand::Register(rs),
-                        Operand::Register(ra),
-                    ],
-                    false,
-                )
-            } else {
-                (
-                    "MUL".to_string(),
-                    vec![
-                        Operand::Register(rd),
-                        Operand::Register(rm),
-                        Operand::Register(rs),
-                    ],
-                    false,
-                )
-            }
-        } else if bits_27_24 == 0x0 && bits_7_4 == 0x9 && bits_23_21 != 0x1 {
+            (
+                "MUL".to_string(),
+                vec![
+                    Operand::Register(rd),
+                    Operand::Register(rm),
+                    Operand::Register(rs),
+                ],
+                s_bit,
+            )
+        } else if bits_27_24 == 0x0 && bits_23_21 == 0x1 && bits_7_4 == 0x9 {
+            // MLA: cond 0000 001S Rd Rn Rs 1001 Rm
+            // bits_23_21 == 0x1 means bit 21 (A bit) is set → always MLA
+            let s_bit = (word >> 20) & 1 != 0;
+            let rd = ((word >> 16) & 0xF) as u8;
+            let ra = ((word >> 12) & 0xF) as u8;
+            let rs = ((word >> 8) & 0xF) as u8;
+            let rm = (word & 0xF) as u8;
+            (
+                "MLA".to_string(),
+                vec![
+                    Operand::Register(rd),
+                    Operand::Register(rm),
+                    Operand::Register(rs),
+                    Operand::Register(ra),
+                ],
+                s_bit,
+            )
+        } else if bits_27_24 == 0x0 && bits_7_4 == 0x9 && (bits_23_21 & 0x4) != 0 {
+            // Long multiply (bit 23 = 1): UMULL/SMULL/UMLAL/SMLAL
             let a_bit = (word >> 21) & 1 != 0;
             let s_bit = (word >> 20) & 1 != 0;
-            let rd_lo = ((word >> 16) & 0xF) as u8;
-            let rd_hi = ((word >> 12) & 0xF) as u8;
+            let rd_hi = ((word >> 16) & 0xF) as u8;
+            let rd_lo = ((word >> 12) & 0xF) as u8;
             let rm = (word & 0xF) as u8;
             let rs = ((word >> 8) & 0xF) as u8;
 
-            let is_signed = (word >> 22) & 1 == 0;
+            let is_signed = (word >> 22) & 1 != 0;
             let base_op = if is_signed { "SMULL" } else { "UMULL" };
             let op_name = if a_bit {
                 if is_signed {

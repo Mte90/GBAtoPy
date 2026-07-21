@@ -13,7 +13,34 @@ fn base_address_expr(base: u8, inst: &DecodedInstruction) -> String {
     }
 }
 
+fn wrap_conditional(code: String, opcode: &str) -> String {
+    let full_opcode = opcode.split_whitespace().next().unwrap_or(opcode);
+    let base_opcode = full_opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    let cond_suffix = &full_opcode[base_opcode.len()..];
+    if cond_suffix.is_empty() || cond_suffix.eq_ignore_ascii_case("al") {
+        return code;
+    }
+    let cond = cond_suffix.to_uppercase();
+    let indented = code
+        .lines()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("    {}", line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("if cpsr_check('{}'):\n{}", cond, indented)
+}
+
 pub fn generate(inst: &DecodedInstruction) -> Option<String> {
+    let code = generate_inner(inst)?;
+    Some(wrap_conditional(code, &inst.opcode))
+}
+
+fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     let opcode = inst.opcode.as_str();
     let ops = &inst.operands;
     let base_opcode = opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());

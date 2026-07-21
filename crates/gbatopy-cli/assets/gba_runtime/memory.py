@@ -58,7 +58,13 @@ class Memory:
         self.oam = _array.array('B', [0] * MemoryMap.OAM_SIZE)
         self.sram = _array.array('B', [0] * MemoryMap.SRAM_SIZE)
 
-        self._affine_params = _array.array('B', [0] * 16)
+        # GBA hardware default: identity affine (dx=0x100, dmy=0x100).
+        # Matches mGBA's GBAVideoSoftwareRendererInit (bg->dx=256, bg->dmy=256).
+        # Without this, bitmap modes (3/4/5) map every pixel to VRAM[0] (black).
+        _ap = [0] * 16
+        _ap[0] = 0x00; _ap[1] = 0x01  # BG2PA = 0x0100 (dx = 256)
+        _ap[6] = 0x00; _ap[7] = 0x01  # BG2PD = 0x0100 (dmy = 256)
+        self._affine_params = _array.array('B', _ap)
 
         self.rom: Optional[bytearray] = None
         self.rom_size: int = 0

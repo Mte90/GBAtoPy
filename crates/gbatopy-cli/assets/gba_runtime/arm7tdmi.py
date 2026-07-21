@@ -241,9 +241,6 @@ class ARM7TDMI:
     @jit_compile
     def step_arm(self) -> int:
         pc = self.pc
-        if pc >= 0x08000000:
-            pc = (pc - 0x08000000) + len(self.memory.rom)
-
         instr = self.memory.read_u32(pc)
         cond = (instr >> 28) & 0xF
 
@@ -256,9 +253,6 @@ class ARM7TDMI:
     @jit_compile
     def step_thumb(self) -> int:
         pc = self.pc
-        if pc >= 0x08000000:
-            pc = (pc - 0x08000000) + len(self.memory.rom)
-
         instr = self.memory.read_u16(pc)
         return self.execute_thumb(instr)
 
@@ -318,11 +312,21 @@ class ARM7TDMI:
                 elif shift_type == 1:  # LSR
                     operand2 = operand2 >> shift_imm
                 elif shift_type == 2:  # ASR
-                    operand2 = (operand2 >> shift_imm) | ((operand2 & 0x80000000) * shift_imm)
+                    operand2 = (operand2 >> shift_imm) | (
+                        (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm))
+                    )
                 elif shift_type == 3:  # ROR
                     operand2 = (
                         (operand2 >> shift_imm) | (operand2 << (32 - shift_imm))
                     ) & 0xFFFFFFFF
+            else:
+                if shift_type == 1:  # LSR #0 means LSR #32
+                    operand2 = 0
+                elif shift_type == 2:  # ASR #0 means ASR #32
+                    operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
+                elif shift_type == 3:  # ROR #0 means RRX
+                    carry = (self.cpsr >> 29) & 1
+                    operand2 = ((carry << 31) | (operand2 >> 1)) & 0xFFFFFFFF
 
         operand1 = self.registers[rn]
 
@@ -645,27 +649,55 @@ class ARM7TDMI:
                 self.bios.swi_lz77_uncomp(self.registers[0], self.registers[1])
 
     def execute_thumb(self, instr: int) -> int:
-        """Execute Thumb instruction."""
-        op = (instr >> 13) & 7
+        """Execute Thumb instruction.
 
-        if op == 0:  # Move shifted/ADD/SUB
+        Dispatch matches the ThumbDecoder format table in
+        crates/gbatopy-disasm/src/thumb/mod.rs (instr >> 8 → format ranges).
+        """
+        op = instr >> 8  # bits 15-8
+
+        if op <= 0x17:  # format 1: LSL/LSR/ASR Rd, Rs, #Offset5
             return self.exec_thumb_move_shift(instr)
-        elif op == 1:  # Add/Sub
+        elif op <= 0x1F:  # format 2: ADD/SUB Rd, Rs, Rn/#Imm3
             return self.exec_thumb_add_sub(instr)
-        elif op == 2:  # MOV/CMP/ADD/SUB immediate
-            return self.exec_thumb_imm(instr)
-        elif op == 3:  # ALU operations
+        elif op <= 0x3F:  # format 3: MOV/CMP/ADD/SUB Rd, #Imm8
+            return self.exec_thumb_imm3(instr)
+        elif op <= 0x43:  # format 4: ALU operations
             return self.exec_thumb_alu(instr)
-        elif op == 4:  # Hi register operations/BX
+        elif op <= 0x47:  # format 5: Hi register operations / BX
             return self.exec_thumb_hi(instr)
-        elif op == 5:  # PC-relative load
+        elif op <= 0x4F:  # format 6: LDR Rd, [PC, #Imm8*4]
             return self.exec_thumb_pc_rel(instr)
-        elif op == 6:  # LDR/STR
+        elif op <= 0x5F:  # format 7: Load/store with register offset
             return self.exec_thumb_load_store(instr)
-        elif op == 7:  # LDRH/STRH
-            return self.exec_thumb_hword(instr)
-
-        return 1
+        elif op <= 0x77:  # format 9: Load/store with immediate offset (word/byte)
+            return self.exec_thumb_load_store_imm(instr)
+        elif op <= 0x7F:  # format 10: Load/store halfword with immediate offset
+            return self.exec_thumb_load_store_imm(instr)
+        elif op <= 0x8F:  # format 9: Load/store with immediate offset (cont.)
+            return self.exec_thumb_load_store_imm(instr)
+        elif op <= 0x9F:  # format 11: Load/store SP-relative
+            return self.exec_thumb_sp_rel(instr)
+        elif op <= 0xAF:  # format 12: Load address (PC or SP + Imm8*4)
+            return self.exec_thumb_load_addr(instr)
+        elif op == 0xB0:  # format 13: ADD SP, #Imm7*4
+            return self.exec_thumb_add_sp(instr)
+        elif op <= 0xB5:  # format 14: PUSH {reglist, LR}
+            return self.exec_thumb_push_pop(instr)
+        elif op <= 0xBD:  # format 14: POP {reglist, PC}
+            return self.exec_thumb_push_pop(instr)
+        elif op <= 0xCF:  # format 15: LDM/STM
+            return self.exec_thumb_ldm_stm(instr)
+        elif op <= 0xDF:  # format 16: Conditional branch (cond 0xE) or SWI (cond 0xF)
+            if (instr >> 8) == 0xDF:
+                return self.exec_thumb_swi(instr)
+            return self.exec_thumb_cond_branch(instr)
+        elif op <= 0xEF:  # format 18: Unconditional branch
+            return self.exec_thumb_branch(instr)
+        elif op <= 0xF7:  # format 19: BL prefix
+            return self.exec_thumb_bl_prefix(instr)
+        else:  # 0xF8-0xFF: format 19: BL suffix
+            return self.exec_thumb_bl_suffix(instr)
 
     def exec_thumb_move_shift(self, instr: int) -> int:
         """Thumb move shifted."""
@@ -709,26 +741,27 @@ class ARM7TDMI:
         self.registers[15] += 2
         return 1
 
-    def exec_thumb_imm(self, instr: int) -> int:
-        """Thumb MOV/CMP/ADD/SUB immediate."""
-        op = (instr >> 11) & 3
-        offset = (instr >> 6) & 0x1F
-        rn = (instr >> 3) & 7
-        rd = instr & 7
+    def exec_thumb_imm3(self, instr: int) -> int:
+        """Thumb MOV/CMP/ADD/SUB Rd, #Imm8 (format 3)."""
+        op = (instr >> 11) & 3  # bits 12-11
+        rd = (instr >> 8) & 7   # bits 10-8
+        imm8 = instr & 0xFF     # bits 7-0
 
-        if op == 0:  # MOV
-            self.write_register(rd, offset)
-        elif op == 1:  # CMP
-            result = (self.registers[rn] - offset) & 0xFFFFFFFF
+        if op == 0:  # MOV Rd, #Imm8
+            self.write_register(rd, imm8)
+        elif op == 1:  # CMP Rd, #Imm8
+            result = (self.registers[rd] - imm8) & 0xFFFFFFFF
             self.cpsr = (
                 (self.cpsr & 0x0FFFFFFF)
                 | ((result >> 31) << 28)
                 | (0 if result == 0 else (1 << 30))
             )
-        elif op == 2:  # ADD
-            self.write_register(rd, (self.registers[rn] + offset) & 0xFFFFFFFF)
-        elif op == 3:  # SUB
-            self.write_register(rd, (self.registers[rn] - offset) & 0xFFFFFFFF)
+        elif op == 2:  # ADD Rd, #Imm8
+            result = (self.registers[rd] + imm8) & 0xFFFFFFFF
+            self.write_register(rd, result)
+        elif op == 3:  # SUB Rd, #Imm8
+            result = (self.registers[rd] - imm8) & 0xFFFFFFFF
+            self.write_register(rd, result)
 
         self.registers[15] += 2
         return 1
@@ -846,49 +879,268 @@ class ARM7TDMI:
         return 2
 
     def exec_thumb_load_store(self, instr: int) -> int:
-        """Thumb LDR/STR."""
-        is_load = (instr >> 11) & 1
-        is_byte = (instr >> 10) & 1
-        is_up = (instr >> 9) & 1
-        rn = (instr >> 3) & 7
-        rd = instr & 7
-        offset = self.registers[rn & 7]
+        """Thumb load/store with register offset (formats 7+8).
 
-        if is_up:
-            addr = offset + 0
-        else:
-            addr = offset - 0
+        Opcode bits 11-9 select the access type:
+        000=STR, 001=STRH, 010=STRB, 011=LDSB, 100=LDR, 101=LDSH, 110=LDRB, 111=LDRH
+        """
+        op = (instr >> 9) & 7   # bits 11-9
+        ro = (instr >> 6) & 7   # bits 8-6
+        rb = (instr >> 3) & 7   # bits 5-3
+        rd = instr & 7          # bits 2-0
+
+        addr = (self.registers[rb] + self.registers[ro]) & 0xFFFFFFFF
+
+        if op == 0:    # STR Rd, [Rb, Ro]
+            self.memory.write_u32(addr, self.registers[rd])
+        elif op == 1:  # STRH Rd, [Rb, Ro]
+            self.memory.write_u16(addr, self.registers[rd] & 0xFFFF)
+        elif op == 2:  # STRB Rd, [Rb, Ro]
+            self.memory.write_u8(addr, self.registers[rd] & 0xFF)
+        elif op == 3:  # LDSB Rd, [Rb, Ro] (sign-extended byte)
+            val = self.memory.read_u8(addr)
+            if val & 0x80:
+                val |= 0xFFFFFF00
+            self.write_register(rd, val)
+        elif op == 4:  # LDR Rd, [Rb, Ro]
+            self.write_register(rd, self.memory.read_u32(addr))
+        elif op == 5:  # LDSH Rd, [Rb, Ro] (sign-extended halfword)
+            val = self.memory.read_u16(addr)
+            if val & 0x8000:
+                val |= 0xFFFF0000
+            self.write_register(rd, val)
+        elif op == 6:  # LDRB Rd, [Rb, Ro]
+            self.write_register(rd, self.memory.read_u8(addr))
+        elif op == 7:  # LDRH Rd, [Rb, Ro]
+            self.write_register(rd, self.memory.read_u16(addr))
+
+        self.registers[15] += 2
+        return 2
+
+    def exec_thumb_load_store_imm(self, instr: int) -> int:
+        """Thumb load/store with immediate offset (formats 9+10).
+
+        Bits 15-11 select the access type:
+        01100=STR word, 01101=LDR word, 01110=STRB, 01111=LDRB,
+        10000=STRH, 10001=LDRH
+        """
+        op = (instr >> 11) & 0x1F  # bits 15-11
+        imm5 = (instr >> 6) & 0x1F  # bits 10-6
+        rb = (instr >> 3) & 7       # bits 5-3
+        rd = instr & 7              # bits 2-0
+
+        if op == 0b01100:  # STR Rd, [Rb, #Imm5*4]
+            addr = self.registers[rb] + imm5 * 4
+            self.memory.write_u32(addr, self.registers[rd])
+        elif op == 0b01101:  # LDR Rd, [Rb, #Imm5*4]
+            addr = self.registers[rb] + imm5 * 4
+            self.write_register(rd, self.memory.read_u32(addr))
+        elif op == 0b01110:  # STRB Rd, [Rb, #Imm5]
+            addr = self.registers[rb] + imm5
+            self.memory.write_u8(addr, self.registers[rd] & 0xFF)
+        elif op == 0b01111:  # LDRB Rd, [Rb, #Imm5]
+            addr = self.registers[rb] + imm5
+            self.write_register(rd, self.memory.read_u8(addr))
+        elif op == 0b10000:  # STRH Rd, [Rb, #Imm5*2]
+            addr = self.registers[rb] + imm5 * 2
+            self.memory.write_u16(addr, self.registers[rd] & 0xFFFF)
+        elif op == 0b10001:  # LDRH Rd, [Rb, #Imm5*2]
+            addr = self.registers[rb] + imm5 * 2
+            self.write_register(rd, self.memory.read_u16(addr))
+
+        self.registers[15] += 2
+        return 2
+
+    def exec_thumb_sp_rel(self, instr: int) -> int:
+        """Thumb load/store SP-relative (format 11)."""
+        is_load = (instr >> 11) & 1  # bit 11: 0=STR, 1=LDR
+        rd = (instr >> 8) & 7        # bits 10-8
+        imm8 = instr & 0xFF          # bits 7-0
+        addr = (self.registers[13] + imm8 * 4) & 0xFFFFFFFF
 
         if is_load:
-            val = self.memory.read_u32(addr)
-            self.write_register(rd, val)
+            self.write_register(rd, self.memory.read_u32(addr))
         else:
             self.memory.write_u32(addr, self.registers[rd])
 
         self.registers[15] += 2
         return 2
 
-    def exec_thumb_hword(self, instr: int) -> int:
-        """Thumb LDRH/STRH."""
-        is_load = (instr >> 11) & 1
-        is_up = (instr >> 9) & 1
-        rn = (instr >> 3) & 7
-        rd = instr & 7
-        offset = ((instr >> 6) & 0x1F) * 2
+    def exec_thumb_load_addr(self, instr: int) -> int:
+        """Thumb load address (format 12): ADD Rd, PC/SP, #Imm8*4."""
+        use_sp = (instr >> 11) & 1  # bit 11: 0=PC, 1=SP
+        rd = (instr >> 8) & 7       # bits 10-8
+        imm8 = instr & 0xFF         # bits 7-0
 
-        if is_up:
-            addr = self.registers[rn] + offset
+        if use_sp:
+            addr = (self.registers[13] + imm8 * 4) & 0xFFFFFFFF
         else:
-            addr = self.registers[rn] - offset
+            # Thumb PC reads as current instruction + 4
+            pc = (self.registers[15] + 4) & 0xFFFFFFFF
+            addr = ((pc & 0xFFFFFFFC) + imm8 * 4) & 0xFFFFFFFF
+        self.write_register(rd, addr)
+        self.registers[15] += 2
+        return 1
 
-        if is_load:
-            val = self.memory.read_u16(addr)
-            self.write_register(rd, val)
+    def exec_thumb_add_sp(self, instr: int) -> int:
+        """Thumb add/sub offset to SP (format 13)."""
+        sign = (instr >> 7) & 1  # bit 7: 0=ADD, 1=SUB
+        imm7 = instr & 0x7F       # bits 6-0
+        if sign:
+            self.registers[13] = (self.registers[13] - imm7 * 4) & 0xFFFFFFFF
         else:
-            self.memory.write_u16(addr, self.registers[rd] & 0xFFFF)
+            self.registers[13] = (self.registers[13] + imm7 * 4) & 0xFFFFFFFF
+        self.registers[15] += 2
+        return 1
+
+    def exec_thumb_push_pop(self, instr: int) -> int:
+        """Thumb push/pop registers (format 14)."""
+        op8 = (instr >> 8) & 0xFF
+        is_pop = op8 in (0xBC, 0xBD)
+        with_extra = op8 in (0xB5, 0xBD)  # LR for push, PC for pop
+        reg_list = instr & 0xFF  # bits 7-0
+
+        if is_pop:
+            addr = self.registers[13]
+            for i in range(8):
+                if reg_list & (1 << i):
+                    self.write_register(i, self.memory.read_u32(addr))
+                    addr += 4
+            if with_extra:
+                val = self.memory.read_u32(addr)
+                addr += 4
+                self.thumb_mode = (val & 1) != 0
+                self.registers[15] = val & 0xFFFFFFFE
+            else:
+                self.registers[15] += 2
+            self.registers[13] = addr
+            return 2
+        else:
+            count = bin(reg_list).count('1') + (1 if with_extra else 0)
+            addr = (self.registers[13] - count * 4) & 0xFFFFFFFF
+            self.registers[13] = addr
+            for i in range(8):
+                if reg_list & (1 << i):
+                    self.memory.write_u32(addr, self.registers[i])
+                    addr += 4
+            if with_extra:
+                self.memory.write_u32(addr, self.registers[14])  # LR
+            self.registers[15] += 2
+            return 2
+
+    def exec_thumb_ldm_stm(self, instr: int) -> int:
+        """Thumb LDM/STM (format 15)."""
+        is_load = (instr >> 11) & 1  # bit 11: 0=STM, 1=LDM
+        rb = (instr >> 8) & 7        # bits 10-8
+        reg_list = instr & 0xFF      # bits 7-0
+
+        if reg_list == 0:
+            self.registers[15] += 2
+            return 1
+
+        addr = self.registers[rb]
+        for i in range(8):
+            if reg_list & (1 << i):
+                if is_load:
+                    self.write_register(i, self.memory.read_u32(addr))
+                else:
+                    self.memory.write_u32(addr, self.registers[i])
+                addr += 4
+        self.registers[rb] = addr  # write back
 
         self.registers[15] += 2
         return 2
+
+    def _check_condition(self, cond: int) -> bool:
+        """Check ARM condition code."""
+        n = (self.cpsr >> 31) & 1
+        z = (self.cpsr >> 30) & 1
+        c = (self.cpsr >> 29) & 1
+        v = (self.cpsr >> 28) & 1
+
+        if cond == 0x0:   # EQ
+            return z == 1
+        elif cond == 0x1: # NE
+            return z == 0
+        elif cond == 0x2: # CS/HS
+            return c == 1
+        elif cond == 0x3: # CC/LO
+            return c == 0
+        elif cond == 0x4: # MI
+            return n == 1
+        elif cond == 0x5: # PL
+            return n == 0
+        elif cond == 0x6: # VS
+            return v == 1
+        elif cond == 0x7: # VC
+            return v == 0
+        elif cond == 0x8: # HI
+            return c == 1 and z == 0
+        elif cond == 0x9: # LS
+            return c == 0 or z == 1
+        elif cond == 0xA: # GE
+            return n == v
+        elif cond == 0xB: # LT
+            return n != v
+        elif cond == 0xC: # GT
+            return n == v and z == 0
+        elif cond == 0xD: # LE
+            return n != v or z == 1
+        elif cond == 0xE: # AL
+            return True
+        return False       # NV
+
+    def exec_thumb_cond_branch(self, instr: int) -> int:
+        """Thumb conditional branch (format 16)."""
+        cond = (instr >> 8) & 0xF  # bits 11-8
+        offset = instr & 0xFF      # bits 7-0
+        if offset & 0x80:
+            offset -= 0x100
+        offset *= 2
+
+        if self._check_condition(cond):
+            self.registers[15] = (self.registers[15] + offset) & 0xFFFFFFFF
+        else:
+            self.registers[15] += 2
+        return 2
+
+    def exec_thumb_branch(self, instr: int) -> int:
+        """Thumb unconditional branch (format 18)."""
+        offset = instr & 0x7FF  # bits 10-0
+        if offset & 0x400:
+            offset -= 0x800
+        offset *= 2
+        self.registers[15] = (self.registers[15] + offset) & 0xFFFFFFFF
+        return 2
+
+    def exec_thumb_bl_prefix(self, instr: int) -> int:
+        """Thumb BL prefix (format 19)."""
+        offset_high = instr & 0x7FF  # bits 10-0
+        if offset_high & 0x400:
+            offset_high -= 0x800
+        offset_high <<= 12
+        # Thumb PC reads as current instruction + 4
+        pc = (self.registers[15] + 4) & 0xFFFFFFFF
+        self.registers[14] = (pc + offset_high) & 0xFFFFFFFF
+        self.registers[15] += 2
+        return 1
+
+    def exec_thumb_bl_suffix(self, instr: int) -> int:
+        """Thumb BL suffix (format 19)."""
+        offset_low = (instr & 0x7FF) << 1  # bits 10-0, *2
+        target = (self.registers[14] + offset_low) & 0xFFFFFFFF
+        # Return address = next instruction with Thumb bit set
+        self.registers[14] = (self.registers[15] + 2) | 1
+        self.registers[15] = target
+        return 2
+
+    def exec_thumb_swi(self, instr: int) -> int:
+        """Thumb SWI (format 17)."""
+        swi_num = instr & 0xFF
+        if hasattr(self, 'swi_handler'):
+            self.swi_handler(swi_num)
+        self.registers[15] += 2
+        return 1
 
 
 class ISRHandler:

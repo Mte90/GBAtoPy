@@ -94,12 +94,22 @@ fn resolve_pc_operands(ops: &[Operand], inst_addr: u32, base_opcode: &str) -> Ve
 
 pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let opcode = &inst.opcode;
-    let base_opcode = opcode.split_whitespace().next().unwrap_or(opcode);
-    let base_opcode = base_opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());
+    let full_opcode = opcode.split_whitespace().next().unwrap_or(opcode);
+    let base_opcode = full_opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());
+
+    // Extract condition code from the stripped suffix.
+    // The disassembler appends lowercase condition codes (e.g., "ADDeq").
+    // cpsr_check expects uppercase, so we convert.
+    let cond_suffix = &full_opcode[base_opcode.len()..];
+    let cond = if cond_suffix.is_empty() || cond_suffix.eq_ignore_ascii_case("al") {
+        None
+    } else {
+        Some(cond_suffix.to_uppercase())
+    };
 
     let ops = resolve_pc_operands(&inst.operands, inst.address, base_opcode);
 
-    match base_opcode {
+    let code = match base_opcode {
         "MOV" => generate_mov(&ops),
         "MVN" => generate_mvn(&ops),
         "ADD" | "ADC" => generate_add(&ops, base_opcode),
@@ -113,7 +123,25 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         "TEQ" => generate_teq(&ops),
         "UMLAL" | "SMLAL" => generate_umlal(&ops, base_opcode),
         _ => None,
+    }?;
+
+    // Wrap in conditional check if the instruction has a condition code
+    if let Some(c) = cond {
+        let indented = code
+            .lines()
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("    {}", line)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Some(format!("if cpsr_check('{}'):\n{}", c, indented));
     }
+
+    Some(code)
 }
 
 fn generate_mov(ops: &[Operand]) -> Option<String> {
@@ -261,8 +289,9 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
             }
             
             // Handle 3-operand form: ORR Rd, Rn, #imm/Rm/shifted
-            if let Operand::Register(rn_reg) = ops[1] {
-                let rn = format!("registers[{}]", rn_reg);
+            // Use operand_to_expr for Rn to handle PC-relative (already resolved to Immediate)
+            if ops.len() >= 3 {
+                let rn = operand_to_expr(&ops[1]);
                 let op2 = operand_to_expr(&ops[2]);
                 let py_op = match op {
                     "AND" => "&",

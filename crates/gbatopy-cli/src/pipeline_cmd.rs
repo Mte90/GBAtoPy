@@ -4,7 +4,8 @@ use crate::codegen::generate_instruction_python;
 #[allow(unused_imports)]
 use crate::ppu::generate_ppu_code;
 use gbatopy_disasm::{
-    operand::AddressingMode, operand::Operand, operand::ShiftAmount, CfgBuilder, Disassembler,
+    operand::AddressingMode, operand::Operand, operand::ShiftAmount, ArmMode, CfgBuilder,
+    Disassembler,
 };
 use std::fs;
 use std::path::Path;
@@ -733,7 +734,7 @@ pub fn run_pipeline(
     }
 
     // Generate functions for each branch target, skip pure NOP blocks
-    let mut non_nop_addrs: Vec<u64> = Vec::new();
+    let mut non_nop_addrs: Vec<(u64, ArmMode)> = Vec::new();
     let mut block_function_code = String::new();
     let address_list: Vec<u64> = func_groups.keys().copied().collect();
 
@@ -741,6 +742,7 @@ pub fn run_pipeline(
         let func_name = format!("func_{:08X}", func_start);
         let block_len = func_instructions.len();
         let instr_size: u64 = func_instructions[0].width as u64;
+        let func_mode = func_instructions[0].mode;
 
         // Generate function body into a temp buffer
         let mut body = String::new();
@@ -795,26 +797,39 @@ pub fn run_pipeline(
         } else {
             block_function_code.push_str(&format!("\ndef {}(registers, cpsr):\n", func_name));
             block_function_code.push_str(&body);
-            non_nop_addrs.push(func_start);
+            non_nop_addrs.push((func_start, func_mode));
         }
     }
 
     // Write all block functions
     code.push_str(&block_function_code);
 
-    // Generate jump table dispatch (dict-based for sparse ROMs - reduces memory overhead)
-    code.push_str("dispatch_table = {\n");
-    
-    // Populate jump table entries using dict (more compact for sparse ROMs)
+    // Generate mode-aware jump table dispatch (dict-based for sparse ROMs - reduces memory overhead)
+    // Two separate tables so ARM and Thumb functions at the same address don't collide.
+    // The disassembler uses linear sweep and may decode the same address as ARM when the
+    // CPU is actually in Thumb mode at runtime; separate tables prevent calling the wrong function.
     let base_addr: u64 = 0x08000000;
-    for &addr in &non_nop_addrs {
+    
+    code.push_str("dispatch_table_arm = {\n");
+    for &(addr, mode) in &non_nop_addrs {
+        if mode != ArmMode::Arm { continue; }
         let idx = (addr - base_addr) >> 1;
-        if idx >= 0x100000 {
-            continue;
-        }
+        if idx >= 0x100000 { continue; }
         code.push_str(&format!("    0x{:07X}: func_{:08X},\n", idx, addr));
     }
     code.push_str("}\n\n");
+    
+    code.push_str("dispatch_table_thumb = {\n");
+    for &(addr, mode) in &non_nop_addrs {
+        if mode != ArmMode::Thumb { continue; }
+        let idx = (addr - base_addr) >> 1;
+        if idx >= 0x100000 { continue; }
+        code.push_str(&format!("    0x{:07X}: func_{:08X},\n", idx, addr));
+    }
+    code.push_str("}\n\n");
+
+    // Merged table for _interp_fallback boundary checks (mode-agnostic membership test)
+    code.push_str("dispatch_table = {**dispatch_table_arm, **dispatch_table_thumb}\n\n");
 
     // Add game loop (from generate_game_loop in pipeline.rs)
     code.push_str(&generate_game_loop());
@@ -1078,23 +1093,53 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
+    _vblank_irq_delivered = False
     while ic < mi:
         if _cpu_halted:
             for _ in range(228):
                 ppu_instance.step_scanline()
                 if ppu_instance.vblank:
                     _cpu_halted = False
+                    if not _vblank_irq_delivered:
+                        _irq = getattr(memory, '_interrupts', None)
+                        if _irq is not None and (_irq.ime_reg & 0x0001):
+                            _pending = _irq.if_reg & _irq.ie_reg
+                            if _pending:
+                                _handler = memory.read_u32(0x03007FFC)
+                                if 0x02000000 <= _handler < 0x0A000000:
+                                    registers[14] = registers[15]
+                                    registers[15] = _handler & 0xFFFFFFFE
+                                    cpsr['t'] = 1 if (_handler & 1) else 0
+                                    _vblank_irq_delivered = True
                     break
             continue
         pc = registers[15]
         idx = (pc - 0x08000000) >> 1
-        func = dispatch_table.get(idx)
+        _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
+        func = _dt.get(idx)
         if func is None:
             _interp_fallback(registers, cpsr); ic += 1
             continue
         func(registers, cpsr); ic += 1
         if registers[15] == pc:
-            break
+            # B . idle loop — step PPU and deliver VBlank interrupt
+            ppu_instance.step_scanline()
+            if ppu_instance.vblank:
+                _cpu_halted = False
+                if not _vblank_irq_delivered:
+                    _irq = getattr(memory, '_interrupts', None)
+                    if _irq is not None and (_irq.ime_reg & 0x0001):
+                        _pending = _irq.if_reg & _irq.ie_reg
+                        if _pending:
+                            _handler = memory.read_u32(0x03007FFC)
+                            if 0x02000000 <= _handler < 0x0A000000:
+                                registers[14] = registers[15]
+                                registers[15] = _handler & 0xFFFFFFFE
+                                cpsr['t'] = 1 if (_handler & 1) else 0
+                                _vblank_irq_delivered = True
+            else:
+                _vblank_irq_delivered = False
+            continue
         if frame_limit and fc >= frame_limit: break
         if ic % 1000 == 0: fc += 1
     # print(f"Done: {ic} instrs")
@@ -1135,6 +1180,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     fc = 0; running = True; mi = 1000000; ic = 0
     loop_stall_count = 0
     max_loop_stalls = 10000
+    _vblank_irq_delivered = False
     # print(f"PC=0x{registers[15]:08X}")
     while running and ic < mi and fc < (frame_limit or 10000):
         for e in pygame.event.get():
@@ -1169,7 +1215,8 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     break
                 pc = registers[15]
                 idx = (pc - 0x08000000) >> 1
-                func = dispatch_table.get(idx)
+                _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
+                func = _dt.get(idx)
                 if func is None:
                     _interp_fallback(registers, cpsr); ic += 1
                     continue
@@ -1187,6 +1234,19 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             ppu_instance.step_scanline()
             if ppu_instance.vblank:
                 _cpu_halted = False
+                if not _vblank_irq_delivered:
+                    _irq = getattr(memory, '_interrupts', None)
+                    if _irq is not None and (_irq.ime_reg & 0x0001):
+                        _pending = _irq.if_reg & _irq.ie_reg
+                        if _pending:
+                            _handler = memory.read_u32(0x03007FFC)
+                            if 0x02000000 <= _handler < 0x0A000000:
+                                registers[14] = registers[15]
+                                registers[15] = _handler & 0xFFFFFFFE
+                                cpsr['t'] = 1 if (_handler & 1) else 0
+                                _vblank_irq_delivered = True
+            else:
+                _vblank_irq_delivered = False
         # Render the completed frame
         ppu_instance.render_frame()
         # Update APU audio

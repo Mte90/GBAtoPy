@@ -226,11 +226,21 @@ class ARM7TDMI:
                 elif shift_type == 1:  # LSR
                     operand2 = operand2 >> shift_imm
                 elif shift_type == 2:  # ASR
-                    operand2 = (operand2 >> shift_imm) | ((operand2 & 0x80000000) * shift_imm)
+                    operand2 = (operand2 >> shift_imm) | (
+                        (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm))
+                    )
                 elif shift_type == 3:  # ROR
                     operand2 = (
                         (operand2 >> shift_imm) | (operand2 << (32 - shift_imm))
                     ) & 0xFFFFFFFF
+            else:
+                if shift_type == 1:  # LSR #0 means LSR #32
+                    operand2 = 0
+                elif shift_type == 2:  # ASR #0 means ASR #32
+                    operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
+                elif shift_type == 3:  # ROR #0 means RRX
+                    carry = (self.cpsr >> 29) & 1
+                    operand2 = ((carry << 31) | (operand2 >> 1)) & 0xFFFFFFFF
 
         operand1 = self.registers[rn]
 

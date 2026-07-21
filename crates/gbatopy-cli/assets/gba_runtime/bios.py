@@ -403,37 +403,35 @@ class BIOS:
     def swi_vblank_intr_wait(self):
         if not hasattr(self, "memory") or not hasattr(self.memory, "cpu"):
             return
-        
+
         cpu = self.memory.cpu
         memory = self.memory
         interrupts = getattr(memory, "_interrupts", None)
-        
-        first_call = cpu.registers[0] & 1
-        
-        if interrupts:
-            vblank_occurred = False
-            
-            if first_call:
-                # Wait for VBlank interrupt flag
-                # In real GBA, CPU would halt here until interrupt occurs
-                # We poll the IF register with minimal yield
-                import time
-                while not (interrupts.if_reg & (1 << 0)):
-                    time.sleep(0.0001)  # Yield CPU briefly
-                
-                vblank_occurred = True
-                interrupts.if_reg &= ~(1 << 0)
-            
-            if vblank_occurred:
-                cpu.set_cpsr_flag("Z", True)
-                cpu.registers[0] = 1
-            else:
-                cpu.set_cpsr_flag("Z", False)
-                cpu.registers[0] = 0
-        else:
+        ppu = getattr(memory, "_ppu", None)
+
+        # If a fresh VBlank is already pending, consume it without advancing.
+        if interrupts is not None and (interrupts.if_reg & (1 << 0)):
+            interrupts.if_reg &= ~(1 << 0)
             cpu.set_cpsr_flag("Z", True)
             cpu.registers[0] = 1
-            time.sleep(0.016)
+            return
+
+        # Advance PPU scanlines until VBlank fires. Mirrors real hardware:
+        # CPU halts, PPU keeps running, VBlank IRQ wakes the CPU.
+        # Bounded by a full frame (228 scanlines) as a safety net.
+        if ppu is not None:
+            for _ in range(228):
+                ppu.step_scanline()
+                if ppu.vblank:
+                    if interrupts is not None:
+                        interrupts.if_reg &= ~(1 << 0)
+                    cpu.set_cpsr_flag("Z", True)
+                    cpu.registers[0] = 1
+                    return
+
+        # No PPU or no VBlank within one frame: fall back to success.
+        cpu.set_cpsr_flag("Z", True)
+        cpu.registers[0] = 1
     def swi_intr_wait(self, wait_flag: int, vblank_flag: int):
         """Wait for interrupt"""
         if wait_flag:

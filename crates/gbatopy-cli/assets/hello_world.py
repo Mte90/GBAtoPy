@@ -3243,17 +3243,22 @@ class CPU:
             shift_type = (opcode >> 5) & 3
             if shift_imm:
                 if shift_type == 0:  # LSL
-                    operand2 = (operand2 << shift_imm) & 0xFFFFFFFF
+                    operand2 = 0 if shift_imm >= 32 else (operand2 << shift_imm) & 0xFFFFFFFF
                 elif shift_type == 1:  # LSR
-                    operand2 = operand2 >> shift_imm
+                    operand2 = 0 if shift_imm >= 32 else operand2 >> shift_imm
                 elif shift_type == 2:  # ASR
-                    operand2 = (operand2 >> shift_imm) | (
-                        (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm))
-                    )
+                    if shift_imm >= 32:
+                        operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
+                    else:
+                        operand2 = (operand2 >> shift_imm) | (
+                            (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm))
+                        )
                 elif shift_type == 3:  # ROR
-                    operand2 = (
-                        (operand2 >> shift_imm) | (operand2 << (32 - shift_imm))
-                    ) & 0xFFFFFFFF
+                    effective = shift_imm & 0x1F
+                    if effective:
+                        operand2 = (
+                            (operand2 >> effective) | (operand2 << (32 - effective))
+                        ) & 0xFFFFFFFF
         else:
             rm = opcode & 0xF
             operand2 = self.registers[rm]
@@ -3272,6 +3277,14 @@ class CPU:
                     operand2 = (
                         (operand2 >> shift_imm) | (operand2 << (32 - shift_imm))
                     ) & 0xFFFFFFFF
+            else:
+                if shift_type == 1:  # LSR #0 means LSR #32
+                    operand2 = 0
+                elif shift_type == 2:  # ASR #0 means ASR #32
+                    operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
+                elif shift_type == 3:  # ROR #0 means RRX
+                    carry = 1 if self.flag_c else 0
+                    operand2 = ((carry << 31) | (operand2 >> 1)) & 0xFFFFFFFF
 
         op = (opcode >> 21) & 0xF
         s = (opcode >> 20) & 1
@@ -3365,7 +3378,10 @@ class CPU:
             rm = opcode & 0xF
             offset = self.registers[rm]
 
-        addr = self.registers[rn]
+        if rn == 15:
+            addr = (self.registers[self.PC] + 4) & 0xFFFFFFFF
+        else:
+            addr = self.registers[rn]
 
         # Pre/post indexing
         add = (opcode >> 23) & 1
@@ -3390,10 +3406,11 @@ class CPU:
                 self.memory.write_u32(addr, val)
 
         if write_back:
+            base = (self.registers[self.PC] + 4) if rn == 15 else self.registers[rn]
             if add:
-                self.registers[rn] = (self.registers[rn] + offset) & 0xFFFFFFFF
+                self.registers[rn] = (base + offset) & 0xFFFFFFFF
             else:
-                self.registers[rn] = (self.registers[rn] - offset) & 0xFFFFFFFF
+                self.registers[rn] = (base - offset) & 0xFFFFFFFF
 
         return True
 
@@ -3990,11 +4007,21 @@ class ARM7TDMI:
                 elif shift_type == 1:  # LSR
                     operand2 = operand2 >> shift_imm
                 elif shift_type == 2:  # ASR
-                    operand2 = (operand2 >> shift_imm) | ((operand2 & 0x80000000) * shift_imm)
+                    operand2 = (operand2 >> shift_imm) | (
+                        (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm))
+                    )
                 elif shift_type == 3:  # ROR
                     operand2 = (
                         (operand2 >> shift_imm) | (operand2 << (32 - shift_imm))
                     ) & 0xFFFFFFFF
+            else:
+                if shift_type == 1:  # LSR #0 means LSR #32
+                    operand2 = 0
+                elif shift_type == 2:  # ASR #0 means ASR #32
+                    operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
+                elif shift_type == 3:  # ROR #0 means RRX
+                    carry = 1 if self.flag_c else 0
+                    operand2 = ((carry << 31) | (operand2 >> 1)) & 0xFFFFFFFF
 
         operand1 = self.registers[rn]
 
