@@ -444,15 +444,16 @@ pub fn run_pipeline(
     );
 
     // PASS 2: Group instructions into basic blocks
-    let mut func_groups: std::collections::HashMap<u64, Vec<&gbatopy_disasm::DecodedInstruction>> =
+    let mut func_groups: std::collections::HashMap<(u64, ArmMode), Vec<&gbatopy_disasm::DecodedInstruction>> =
         std::collections::HashMap::new();
 
-    let mut current_block_start: Option<u64> = None;
+    let mut current_block_start: Option<(u64, ArmMode)> = None;
     let mut prev_addr: Option<u64> = None;
     let mut prev_was_branch = false;
 
     for inst in &instructions {
         let addr = inst.address as u64;
+        let mode = inst.mode;
         let instr_size = inst.width as u64;
         let next_expected = prev_addr.map(|a| a + instr_size);
         let is_branch = writes_r15(inst);
@@ -460,14 +461,14 @@ pub fn run_pipeline(
         // CRITICAL: Branch instructions ALWAYS start their own block and terminate it
         if is_branch {
             // Start a new block for this branch instruction
-            current_block_start = Some(addr);
+            current_block_start = Some((addr, mode));
             // Add this instruction to its own block
             func_groups
-                .entry(addr)
+                .entry((addr, mode))
                 .or_insert_with(Vec::new)
                 .push(inst);
             // Terminate the block (don't add more instructions to it)
-            // BUT keep current_block_start = Some(addr) so next instruction knows prev_was_branch
+            // BUT keep current_block_start = Some((addr, mode)) so next instruction knows prev_was_branch
             prev_was_branch = true;
             prev_addr = Some(addr);
             continue;  // Skip the rest of the loop
@@ -476,7 +477,7 @@ pub fn run_pipeline(
         // Start new block if:
         // 1. This is a branch target, OR
         // 2. Previous instruction was a branch, OR
-        // 3. Gap in addresses (not sequential)
+        // 3. Gap in addresses (not sequential) OR mode change
         let should_start_new_block = branch_targets.contains(&addr)
             || prev_addr.map_or(true, |pa| {
                 let is_sequential = next_expected == Some(addr);
@@ -484,7 +485,7 @@ pub fn run_pipeline(
             });
 
         if should_start_new_block {
-            current_block_start = Some(addr);
+            current_block_start = Some((addr, mode));
             prev_was_branch = false;  // Reset after starting new block
         }
 
@@ -736,10 +737,11 @@ pub fn run_pipeline(
     // Generate functions for each branch target, skip pure NOP blocks
     let mut non_nop_addrs: Vec<(u64, ArmMode)> = Vec::new();
     let mut block_function_code = String::new();
-    let address_list: Vec<u64> = func_groups.keys().copied().collect();
+    let address_list: Vec<(u64, ArmMode)> = func_groups.keys().copied().collect();
 
-    for (&func_start, func_instructions) in &func_groups {
-        let func_name = format!("func_{:08X}", func_start);
+    for (&(func_start, func_mode_key), func_instructions) in &func_groups {
+        let mode_suffix = if func_mode_key == ArmMode::Arm { "a" } else { "t" };
+        let func_name = format!("func_{:08X}_{}", func_start, mode_suffix);
         let block_len = func_instructions.len();
         let instr_size: u64 = func_instructions[0].width as u64;
         let func_mode = func_instructions[0].mode;
@@ -797,7 +799,7 @@ pub fn run_pipeline(
         } else {
             block_function_code.push_str(&format!("\ndef {}(registers, cpsr):\n", func_name));
             block_function_code.push_str(&body);
-            non_nop_addrs.push((func_start, func_mode));
+            non_nop_addrs.push((func_start, func_mode_key));
         }
     }
 
@@ -815,7 +817,7 @@ pub fn run_pipeline(
         if mode != ArmMode::Arm { continue; }
         let idx = (addr - base_addr) >> 1;
         if idx >= 0x100000 { continue; }
-        code.push_str(&format!("    0x{:07X}: func_{:08X},\n", idx, addr));
+        code.push_str(&format!("    0x{:07X}: func_{:08X}_a,\n", idx, addr));
     }
     code.push_str("}\n\n");
     
@@ -824,7 +826,7 @@ pub fn run_pipeline(
         if mode != ArmMode::Thumb { continue; }
         let idx = (addr - base_addr) >> 1;
         if idx >= 0x100000 { continue; }
-        code.push_str(&format!("    0x{:07X}: func_{:08X},\n", idx, addr));
+        code.push_str(&format!("    0x{:07X}: func_{:08X}_t,\n", idx, addr));
     }
     code.push_str("}\n\n");
 
@@ -1021,13 +1023,15 @@ def swi_handler(swi_field):
 def _interp_fallback(registers, cpsr):
     global _interp_cpu
     if _interp_cpu is None:
-        _interp_cpu = CPU(memory)
+        _interp_cpu = ARM7TDMI(memory)
     for i in range(16):
         _interp_cpu.registers[i] = registers[i]
-    _interp_cpu.flag_n = bool(cpsr.get('n', 0))
-    _interp_cpu.flag_z = bool(cpsr.get('z', 0))
-    _interp_cpu.flag_c = bool(cpsr.get('c', 0))
-    _interp_cpu.flag_v = bool(cpsr.get('v', 0))
+    _cpsr_val = 0
+    if cpsr.get('n', 0): _cpsr_val |= 0x80000000
+    if cpsr.get('z', 0): _cpsr_val |= 0x40000000
+    if cpsr.get('c', 0): _cpsr_val |= 0x20000000
+    if cpsr.get('v', 0): _cpsr_val |= 0x10000000
+    _interp_cpu.cpsr = _cpsr_val
     _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
     _step_count = 0
     _trace = []
@@ -1036,6 +1040,12 @@ def _interp_fallback(registers, cpsr):
         if 0x08000000 <= _pc < 0x0A000000:
             _idx = (_pc - 0x08000000) >> 1
             if _idx in dispatch_table:
+                # Correct mode: if PC is only in ARM table, switch to ARM;
+                # if only in Thumb, switch to Thumb. If in both, keep current.
+                if _idx in dispatch_table_arm and _idx not in dispatch_table_thumb:
+                    _interp_cpu.thumb_mode = False
+                elif _idx in dispatch_table_thumb and _idx not in dispatch_table_arm:
+                    _interp_cpu.thumb_mode = True
                 break
         if _pc == 0x03000128:
             irq = memory._interrupts
@@ -1080,10 +1090,11 @@ def _interp_fallback(registers, cpsr):
             print(line)
     for i in range(16):
         registers[i] = _interp_cpu.registers[i]
-    cpsr['n'] = 1 if _interp_cpu.flag_n else 0
-    cpsr['z'] = 1 if _interp_cpu.flag_z else 0
-    cpsr['c'] = 1 if _interp_cpu.flag_c else 0
-    cpsr['v'] = 1 if _interp_cpu.flag_v else 0
+    _cpsr_val = _interp_cpu.cpsr
+    cpsr['n'] = (_cpsr_val >> 31) & 1
+    cpsr['z'] = (_cpsr_val >> 30) & 1
+    cpsr['c'] = (_cpsr_val >> 29) & 1
+    cpsr['v'] = (_cpsr_val >> 28) & 1
     cpsr['t'] = 1 if _interp_cpu.thumb_mode else 0
 
 def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):

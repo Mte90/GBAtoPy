@@ -74,6 +74,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                             let increment = *offset;
                             code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
                         }
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
+                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
+                        }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
                             code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
@@ -118,6 +121,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             let increment = *offset;
                             code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                        }
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
+                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
@@ -164,6 +170,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                             let increment = *offset;
                             code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
                         }
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
+                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
+                        }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
                             code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
@@ -208,6 +217,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             let increment = *offset;
                             code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                        }
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
+                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;

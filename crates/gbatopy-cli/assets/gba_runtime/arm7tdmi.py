@@ -439,8 +439,7 @@ class ARM7TDMI:
 
         if is_link:
             self.registers[14] = self.registers[15] + 4
-
-        self.registers[15] = (self.registers[15] + offset) & 0xFFFFFFFF
+        self.registers[15] = ((self.registers[15] + 8) + offset) & 0xFFFFFFFF
         return 3
 
     def exec_bx(self, instr: int) -> int:
@@ -872,7 +871,7 @@ class ARM7TDMI:
         """Thumb PC-relative load."""
         rd = (instr >> 8) & 7
         offset = (instr & 0xFF) * 4
-        addr = (self.registers[15] & 0xFFFFFFFC) + offset
+        addr = ((self.registers[15] + 4) & 0xFFFFFFFC) + offset
         val = self.memory.read_u32(addr)
         self.write_register(rd, val)
         self.registers[15] += 2
@@ -1099,7 +1098,7 @@ class ARM7TDMI:
         offset *= 2
 
         if self._check_condition(cond):
-            self.registers[15] = (self.registers[15] + offset) & 0xFFFFFFFF
+            self.registers[15] = ((self.registers[15] + 4) + offset) & 0xFFFFFFFF
         else:
             self.registers[15] += 2
         return 2
@@ -1110,7 +1109,7 @@ class ARM7TDMI:
         if offset & 0x400:
             offset -= 0x800
         offset *= 2
-        self.registers[15] = (self.registers[15] + offset) & 0xFFFFFFFF
+        self.registers[15] = ((self.registers[15] + 4) + offset) & 0xFFFFFFFF
         return 2
 
     def exec_thumb_bl_prefix(self, instr: int) -> int:

@@ -85,7 +85,7 @@ impl CfgBuilder {
     }
 
     pub fn build_from_entry(&mut self, rom: &[u8], entry_point: u32) {
-        let mut visited: HashSet<u32> = HashSet::new();
+        let mut visited: HashSet<(u32, ArmMode)> = HashSet::new();
         // BFS queue stores (address, mode) so we propagate the execution mode
         // instead of guessing from address parity. Thumb branch targets can be
         // even addresses, and the parity heuristic decodes them as ARM.
@@ -110,7 +110,13 @@ impl CfgBuilder {
         for &addr in &common_entry_points {
             let rom_offset = (addr - 0x08000000) as usize;
             if rom_offset < rom.len() {
+                // Visit in both ARM and Thumb mode. The visited set tracks
+                // (addr, mode) pairs, so there is no collision. Many GBA ROMs
+                // interleave ARM and Thumb code at these addresses, and visiting
+                // only ARM mode causes the Thumb decoder to miss entire
+                // functions that are only reachable via BL from Thumb code.
                 to_visit.push((addr, ArmMode::Arm));
+                to_visit.push((addr, ArmMode::Thumb));
             }
         }
         to_visit.push((entry_point, ArmMode::Arm));
@@ -122,10 +128,10 @@ impl CfgBuilder {
         let mut instruction_count = 0;
 
         while let Some((addr, current_mode)) = to_visit.pop() {
-            if visited.contains(&addr) {
+            if visited.contains(&(addr, current_mode)) {
                 continue;
             }
-            visited.insert(addr);
+            visited.insert((addr, current_mode));
 
             instruction_count += 1;
             if instruction_count > MAX_INSTRUCTIONS {
@@ -190,7 +196,7 @@ impl CfgBuilder {
 
             if !is_uncond_branch {
                 let next_addr = addr + instr_width;
-                if !visited.contains(&next_addr)
+                if !visited.contains(&(next_addr, current_mode))
                     && next_addr >= 0x08000000
                     && ((next_addr - 0x08000000) as usize) < rom.len()
                 {
@@ -216,7 +222,7 @@ impl CfgBuilder {
                 } else {
                     raw_target & !3
                 };
-                if !visited.contains(&target) {
+                if !visited.contains(&(target, target_mode)) {
                     to_visit.push((target, target_mode));
                 }
                 if !self.branch_targets.contains(&target) {
@@ -281,13 +287,13 @@ impl CfgBuilder {
         // If new targets were discovered, run a mini-CFG pass from them to
         // collect their instruction addresses and any further branches.
         if !new_targets.is_empty() {
-            let mut mini_visited: HashSet<u32> = HashSet::new();
+            let mut mini_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini_queue: Vec<(u32, ArmMode)> = new_targets;
             while let Some((addr, current_mode)) = mini_queue.pop() {
-                if mini_visited.contains(&addr) || visited.contains(&addr) {
+                if mini_visited.contains(&(addr, current_mode)) || visited.contains(&(addr, current_mode)) {
                     continue;
                 }
-                mini_visited.insert(addr);
+                mini_visited.insert((addr, current_mode));
 
                 let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
                 if decode_addr < 0x08000000 {
@@ -328,8 +334,8 @@ impl CfgBuilder {
 
                 if !is_uncond_branch {
                     let next_addr = addr + instr_width;
-                    if !mini_visited.contains(&next_addr)
-                        && !visited.contains(&next_addr)
+                    if !mini_visited.contains(&(next_addr, current_mode))
+                        && !visited.contains(&(next_addr, current_mode))
                         && next_addr >= 0x08000000
                         && ((next_addr - 0x08000000) as usize) < rom.len()
                     {
@@ -351,8 +357,165 @@ impl CfgBuilder {
                     } else {
                         raw_target & !3
                     };
-                    if !mini_visited.contains(&target) && !visited.contains(&target) {
+                    if !mini_visited.contains(&(target, target_mode)) && !visited.contains(&(target, target_mode)) {
                         mini_queue.push((target, target_mode));
+                    }
+                    if !self.branch_targets.contains(&target) {
+                        self.branch_targets.push(target);
+                    }
+                }
+
+                if opcode_str == "BL_SUFFIX" {
+                    self.register_tracker.track_mov_immediate(14, (addr + 2) | 1);
+                } else if opcode_str == "BL" || opcode_str == "BLX" {
+                    self.register_tracker.track_mov_immediate(14, addr + 4);
+                }
+            }
+        }
+
+        // ROM-wide function pointer scan: scan every 4-byte aligned word in
+        // the ROM for values that look like function pointers (ROM addresses).
+        // This catches function pointers stored in data tables (e.g., init
+        // call tables, vtables) that are loaded via two-level indirection
+        // (LDR Rn, =table_addr; LDR Rm, [Rn]; BLX Rm) which the LDR-based
+        // scan above cannot resolve. False positives only add dead code to
+        // the dispatch table — they don't affect correctness.
+        let mut rom_wide_targets: Vec<(u32, ArmMode)> = Vec::new();
+        for off in (0..rom.len().saturating_sub(3)).step_by(2) {
+            let value = u32::from_le_bytes([
+                rom[off], rom[off + 1], rom[off + 2], rom[off + 3],
+            ]);
+            if value < 0x08000000 || value >= 0x0A000000 {
+                continue;
+            }
+            let (taddr, tmode) = if value & 1 == 1 {
+                (value & !1, ArmMode::Thumb)
+            } else if value & 3 == 0 {
+                (value, ArmMode::Arm)
+            } else {
+                (value & !1, ArmMode::Thumb)
+            };
+            if taddr < 0x08000000 || (taddr - 0x08000000) as usize >= rom.len() {
+                continue;
+            }
+            if !visited.contains(&(taddr, tmode))
+                && !self.branch_targets.contains(&taddr)
+            {
+                self.branch_targets.push(taddr);
+                rom_wide_targets.push((taddr, tmode));
+            }
+        }
+        // ROM-wide function pointer scan: scan every 4-byte aligned word in
+        // the ROM for values that look like function pointers (ROM addresses).
+        // This catches function pointers stored in data tables (e.g., init
+        // call tables, vtables) that are loaded via two-level indirection
+        // (LDR Rn, =table_addr; LDR Rm, [Rn]; BLX Rm) which the LDR-based
+        // scan above cannot resolve. False positives only add dead code to
+        // the dispatch table — they don't affect correctness.
+        for off in (0..rom.len().saturating_sub(3)).step_by(2) {
+            let value = u32::from_le_bytes([
+                rom[off], rom[off + 1], rom[off + 2], rom[off + 3],
+            ]);
+            if value < 0x08000000 || value >= 0x0A000000 {
+                continue;
+            }
+            let (taddr, tmode) = if value & 1 == 1 {
+                (value & !1, ArmMode::Thumb)
+            } else if value & 3 == 0 {
+                (value, ArmMode::Arm)
+            } else {
+                // 2-byte-aligned but not 4-byte-aligned → Thumb
+                (value & !1, ArmMode::Thumb)
+            };
+            if taddr < 0x08000000 || (taddr - 0x08000000) as usize >= rom.len() {
+                continue;
+            }
+            if !visited.contains(&(taddr, tmode))
+                && !self.branch_targets.contains(&taddr)
+            {
+                self.branch_targets.push(taddr);
+                rom_wide_targets.push((taddr, tmode));
+            }
+        }
+
+        // Run mini-CFG pass on newly discovered targets, same as above
+        if !rom_wide_targets.is_empty() {
+            let mut mini2_visited: HashSet<(u32, ArmMode)> = HashSet::new();
+            let mut mini2_queue: Vec<(u32, ArmMode)> = rom_wide_targets;
+            while let Some((addr, current_mode)) = mini2_queue.pop() {
+                if mini2_visited.contains(&(addr, current_mode))
+                    || visited.contains(&(addr, current_mode))
+                {
+                    continue;
+                }
+                mini2_visited.insert((addr, current_mode));
+
+                let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
+                if decode_addr < 0x08000000 {
+                    continue;
+                }
+                let rom_offset = (decode_addr - 0x08000000) as usize;
+                if rom_offset >= rom.len() {
+                    continue;
+                }
+
+                let (opcode_str, operands, instr_width) = match current_mode {
+                    ArmMode::Arm => {
+                        if rom_offset + 4 > rom.len() { continue; }
+                        let opcode = u32::from_le_bytes([
+                            rom[rom_offset], rom[rom_offset + 1],
+                            rom[rom_offset + 2], rom[rom_offset + 3],
+                        ]);
+                        let (op, ops, _) = arm_decoder.decode(opcode, decode_addr);
+                        (op, ops, 4)
+                    }
+                    ArmMode::Thumb => {
+                        if rom_offset + 2 > rom.len() { continue; }
+                        let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
+                        let (op, ops, _) = thumb_decoder.decode(opcode, decode_addr);
+                        (op, ops, 2)
+                    }
+                };
+
+                self.instruction_addresses.push(addr);
+                self.mode_map.push((addr, current_mode));
+
+                let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
+                self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
+
+                let is_uncond_branch = opcode_str == "B"
+                    || opcode_str == "BX"
+                    || writes_to_pc(&opcode_str, &operands);
+
+                if !is_uncond_branch {
+                    let next_addr = addr + instr_width;
+                    if !mini2_visited.contains(&(next_addr, current_mode))
+                        && !visited.contains(&(next_addr, current_mode))
+                        && next_addr >= 0x08000000
+                        && ((next_addr - 0x08000000) as usize) < rom.len()
+                    {
+                        mini2_queue.push((next_addr, current_mode));
+                    }
+                }
+
+                for raw_target in targets {
+                    if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
+                        continue;
+                    }
+                    let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
+                        if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
+                    } else {
+                        current_mode
+                    };
+                    let target = if target_mode == ArmMode::Thumb {
+                        raw_target & !1
+                    } else {
+                        raw_target & !3
+                    };
+                    if !mini2_visited.contains(&(target, target_mode))
+                        && !visited.contains(&(target, target_mode))
+                    {
+                        mini2_queue.push((target, target_mode));
                     }
                     if !self.branch_targets.contains(&target) {
                         self.branch_targets.push(target);

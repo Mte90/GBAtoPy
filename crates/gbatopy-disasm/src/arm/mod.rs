@@ -515,55 +515,58 @@ impl ArmDecoder {
                 false,
             );
         }
-        // Offset extraction: bit 25 (I) selects immediate (0) or register (1)
-        let offset = if i_bit {
-            let rm = (word & 0xF) as u8;
-            // Check if this is a register offset (no shift) or shifted register
-            let shift_bits = (word >> 5) & 0x3;
-            let shift_imm = (word >> 7) & 0x1F;
-            if shift_bits == 0 && shift_imm == 0 {
-                // Register offset without shift: STR R0, [R1, R2]
-                Operand::Register(rm)
-            } else {
-                // Shifted register: STR R0, [R1, R2, LSL #imm]
-                Operand::ShiftedRegister {
-                    reg: rm,
-                    shift: crate::operand::ShiftType::Lsl,
-                    amount: crate::operand::ShiftAmount::Immediate(shift_imm as u8),
-                }
-            }
-        } else {
-            let imm = word & 0xFFF;
-            if u_bit {
-                Operand::Immediate(imm)
-            } else {
-                Operand::Immediate((-(imm as i32)) as u32)
-            }
-        };
+        // Compute signed immediate offset from U bit and 12-bit immediate field
+        let imm12 = (word & 0xFFF) as i32;
+        let signed_imm = if u_bit { imm12 } else { -imm12 };
+
+        // Register offset fields (bit 25 = I: 0=immediate, 1=register)
+        let rm = (word & 0xF) as u8;
+        let shift_bits = (word >> 5) & 0x3;
+        let shift_imm = (word >> 7) & 0x1F;
+        let is_unshifted_reg = i_bit && shift_bits == 0 && shift_imm == 0;
 
         let writeback = w_bit || !p_bit;
 
-        // Convert offset Operand to AddressingMode
-        let addressing_mode = match offset {
-            Operand::Immediate(imm) => {
-                crate::operand::AddressingMode::ImmediateOffset(imm as i32)
+        // Addressing mode depends on P (pre/post), W (writeback), and I (immediate/register)
+        let addressing_mode = if !p_bit {
+            // Post-indexed: transfer uses [base] only, then base += offset
+            if is_unshifted_reg {
+                crate::operand::AddressingMode::PostIndexedRegister { base: rn, reg: rm }
+            } else if i_bit {
+                crate::operand::AddressingMode::PostIndexed { base: rn, offset: 0, writeback: true }
+            } else {
+                crate::operand::AddressingMode::PostIndexed { base: rn, offset: signed_imm, writeback: true }
             }
-            Operand::Register(reg) => {
-                crate::operand::AddressingMode::RegisterOffset(reg)
-            }
-            Operand::ShiftedRegister { reg, shift, amount } => {
-                // Extract immediate value from ShiftAmount::Immediate
-                let imm = match amount {
-                    crate::operand::ShiftAmount::Immediate(v) => v as i32,
-                    _ => 0,
-                };
-                crate::operand::AddressingMode::ScaledRegisterOffset {
-                    reg,
-                    shift,
-                    amount: imm as u8,
+        } else if w_bit {
+            // Pre-indexed with writeback: transfer uses [base + offset], base = base + offset
+            if i_bit {
+                if is_unshifted_reg {
+                    crate::operand::AddressingMode::RegisterOffset(rm)
+                } else {
+                    crate::operand::AddressingMode::ScaledRegisterOffset {
+                        reg: rm,
+                        shift: crate::operand::ShiftType::Lsl,
+                        amount: shift_imm as u8,
+                    }
                 }
+            } else {
+                crate::operand::AddressingMode::PreIndexed { base: rn, offset: signed_imm, writeback: true }
             }
-            _ => crate::operand::AddressingMode::ImmediateOffset(0),
+        } else {
+            // Offset addressing: transfer uses [base + offset], base unchanged
+            if i_bit {
+                if is_unshifted_reg {
+                    crate::operand::AddressingMode::RegisterOffset(rm)
+                } else {
+                    crate::operand::AddressingMode::ScaledRegisterOffset {
+                        reg: rm,
+                        shift: crate::operand::ShiftType::Lsl,
+                        amount: shift_imm as u8,
+                    }
+                }
+            } else {
+                crate::operand::AddressingMode::ImmediateOffset(signed_imm)
+            }
         };
 
         let mem_op = Operand::MemoryAddress {

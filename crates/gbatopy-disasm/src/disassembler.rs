@@ -719,25 +719,18 @@ impl Disassembler {
     pub fn selective_disassemble(
         &mut self,
         rom: &[u8],
-        addresses: &[u32],
+        _addresses: &[u32],
         mode_map: &[(u32, ArmMode)],
     ) -> Vec<DecodedInstruction> {
         let mut instructions = Vec::new();
         let arm_decoder = crate::arm::ArmDecoder::new();
         let thumb_decoder = crate::thumb::ThumbDecoder::new();
 
-        for &addr in addresses {
-            // Look up the mode from the CFG's mode_map. Fall back to the parity
-            // heuristic for addresses not in the map (e.g. common entry points).
-            let mode = mode_map
-                .iter()
-                .find(|(a, _)| *a == addr)
-                .map(|(_, m)| *m)
-                .unwrap_or(if addr % 2 == 1 {
-                    ArmMode::Thumb
-                } else {
-                    ArmMode::Arm
-                });
+        // Iterate over mode_map directly so each (addr, mode) pair produces
+        // one instruction. This handles mixed-mode addresses correctly: if
+        // the CFG visited the same address in both ARM and Thumb modes, both
+        // instructions are generated.
+        for &(addr, mode) in mode_map {
             let decode_addr = if mode == ArmMode::Thumb { addr & !1 } else { addr };
             let rom_offset = (decode_addr - 0x08000000) as usize;
             
