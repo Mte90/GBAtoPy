@@ -2,6 +2,7 @@
 import subprocess
 import json
 import os
+import argparse
 from pathlib import Path
 from datetime import datetime
 
@@ -35,15 +36,28 @@ def transpile_and_measure(rom_path: str, output_dir: str = "/tmp") -> dict:
     return {'rom_name': rom_name, 'error': 'file_not_created'}
 
 def main():
-    rom_dir = "test_roms/roms"
-    roms = list(Path(rom_dir).glob("*.gba"))
+    parser = argparse.ArgumentParser(description="Generate baseline metrics for GBAtoPy")
+    parser.add_argument("--rom", type=str, help="Single ROM path")
+    parser.add_argument("--roms-dir", type=str, default="test_roms/roms",
+                       help="Directory containing ROMs")
+    parser.add_argument("--output-dir", type=str, default="/tmp",
+                       help="Output directory for transpiled Python")
+    parser.add_argument("--output", type=str, default="baseline.json",
+                       help="Output JSON file")
+    args = parser.parse_args()
+    
+    roms = []
+    if args.rom:
+        roms = [Path(args.rom)]
+    else:
+        roms = list(Path(args.roms_dir).glob("*.gba"))
     
     print(f"Generating baseline for {len(roms)} ROMs...")
     results = []
     
     for idx, rom in enumerate(roms, 1):
         print(f"[{idx}/{len(roms)}] {rom.name}")
-        metrics = transpile_and_measure(str(rom))
+        metrics = transpile_and_measure(str(rom), args.output_dir)
         results.append(metrics)
         
         if 'error' not in metrics:
@@ -60,10 +74,10 @@ def main():
         'results': results
     }
     
-    with open('baseline.json', 'w') as f:
+    with open(args.output, 'w') as f:
         json.dump(baseline, f, indent=2)
     
-    print(f"\nBaseline saved to baseline.json")
+    print(f"\nBaseline saved to {args.output}")
     print(f"Successful: {baseline['successful']}, Failed: {baseline['failed']}")
 
 if __name__ == "__main__":

@@ -58,7 +58,6 @@ Generated Python includes an inlined runtime that emulates GBA hardware. The run
 
 | Module | Hardware | Role | Status |
 |--------|----------|------|--------|
-| `arm7tdmi.py` | CPU | ARM7TDMI core (22K lines) | ⚠️ Partial — STMFD/LDMFD register order bug corrupts stack on real-game ROMs |
 | `ppu.py` | Picture Processing Unit | Background tiles, sprites, scanline rendering | ⚠️ Mode 0 verified on shades.gba, Mode 3 verified on stripes.gba; Mode 4 partial; Mode 1/2 affine, windows, blend, mosaic = stubs |
 | `memory.py` | Bus | Memory-mapped I/O with HAL side effects | ✅ Working |
 | `bios.py` | BIOS ROM | Software interrupt handlers (SWI) | ✅ 54 handlers implemented |
@@ -115,7 +114,7 @@ The output is a single `.py` file with all runtime code inlined. The only extern
 | Disassembler | ✅ Working | ~100% ARM/Thumb coverage |
 | Python generation | ✅ Working | All 68 ROMs produce valid Python |
 | Memory map | ✅ Working | Full GBA memory layout with mirrors |
-| CPU core | ⚠️ Partial | ARM7TDMI with global registers; STMFD/LDMFD register order bug corrupts stack |
+| CPU core | ⚠️ Partial | Code-gen generates Python functions; runtime uses PyBoyAdvance modules; STMFD/LDMFD register order bug corrupts stack |
 | PPU Mode 3 | ✅ Verified | stripes.gba 100% golden match |
 | PPU Mode 0 | ✅ Verified | shades.gba 100% golden match (after 5 bug fixes) |
 | PPU Mode 4 | ⚠️ Partial | 8BPP bitmap, palette fallback fixed on hello.gba, not all ROMs verified |

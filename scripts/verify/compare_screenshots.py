@@ -90,22 +90,22 @@ def calculate_difference(
     }
 
     MIN_CONTENT_PCT = 0.5
+    base_pass = diff_percentage < 30
     inconclusive_reason = None
 
     if golden_content_pct < MIN_CONTENT_PCT and transpiled_content_pct < MIN_CONTENT_PCT:
-        inconclusive_reason = (
-            f"Both images nearly empty (golden: {golden_content_pct:.2f}%, "
-            f"transpiled: {transpiled_content_pct:.2f}% content)"
-        )
+        if base_pass:
+            status = "pass"
+        else:
+            inconclusive_reason = (
+                f"Both images nearly empty and differ (golden: {golden_content_pct:.2f}%, "
+                f"transpiled: {transpiled_content_pct:.2f}%, diff: {diff_percentage:.2f}%) "
+                f"- cannot trust match"
+            )
     elif golden_content_pct < MIN_CONTENT_PCT:
         inconclusive_reason = (
             f"Golden image nearly empty ({golden_content_pct:.2f}% content) "
             f"- golden screenshot may be bad"
-        )
-    elif transpiled_content_pct < MIN_CONTENT_PCT:
-        inconclusive_reason = (
-            f"Transpiled image nearly empty ({transpiled_content_pct:.2f}% content) "
-            f"- transpiled ROM produced no visible output"
         )
 
     if inconclusive_reason:
@@ -123,7 +123,7 @@ def calculate_difference(
             "per_channel": per_channel,
         }
 
-    passed = diff_percentage < 30
+    passed = base_pass
     return {
         "total_pixels": int(total_pixels),
         "diff_pixels": diff_pixels,

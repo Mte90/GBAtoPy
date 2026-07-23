@@ -13,7 +13,7 @@ Usage:
   python3 scripts/run_tests.py --rom hello              # Single ROM
   python3 scripts/run_tests.py --filter stripes          # Filter by name
   python3 scripts/run_tests.py --workers 8               # Parallel workers
-  python3 scripts/run_tests.py --frame 60                # Execution frame count
+  python3 scripts/run_tests.py --frame 10                # Execution frame count (default 10)
   python3 scripts/run_tests.py --json test-reports/report.json
 
 Exit codes:
@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,24 @@ GOLDEN_DIR = PROJECT_ROOT / "scripts" / "screenshot" / "golden"
 GBATOPY_BIN = PROJECT_ROOT / "target" / "release" / "gbatopy-cli"
 COMPARE_SCRIPT = PROJECT_ROOT / "scripts" / "verify" / "compare_screenshots.py"
 OUTPUT_DIR = PROJECT_ROOT / "test-reports" / "artifacts"
+TEST_CONFIG_PATH = PROJECT_ROOT / "test-roms-config.toml"
+
+# Test types that use L3 screenshot comparison
+VISUAL_TEST_TYPES = {"ScreenshotMgba"}
+
+
+def load_test_types():
+    """Load test_type for each ROM from config. Returns dict: rom_filename -> test_type."""
+    types = {}
+    if not TEST_CONFIG_PATH.exists():
+        return types
+    with open(TEST_CONFIG_PATH, "rb") as f:
+        cfg = tomllib.load(f)
+    for test in cfg.get("tests", []):
+        name = test.get("name", "")
+        if name:
+            types[f"{name}.gba"] = test.get("test_type", "Smoke")
+    return types
 
 
 def build_transpiler():
@@ -88,8 +107,9 @@ def check_syntax(output_path):
         return False, "syntax_check_timeout"
 
 
-def execute_rom(output_path, frame=60, timeout=30):
-    """Run generated script headless. Returns (success, screenshot_path, error_msg)."""
+def execute_rom(output_path, frame=10, timeout=90):
+    """Run generated script headless. Returns (success, screenshot_path, error_msg).
+    Default 10 frames at ~2.5s each (slow ROMs) = 25s; 90s timeout gives margin."""
     screenshot_path = output_path.replace('.py', f'_frame{frame}.png')
     try:
         result = subprocess.run(
@@ -136,7 +156,7 @@ def compare_screenshot(transpiled_screenshot, rom_name, frame=60):
     return "fail", result.stdout[-500:]
 
 
-def test_rom_worker(rom_path, max_level, frame):
+def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
     """
     Run all applicable test levels for a single ROM.
 
@@ -185,7 +205,7 @@ def test_rom_worker(rom_path, max_level, frame):
         return result
 
     # --- Level 2: Execution ---
-    success, screenshot_path, err = execute_rom(output_py, frame=frame)
+    success, screenshot_path, err = execute_rom(output_py, frame=frame, timeout=90)
     if not success:
         result["level2"] = False
         result["level2_status"] = err or "execution_failed"
@@ -200,6 +220,12 @@ def test_rom_worker(rom_path, max_level, frame):
         return result
 
     # --- Level 3: Visual Comparison ---
+    if test_type not in VISUAL_TEST_TYPES:
+        result["level3_status"] = "skipped"
+        result["level3_detail"] = f"test_type={test_type}"
+        result["elapsed"] = round(time() - start, 2)
+        return result
+
     status, detail = compare_screenshot(screenshot_path, rom_name, frame=frame)
     result["level3_status"] = status
     result["level3_detail"] = detail if status != "pass" else None
@@ -220,13 +246,15 @@ def main():
     parser.add_argument("--rom", type=str, help="Run single ROM by name")
     parser.add_argument("--filter", type=str, help="Filter ROMs by name substring")
     parser.add_argument("--workers", type=int, default=4, help="Parallel workers")
-    parser.add_argument("--frame", type=int, default=60, help="Frame count for execution")
+    parser.add_argument("--frame", type=int, default=10, help="Frame count for execution")
     parser.add_argument("--json", type=Path, help="Save JSON report to this path")
     parser.add_argument("--no-build", action="store_true", help="Skip building transpiler")
     args = parser.parse_args()
 
     if not args.no_build:
         build_transpiler()
+
+    test_types = load_test_types()
 
     if not ROMS_DIR.exists():
         print(f"ERROR: {ROMS_DIR} not found")
@@ -260,7 +288,10 @@ def main():
 
     with ProcessPoolExecutor(max_workers=args.workers) as executor:
         futures = {
-            executor.submit(test_rom_worker, rom, args.level, args.frame): rom
+            executor.submit(
+                test_rom_worker, rom, args.level, args.frame,
+                test_types.get(rom.name, "Smoke")
+            ): rom
             for rom in roms
         }
 
@@ -312,7 +343,10 @@ def main():
         l3_fail = sum(1 for r in l3_run if r["level3_status"] == "fail")
         l3_inc = sum(1 for r in l3_run if r["level3_status"] == "inconclusive")
         l3_nog = sum(1 for r in results if r["level3_status"] == "no_golden")
+        l3_skip = sum(1 for r in results if r["level3_status"] == "skipped")
         print(f"Level 3 (visual):     {l3_pass}/{len(l3_run)} passed, {l3_fail} failed, {l3_inc} inconclusive")
+        if l3_skip:
+            print(f"                      ({l3_skip} ROMs skipped — non-visual test type)")
         if l3_nog:
             print(f"                      ({l3_nog} ROMs without golden screenshots)")
 

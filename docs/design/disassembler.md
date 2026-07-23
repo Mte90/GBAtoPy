@@ -1,4 +1,4 @@
-# Plan 1: Static Disassembler (Rust crate: pygba-disasm)
+# Plan 1: Static Disassembler (Rust crate: gbatopy-disasm)
 
 ## 1.1 Objective
 
@@ -438,5 +438,5 @@ Plan 1 is complete when:
 - [ ] Function boundaries identified for all test ROMs
 - [ ] Code/data separation achieves >95% accuracy vs mGBA oracle
 - [ ] Disassembly output serializes to valid JSON
-- [ ] `cargo test -p pygba-disasm` passes all tests
+- [ ] `cargo test -p gbatopy-disasm` passes all tests
 - [ ] Crate compiles and exports a clean public API

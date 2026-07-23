@@ -1,28 +1,64 @@
 # GBA Test ROMs Reference - Updated (2026-05-19)
 
-This document catalogs all **66 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
+This document catalogs all **68 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
 **Note**: Previous version claimed 41 ROMs. This is now updated to reflect the complete inventory including hw-test/, gba-sound-demo/, and other directories.
 
 ---
 
+## Verification Status Summary
+
+As of 2026-07-23, ROMs are classified by visual verification against mGBA golden screenshots (using `scripts/verify/compare_screenshots.py` with <30% pixel difference threshold).
+
+### Status Legend
+
+- ✅ **Verified working** — Transpiles + runs + 100% pixel match with mGBA golden screenshot
+- ⚠️ **Partial** — Transpiles and runs, but visual mismatch or known rendering issues
+- ❌ **Not working** — Crashes, hangs, or black screen (smoke test failure or runtime error)
+- ❓ **Unknown** — Transpiles to valid Python, but NOT verified at Level 3 visual (no screenshot comparison evidence)
+
+### Summary Counts
+
+| Status | Count | ROMs |
+|--------|-------|------|
+| ✅ Verified working | 2 | stripes.gba, shades.gba |
+| ❌ Not working | 3 | hello.gba, helloAudio.gba, rates.gba |
+| ❓ Unknown | 63 | All others (transpile cleanly, visual status unverified) |
+
+### Verified Working ROMs (100% Golden Match)
+
+| ROM | Mode | Evidence |
+|-----|------|----------|
+| **stripes.gba** | Mode 3 (16-bit bitmap) | Git commit 3dc6e29: "golden screenshot 100% match"; docs/status.md confirms address mapping fix (2026-07-02) |
+| **shades.gba** | Mode 0 (4BPP text tiles) | docs/reference/test-roms.md line 257: "100% pixel match with mGBA (35,840 non-black pixels)"; 5 bugs fixed (char-block base, nibble order, double-scale, dispatch NOP, STRH offset) |
+
+### Known Issues (Not Working)
+
+| ROM | Issue | Evidence |
+|-----|-------|----------|
+| **hello.gba** | Crashes (PC=0x04040404) | docs/status.md line 68-71: STMFD/LDMFD register order bug corrupts stack |
+| **helloAudio.gba** | Smoke test failure | docs/status.md line 72: "helloAudio, rates smoke failures — cause undiagnosed" |
+| **rates.gba** | Smoke test failure | docs/status.md line 72: "helloAudio, rates smoke failures — cause undiagnosed" |
+
+---
+
 ## Summary Table
 
-|| Category | Count | ROMs |
-|----------|-------|------|
-| CPU-only | 16 | arm.gba, thumb.gba, bios.gba, memory.gba, nes.gba, unsafe.gba, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba, retAddr.gba, basic-timing.gba |
-| PPU | 15 | shades.gba, stripes.gba, hello.gba, helloWorld.gba, hello_world.gba, line_timing.gba, lyc_midline.gba, mode2.gba, mode3.gba, mode4.gba, greenswap.gba, bgpd.gba, bgx.gba, sprite-hmosaic.gba, vram-mirror.gba |
-| IRQ | 9 | isr.gba, if_ack.gba, irq-delay.gba, irq_delay.gba, joypad.gba, cancel-irq-ie.gba, cancel-irq-if.gba, cancel-irq-ime.gba, status-irq-dma.gba |
-| DMA | 8 | dma_priority.gba, burst-into-tears.gba, force-nseq-access.gba, latch.gba, start-stop.gba, reload.gba, dispcnt-latch.gba, window_midframe.gba |
-| Timer | 2 | timer_change.gba, haltcnt.gba |
-| Keypad | 1 | enhancedcontrolchecker.gba |
-| Audio | 6 | helloAudio.gba, test.gba, song.gba, rates.gba, redline.gba, pcmxx.gba |
-| Save | 4 | sram.gba, flash64.gba, flash128.gba, none.gba |
-| Memory | 2 | 128kb-boundary.gba, ram-access-timing.gba |
-| RTC | 1 | rtc-demo.gba |
-| Timing | 2 | exact-timing.gba, start-delay.gba |
+|| Category | Count | ROMs | Status |
+|----------|-------|------|------|--------|
+| CPU-only | 16 | arm.gba, thumb.gba, bios.gba, memory.gba, nes.gba, unsafe.gba, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba, retAddr.gba, basic-timing.gba | ❓ |
+| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ❌, helloWorld.gba, hello_world.gba, line_timing.gba, lyc_midline.gba, mode2.gba, mode3.gba, mode4.gba, greenswap.gba, bgpd.gba, bgx.gba, sprite-hmosaic.gba, vram-mirror.gba | 2✅, 1❌, 12❓ |
+| IRQ | 9 | isr.gba, if_ack.gba, irq-delay.gba, irq_delay.gba, joypad.gba, cancel-irq-ie.gba, cancel-irq-if.gba, cancel-irq-ime.gba, status-irq-dma.gba | ❓ |
+| DMA | 8 | dma_priority.gba, burst-into-tears.gba, force-nseq-access.gba, latch.gba, start-stop.gba, reload.gba, dispcnt-latch.gba, window_midframe.gba | ❓ |
+| Timer | 2 | timer_change.gba, haltcnt.gba | ❓ |
+| Keypad | 1 | enhancedcontrolchecker.gba | ❓ |
+| Audio | 6 | helloAudio.gba ❌, test.gba, song.gba, rates.gba ❌, redline.gba, pcmxx.gba | 2❌, 4❓ |
+| Save | 4 | sram.gba, flash64.gba, flash128.gba, none.gba | ❓ |
+| Memory | 2 | 128kb-boundary.gba, ram-access-timing.gba | ❓ |
+| RTC | 1 | rtc-demo.gba | ❓ |
+| Timing | 2 | exact-timing.gba, start-delay.gba | ❓ |
 
-**Total ROMs**: 66 (all in test_roms/roms/)
+**Total ROMs**: 68 (2 verified working, 3 known broken, 63 unverified at visual level)
 
 ---
 
@@ -741,51 +777,53 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 
 ## Transpiler Status
 
-All 39 test ROMs in `test_roms/roms/` transpile to syntactically valid Python with **0 instruction parsing failures**.
+All 68 test ROMs transpile to syntactically valid Python with **0 instruction parsing failures**.
+
+**Note**: "Status" column below shows **visual verification** (Level 3), not just syntax validation. Most ROMs are ❓ Unknown because they have NOT been compared against mGBA golden screenshots.
 
 **Compatibility Matrix**
 
-| ROM | Stubs | Lines | Status |
-|-----|-------|-------|--------|
-| ARM_Any.gba | 0 | 75878 | ✅ |
-| ARM_DataProcessing.gba | 0 | 74253 | ✅ |
-| FuzzARM.gba | 0 | 74886 | ✅ |
-| THUMB_Any.gba | 0 | 74096 | ✅ |
-| THUMB_DataProcessing.gba | 0 | 71187 | ✅ |
-| arm.gba | 0 | 3977 | ✅ |
-| armwrestler-gba-fixed.gba | 0 | 6060 | ✅ |
-| armwrestler.gba | 0 | 6070 | ✅ |
-| bios.gba | 0 | 1238 | ✅ |
-| cond_invalid.gba | 0 | 1265 | ✅ |
-| dma_priority.gba | 0 | 1495 | ✅ |
-| enhancedcontrolchecker.gba | 0 | 28937 | ✅ |
-| flash128.gba | 0 | 2004 | ✅ |
-| flash64.gba | 0 | 1871 | ✅ |
-| hello.gba | 0 | 1010 | ✅ |
-| helloAudio.gba | 0 | 476183 | ✅ |
-| helloWorld.gba | 0 | 4510 | ✅ |
-| hello_world.gba | 0 | 1313 | ✅ |
-| if_ack.gba | 0 | 1315 | ✅ |
-| irq_delay.gba | 0 | 2225 | ✅ |
-| isr.gba | 0 | 1557 | ✅ |
-| joypad.gba | 0 | 1567 | ✅ |
-| line_timing.gba | 0 | 1374 | ✅ |
-| lyc_midline.gba | 0 | 1433 | ✅ |
-| memory.gba | 0 | 1345 | ✅ |
-| nes.gba | 0 | 1199 | ✅ |
-| none.gba | 0 | 1142 | ✅ |
-| pcmxx.gba | 0 | 1385 | ✅ |
-| redline.gba | 0 | 871 | ✅ |
-| retAddr.gba | 0 | 3208 | ✅ |
-| rtc-demo.gba | 0 | 28167 | ✅ |
-| shades.gba | 0 | 693 | ✅ |
-| sram.gba | 0 | 1315 | ✅ |
-| stripes.gba | 0 | 682 | ✅ |
-| test.gba | 0 | 28851 | ✅ |
-| thumb.gba | 0 | 1806 | ✅ |
-| timer_change.gba | 0 | 1299 | ✅ |
-| unsafe.gba | 0 | 1174 | ✅ |
-| window_midframe.gba | 0 | 978 | ✅ |
+| ROM | Stubs | Lines | Visual Status |
+|-----|-------|-------|---------------|
+| ARM_Any.gba | 0 | 75878 | ❓ |
+| ARM_DataProcessing.gba | 0 | 74253 | ❓ |
+| FuzzARM.gba | 0 | 74886 | ❓ |
+| THUMB_Any.gba | 0 | 74096 | ❓ |
+| THUMB_DataProcessing.gba | 0 | 71187 | ❓ |
+| arm.gba | 0 | 3977 | ❓ |
+| armwrestler-gba-fixed.gba | 0 | 6060 | ❓ |
+| armwrestler.gba | 0 | 6070 | ❓ |
+| bios.gba | 0 | 1238 | ❓ |
+| cond_invalid.gba | 0 | 1265 | ❓ |
+| dma_priority.gba | 0 | 1495 | ❓ |
+| enhancedcontrolchecker.gba | 0 | 28937 | ❓ |
+| flash128.gba | 0 | 2004 | ❓ |
+| flash64.gba | 0 | 1871 | ❓ |
+| hello.gba | 0 | 1010 | ❌ (crashes) |
+| helloAudio.gba | 0 | 476183 | ❌ (smoke failure) |
+| helloWorld.gba | 0 | 4510 | ❓ |
+| hello_world.gba | 0 | 1313 | ❓ |
+| if_ack.gba | 0 | 1315 | ❓ |
+| irq_delay.gba | 0 | 2225 | ❓ |
+| isr.gba | 0 | 1557 | ❓ |
+| joypad.gba | 0 | 1567 | ❓ |
+| line_timing.gba | 0 | 1374 | ❓ |
+| lyc_midline.gba | 0 | 1433 | ❓ |
+| memory.gba | 0 | 1345 | ❓ |
+| nes.gba | 0 | 1199 | ❓ |
+| none.gba | 0 | 1142 | ❓ |
+| pcmxx.gba | 0 | 1385 | ❓ |
+| redline.gba | 0 | 871 | ❓ |
+| retAddr.gba | 0 | 3208 | ❓ |
+| rtc-demo.gba | 0 | 28167 | ❓ |
+| shades.gba | 0 | 693 | ✅ (100% golden) |
+| sram.gba | 0 | 1315 | ❓ |
+| stripes.gba | 0 | 682 | ✅ (100% golden) |
+| test.gba | 0 | 28851 | ❓ |
+| thumb.gba | 0 | 1806 | ❓ |
+| timer_change.gba | 0 | 1299 | ❓ |
+| unsafe.gba | 0 | 1174 | ❓ |
+| window_midframe.gba | 0 | 978 | ❓ |
 
 ---
 

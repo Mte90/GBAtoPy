@@ -200,7 +200,7 @@ Bit   Name                Description
 The transpiler follows a multi-stage pipeline:
 
 ```
-ROM → Disassembler → IR → Codegen → Python
+ROM → Disassembler → Codegen (instruction-by-instruction) → Python
 ```
 
 ### Stage 1: Disassembler

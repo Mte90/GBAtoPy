@@ -1047,6 +1047,10 @@ def _interp_fallback(registers, cpsr):
                 elif _idx in dispatch_table_thumb and _idx not in dispatch_table_arm:
                     _interp_cpu.thumb_mode = True
                 break
+            # PC in ROM but not in dispatch table (e.g., return from IWRAM code).
+            # Break only after stepping at least once to avoid tight loop.
+            if _step_count > 0:
+                break
         if _pc == 0x03000128:
             irq = memory._interrupts
             if irq is not None:
@@ -1105,23 +1109,28 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
     _vblank_irq_delivered = False
+    instr_per_scanline = max(50, (int(gba_hz / 60.0) // 4) // 160)
+    def _deliver_vblank_irq():
+        nonlocal _vblank_irq_delivered
+        global _cpu_halted
+        _cpu_halted = False
+        if not _vblank_irq_delivered:
+            _irq = getattr(memory, '_interrupts', None)
+            if _irq is not None and (_irq.ime_reg & 0x0001):
+                _pending = _irq.if_reg & _irq.ie_reg
+                if _pending:
+                    _handler = memory.read_u32(0x03007FFC)
+                    if 0x02000000 <= _handler < 0x0A000000:
+                        registers[14] = registers[15]
+                        registers[15] = _handler & 0xFFFFFFFE
+                        cpsr['t'] = 1 if (_handler & 1) else 0
+                        _vblank_irq_delivered = True
     while ic < mi:
         if _cpu_halted:
             for _ in range(228):
                 ppu_instance.step_scanline()
                 if ppu_instance.vblank:
-                    _cpu_halted = False
-                    if not _vblank_irq_delivered:
-                        _irq = getattr(memory, '_interrupts', None)
-                        if _irq is not None and (_irq.ime_reg & 0x0001):
-                            _pending = _irq.if_reg & _irq.ie_reg
-                            if _pending:
-                                _handler = memory.read_u32(0x03007FFC)
-                                if 0x02000000 <= _handler < 0x0A000000:
-                                    registers[14] = registers[15]
-                                    registers[15] = _handler & 0xFFFFFFFE
-                                    cpsr['t'] = 1 if (_handler & 1) else 0
-                                    _vblank_irq_delivered = True
+                    _deliver_vblank_irq()
                     break
             continue
         pc = registers[15]
@@ -1130,30 +1139,26 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         func = _dt.get(idx)
         if func is None:
             _interp_fallback(registers, cpsr); ic += 1
-            continue
-        func(registers, cpsr); ic += 1
-        if registers[15] == pc:
-            # B . idle loop — step PPU and deliver VBlank interrupt
+        else:
+            func(registers, cpsr); ic += 1
+            if registers[15] == pc:
+                # B . idle loop — step PPU immediately for responsiveness
+                ppu_instance.step_scanline()
+                if ppu_instance.vblank:
+                    _deliver_vblank_irq()
+                else:
+                    _vblank_irq_delivered = False
+                continue
+        # Step PPU periodically (covers fallback-only execution paths
+        # where the dispatch table is never hit)
+        if ic % instr_per_scanline == 0:
             ppu_instance.step_scanline()
             if ppu_instance.vblank:
-                _cpu_halted = False
-                if not _vblank_irq_delivered:
-                    _irq = getattr(memory, '_interrupts', None)
-                    if _irq is not None and (_irq.ime_reg & 0x0001):
-                        _pending = _irq.if_reg & _irq.ie_reg
-                        if _pending:
-                            _handler = memory.read_u32(0x03007FFC)
-                            if 0x02000000 <= _handler < 0x0A000000:
-                                registers[14] = registers[15]
-                                registers[15] = _handler & 0xFFFFFFFE
-                                cpsr['t'] = 1 if (_handler & 1) else 0
-                                _vblank_irq_delivered = True
+                _deliver_vblank_irq()
             else:
                 _vblank_irq_delivered = False
-            continue
         if frame_limit and fc >= frame_limit: break
         if ic % 1000 == 0: fc += 1
-    # print(f"Done: {ic} instrs")
     return fc
 
 def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None):

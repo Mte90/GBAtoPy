@@ -1,4 +1,4 @@
-# Plan 4: Type and Struct Recovery (Rust crate: pygba-types)
+# Plan 4: Type and Struct Recovery (Rust crate: gbatopy-types)
 
 ## 4.1 Objective
 
@@ -251,4 +251,4 @@ impl TypeAnalyzer {
 - [ ] Struct recovery identifies known hardware register groups (display, DMA, timer, etc.)
 - [ ] Function signatures match ARM calling convention
 - [ ] Variable names are consistent within each function
-- [ ] `cargo test -p pygba-types` passes all tests
+- [ ] `cargo test -p gbatopy-types` passes all tests

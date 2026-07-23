@@ -1,6 +1,15 @@
--- Extract VRAM and Palette from shades.gba for GBAtoPy
--- Try different mGBA memory access APIs
-local target_frame = 60
+-- Generic asset extraction tool for GBAtoPy.
+-- Extracts VRAM and Palette from a GBA ROM at a specified frame.
+--
+-- Usage:
+--   GBATOPY_TARGET_FRAME=60 ./mgba/build/sdl/mgba -S scripts/extract_assets.lua <rom.gba>
+--
+-- Environment variables:
+--   GBATOPY_TARGET_FRAME  - frame number to extract (default: 60)
+--   GBATOPY_OUTPUT_DIR    - output directory for assets (default: /tmp)
+
+local target_frame = tonumber(os.getenv("GBATOPY_TARGET_FRAME") or "60")
+local output_dir = os.getenv("GBATOPY_OUTPUT_DIR") or "/tmp"
 
 -- Test which API is available
 local function read8(addr)
@@ -34,8 +43,13 @@ callbacks:add("frame", function()
         print("Extracting VRAM and Palette...")
         
         -- Open output files
-        local vram_file = io.open("/home/archimede/Desktop/projects/GBAtoPy/test_roms/assets/shades_vram.bin", "wb")
-        local pal_file = io.open("/home/archimede/Desktop/projects/GBAtoPy/test_roms/assets/shades_palette.bin", "wb")
+        local rom_name = "rom"  -- Will be set from command line args
+        if #arg >= 1 then
+            rom_name = arg[1]:match("([^/]+)%.gba$") or arg[1]
+        end
+        
+        local vram_file = io.open(output_dir .. "/" .. rom_name .. "_vram.bin", "wb")
+        local pal_file = io.open(output_dir .. "/" .. rom_name .. "_palette.bin", "wb")
         
         if not vram_file or not pal_file then
             print("Error: Could not open output files")
@@ -63,4 +77,5 @@ callbacks:add("frame", function()
     end
 end)
 
-print("Starting shades.gba, will extract at frame " .. target_frame)
+print("Starting asset extraction, will extract at frame " .. target_frame)
+print("Output directory: " .. output_dir)

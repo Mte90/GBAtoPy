@@ -1,11 +1,14 @@
-# Plan 5: Python Code Generation (Rust crate: pygba-codegen)
+# Plan 5: Python Code Generation (Rust crate: gbatopy-codegen)
 
 > **⚠️ HISTORICAL DESIGN DOCUMENT**
 >
-> This document describes the original SSA-IR-based codegen design (`pygba-codegen` consuming typed IR with phi nodes).
+> This document describes the original SSA-IR-based codegen design (`gbatopy-codegen` consuming typed IR with phi nodes).
 > The **actual implementation** differs: codegen emits Python directly from disassembly via per-instruction `generate_*_python()`
-> functions, using a `dispatch_table`/`func_map`/`call_func` runtime with an embedded Py7TDMI interpreter.
+> functions, using a `dispatch_table`/`func_map`/`call_func` runtime with PyBoyAdvance runtime modules (NOT an embedded CPU core).
 > `codegen/ir_ops.rs` is empty; the `gbatopy-ir` crate exists but is not wired into the emit path.
+>
+> **CRITICAL (2026-07-23)**: Py7TDMI library was REMOVED. The pipeline generates Python via CODE-GEN ONLY (instruction-by-instruction),
+> NOT by embedding a CPU core. Any claim of embedding Py7TDMI or a CPU core is false.
 >
 > For the **current** architecture, see:
 > - [`docs/design/transpilation-patterns.md`](transpilation-patterns.md) — interpreter fallback, dispatch table, hotspot tracking
@@ -14,7 +17,7 @@
 
 ## 5.1 Objective
 
-Convert the typed, optimized SSA IR into readable, executable Python 3 source code that uses `gba_runtime` for hardware abstraction. The generated code is pure Python. Rust is not needed at runtime.
+Convert disassembly into readable, executable Python 3 source code that uses PyBoyAdvance runtime modules for hardware abstraction. The generated code is pure Python. Rust is not needed at runtime.
 
 ## 5.2 Output Structure
 
@@ -26,9 +29,9 @@ output_python/
 ```
 
 The generated file contains:
-- All GBA hardware emulation classes (CPU, PPU, APU, DMA, BIOS, etc.)
-- Decompiled ARM/Thumb code as Python functions
-- Asset data extracted to separate .bin files (palette.bin, tiles.bin, sprites.bin, tilemap.bin) and loaded via load_assets() at runtime
+- All GBA hardware emulation classes (PPU, APU, Memory, etc.) from PyBoyAdvance runtime modules
+- Decompiled ARM/Thumb code as Python functions (generated instruction-by-instruction)
+- ROM data embedded as `ROM_DATA = bytearray([...])` (external .bin file for larger ROMs)
 - Game loop with keyboard input handling
 - No external dependencies except pygame
 
@@ -442,7 +445,7 @@ impl CodeGenerator {
 - [x] `cargo build` passes with 6 crates, 0 errors
 - [x] Zero NotImplementedError stubs in Python runtime
 - [x] Game loop with pygame renders window
-- [x] ARM7TDMI interpreter executes real ARM code
+- [x] ARM7TDMI code-gen (instruction-by-instruction Python generation, NOT interpreter)
 - [x] Asset extraction script works (LZ77/Huffman/RLE decompression)
 - [x] 54 BIOS handlers implemented
 - [x] PPU Mode 3 verified (stripes.gba 100% golden match); Mode 0 verified (shades.gba 100% golden match, after 5 bug fixes); Mode 4 partial; Mode 1/2 affine, windows, blend, mosaic = stubs

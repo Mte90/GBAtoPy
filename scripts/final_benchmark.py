@@ -7,6 +7,7 @@ Compares before/after metrics for all optimizations.
 import json
 import subprocess
 import time
+import argparse
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List
@@ -106,4 +107,15 @@ def compare_roms(rom_dir: str, output_dir: str = "/tmp"):
     return results
 
 if __name__ == "__main__":
-    compare_roms("test_roms/roms")
+    parser = argparse.ArgumentParser(description="Benchmark GBAtoPy transpiled ROMs")
+    parser.add_argument("--rom", type=str, help="Single ROM path")
+    parser.add_argument("--roms-dir", type=str, default="test_roms/roms",
+                       help="Directory containing ROMs")
+    parser.add_argument("--output-dir", type=str, default="/tmp",
+                       help="Output directory for transpiled Python")
+    parser.add_argument("--frames", type=int, default=60,
+                       help="Number of frames to benchmark")
+    args = parser.parse_args()
+    
+    compare_roms(args.roms_dir if not args.rom else str(Path(args.rom).parent), 
+                 args.output_dir)

@@ -24,7 +24,7 @@ sudo apt install cmake pkg-config python3-pip liblua5.4-dev libsdl2-dev \
 cargo build --release
 ```
 
-This compiles all workspace crates. The project contains 6 crates (`gbatopy-cli`, `gbatopy-mgba`, `gbatopy-disasm`, `gbatopy-ir`, `gbatopy-types`, `gbatopy-codegen`), of which `gbatopy-cli` and `gbatopy-mgba` are in the Cargo workspace.
+This compiles the workspace. The main crate is `gbatopy-cli` which contains the disassembler and codegen.
 
 ### mGBA (for golden screenshots and oracle tracing)
 
@@ -52,10 +52,7 @@ cargo run --release -p gbatopy-cli -- pipeline --rom game.gba --output game.py
 # Disassemble only
 cargo run --release -p gbatopy-cli -- disasm --input game.gba --output disasm.json
 
-# Lift to IR
-cargo run --release -p gbatopy-cli -- lift --input disasm.json --output ir.json
-
-# Generate Python from disassembly
+# Generate Python from ROM (code-gen only, no IR)
 cargo run --release -p gbatopy-cli -- generate --input game.gba --output game.py
 ```
 
@@ -64,8 +61,7 @@ cargo run --release -p gbatopy-cli -- generate --input game.gba --output game.py
 | Command | Description |
 |---------|-------------|
 | `disasm` | Disassemble ROM to JSON |
-| `lift` | Lift disassembly to IR |
-| `generate` | Generate Python from disassembly |
+| `generate` | Generate Python from ROM (code-gen only) |
 | `pipeline` | Run all stages end-to-end |
 | `test` | Test a single ROM |
 | `test-all` | Test all ROMs in a directory |
@@ -76,16 +72,16 @@ cargo run --release -p gbatopy-cli -- generate --input game.gba --output game.py
 
 ```bash
 # Test a single ROM
-cargo run --release -p gbatopy-cli -- test --rom test_roms/roms/arm.gba --frames 60 --screenshot /tmp/test.png
+cargo run --release -p gbatopy-cli -- test --rom test_roms/roms/stripes.gba --frames 60 --screenshot /tmp/test.png
 
 # Test all ROMs
 cargo run --release -p gbatopy-cli -- test-all --rom-dir test_roms/roms --frames 10
 
 # Verify against reference
-cargo run --release -p gbatopy-cli -- verify --rom test_roms/roms/arm.gba --frames 100 --diff
+cargo run --release -p gbatopy-cli -- verify --rom test_roms/roms/stripes.gba --frames 100 --diff
 
 # Benchmark
-cargo run --release -p gbatopy-cli -- benchmark --rom test_roms/roms/arm.gba --frames 1000
+cargo run --release -p gbatopy-cli -- benchmark --rom test_roms/roms/stripes.gba --frames 1000
 ```
 
 ### Run the generated Python
@@ -122,7 +118,7 @@ Oracle tracing uses mGBA with Lua scripts to capture execution data. Scripts are
 
 ```bash
 # Capture golden screenshot
-mgba/build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/arm.gba
+mgba/build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/stripes.gba
 ```
 
 ## Project Layout
@@ -131,15 +127,11 @@ mgba/build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/ar
 GBAtoPy/
 ├── Cargo.toml                    # Workspace definition
 ├── crates/
-│   ├── gbatopy-cli/              # CLI driver + runtime assets
+│   ├── gbatopy-cli/              # CLI driver + runtime assets (disassembler + codegen)
 │   │   └── assets/
 │   │       ├── gba_runtime/      # Python runtime modules (PPU, APU, Memory, etc.)
 │   │       └── templates/        # Python code templates
-│   ├── gbatopy-disasm/           # ARM/Thumb disassembler
-│   ├── gbatopy-mgba/             # mGBA oracle interface
-│   ├── gbatopy-ir/               # IR lifting + optimization
-│   ├── gbatopy-types/            # Shared type definitions
-│   └── gbatopy-codegen/          # Python code generation
+│   └── gbatopy-mgba/             # mGBA oracle interface
 ├── scripts/
 │   ├── screenshot/               # mGBA Lua scripts + compare_screenshots.py
 │   ├── setup/                    # Download scripts

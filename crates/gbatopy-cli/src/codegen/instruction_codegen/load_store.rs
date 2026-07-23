@@ -13,6 +13,20 @@ fn base_address_expr(base: u8, inst: &DecodedInstruction) -> String {
     }
 }
 
+fn scaled_reg_offset_expr(reg: u8, shift: gbatopy_disasm::operand::ShiftType, amount: u8) -> String {
+    use gbatopy_disasm::operand::ShiftType;
+    match shift {
+        ShiftType::Lsl if amount == 0 => format!(" + registers[{}]", reg),
+        ShiftType::Lsl => format!(" + ((registers[{}] << {}) & 0xFFFFFFFF)", reg, amount),
+        ShiftType::Lsr if amount == 0 => format!(" + (0 if registers[{}] == 0 else 0)", reg),
+        ShiftType::Lsr => format!(" + (registers[{}] >> {})", reg, amount),
+        ShiftType::Asr if amount == 0 => format!(" + (0xFFFFFFFF if registers[{}] & 0x80000000 else 0)", reg),
+        ShiftType::Asr => format!(" + ((registers[{}] >> {}) | (0xFFFFFFFF if registers[{}] & 0x80000000 else 0))", reg, amount, reg),
+        ShiftType::Ror if amount == 0 => format!(" + ((registers[{}] >> 1) & 0x7FFFFFFF)", reg),
+        ShiftType::Ror => format!(" + (((registers[{}] >> {}) | (registers[{}] << (32 - {}))) & 0xFFFFFFFF)", reg, amount, reg, amount),
+    }
+}
+
 fn wrap_conditional(code: String, opcode: &str) -> String {
     let full_opcode = opcode.split_whitespace().next().unwrap_or(opcode);
     let base_opcode = full_opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());
@@ -54,6 +68,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
+                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
+                        scaled_reg_offset_expr(*reg, *shift, *amount)
                     }
                     gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
                         String::new()
@@ -103,6 +120,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
+                        scaled_reg_offset_expr(*reg, *shift, *amount)
+                    }
                     gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
                         String::new()
                     }
@@ -150,6 +170,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
+                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
+                        scaled_reg_offset_expr(*reg, *shift, *amount)
                     }
                     gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
                         String::new()
@@ -199,6 +222,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
+                        scaled_reg_offset_expr(*reg, *shift, *amount)
+                    }
                     gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
                         String::new()
                     }
@@ -246,6 +272,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
+                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
+                        scaled_reg_offset_expr(*reg, *shift, *amount)
                     }
                     gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
                         String::new()
@@ -297,6 +326,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
+                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
+                        scaled_reg_offset_expr(*reg, *shift, *amount)
                     }
                     gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
                         String::new()

@@ -232,6 +232,20 @@ class ARM7TDMI:
         if (reg & 0xF) == 15:
             self.registers[15] = value & (0xFFFFFFFE if self.thumb_mode else 0xFFFFFFFC)
 
+    def _operand(self, reg: int) -> int:
+        """Read a register as an instruction operand.
+
+        R15 has a visible value of PC+8 in ARM mode and PC+4 in Thumb mode
+        because of the 3-stage pipeline: when the current instruction at PC
+        is executing, the fetch for PC+8 (ARM) is already in flight. Reading
+        R15 directly returns the fetch address, so operand reads must add the
+        pipeline offset.
+        """
+        if (reg & 0xF) == 15:
+            offset = 4 if self.thumb_mode else 8
+            return (self.registers[15] + offset) & 0xFFFFFFFF
+        return self.registers[reg & 0xF]
+
     @jit_compile
     def step(self) -> int:
         if self.thumb_mode:
@@ -263,6 +277,9 @@ class ARM7TDMI:
         rd = (instr >> 12) & 0xF
         rm = instr & 0xF
 
+        if (instr & 0x0FFFFFF0) == 0x012FFF10:
+            return self.exec_bx(instr)
+
         if (instr & 0x0C000000) == 0:
             return self.exec_data_processing(instr)
 
@@ -271,9 +288,6 @@ class ARM7TDMI:
 
         if (instr & 0xE000000) == 0xA000000:
             return self.exec_branch(instr)
-
-        if (instr & 0xFFFFFF0) == 0x12FFF10:
-            return self.exec_bx(instr)
 
         if (instr & 0xE000000) == 0x8000000:
             return self.exec_block_transfer(instr)
@@ -286,13 +300,108 @@ class ARM7TDMI:
 
         return 1
 
+    def _exec_status_transfer(self, instr: int, rd: int) -> int:
+        """Execute MSR (write PSR) or MRS (read PSR).
+
+        Encoding overlaps with TST/TEQ/CMP/CMN when S=0:
+          - Rd == 15 (Rn field == 15 in disassembly) -> MSR: write masked fields
+          - Rn == 15 (rd field == 15)                  -> MRS: read PSR to Rd
+
+        Field mask (bits 19:16 of instr):
+          bit 19 = f -> update N,Z,C,V (bits 31:28)
+          bit 18 = s -> reserved (bits 23:16)
+          bit 17 = x -> reserved (bits 15:8)
+          bit 16 = c -> update mode,I,F,T (bits 7:0)
+        """
+        is_mrs = (rd == 15)  # Rn field holds the mask for MSR; Rd field == 15 means MRS
+        # In our encoding MSR has Rd==15 (Rn in standard form), MRS has Rn==15.
+        # Re-derive cleanly: MSR is selected when bit 21 (opcode bit) is 0x2 AND Rn != 15.
+        rn = (instr >> 16) & 0xF
+        rd_field = (instr >> 12) & 0xF
+        # MRS: 00010?001111???????1111????????
+        #   - Rn field = 1111? No: MRS has Rn=1111 (15) and Rd != 15.
+        # MSR (reg): 00010?10?1111????1111????????
+        #   - Rd field = 1111 (15), Rn field = mask.
+        # MSR (imm): 00110010?1111????1111????????
+        #   - Rd field = 1111 (15), Rn field = mask.
+        is_msr = (rd_field == 15)
+
+        if not is_msr and rn == 15:
+            # MRS: Rd <- CPSR (or SPSR if bit 22 set)
+            psr_sel = (instr >> 22) & 1
+            if psr_sel:
+                mode_idx = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1A: 4, 0x11: 5}.get(self.mode, 0)
+                psr = self.spsr[mode_idx] if 0 <= mode_idx < 6 else 0
+            else:
+                psr = self.cpsr
+            self.registers[rd_field] = psr & 0xFFFFFFFF
+            self.registers[15] = (self.registers[15] + 4) & 0xFFFFFFFF
+            return 1
+
+        # MSR: compute operand
+        imm = (instr >> 25) & 1
+        if imm:
+            imm_val = instr & 0xFF
+            rot = ((instr >> 8) & 0xF) * 2
+            if rot:
+                imm_val = ((imm_val >> rot) | (imm_val << (32 - rot))) & 0xFFFFFFFF
+            operand = imm_val
+        else:
+            rm = instr & 0xF
+            operand = self.registers[rm & 0xF] & 0xFFFFFFFF
+
+        # Field mask from bits 19:16
+        mask_f = (rn >> 3) & 1  # bit 19
+        mask_s = (rn >> 2) & 1  # bit 18
+        mask_x = (rn >> 1) & 1  # bit 17
+        mask_c = (rn >> 0) & 1  # bit 16
+
+        psr_sel = (instr >> 22) & 1
+        if psr_sel:
+            mode_idx = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1A: 4, 0x11: 5}.get(self.mode, 0)
+            target = self.spsr[mode_idx] if 0 <= mode_idx < 6 else 0
+            write_back_spsr = True
+        else:
+            target = self.cpsr
+            write_back_spsr = False
+
+        new_psr = target
+        if mask_f:
+            new_psr = (new_psr & 0x0FFFFFFF) | (operand & 0xF0000000)
+        if mask_s:
+            new_psr = (new_psr & 0xFF00FFFF) | (operand & 0x00FF0000)
+        if mask_x:
+            new_psr = (new_psr & 0xFFFF00FF) | (operand & 0x0000FF00)
+        if mask_c:
+            new_psr = (new_psr & 0xFFFFFF00) | (operand & 0x000000FF)
+
+        if write_back_spsr:
+            self.spsr[mode_idx] = new_psr & 0xFFFFFFFF
+        else:
+            self.cpsr = new_psr & 0xFFFFFFFF
+            # Apply mode and Thumb state from control field
+            self.mode = new_psr & 0x1F
+            self.thumb_mode = bool((new_psr >> 5) & 1)
+
+        self.registers[15] = (self.registers[15] + 4) & 0xFFFFFFFF
+        return 1
+
     @jit_compile
     def exec_data_processing(self, instr: int) -> int:
         """Execute ARM data processing instruction."""
         opcode = (instr >> 21) & 0xF
+        s_bit = (instr >> 20) & 1
         rn = (instr >> 16) & 0xF
         rd = (instr >> 12) & 0xF
         rm = instr & 0xF
+
+        # MSR/MRS: test opcodes (TST=8, TEQ=9, CMP=A, CMN=B) with S=0
+        # are status register transfers, not arithmetic tests.
+        # Rd=15 → MSR (write PSR), Rn=15 → MRS (read PSR).
+        if opcode in (8, 9, 0xA, 0xB) and s_bit == 0:
+            return self._exec_status_transfer(instr, rd)
+
+        shifter_carry = (self.cpsr >> 29) & 1
 
         # Check for immediate
         imm = (instr >> 25) & 1
@@ -301,34 +410,48 @@ class ARM7TDMI:
             rot = ((instr >> 8) & 0xF) * 2
             if rot:
                 imm_val = ((imm_val >> rot) | (imm_val << (32 - rot))) & 0xFFFFFFFF
+                shifter_carry = (imm_val >> 31) & 1
             operand2 = imm_val
         else:
             shift_type = (instr >> 5) & 3
             shift_imm = (instr >> 7) & 0x1F
-            operand2 = self.registers[rm]
+            operand2 = self._operand(rm)
             if shift_imm:
                 if shift_type == 0:  # LSL
+                    shifter_carry = (operand2 >> (32 - shift_imm)) & 1
                     operand2 = (operand2 << shift_imm) & 0xFFFFFFFF
                 elif shift_type == 1:  # LSR
+                    shifter_carry = (operand2 >> (shift_imm - 1)) & 1
                     operand2 = operand2 >> shift_imm
                 elif shift_type == 2:  # ASR
+                    shifter_carry = (operand2 >> (shift_imm - 1)) & 1
                     operand2 = (operand2 >> shift_imm) | (
                         (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm))
                     )
                 elif shift_type == 3:  # ROR
+                    shifter_carry = (operand2 >> (shift_imm - 1)) & 1
                     operand2 = (
                         (operand2 >> shift_imm) | (operand2 << (32 - shift_imm))
                     ) & 0xFFFFFFFF
             else:
                 if shift_type == 1:  # LSR #0 means LSR #32
+                    shifter_carry = (operand2 >> 31) & 1
                     operand2 = 0
                 elif shift_type == 2:  # ASR #0 means ASR #32
+                    shifter_carry = (operand2 >> 31) & 1
                     operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
                 elif shift_type == 3:  # ROR #0 means RRX
                     carry = (self.cpsr >> 29) & 1
+                    shifter_carry = operand2 & 1
                     operand2 = ((carry << 31) | (operand2 >> 1)) & 0xFFFFFFFF
 
-        operand1 = self.registers[rn]
+        operand1 = self._operand(rn)
+
+        is_test = opcode in (8, 9, 0xA, 0xB)
+        is_arithmetic = opcode in (2, 3, 4, 5, 6, 7, 0xA, 0xB)
+        update_flags = s_bit or is_test
+        alu_carry = shifter_carry
+        alu_overflow = (self.cpsr >> 28) & 1
 
         if opcode == 0:  # AND
             result = operand1 & operand2
@@ -338,63 +461,75 @@ class ARM7TDMI:
             self.write_register(rd, result)
         elif opcode == 2:  # SUB
             result = (operand1 - operand2) & 0xFFFFFFFF
+            alu_carry = 1 if operand1 >= operand2 else 0
+            alu_overflow = 1 if ((operand1 ^ operand2) & (operand1 ^ result) & 0x80000000) else 0
             self.write_register(rd, result)
         elif opcode == 3:  # RSB
             result = (operand2 - operand1) & 0xFFFFFFFF
+            alu_carry = 1 if operand2 >= operand1 else 0
+            alu_overflow = 1 if ((operand2 ^ operand1) & (operand2 ^ result) & 0x80000000) else 0
             self.write_register(rd, result)
         elif opcode == 4:  # ADD
-            result = (operand1 + operand2) & 0xFFFFFFFF
+            raw = operand1 + operand2
+            result = raw & 0xFFFFFFFF
+            alu_carry = 1 if raw > 0xFFFFFFFF else 0
+            alu_overflow = 1 if ((operand1 ^ result) & (operand2 ^ result) & 0x80000000) else 0
             self.write_register(rd, result)
         elif opcode == 5:  # ADC
             c = (self.cpsr >> 29) & 1
-            result = (operand1 + operand2 + c) & 0xFFFFFFFF
+            raw = operand1 + operand2 + c
+            result = raw & 0xFFFFFFFF
+            alu_carry = 1 if raw > 0xFFFFFFFF else 0
+            alu_overflow = 1 if ((operand1 ^ result) & (operand2 ^ result) & 0x80000000) else 0
             self.write_register(rd, result)
         elif opcode == 6:  # SBC
             c = (self.cpsr >> 29) & 1
             result = (operand1 - operand2 - (1 - c)) & 0xFFFFFFFF
+            alu_carry = 1 if (operand1 >= operand2 + (1 - c)) else 0
+            alu_overflow = 1 if ((operand1 ^ operand2) & (operand1 ^ result) & 0x80000000) else 0
             self.write_register(rd, result)
         elif opcode == 7:  # RSC
             c = (self.cpsr >> 29) & 1
             result = (operand2 - operand1 - (1 - c)) & 0xFFFFFFFF
+            alu_carry = 1 if (operand2 >= operand1 + (1 - c)) else 0
+            alu_overflow = 1 if ((operand2 ^ operand1) & (operand2 ^ result) & 0x80000000) else 0
             self.write_register(rd, result)
         elif opcode == 8:  # TST
             result = operand1 & operand2
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
         elif opcode == 9:  # TEQ
             result = operand1 ^ operand2
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
         elif opcode == 0xA:  # CMP
             result = (operand1 - operand2) & 0xFFFFFFFF
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
+            alu_carry = 1 if operand1 >= operand2 else 0
+            alu_overflow = 1 if ((operand1 ^ operand2) & (operand1 ^ result) & 0x80000000) else 0
         elif opcode == 0xB:  # CMN
-            result = (operand1 + operand2) & 0xFFFFFFFF
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
+            raw = operand1 + operand2
+            result = raw & 0xFFFFFFFF
+            alu_carry = 1 if raw > 0xFFFFFFFF else 0
+            alu_overflow = 1 if ((operand1 ^ result) & (operand2 ^ result) & 0x80000000) else 0
         elif opcode == 0xC:  # ORR
             result = operand1 | operand2
             self.write_register(rd, result)
         elif opcode == 0xD:  # MOV
-            self.write_register(rd, operand2)
+            result = operand2
+            self.write_register(rd, result)
         elif opcode == 0xE:  # BIC
-            result = operand1 & ~operand2
+            result = operand1 & (~operand2 & 0xFFFFFFFF)
             self.write_register(rd, result)
         elif opcode == 0xF:  # MVN
-            self.write_register(rd, (~operand2) & 0xFFFFFFFF)
+            result = (~operand2) & 0xFFFFFFFF
+            self.write_register(rd, result)
+
+        if update_flags:
+            n = (result >> 31) & 1
+            z = 1 if result == 0 else 0
+            if is_arithmetic:
+                c = alu_carry
+                v = alu_overflow
+            else:
+                c = shifter_carry
+                v = (self.cpsr >> 28) & 1
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
 
         if rd != 15:
             self.registers[15] += 4
@@ -406,12 +541,37 @@ class ARM7TDMI:
         is_load = (instr >> 20) & 1
         is_byte = (instr >> 22) & 1
         is_up = (instr >> 23) & 1
+        p_bit = (instr >> 24) & 1
+        w_bit = (instr >> 21) & 1
+        is_imm = not ((instr >> 25) & 1)
         rn = (instr >> 16) & 0xF
         rd = (instr >> 12) & 0xF
-        offset = instr & 0xFFF
 
-        base = self.registers[rn]
-        addr = base + offset if is_up else base - offset
+        base = self._operand(rn)
+
+        if is_imm:
+            offset = instr & 0xFFF
+        else:
+            rm = instr & 0xF
+            shift_type = (instr >> 5) & 3
+            shift_imm = (instr >> 7) & 0x1F
+            offset = self._operand(rm)
+            if shift_imm:
+                if shift_type == 0:
+                    offset = (offset << shift_imm) & 0xFFFFFFFF
+                elif shift_type == 1:
+                    offset = offset >> shift_imm
+                elif shift_type == 2:
+                    offset = (offset >> shift_imm) | ((offset & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm)))
+                elif shift_type == 3:
+                    offset = ((offset >> shift_imm) | (offset << (32 - shift_imm))) & 0xFFFFFFFF
+
+        eff_offset = offset if is_up else -offset
+
+        if p_bit:
+            addr = (base + eff_offset) & 0xFFFFFFFF
+        else:
+            addr = base
 
         if is_load:
             if is_byte:
@@ -420,12 +580,18 @@ class ARM7TDMI:
                 val = self.memory.read_u32(addr)
             self.write_register(rd, val)
         else:
-            val = self.registers[rd]
+            val = self._operand(rd)
             if is_byte:
                 self.memory.write_u8(addr, val & 0xFF)
             else:
                 self.memory.write_u32(addr, val)
 
+        if w_bit or not p_bit:
+            if rn != 15:
+                self.registers[rn] = (base + eff_offset) & 0xFFFFFFFF
+
+        if rd != 15:
+            self.registers[15] += 4
         return 2
 
     @jit_compile
@@ -445,7 +611,7 @@ class ARM7TDMI:
     def exec_bx(self, instr: int) -> int:
         """Execute BX instruction."""
         rm = instr & 0xF
-        target = self.registers[rm]
+        target = self._operand(rm)
         self.thumb_mode = (target & 1) != 0
         self.registers[15] = target & 0xFFFFFFFE
         return 3
@@ -471,7 +637,7 @@ class ARM7TDMI:
         if reg_list == 0:
             return 2
 
-        base = self.registers[rn]
+        base = self._operand(rn)
         n_regs = bin(reg_list).count('1')
 
         # Compute start address honoring pre/post index
@@ -500,9 +666,7 @@ class ARM7TDMI:
         else:
             for i in range(16):
                 if reg_list & (1 << i):
-                    val = self.registers[i]
-                    if i == 15:
-                        val = self.registers[15] + 8 if not self.thumb_mode else self.registers[15] + 4
+                    val = self._operand(i)
                     self.memory.write_u32(addr, val & 0xFFFFFFFF)
                     addr += 4
 
@@ -512,6 +676,8 @@ class ARM7TDMI:
             else:
                 self.registers[rn] = (base - n_regs * 4) & 0xFFFFFFFF
 
+        if not (is_load and (reg_list & (1 << 15))):
+            self.registers[15] += 4
         return 2 + (n_regs * 2)
 
     @jit_compile
@@ -519,14 +685,16 @@ class ARM7TDMI:
         rm = instr & 0xF
         rs = (instr >> 8) & 0xF
         rd = (instr >> 16) & 0xF
-        result = (self.registers[rm] * self.registers[rs]) & 0xFFFFFFFF
+        result = (self._operand(rm) * self._operand(rs)) & 0xFFFFFFFF
         self.write_register(rd, result)
+        self.registers[15] += 4
         return 2
 
     def exec_swi(self, instr: int) -> int:
         """Execute SWI (software interrupt)."""
         swi_num = instr & 0xFFFFFF
         self.swi_handler(swi_num)
+        self.registers[15] += 4
         return 2
 
     def swi_handler(self, num: int):

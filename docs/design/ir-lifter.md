@@ -1,4 +1,4 @@
-# Plan 3: IR Lifting and Optimization (Rust crate: pygba-ir)
+# Plan 3: IR Lifting and Optimization (Rust crate: gbatopy-ir)
 
 ## 3.1 Objective
 
@@ -328,4 +328,4 @@ impl Optimizer {
 - [ ] SSA form is valid (single definition per value, phi nodes at merge points)
 - [ ] Optimization passes reduce instruction count by >30% on test ROMs
 - [ ] Optimized IR semantics match oracle execution traces
-- [ ] `cargo test -p pygba-ir` passes all tests
+- [ ] `cargo test -p gbatopy-ir` passes all tests
