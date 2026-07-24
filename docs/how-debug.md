@@ -166,6 +166,135 @@ print(f'Palette: {[rom_module.memory.read_u8(0x05000000 + i) for i in range(8)]}
 print(f'VRAM: {[rom_module.memory.read_u8(0x06000000 + i) for i in range(8)]}')
 ```
 
+## Systematic Spin Diagnosis Workflow
+
+Use this workflow when a generated ROM hangs or spins. It is the procedure that found and fixed every spin bug in this project's history.
+
+### Step 1: Enable PC tracing
+
+The generated runtime has built-in trace flags. Transpile and run with tracing:
+
+```bash
+cargo run --release -p gbatopy-cli -- pipeline --rom test_roms/roms/ROM.gba --output /tmp/ROM.py
+cd /tmp && python3 ROM.py --headless --frame=60 --pc-trace=/tmp/ROM_trace.txt --trace-n=200 --max-instrs=5000
+```
+
+- `--pc-trace=FILE`: writes `ic PC R0 R1 R2 R3` per instruction to a file (buffered).
+- `--trace-n=N`: prints the first N PCs to stdout for quick inspection.
+- `--max-instrs=N`: aborts after N instructions instead of hanging for 20s.
+
+### Step 2: Find the spin address
+
+```bash
+# Look at the trace tail — the last repeated PC is the spin address
+tail -50 /tmp/ROM_trace.txt
+```
+
+If the PC bounces between two addresses, it is a copy/clear loop that never exits. If the PC is stuck at one address, an instruction is not advancing the PC.
+
+### Step 3: Decode the opcode at the spin address
+
+Do NOT guess the instruction. Decode it from the ROM:
+
+```python
+with open('test_roms/roms/ROM.gba', 'rb') as f:
+    addr_offset = SPIN_ADDR - 0x08000000
+    f.seek(addr_offset)
+    word = int.from_bytes(f.read(4), 'little')
+    print(f'Word: {word:#010x}')
+```
+
+Then run it through the disassembler to see what the transpiler thinks it is:
+
+```bash
+cargo run --release -p gbatopy-cli -- disasm --input test_roms/roms/ROM.gba --output /tmp/ROM_disasm.json
+python3 -c "
+import json
+data = json.load(open('/tmp/ROM_disasm.json'))
+for inst in data:
+    if inst['address'] == SPIN_ADDR:
+        print(f\"opcode={inst['opcode']} condition={inst.get('condition')} operands={inst['operands']}\")
+        break
+"
+```
+
+Compare the disassembler output against the GBATEK reference. If the opcode/condition/operands are wrong, the bug is in `crates/gbatopy-disasm/`. If the decode is correct but the generated Python is wrong, the bug is in `crates/gbatopy-cli/src/codegen/`.
+
+### Step 4: Check dispatch routing
+
+Most spin bugs are an instruction dispatched to the wrong handler. Check `arm7tdmi.py`:
+
+- `execute_arm`: the if-elif chain that routes opcodes. MSR/MRS must be checked **before** the generic data-processing branch (`(instr & 0x0C000000) == 0`), because MSR shares opcode class bits with TST/TEQ/CMP/CMN.
+- `execute_thumb`: the format-based dispatch. STRH/LDRH (format 9) must route to the extra load/store handler, not the generic load/store path.
+
+### Step 5: Check condition codes
+
+For conditional branches (BXEQ, BNE, etc.), verify the condition is preserved end-to-end:
+
+- Disassembler: `inst.condition` field (e.g., `Some(Condition::Eq)`).
+- Codegen `branch.rs`: must read `inst.condition` and emit `cpsr_check('EQ')`, not drop to unconditional `cpsr_check('AL')`.
+- The disassembler stores `opcode = "BX"` (no suffix) with the condition in a separate field. Do NOT parse the opcode string for the condition suffix.
+
+### Step 6: Check PC-relative offsets
+
+Any read of R15 must apply the ARM pipeline offset:
+
+- ARM mode: R15 reads as `PC + 8` (two instructions ahead).
+- Thumb mode: R15 reads as `PC + 4` (two half-words ahead).
+
+This affects `MOV Rd, R15`, `LDR Rd, [PC, #imm]`, `ADD Rd, PC, #imm`, and any operand that references R15.
+
+### Step 7: Fix and verify
+
+1. Fix the Rust codegen or interpreter.
+2. `cargo build --release`.
+3. Re-transpile: `cargo run --release -p gbatopy-cli -- pipeline --rom test_roms/roms/ROM.gba --output /tmp/ROM.py`.
+4. Verify with the one-shot script: `./scripts/verify/verify_rom.sh ROM --no-golden`.
+
+## Known Codegen Bug Classes (CHECK FIRST)
+
+Before deep debugging, verify these common failure modes. They have caused the majority of spin/hang bugs in this project.
+
+### Class 1: Dispatch routing (opcode → wrong handler)
+
+**Symptom**: PC stuck at one address, infinite spin.
+**Root cause**: An instruction's opcode class bits match a broader branch in the dispatch chain before the specific handler is checked.
+**Known instances**:
+- MSR CPSR routed to `exec_data_processing` (treated as TEQ) → PC never advanced.
+- Thumb STRH routed to generic load/store instead of extra load/store handler.
+**Check**: `arm7tdmi.py` `execute_arm` / `execute_thumb` dispatch order. Specific handlers (MSR/MRS, extra load/store) must be checked **before** generic branches.
+**Test**: `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py`
+
+### Class 2: Condition codes dropped
+
+**Symptom**: Conditional branch executes unconditionally, causing infinite loops (e.g., copy loop never exits).
+**Root cause**: The codegen reads `inst.opcode` (which is "BX" without suffix) and parses for a condition suffix that isn't there, defaulting to unconditional AL.
+**Known instances**: BXEQ emitted as unconditional BX → copy loop never terminates.
+**Check**: `crates/gbatopy-cli/src/codegen/instruction_codegen/branch.rs` — must use `inst.condition` field, not string parsing.
+**Test**: `test_dispatch_audit.py::TestARMDispatchAudit::test_bxeq_preserves_condition`
+
+### Class 3: PC-relative offset missing
+
+**Symptom**: Return addresses, branch targets, or PC-relative loads are off by 8 (ARM) or 4 (Thumb).
+**Root cause**: R15 reads don't apply the pipeline offset.
+**Known instances**: `MOV R14, R15` wrote PC without +8 → wrong return address; LDR PC-relative ignored immediate offset.
+**Check**: Any codegen path that reads `registers[15]` must add the pipeline offset before use.
+
+### Class 4: Thumb bit-field masks wrong width
+
+**Symptom**: Branch targets truncated, immediate values wrong magnitude.
+**Root cause**: Thumb instruction formats use specific bit widths that are easy to mask incorrectly.
+**Known instances**: Thumb B (format 18) offset masked with `0x3FF` (10-bit) instead of `0x7FF` (11-bit).
+**Check**: `crates/gbatopy-disasm/src/thumb/` against GBATEK format tables.
+**Test**: `test_dispatch_audit.py::TestThumbDispatchAudit::test_branch_offset_uses_11bit_mask`
+
+### Class 5: Banked registers on MSR mode switch
+
+**Symptom**: Registers corrupted after mode switch, subtle state errors.
+**Root cause**: MSR changes processor mode (USR/SVC/IRQ/FIQ/etc.), which banks R13/R14 and SPSR. If the runtime doesn't switch register banks, subsequent reads/writes hit the wrong physical registers.
+**Check**: `arm7tdmi.py` MSR handler must update `self.mode` and swap banked registers.
+**Test**: `test_dispatch_audit.py::TestARMDispatchAudit::test_msr_cpsr_routes_to_status_transfer`
+
 ## Common Issues
 
 ### Issue 1: Wrong Immediate Offsets in STRH/LDRH
