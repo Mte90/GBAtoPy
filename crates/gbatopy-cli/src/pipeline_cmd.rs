@@ -906,6 +906,15 @@ pub fn run_pipeline(
         eprintln!("  Aggressive minification complete");
     }
 
+    let cpu_class_count = code.matches("class CPU").count();
+    if cpu_class_count > 1 {
+        return Err(format!(
+            "Assertion failed: 'class CPU' defined {} times in generated output — duplicate runtime module detected. \
+             Check runtime_files list in pipeline_cmd.rs for duplicates (e.g., arm7tdmi.py vs cpu.py both defining CPU).",
+            cpu_class_count
+        ));
+    }
+
     fs::write(output_path, &code).map_err(|e| format!("Failed to write output: {}", e))?;
 
     println!(
@@ -1161,10 +1170,14 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         if ic % 1000 == 0: fc += 1
     return fc
 
-def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None):
+def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None, pc_trace=None, trace_n=0, max_instrs=1000000):
     global _cpu_halted
     # Initialize HookManager if hook file provided
     hook_manager = HookManager() if hook_file else None
+    trace_file = None
+    if pc_trace:
+        trace_file = open(pc_trace, "w")
+    trace_count = 0
     if hook_file:
         # Load and execute hook script
         try:
@@ -1193,7 +1206,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     else:
         screen = pygame.Surface((240 * scale, 160 * scale))
     clock = pygame.time.Clock()
-    fc = 0; running = True; mi = 1000000; ic = 0
+    fc = 0; running = True; mi = max_instrs; ic = 0
     loop_stall_count = 0
     max_loop_stalls = 10000
     _vblank_irq_delivered = False
@@ -1237,6 +1250,11 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     _interp_fallback(registers, cpsr); ic += 1
                     continue
                 func(registers, cpsr); ic += 1
+                if pc_trace and trace_file:
+                    trace_file.write(f"{ic:08d} PC=0x{registers[15]:08X} R0={registers[0]:08X} R1={registers[1]:08X} R2={registers[2]:08X} R3={registers[3]:08X} R14={registers[14]:08X}\n")
+                if trace_n > 0 and trace_count < trace_n:
+                    print(f"{ic:08d} PC=0x{registers[15]:08X} R0={registers[0]:08X} R1={registers[1]:08X} R2={registers[2]:08X} R3={registers[3]:08X}")
+                    trace_count += 1
                 if registers[15] == pc:
                     inner_loop_stalls += 1
                     if inner_loop_stalls > max_inner_stalls:
@@ -1309,6 +1327,10 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 f.write(bytes(ewram))
         print(f"Memory dump written to: {dump_memory}")
     
+    if trace_file:
+        trace_file.close()
+        print(f"PC trace written to: {pc_trace} ({ic} instructions)")
+    
     return fc
 
 if __name__ == "__main__":
@@ -1323,6 +1345,9 @@ if __name__ == "__main__":
     parser.add_argument("--save-state", type=str, help="Save state to JSON file after execution")
     parser.add_argument("--load-state", type=str, help="Load state from JSON file before execution")
     parser.add_argument("--hook-file", type=str, help="Python script with debugging hooks (breakpoints, tracing, etc.)")
+    parser.add_argument("--pc-trace", type=str, help="Log PC + registers each step to a file")
+    parser.add_argument("--trace-n", type=int, default=0, help="Print first N PCs to stdout then stop tracing")
+    parser.add_argument("--max-instrs", type=int, default=1000000, help="Maximum instructions before aborting (default 1M)")
     args = parser.parse_args()
     frames = run_with_pygame(
         headless=args.headless, 
@@ -1333,7 +1358,10 @@ if __name__ == "__main__":
         dump_region=args.dump_region,
         load_state=args.load_state,
         save_state=args.save_state,
-        hook_file=args.hook_file
+        hook_file=args.hook_file,
+        pc_trace=args.pc_trace,
+        trace_n=args.trace_n,
+        max_instrs=args.max_instrs
     )
     print(f"{frames} frames")
     import os; os._exit(0)

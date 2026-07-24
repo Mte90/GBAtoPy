@@ -152,7 +152,7 @@ Install gcc: `sudo apt install build-essential`
 Ensure `liblua5.4-dev` is installed and cmake finds it: `cmake .. -DENABLE_LUA=ON -DLUA_INCLUDE_DIR=/usr/include/lua5.4`
 
 **Generated Python shows black screen**
-Most test ROMs transpile and run without errors. **Known rendering issues**: stripes.gba has an address mapping bug causing incorrect graphics (under investigation). If a ROM shows black, it may use unimplemented PPU features (Mode 1/2 affine, window/blend/mosaic). See `docs/status.md` for details.
+Most test ROMs transpile and run without errors. See `docs/reference/test-roms.md` for the current verification status.
 
 **`cargo run` says "no such command: pipeline"**
 Make sure you're using `--` to separate cargo args from CLI args: `cargo run --release -p gbatopy-cli -- pipeline --rom ...`

@@ -43,5 +43,5 @@ For these ROMs to render graphics, they must either:
 
 ## Related
 
-- Test ROM classification: `docs/test-roms-status.md`
+- Test ROM classification: `docs/reference/test-roms.md`
 - Memory mapping: `docs/runtime-architecture.md#memory-management`

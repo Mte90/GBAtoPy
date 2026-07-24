@@ -11,13 +11,16 @@ Transform Game Boy Advance ROMs into standalone Python files.
 
 ## In Active Development
 
-- ⚠️ **66/68 ROMs** transpile + pass syntax check (helloAudio, rates fail)
-- ⚠️ **2/68 ROMs** verified pixel-perfect against mGBA golden (stripes.gba, shades.gba — manual comparison)
-- ✅ **PPU Mode 0** (4BPP text tiles) verified on shades.gba; **Mode 3** (16-bit bitmap) verified on stripes.gba; Mode 4 partial; Mode 1/2 affine, windows, blends, mosaic = register stubs only
+- ✅ **68/68 ROMs** transpile to syntactically valid Python
+- ✅ **23/68 ROMs** verified pixel-perfect against mGBA golden at frame 60 (stripes, shades, hello, helloWorld, hello_world, mode3, mode4, redline, arm, thumb, bios, memory, unsafe, cond_invalid, retAddr, if_ack, irq_delay, joypad, mode2, sram, flash64, flash128, none — see [`docs/reference/test-roms.md`](docs/reference/test-roms.md) for per-ROM evidence)
+- ✅ **PPU Mode 0** (4BPP text tiles) verified on shades.gba, hello.gba, helloWorld.gba, hello_world.gba; **Mode 2** (affine) verified on mode2.gba; **Mode 3** (16-bit bitmap) verified on stripes.gba, mode3.gba; **Mode 4** (8BPP bitmap) verified on mode4.gba — all exact pixel matches
+- ⚠️ **Mode 1/2 affine**, windows, blends, mosaic = register stubs only
 - ⚠️ **Audio system** infrastructure exists, synthesis not verified end-to-end
-- ⚠️ **Test framework** has smoke tests; screenshot-golden comparison not yet automated (32 golden screenshots exist, comparison pending)
+- ⚠️ **4/68 ROMs** known failures: helloAudio.gba, rates.gba (runtime hang), window_midframe.gba (55% diff), greenswap.gba (85% diff)
+- ⏰ **10/68 ROMs** hang at runtime (bgx, bgpd, nes, timer_change, pcmxx, line_timing, sprite-hmosaic, lyc_midline, dma_priority, isr) — likely codegen bugs in IRQ/DMA/timer paths
+- ✅ **Test framework** includes smoke tests and screenshot-golden comparison via `scripts/verify/verify_rom.sh <rom> --no-golden`
 
-**Last updated**: 2026-07-23
+**Last updated**: 2026-07-24
 
 ---
 

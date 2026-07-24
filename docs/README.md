@@ -6,7 +6,7 @@ Documentation for the GBA ROM-to-Python transpiler.
 
 - **[quickstart.md](quickstart.md)** — Build, run, and test the transpiler
 - **[architecture.md](architecture.md)** — How the pipeline works
-- **[status.md](status.md)** — Current implementation status per component
+- **[reference/test-roms.md](reference/test-roms.md)** — Per-ROM verification matrix and summary counts
 - **[roadmap.md](roadmap.md)** — Development roadmap and remaining work
 
 ## Debugging & Runtime

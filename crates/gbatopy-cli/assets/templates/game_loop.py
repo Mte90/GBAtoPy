@@ -62,15 +62,20 @@ def calibrate_gba_timing(measure_cycles=100000):
     calibrated_delay = 1.0 / cycles_per_second * target_cycles_per_frame
     return speed_ratio, calibrated_delay, cycles_per_second, gba_hz
 
-def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):
+def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, pc_trace=None, trace_n=0, max_instrs=1000000):
     r[15] = 0  # Initial PC placeholder
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     print(f"Timing calibration: speed_ratio={speed_ratio:.4f}, cycles_per_sec={cycles_per_second:.0f}, gba_hz={gba_hz:.0f}")
     
     fc = 0
-    mi = 1000000
+    mi = max_instrs
     ic = 0
+    trace_count = 0
     print(f"PC=0x{r[15]:08X}")
+    
+    trace_file = None
+    if pc_trace:
+        trace_file = open(pc_trace, "w")
     
     while ic < mi:
         pc = r[15]
@@ -82,6 +87,11 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         if func:
             func()
         ic += 1
+        if pc_trace and trace_file:
+            trace_file.write(f"{ic:08d} PC=0x{r[15]:08X} R0={r[0]:08X} R1={r[1]:08X} R2={r[2]:08X} R3={r[3]:08X}\n")
+        if trace_n > 0 and trace_count < trace_n:
+            print(f"{ic:08d} PC=0x{r[15]:08X} R0={r[0]:08X} R1={r[1]:08X} R2={r[2]:08X} R3={r[3]:08X}")
+            trace_count += 1
         if r[15] == pc:
             print(f"Loop at 0x{pc:08X}")
             break
@@ -93,9 +103,11 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             fc += 1
     
     print(f"Done: {ic} instrs")
+    if trace_file:
+        trace_file.close()
     return fc
 
-def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None):
+def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, pc_trace=None, trace_n=0, max_instrs=1000000):
     pygame.init()
     apu = APU()
     apu.start()
@@ -109,8 +121,9 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     r[15] = 0  # Initial PC placeholder
     fc = 0
     running = True
-    mi = 1000000
+    mi = max_instrs
     ic = 0
+    trace_count = 0
     loop_stall_count = 0  # Track consecutive stalls at same PC
     max_loop_stalls = 10000  # Max stalls before giving up (prevents true infinite loops)
     
@@ -118,6 +131,10 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     
     print(f"PC=0x{r[15]:08X}")
     print(f"Calibrated timing: delay_per_instr={calibrated_delay*1000:.4f}ms, cycles/sec={cycles_per_second:.0f}")
+    
+    trace_file = None
+    if pc_trace:
+        trace_file = open(pc_trace, "w")
     
     while running and ic < mi and fc < (frame_limit or 10000):
         for event in pygame.event.get():
@@ -132,6 +149,11 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             break
         
         ic += 1
+        if pc_trace and trace_file:
+            trace_file.write(f"{ic:08d} PC=0x{r[15]:08X} R0={r[0]:08X} R1={r[1]:08X} R2={r[2]:08X} R3={r[3]:08X}\n")
+        if trace_n > 0 and trace_count < trace_n:
+            print(f"{ic:08d} PC=0x{r[15]:08X} R0={r[0]:08X} R1={r[1]:08X} R2={r[2]:08X} R3={r[3]:08X}")
+            trace_count += 1
         if r[15] == pc:
             # PC didn't change - might be a wait loop (e.g., waiting for VBlank)
             loop_stall_count += 1
@@ -183,6 +205,8 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         pygame.image.save(screen, screenshot_path)
         print(f"Screenshot: {screenshot_path}")
     
+    if trace_file:
+        trace_file.close()
     pygame.quit()
     return fc
 
@@ -195,7 +219,20 @@ if __name__ == "__main__":
     parser.add_argument("--scale", type=int, default=1)
     parser.add_argument("--dump-memory", type=str)
     parser.add_argument("--dump-region", type=str, choices=["ewram", "iwram", "vram"])
+    parser.add_argument("--pc-trace", type=str, help="Log PC + registers each step to a file")
+    parser.add_argument("--trace-n", type=int, default=0, help="Print first N PCs to stdout then stop tracing")
+    parser.add_argument("--max-instrs", type=int, default=1000000, help="Maximum instructions before aborting (default 1M)")
     args = parser.parse_args()
     
-    frames = run_with_pygame(headless=args.headless, frame_limit=args.frame, screenshot_path=args.screenshot, scale=args.scale, dump_memory=args.dump_memory, dump_region=args.dump_region)
+    frames = run_with_pygame(
+        headless=args.headless,
+        frame_limit=args.frame,
+        screenshot_path=args.screenshot,
+        scale=args.scale,
+        dump_memory=args.dump_memory,
+        dump_region=args.dump_region,
+        pc_trace=args.pc_trace,
+        trace_n=args.trace_n,
+        max_instrs=args.max_instrs,
+    )
     print(f"{frames} frames")

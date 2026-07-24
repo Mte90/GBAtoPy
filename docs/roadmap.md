@@ -1,7 +1,7 @@
 # GBAtoPy Roadmap — Project Status
 
 > **Role:** Strategy, sequencing, and remaining work.
-> For the current capability matrix (what works/what's stubbed), see [`status.md`](status.md).
+> For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
 > **Last updated**: 2026-07-06
 > **Current state**: 68 ROMs transpile; 66/68 pass smoke test (helloAudio, rates fail). Build: 0 errors, 0 warnings. 2/68 ROMs verified pixel-perfect against mGBA golden via manual comparison (stripes.gba, shades.gba). 32 golden screenshots exist; automated comparison not yet wired into CI. Known blocking bug: STMFD/LDMFD register order corrupts stack on real-game ROMs (hello.gba).
