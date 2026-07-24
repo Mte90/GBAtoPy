@@ -32,9 +32,6 @@ output_python/
 /test_arm*.py
 /test_thumb*.py
 
-# Evidence from testing
-/.sisyphus/evidence/
-
 # IDE
 .vscode/
 .idea/
@@ -55,14 +52,10 @@ tmp/
 *.bak
 
 # Documentation drafts (not for public upload)
-.sisyphus/drafts/
 docs/v3/
 
 # mGBA build (binary, not source)
 mgba/build/
-
-# Plans archive (old plans)
-.sisyphus/plans/archive/
 
 # Logs
 *.log
@@ -77,4 +70,3 @@ yarn-error.log*
 
 test_roms/
 AGENTS.md
-scripts/screenshot/golden/

@@ -54,6 +54,4 @@ Hardware specifications, instruction sets, and test ROM catalogs.
 
 - **[testing-framework.md](testing-framework.md)** — Automated testing strategy, test ROM classification, implementation plan
 
-## Attribution
 
-The Python runtime is derived from [PyBoyAdvance](https://github.com/williamckha/PyBoyAdvance) (MIT licensed).

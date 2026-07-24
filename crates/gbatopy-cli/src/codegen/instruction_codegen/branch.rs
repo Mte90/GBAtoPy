@@ -1,4 +1,4 @@
-use gbatopy_disasm::{DecodedInstruction, Operand};
+use gbatopy_disasm::{Condition, DecodedInstruction, Operand};
 
 pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let opcode = inst.opcode.as_str();
@@ -28,15 +28,27 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     if base_opcode == "BX" || base_opcode == "BLX" {
         if let Some(Operand::Register(rn)) = ops.first() {
             // BX/BLX Rm: bit 0 of Rm selects Thumb (1) or ARM (0) mode.
-            if base_opcode == "BLX" {
+            // The disassembler stores the condition in inst.condition (not in
+            // the opcode string), so we must read it separately for conditional
+            // variants like BXEQ, BXNE, etc.
+            let cond_str = match inst.condition {
+                Some(c) if c != Condition::Al => c.name().to_uppercase(),
+                _ => String::new(),
+            };
+            let blx_link = if base_opcode == "BLX" {
+                "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n"
+            } else {
+                ""
+            };
+            if !cond_str.is_empty() {
                 return Some(format!(
-                    "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\ncpsr['t'] = registers[{}] & 1\nregisters[15] = registers[{}] & 0xFFFFFFFE",
-                    rn, rn
+                    "if cpsr_check('{}'):\n    {}cpsr['t'] = registers[{}] & 1\n    registers[15] = registers[{}] & 0xFFFFFFFE\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
+                    cond_str, blx_link, rn, rn
                 ));
             }
             return Some(format!(
-                "cpsr['t'] = registers[{}] & 1\nregisters[15] = registers[{}] & 0xFFFFFFFE",
-                rn, rn
+                "{}cpsr['t'] = registers[{}] & 1\nregisters[15] = registers[{}] & 0xFFFFFFFE",
+                blx_link, rn, rn
             ));
         }
         return Some(format!("# {} branch exchange", base_opcode));
@@ -66,26 +78,6 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
             return Some(format!(
                 "if cpsr_check('{}'):\n    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
                 cond, target
-            ));
-        }
-    }
-    // Conditional BX: BXEQ, BXNE, etc. (4 chars, starts with "BX")
-    if opcode.len() >= 4 && opcode.starts_with("BX") {
-        if let Some(Operand::Register(rn)) = ops.first() {
-            let cond = &opcode[2..];
-            return Some(format!(
-                "if cpsr_check('{}'):\n    cpsr['t'] = registers[{}] & 1\n    registers[15] = registers[{}] & 0xFFFFFFFE\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
-                cond, rn, rn
-            ));
-        }
-    }
-    // Conditional BLX: BLXEQ, BLXNE, etc. (5+ chars, starts with "BLX")
-    if opcode.len() >= 5 && opcode.starts_with("BLX") {
-        if let Some(Operand::Register(rn)) = ops.first() {
-            let cond = &opcode[3..];
-            return Some(format!(
-                "if cpsr_check('{}'):\n    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n    cpsr['t'] = registers[{}] & 1\n    registers[15] = registers[{}] & 0xFFFFFFFE\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
-                cond, rn, rn
             ));
         }
     }

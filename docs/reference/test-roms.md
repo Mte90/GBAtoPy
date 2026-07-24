@@ -1,4 +1,4 @@
-# GBA Test ROMs Reference - Updated (2026-05-19)
+# GBA Test ROMs Reference - Updated (2026-07-23)
 
 This document catalogs all **68 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
@@ -21,9 +21,10 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 
 | Status | Count | ROMs |
 |--------|-------|------|
-| ✅ Verified working | 2 | stripes.gba, shades.gba |
-| ❌ Not working | 3 | hello.gba, helloAudio.gba, rates.gba |
-| ❓ Unknown | 63 | All others (transpile cleanly, visual status unverified) |
+| ✅ Verified working | 4 | stripes.gba, shades.gba, helloWorld.gba, hello_world.gba (all pixel-match mGBA golden) |
+| ⚠️ Partial | 1 | hello.gba (runs, visible content, no golden comparison) |
+| ❌ Not working | 2 | helloAudio.gba (smoke failure), rates.gba (smoke failure) |
+| ❓ Unknown | 61 | All others (transpile cleanly, visual status unverified) |
 
 ### Verified Working ROMs (100% Golden Match)
 
@@ -31,12 +32,19 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 |-----|------|----------|
 | **stripes.gba** | Mode 3 (16-bit bitmap) | Git commit 3dc6e29: "golden screenshot 100% match"; docs/status.md confirms address mapping fix (2026-07-02) |
 | **shades.gba** | Mode 0 (4BPP text tiles) | docs/reference/test-roms.md line 257: "100% pixel match with mGBA (35,840 non-black pixels)"; 5 bugs fixed (char-block base, nibble order, double-scale, dispatch NOP, STRH offset) |
+| **helloWorld.gba** | Mode 0 (text background) | 0.0% pixel difference vs mGBA golden at frame 60 (2026-07-24). Two codegen bugs fixed: (1) Thumb branch offset mask in `crates/gbatopy-disasm/src/thumb/mod.rs` — `format_18_uncond_branch` masked with `0x3FF` (10-bit) instead of `0x7FF` (11-bit), truncating branch targets and skipping the IWRAM clear routine; (2) Thumb STRH dispatch routing in `arm7tdmi.py` — the extra load/store handler was not invoked for the STRH Rd,[Rb,#Imm5] encoding, falling through to the generic path. |
+| **hello_world.gba** | Mode 0 (text background) | 0.1% pixel difference vs mGBA golden at frame 60 and 120 (PASS, <30% threshold) (2026-07-24). Display only enables at frame ≥3 (late DISPCNT write in ROM init); at frame 1 the screen is correctly black because the PPU is not yet enabled. Requires running ≥3 frames to see content. Prior BXEQ codegen fix (2026-07-23) resolved an earlier hang. |
+
+### Partial (Runs Without Hang, Visual Not Fully Verified)
+
+| ROM | Behavior | Evidence |
+|-----|----------|----------|
+| **hello.gba** | Transpiles + runs headless frame=1 without hang; 209 non-black pixels (text visible). No golden screenshot comparison performed yet. | BXEQ conditional-branch codegen fix in `crates/gbatopy-cli/src/codegen/instruction_codegen/branch.rs` (2026-07-23) resolved prior copy-loop infinite spin. Previous "crashes PC=0x04040404" claim was stale. |
 
 ### Known Issues (Not Working)
 
 | ROM | Issue | Evidence |
 |-----|-------|----------|
-| **hello.gba** | Crashes (PC=0x04040404) | docs/status.md line 68-71: STMFD/LDMFD register order bug corrupts stack |
 | **helloAudio.gba** | Smoke test failure | docs/status.md line 72: "helloAudio, rates smoke failures — cause undiagnosed" |
 | **rates.gba** | Smoke test failure | docs/status.md line 72: "helloAudio, rates smoke failures — cause undiagnosed" |
 
@@ -47,7 +55,7 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 || Category | Count | ROMs | Status |
 |----------|-------|------|------|--------|
 | CPU-only | 16 | arm.gba, thumb.gba, bios.gba, memory.gba, nes.gba, unsafe.gba, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba, retAddr.gba, basic-timing.gba | ❓ |
-| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ❌, helloWorld.gba, hello_world.gba, line_timing.gba, lyc_midline.gba, mode2.gba, mode3.gba, mode4.gba, greenswap.gba, bgpd.gba, bgx.gba, sprite-hmosaic.gba, vram-mirror.gba | 2✅, 1❌, 12❓ |
+| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ⚠️, helloWorld.gba ✅, hello_world.gba ✅, line_timing.gba, lyc_midline.gba, mode2.gba, mode3.gba, mode4.gba, greenswap.gba, bgpd.gba, bgx.gba, sprite-hmosaic.gba, vram-mirror.gba | 4✅, 1⚠️, 10❓ |
 | IRQ | 9 | isr.gba, if_ack.gba, irq-delay.gba, irq_delay.gba, joypad.gba, cancel-irq-ie.gba, cancel-irq-if.gba, cancel-irq-ime.gba, status-irq-dma.gba | ❓ |
 | DMA | 8 | dma_priority.gba, burst-into-tears.gba, force-nseq-access.gba, latch.gba, start-stop.gba, reload.gba, dispcnt-latch.gba, window_midframe.gba | ❓ |
 | Timer | 2 | timer_change.gba, haltcnt.gba | ❓ |
@@ -58,7 +66,7 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 | RTC | 1 | rtc-demo.gba | ❓ |
 | Timing | 2 | exact-timing.gba, start-delay.gba | ❓ |
 
-**Total ROMs**: 68 (2 verified working, 3 known broken, 63 unverified at visual level)
+**Total ROMs**: 68 (4 verified working, 2 known broken, 62 unverified at visual level)
 
 ---
 
@@ -312,7 +320,7 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 **Expected Output**: Diagonal red/white stripes - perfect for visual verification  
 **Transpiler Blockers**: PPU rendering - palette lookup not fully implemented
 
-### hello.gba
+### hello.gba ⚠️ PARTIAL (was ❌)
 **Suite**: gba-tests-master  
 **Source**: `test_roms/sources/gba-tests-master/ppu/hello.asm`  
 **Purpose**: Basic PPU rendering - text display on background  
@@ -326,9 +334,9 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 - Text rendering
 - Basic tile display
 **Expected Output**: "Hello" text on screen  
-**Transpiler Blockers**: PPU rendering - partially working
+**Status**: ⚠️ Partial — Transpiles + runs headless frame=1 without hang (209 non-black pixels, text visible). No golden screenshot comparison performed yet. Prior "crashes PC=0x04040404" claim was stale; resolved by BXEQ conditional-branch codegen fix in `branch.rs` (2026-07-23).
 
-### helloWorld.gba
+### helloWorld.gba ✅ VERIFIED (was ❌)
 **Suite**: gba_tests  
 **Source**: `test_roms/sources/gba_tests-master/helloWorld/source/helloWorld.s`  
 **Purpose**: Basic output display  
@@ -341,9 +349,9 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 **Features Required**:
 - Basic text rendering
 **Expected Output**: "Hello World" text  
-**Transpiler Blockers**: PPU rendering - partially working
+**Status**: ✅ Verified — 0.0% pixel difference vs mGBA golden at frame 60 (2026-07-24). Two codegen bugs fixed: (1) Thumb branch offset mask bug in `crates/gbatopy-disasm/src/thumb/mod.rs` — `format_18_uncond_branch` masked the offset with `0x3FF` (10-bit) instead of `0x7FF` (11-bit), truncating branch targets and skipping the IWRAM clear routine, which caused the memset/copy loop spin; (2) Thumb STRH dispatch routing in `arm7tdmi.py` — the extra load/store handler was not invoked for the STRH Rd,[Rb,#Imm5] encoding.
 
-### hello_world.gba
+### hello_world.gba ✅ VERIFIED (was ⚠️)
 **Suite**: gba_tests  
 **Source**: `test_roms/sources/gba_tests-master/hello_world/source/hello_world.s`  
 **Purpose**: Basic output display  
@@ -356,7 +364,7 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 **Features Required**:
 - Basic text rendering
 **Expected Output**: "Hello World" text  
-**Transpiler Blockers**: PPU rendering - partially working
+**Status**: ✅ Verified — 0.1% pixel difference vs mGBA golden at frame 60 and frame 120 (PASS, <30% threshold) (2026-07-24). The ROM writes DISPCNT late in its init, so the display is not enabled until frame ≥3; at frame 1 the screen is correctly black. **Run with `--frame=60` (or any value ≥3) to see rendered content.** Prior BXEQ codegen fix (2026-07-23) resolved an earlier hang.
 
 ### line_timing.gba
 **Suite**: gba_tests  
@@ -759,8 +767,8 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 | ARM instructions | arm.gba, armwrestler, FuzzARM | ✅ Working |
 | Thumb instructions | thumb.gba, FuzzARM | ✅ Working |
 | BIOS SWI | bios.gba | ⚠️ Partial |
-| PPU rendering | shades.gba (100% golden), stripes.gba (100% golden) | ✅ Verified (2 ROMs) |
-| PPU rendering | hello.gba | ❌ Blocked (STMFD/LDMFD bug → PC=0x04040404) |
+| PPU rendering | shades.gba, stripes.gba, helloWorld.gba, hello_world.gba | ✅ Verified (4 ROMs, all pixel-match mGBA golden) |
+| PPU rendering | hello.gba | ⚠️ Partial (runs, text visible at frame=1; no golden comparison; BXEQ fix 2026-07-23) |
 | PPU rendering | other ROMs | ⚠️ Unverified (32 goldens exist, comparison not wired) |
 | PPU timing | line_timing.gba, lyc_midline.gba | ⚠️ Partial |
 | IRQ handling | isr.gba, if_ack.gba, irq_delay | ⚠️ Implemented, unverified against goldens |
@@ -799,10 +807,10 @@ All 68 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | enhancedcontrolchecker.gba | 0 | 28937 | ❓ |
 | flash128.gba | 0 | 2004 | ❓ |
 | flash64.gba | 0 | 1871 | ❓ |
-| hello.gba | 0 | 1010 | ❌ (crashes) |
+| hello.gba | 0 | 1010 | ⚠️ (runs, text visible, no golden comparison) |
 | helloAudio.gba | 0 | 476183 | ❌ (smoke failure) |
-| helloWorld.gba | 0 | 4510 | ❓ |
-| hello_world.gba | 0 | 1313 | ❓ |
+| helloWorld.gba | 0 | 4510 | ✅ (0.0% diff vs golden, frame 60) |
+| hello_world.gba | 0 | 1313 | ✅ (0.1% diff vs golden, frame 60; display enables at frame ≥3) |
 | if_ack.gba | 0 | 1315 | ❓ |
 | irq_delay.gba | 0 | 2225 | ❓ |
 | isr.gba | 0 | 1557 | ❓ |

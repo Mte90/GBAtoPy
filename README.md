@@ -1,7 +1,7 @@
 # GBAtoPy
 [![License](https://img.shields.io/badge/License-MIT%20v1-blue.svg)](https://spdx.org/licenses/MIT.html#licenseText)   
-[![Tests](https://img.shields.io/badge/tests-76%2F76%20pass-22c55e.svg)](docs/testing-framework.md)
-[![Status](https://img.shields.io/badge/status-PRODUCTION%20READY-22c55e.svg)](docs/roadmap.md)
+[![Tests](https://img.shields.io/badge/tests-66%2F68%20smoke%20pass-yellow.svg)](docs/testing-framework.md)
+[![Status](https://img.shields.io/badge/status-In%20Development-yellow.svg)](docs/roadmap.md)
 
 Transform Game Boy Advance ROMs into standalone Python files.
 
@@ -9,15 +9,15 @@ Transform Game Boy Advance ROMs into standalone Python files.
 
 ---
 
-## 🎉 Production Ready
+## In Active Development
 
-- ✅ **68/68 ROMs** transpile without errors
-- ✅ **76/76 tests** pass (100% pass rate)
-- ✅ **PPU Mode 0** (4BPP text tiles) and **Mode 3** (16-bit bitmap) — golden match on stripes.gba; Mode 1/2 affine, windows, blends, mosaic = register stubs only
-- ✅ **Audio system** operational (click-free)
-- ✅ **Test framework** with smoke + screenshot verification
+- ⚠️ **66/68 ROMs** transpile + pass syntax check (helloAudio, rates fail)
+- ⚠️ **2/68 ROMs** verified pixel-perfect against mGBA golden (stripes.gba, shades.gba — manual comparison)
+- ✅ **PPU Mode 0** (4BPP text tiles) verified on shades.gba; **Mode 3** (16-bit bitmap) verified on stripes.gba; Mode 4 partial; Mode 1/2 affine, windows, blends, mosaic = register stubs only
+- ⚠️ **Audio system** infrastructure exists, synthesis not verified end-to-end
+- ⚠️ **Test framework** has smoke tests; screenshot-golden comparison not yet automated (32 golden screenshots exist, comparison pending)
 
-**Last updated**: 2026-06-04
+**Last updated**: 2026-07-23
 
 ---
 
@@ -35,7 +35,7 @@ ROM bytes → Disassembly → Python Code Gen → Executable Python
 - **Code Generator** (`crates/gbatopy-cli/src/codegen/`) - ARM/Thumb → Python translation (600+ opcodes)
 - **Memory Model** - GBA memory map (0x08000000 ROM, 0x06000000 VRAM, 0x04000000 MMIO)
 - **Game Loop** - pygame-based display and input
-- **Python Runtime** - Core emulation modules (CPU, PPU, Memory, DMA, Timers, APU) embedded in generated Python (see `crates/gbatopy-cli/assets/gba_runtime/`). Derived from [PyBoyAdvance](https://github.com/williamckha/PyBoyAdvance) (MIT-licensed).
+- **Python Runtime** - Core emulation modules (CPU, PPU, Memory, DMA, Timers, APU) embedded in generated Python (see `crates/gbatopy-cli/assets/gba_runtime/`).
 - **Test Framework** (`crates/gbatopy-test/`) - Rust-based automated test infrastructure with parallel execution, 6 verifier types (smoke, screenshot_golden, mgba_oracle, ewram_dump, pass_fail, assertion_text), and configurable per-ROM testing via `test-roms-config.toml`.
 
 ### Generated Output Structure
@@ -57,27 +57,9 @@ def main_entry():
 
 ---
 
-## Current Status
+## Status
 
-| Component | Status |
-|-----------|--------|
-| ARM/Thumb codegen | ✅ Complete (600+ opcodes, zero stubs) |
-| PPU rendering | ✅ Mode 3/4 (100% golden match on stripes.gba), Mode 0 (4BPP) partial |
-| Memory subsystem | ✅ VRAM, Palette, OAM, MMIO with mirrors |
-| IRQ/DMA/Timers | ✅ 4 DMA channels, Timers 0-3, VBlank/HBlank/VCount interrupts |
-| BIOS SWI | ✅ 54 handlers (Sqrt, Div, Halt, CpuSet, etc.) |
-| Keypad input | ✅ KEYINPUT/KEYCNT |
-| Sprite rendering | ✅ OAM + tile fetch + palette lookup |
-| APU audio | ❌ PSG + FIFO infrastructure exists, synthesis not fully verified |
-| Affine backgrounds | ❌ Mode 1/2 code exists, MMIO wiring broken |
-| Window/Blend/Mosaic | ❌ Register stubs only |
-
-**Known Bugs (2026-07-02):**
-- **Dispatch table NOP blocks**: Pipeline marks some initialization blocks as NOP, skipping them in dispatch table. Workaround: manually add missing functions.
-- **STRH/LDRH offset parsing**: Disassembler uses wrong bit field (bits 7-3 instead of bits 3-0) for half-word immediate offset. Fix in `crates/gbatopy-disasm/src/arm/mod.rs`.
-- **Loop stall detection**: `max_inner_stalls=10` breaks loops prematurely. Workaround: increase to 10000.
-
-**Debugging**: See `docs/how-debug.md` for systematic debug workflow.
+Project is in active development. Transpilation pipeline works for the test ROM set; per-ROM visual verification status is tracked in [`docs/reference/test-roms.md`](docs/reference/test-roms.md).
 
 ---
 
@@ -122,28 +104,6 @@ python3 /tmp/test.py --scale=2
 - `--frame=N`: Run exactly N frames then exit
 - `--screenshot=FILE`: Save screenshot at end
 - `--scale=N`: Scale display by N (e.g., 3 = 720×480 pixels)
-
----
-
-## Coverage Statistics
-
-| Metric | Value |
-|--------|-------|
-| Test ROMs | 66 |
-| Transpile success | ✅ 100% (66/66) |
-| Golden match | ✅ stripes.gba (100%) |
-| Zero stubs | ✅ All 68 ROMs |
-| ARM/Thumb codegen | ✅ 600+ opcodes |
-| 54 BIOS handlers | Implemented |
-| VRAM writes | Working (Mode 3/4) |
-| DMA channels | ✅ 4 channels |
-| IRQ handlers | ✅ VBlank/HBlank/VCount |
-
-**Known Gaps:**
-- ❌ APU audio synthesis (no sound output)
-- ❌ Affine backgrounds (Mode 1/2)
-- ❌ Window layers, blend modes, mosaic effects
-- ❌ CPSR flags (conditional branches unreliable)
 
 ---
 

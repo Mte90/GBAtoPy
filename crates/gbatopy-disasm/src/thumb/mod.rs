@@ -369,8 +369,8 @@ impl ThumbDecoder {
         hw: u16,
         address: u32,
     ) -> (String, Vec<crate::Operand>, bool) {
-        let offset = (hw & 0x3FF) as i32;
-        let signed_offset = (offset << 22) >> 22;
+        let offset = (hw & 0x7FF) as i32;
+        let signed_offset = (offset << 21) >> 21;
         let target = address
             .wrapping_add(4)
             .wrapping_add((signed_offset as u32).wrapping_mul(2));

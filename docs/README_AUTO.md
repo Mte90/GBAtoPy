@@ -1,6 +1,6 @@
 # GBAtoPy – Transpiler Documentation
 
-Last verified: 2026-06-11 22:45 UTC
+Last verified: 2026-07-23
 
 ## Identity
 
@@ -12,47 +12,17 @@ GBAtoPy is a GBA ROM-to-Python transpiler that converts GBA ARM/Thumb machine co
 
 ### Not an emulator
 
-The generated Python embeds the **Py7TDMI CPU core** and **PPU renderer** directly, executing translated code rather than simulating the hardware.
+The generated Python uses **project-authored runtime modules** (CPU, PPU, Memory, DMA, Timers, APU) and executes translated code rather than simulating the hardware.
 
-## Status: IMPLEMENTATION COMPLETE ✅
+## Status: In Active Development
 
-- **All 68 test ROMs transpile** without errors to valid Python
-- **Cargo build** – 0 errors, 0 warnings
-- **Codegen** – Generates readable, modifiable Python
-- **Runtime** – Executes end-to-end with graphics rendering and keyboard input
-- **Screenshots differ** between ROMs (verified via pixel diff, average 2.5% difference)
+- Transpilation pipeline functional on the test ROM set
+- Per-ROM visual verification status tracked in `docs/reference/test-roms.md`
+- Build: `cargo build --release`
 
-### Missing Features Still Within Scope
+### Feature Implementation Status
 
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **4BPP tile backgrounds (Mode 0)** | ✅ Verified | shades.gba golden match (after char-block + nibble-order fixes) |
-| **Bitmap modes (Mode 3, Mode 4 8BPP)** | ✅ Verified Mode 3 (stripes.gba golden match) | Mode 4 partial, Mode 5 unverified |
-| **VRAM (96 KB)** | ✅ Verified | direct memory writes verified in shades/stripes |
-| **Palette (1 KB)** | ✅ Verified | 4BPP+8BPP palette lookup verified in shades/stripes |
-| **OAM sprites** | ⚠️ Implemented, unverified | OAM parsing, tile fetch, palette lookup code exists; no sprite ROM golden-verified |
-| **APU audio channels** | ⚠️ Implemented, not integrated | 4 channels + FIFO code exists in runtime template; not wired into transpiler output; helloAudio smoke test fails |
-| **Memory mapped I/O** | ✅ Verified | mirrors at 0x04000000-0x040003FF; DISPCNT reads verified in shades/stripes |
-| **Interrupts** | ⚠️ Implemented, unverified | VBlank/HBlank/VCount, ISR at 0x03007FFC code exists; no IRQ-dependent ROM golden-verified |
-| **Timers 0-3** | ⚠️ Implemented, unverified | prescaler, cascade, overflow IRQ code exists; no timer ROM golden-verified |
-| **DMA 0-3** | ⚠️ Implemented, unverified | immediate/VBlank/HBlank/special triggers, 16/32-bit code exists; no DMA ROM golden-verified |
-| **Keypad** | ✅ Verified | KEYINPUT, 16-bit reads; joypad.gba smoke passes |
-| **BIOS SWI handlers** | ⚠️ Implemented, unverified | 54 handlers (Halt, Div, Sqrt, LZ77, etc.); RegisterRamReset verified in shades debug; rest unverified |
-| **SRAM save/load** | ✅ Verified | 182-line `sram.py`; sram.gba smoke passes |
-| **Base64 encoding** | ✅ Working | ROMs >100KB embedded with Base64 for size reduction |
-| **External assets** | ✅ Working | `--external-assets` flag to export ROM data to `.assets` |
-
-### Out-of-Scope (Per Project Boundaries)
-
-
-| Feature | Status | Future Work |
-|---------|--------|------------|
-| 8BPP tile decode for backgrounds | Register-level decoder exists | Out of scope – no test ROMs use 8BPP tile backgrounds |
-| Mode 1/2 affine backgrounds | `_apply_affine_transform()` implemented | Out of scope |
-| Window layers, blend modes, mosaic effects | Register stubs exist | Out of scope |
-
-**Decision: Scope lines are clear. Focus on what exists and document scope boundaries honestly.**
+Feature implementation status is tracked in `docs/reference/test-roms.md` and `docs/status.md`.
 
 ---
 
@@ -185,27 +155,6 @@ Status: 68/68 transpile ✅
 
 ---
 
-## Current Implementation Depth
-
-| Category | Coverage | Details |
-|----------|----------|-------|
-| **ARM/Thumb opcodes** | 100% coverage (data processing, load/store, branch, multiply, MRS/MSR, SWP/SWPB, LDM/STM, SWI) |
-| **CPSR flags** | N,Z,C,V tracked; `check_condition()` implements all 16 ARM condition codes |
-| **Conditional branches** | Thumb BEQ/BNE/BGT/BLT/BGE/BLE work |
-| **Memory mapping** | All mirrors implemented (VRAM 96KB, Palette 1KB, OAM 1KB, MMIO 1KB) |
-| **4BPP tile decode** | `_decode_tile_4bpp()` reads 32 bytes/tile for Mode 0 |
-| **8BPP mode** | Palette lookup via `_get_palette_color_256()` – available but not used in current ROM set |
-| **Mode 3/4 rendering** | Bitmap modes validated |
-| **Mode 1/2 affine** | `_apply_affine_transform()` implemented; affine backgrounds (Mode 1/2) out of scope per project boundaries |
-| **VBlank IRQ** | IF flag cleared on VBlank; ISR at 0x03007FFC |
-| **HBlank IRQ** | Triggered at VCOUNT match |
-| **Timers** | Timers 0–3 with prescaler, cascade mode, overflow IRQ |
-| **DMA** | All 4 channels (immediate/VBlank/HBlank/special), 16/32-bit transfers, inc/dec/fixed address, repeat mode, FIFO A/B |
-| **APU** | 4 channels + FIFO A/B; `get_sample()` mixes to buffer |
-| **SWI handlers** | 54 BIOS handlers (Halt, Div, Sqrt, LZ77, Huffman, BgAffineSet, ObjAffineSet, CpuSet, RegisterRamReset, etc.) |
-
----
-
 ## Configuration & Conventions
 
 ### VRAM Memory Map
@@ -310,7 +259,7 @@ assert nb >= 100, 'Too many black pixels'
 
 ### In Scope ✅
 
-- ARM7TDMI CPU core (Py7TDMI execution model embedded)
+- ARM/Thumb code-gen (instruction-by-instruction Python generation, NOT interpreter)
 - Thumb mode support
 - Basic Block Merging (via CFG)
 
@@ -396,32 +345,6 @@ mgba/build/sdl/mgba test_roms/roms/stripes.gba --script scripts/screenshot.lua
 
 ---
 
-## Final Assessment
+## Assessment
 
-**Implementation complete for project boundaries.**
-
-| Test | Status |
-|------|--------|
-| Cargo build | ✅ 0 errors, 0 warnings |
-| ROM transpile (68) | ✅ 68/68 |
-| Python compile | ✅ All valid syntactically |
-| Syntax | ✅ Zero `pass`/TODO stubs in active paths |
-| Runtime | ✅ Exits 0; screenshots differ |
-| Documentation | ✅ Honest and consistent |
-
-### Code Cleanliness ✅
-- No `#[allow(dead_code)]` at global level (0 warnings remain)
-- No unused variables (prefixed with `_`)
-- No dead_code warnings
-- No type suppressions (`as any`, `@ts-ignore`)
-- No `.findings` files (removed per user instruction)
-
-### Deliverables ✅
-1. Standalone transpiler executable (`cargo build --release`)
-2. 68 ROM test suite
-3. Documentation coherent with code
-4. Zero surprises in build or output
-
-**Status: IN ACTIVE DEVELOPMENT** ⚠️
-
-Core transpiler works for instruction-coverage ROMs. Real-game ROMs blocked by STMFD/LDMFD register order bug. 2/68 ROMs verified pixel-perfect vs mGBA golden (manual). Automated ScreenshotGolden not yet wired into CI.
+Project is in active development. Transpilation pipeline is functional; visual verification against mGBA goldens is tracked per-ROM in `docs/reference/test-roms.md`. Only a minority of ROMs are currently pixel-verified.

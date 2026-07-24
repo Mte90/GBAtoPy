@@ -281,6 +281,9 @@ class ARM7TDMI:
             return self.exec_bx(instr)
 
         if (instr & 0x0C000000) == 0:
+            op_lo = instr & 0xF0
+            if op_lo == 0xB0 or op_lo == 0xD0 or op_lo == 0xF0:
+                return self.exec_extra_load_store(instr)
             return self.exec_data_processing(instr)
 
         if (instr & 0xC000000) == 0x4000000:
@@ -592,6 +595,60 @@ class ARM7TDMI:
 
         if rd != 15:
             self.registers[15] += 4
+        return 2
+
+    @jit_compile
+    def exec_extra_load_store(self, instr: int) -> int:
+        p_bit = (instr >> 24) & 1
+        is_up = (instr >> 23) & 1
+        is_imm = (instr >> 22) & 1
+        w_bit = (instr >> 21) & 1
+        is_load = (instr >> 20) & 1
+        rn = (instr >> 16) & 0xF
+        rd = (instr >> 12) & 0xF
+        sh = (instr >> 5) & 0x3
+
+        base = self._operand(rn)
+
+        if is_imm:
+            imm_hi = (instr >> 8) & 0xF
+            imm_lo = instr & 0xF
+            offset = (imm_hi << 4) | imm_lo
+        else:
+            rm = instr & 0xF
+            offset = self._operand(rm)
+
+        eff_offset = offset if is_up else -offset
+
+        if p_bit:
+            addr = (base + eff_offset) & 0xFFFFFFFF
+        else:
+            addr = base
+
+        if not is_load:
+            val = self._operand(rd)
+            self.memory.write_u16(addr, val & 0xFFFF)
+        else:
+            if sh == 1:
+                val = self.memory.read_u16(addr)
+            elif sh == 2:
+                val = self.memory.read_u8(addr)
+                if val & 0x80:
+                    val |= 0xFFFFFF00
+            elif sh == 3:
+                val = self.memory.read_u16(addr)
+                if val & 0x8000:
+                    val |= 0xFFFF0000
+            else:
+                val = 0
+            self.write_register(rd, val)
+
+        if w_bit or not p_bit:
+            if rn != 15:
+                self.registers[rn] = (base + eff_offset) & 0xFFFFFFFF
+
+        if rd != 15:
+            self.registers[15] = (self.registers[15] + 4) & 0xFFFFFFFF
         return 2
 
     @jit_compile
