@@ -1043,21 +1043,16 @@ def _interp_fallback(registers, cpsr):
     _interp_cpu.cpsr = _cpsr_val
     _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
     _step_count = 0
-    _trace = []
-    while _step_count < 10000000:
+    while _step_count < 2000:
         _pc = _interp_cpu.registers[15]
         if 0x08000000 <= _pc < 0x0A000000:
             _idx = (_pc - 0x08000000) >> 1
             if _idx in dispatch_table:
-                # Correct mode: if PC is only in ARM table, switch to ARM;
-                # if only in Thumb, switch to Thumb. If in both, keep current.
                 if _idx in dispatch_table_arm and _idx not in dispatch_table_thumb:
                     _interp_cpu.thumb_mode = False
                 elif _idx in dispatch_table_thumb and _idx not in dispatch_table_arm:
                     _interp_cpu.thumb_mode = True
                 break
-            # PC in ROM but not in dispatch table (e.g., return from IWRAM code).
-            # Break only after stepping at least once to avoid tight loop.
             if _step_count > 0:
                 break
         if _pc == 0x03000128:
@@ -1068,13 +1063,6 @@ def _interp_fallback(registers, cpsr):
                 ime = irq.ime_reg
             else:
                 ie = iff = ime = 0
-            if not getattr(_interp_fallback, '_irq_dumped', False):
-                _interp_fallback._irq_dumped = True
-                iw = [memory.read_u32(0x03000128 + i*4) for i in range(8)]
-                print(f"  [irq] IE=0x{ie:04X} IF=0x{iff:04X} IME=0x{ime:04X} R14=0x{_interp_cpu.registers[14]:08X}")
-                print(f"  [irq] IWRAM@0x03000128: {' '.join(f'{w:08X}' for w in iw)}")
-                vt = memory.read_u32(0x03007FFC)
-                print(f"  [irq] vector@0x03007FFC=0x{vt:08X}")
             pending = ie & iff
             if pending and ime:
                 handler_addr = memory.read_u32(0x03007FFC)
@@ -1093,14 +1081,8 @@ def _interp_fallback(registers, cpsr):
                 _interp_cpu.thumb_mode = False
             _step_count += 1
             continue
-        if _step_count < 100:
-            _trace.append(f"  step {_step_count}: PC=0x{_pc:08X} R13=0x{_interp_cpu.registers[13]:08X} R14=0x{_interp_cpu.registers[14]:08X}")
         _interp_cpu.step()
         _step_count += 1
-    if _step_count >= 10000000:
-        print(f"  [interp] exhausted 10000000 steps, final PC=0x{_interp_cpu.registers[15]:08X}")
-        for line in _trace:
-            print(line)
     for i in range(16):
         registers[i] = _interp_cpu.registers[i]
     _cpsr_val = _interp_cpu.cpsr
@@ -1109,6 +1091,7 @@ def _interp_fallback(registers, cpsr):
     cpsr['c'] = (_cpsr_val >> 29) & 1
     cpsr['v'] = (_cpsr_val >> 28) & 1
     cpsr['t'] = 1 if _interp_cpu.thumb_mode else 0
+    return _step_count
 
 def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):
     global _cpu_halted
@@ -1147,7 +1130,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
         func = _dt.get(idx)
         if func is None:
-            _interp_fallback(registers, cpsr); ic += 1
+            _steps = _interp_fallback(registers, cpsr); ic += max(1, _steps)
         else:
             func(registers, cpsr); ic += 1
             if registers[15] == pc:
@@ -1238,16 +1221,19 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         instr_per_scanline = max(50, (target_cycles_per_frame // 4) // 160)
         max_inner_stalls = 10
         for _scanline in range(160):
+            if ic >= mi:
+                break
             inner_loop_stalls = 0
-            for _ in range(instr_per_scanline):
-                if _cpu_halted:
+            _inner_ic_start = ic
+            while (ic - _inner_ic_start) < instr_per_scanline:
+                if _cpu_halted or ic >= mi:
                     break
                 pc = registers[15]
                 idx = (pc - 0x08000000) >> 1
                 _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
                 func = _dt.get(idx)
                 if func is None:
-                    _interp_fallback(registers, cpsr); ic += 1
+                    _steps = _interp_fallback(registers, cpsr); ic += max(1, _steps)
                     continue
                 func(registers, cpsr); ic += 1
                 if pc_trace and trace_file:

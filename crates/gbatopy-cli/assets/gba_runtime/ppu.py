@@ -719,6 +719,12 @@ class PPU:
         self.screen_width = 240
         self.screen_height = 160
 
+        # Per-scanline BG2 affine snapshots for HBlank-DMA support.
+        # Fixed-size array indexed by vcount (0..159) so that step_scanline() being
+        # called from both the main loop and the fallback interpreter is idempotent:
+        # the same vcount overwrites the same slot instead of appending duplicates.
+        self._bg2_affine_snapshots = [None] * self.screen_height
+
         # BG configurations (per layer)
         self.bg_priority = [0] * 4
         self.bg_char_block = [0] * 4
@@ -1531,10 +1537,26 @@ class PPU:
         self.vcount = (self.vcount + 1) % 228
         self.vblank = self.vcount >= self.screen_height
 
+        # Reset per-scanline affine snapshots at frame start (vcount wraps to 0).
+        # Fixed-size array (not list) so duplicate calls from main loop + fallback
+        # interpreter for the same vcount overwrite the same slot instead of
+        # appending duplicates and shifting every subsequent index.
+        if self.vcount == 0:
+            self._bg2_affine_snapshots = [None] * self.screen_height
+
         io = self.memory.io
         # Write VCount to MMIO (0x04000006) so CPU reads see the current scanline
         io[6] = self.vcount & 0xFF
         io[7] = 0
+
+        # Snapshot BG2 affine params for this scanline BEFORE HBlank-DMA can modify them.
+        # render_frame() reads snaps[vcount] so per-scanline affine changes take effect.
+        # Indexed by vcount (not appended) so re-entry for the same scanline is idempotent.
+        if 0 <= self.vcount < self.screen_height:
+            try:
+                self._bg2_affine_snapshots[self.vcount] = self._read_affine_bg2_params()
+            except Exception:
+                self._bg2_affine_snapshots[self.vcount] = None
 
         # Update DISPSTAT (0x04000004): bit0=VBlank, bit1=HBlank, bit2=VCount trigger
         dispstat = io[4] | (io[5] << 8)
@@ -1876,9 +1898,10 @@ class PPU:
         """Render Mode 3: 240x160 16-bit bitmap via affine BG2 transformation.
 
         Matches mGBA's GBAVideoSoftwareRendererDrawBackgroundMode3:
-        - Frame start: sx=BG2X, sy=BG2Y
+        - Frame start: sx=BG2X, sy=BG2Y (latched once, accumulated internally)
         - Per scanline: x=sx-dx, y=sy-dy, then per pixel x+=dx, y+=dy
         - After scanline: sx+=dmx(BG2PB), sy+=dmy(BG2PD)
+        - BG2PA/PB/PC/PD are latched per-scanline so HBlank-DMA updates take effect
         - Out-of-bounds: backdrop if no overflow, wrap if overflow set
         """
         page = self.display_frame_select
@@ -1889,7 +1912,23 @@ class PPU:
         except Exception:
             vram_bytes = bytes(self.screen_height * self.screen_width * 2)
 
-        dx, dmx, dy, dmy, refx, refy, overflow = self._read_affine_bg2_params()
+        # Per-scanline affine snapshots captured by step_scanline() before HBlank-DMA.
+        # Fall back to a single read if no snapshots exist (e.g. headless without stepping).
+        snaps = self._bg2_affine_snapshots
+        if snaps and snaps[0] is not None:
+            _, _, _, _, refx, refy, overflow0 = snaps[0]
+        else:
+            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
+
+        try:
+            bdv = self.memory.read_u16(0x05000000)
+            backdrop_rgb = (
+                _c5to8((bdv >> 0) & 0x1F),
+                _c5to8((bdv >> 5) & 0x1F),
+                _c5to8((bdv >> 10) & 0x1F),
+            )
+        except Exception:
+            backdrop_rgb = (0, 0, 0)
 
         sx = refx
         sy = refy
@@ -1898,8 +1937,15 @@ class PPU:
         sw = self.screen_width
         sh = self.screen_height
         vlen = len(vram_bytes)
+        n_snaps = len(snaps)
 
         for y in range(sh):
+            # Use per-scanline latched matrix; fall back to frame-start read
+            if y < n_snaps and snaps[y] is not None:
+                dx, dmx, dy, dmy, _, _, overflow = snaps[y]
+            else:
+                dx, dmx, dy, dmy, _, _, overflow = self._read_affine_bg2_params()
+
             row_fb = fb[y]
             row_lo = lo[y]
             x = sx - dx
@@ -1913,7 +1959,7 @@ class PPU:
                     tx &= sw - 1
                     ty &= sh - 1
                 elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
-                    row_fb[px] = (0, 0, 0)
+                    row_fb[px] = backdrop_rgb
                     row_lo[px] = 0
                     continue
                 offset = (tx + ty * sw) * 2
@@ -1926,7 +1972,7 @@ class PPU:
                     )
                     row_lo[px] = 2
                 else:
-                    row_fb[px] = (0, 0, 0)
+                    row_fb[px] = backdrop_rgb
                     row_lo[px] = 0
             sx += dmx
             sy += dmy
@@ -1961,7 +2007,14 @@ class PPU:
                 _c5to8((cv >> 10) & 0x1F),
             ))
 
-        dx, dmx, dy, dmy, refx, refy, overflow = self._read_affine_bg2_params()
+        # Per-scanline affine snapshots captured by step_scanline() before HBlank-DMA.
+        snaps = self._bg2_affine_snapshots
+        if snaps and snaps[0] is not None:
+            _, _, _, _, refx, refy, overflow0 = snaps[0]
+        else:
+            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
+
+        backdrop_rgb = palette_rgb[0]
 
         sx = refx
         sy = refy
@@ -1970,8 +2023,13 @@ class PPU:
         sw = self.screen_width
         sh = self.screen_height
         vlen = len(vram_bytes)
+        n_snaps = len(snaps)
 
         for y in range(sh):
+            if y < n_snaps and snaps[y] is not None:
+                dx, dmx, dy, dmy, _, _, overflow = snaps[y]
+            else:
+                dx, dmx, dy, dmy, _, _, overflow = self._read_affine_bg2_params()
             row_fb = fb[y]
             row_lo = lo[y]
             x = sx - dx
@@ -1985,7 +2043,7 @@ class PPU:
                     tx &= sw - 1
                     ty &= sh - 1
                 elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
-                    row_fb[px] = (0, 0, 0)
+                    row_fb[px] = backdrop_rgb
                     row_lo[px] = 0
                     continue
                 offset = tx + ty * sw
@@ -1993,7 +2051,7 @@ class PPU:
                     row_fb[px] = palette_rgb[vram_bytes[offset]]
                     row_lo[px] = 2
                 else:
-                    row_fb[px] = (0, 0, 0)
+                    row_fb[px] = backdrop_rgb
                     row_lo[px] = 0
             sx += dmx
             sy += dmy
@@ -2029,7 +2087,12 @@ class PPU:
         except Exception:
             vram_bytes = bytes(128 * 160 * 2)
 
-        dx, dmx, dy, dmy, refx, refy, overflow = self._read_affine_bg2_params()
+        # Per-scanline affine snapshots captured by step_scanline() before HBlank-DMA.
+        snaps = self._bg2_affine_snapshots
+        if snaps and snaps[0] is not None:
+            _, _, _, _, refx, refy, overflow0 = snaps[0]
+        else:
+            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
 
         sx = refx
         sy = refy
@@ -2038,8 +2101,13 @@ class PPU:
         bw = 160
         bh = 128
         vlen = len(vram_bytes)
+        n_snaps = len(snaps)
 
         for y in range(bh):
+            if y < n_snaps and snaps[y] is not None:
+                dx, dmx, dy, dmy, _, _, overflow = snaps[y]
+            else:
+                dx, dmx, dy, dmy, _, _, overflow = self._read_affine_bg2_params()
             row_fb = fb[y]
             row_lo = lo[y]
             x = sx - dx

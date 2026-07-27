@@ -58,7 +58,7 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 || Category | Count | ROMs | Status |
 |----------|-------|------|------|--------|
 | CPU-only | 16 | arm.gba ✅, thumb.gba ✅, bios.gba ✅, memory.gba ✅, nes.gba ⏰, unsafe.gba ✅, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba ✅, retAddr.gba ✅, basic-timing.gba | 7✅, 1⏰, 8❓ |
-| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ✅, line_timing.gba ⏰, lyc_midline.gba ⏰, mode2.gba ✅, greenswap.gba ❌, bgpd.gba ⏰, bgx.gba ⏰, sprite-hmosaic.gba ⏰, vram-mirror.gba | 8✅, 1❌, 5⏰, 1❓ |
+| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ✅, line_timing.gba ⏰, lyc_midline.gba ⏰, mode2.gba ✅, greenswap.gba ❌, bgpd.gba ⏰, bgx.gba ✅, sprite-hmosaic.gba ⏰, vram-mirror.gba | 9✅, 1❌, 4⏰, 1❓ |
 | IRQ | 9 | isr.gba ⏰, if_ack.gba ✅, irq-delay.gba, irq_delay.gba ✅, joypad.gba ✅, cancel-irq-ie.gba, cancel-irq-if.gba, cancel-irq-ime.gba, status-irq-dma.gba | 3✅, 1⏰, 5❓ |
 | DMA | 8 | dma_priority.gba ⏰, burst-into-tears.gba, force-nseq-access.gba, latch.gba, start-stop.gba, reload.gba, dispcnt-latch.gba, window_midframe.gba ❌ | 1❌, 1⏰, 6❓ |
 | Timer | 2 | timer_change.gba ⏰, haltcnt.gba | 1⏰, 1❓ |
@@ -71,7 +71,7 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 
 **Legend**: ✅ PASS (diff <30%) · ❌ FAIL (diff ≥30%) · ⏰ RUN_FAIL (hang/timeout) · ❓ Unverified
 
-**Total ROMs**: 68 — 23 ✅ verified working, 4 ❌ known failures, 10 ⏰ execution hangs, 31 ❓ unverified
+**Total ROMs**: 68 — 24 ✅ verified working, 4 ❌ known failures, 9 ⏰ execution hangs, 31 ❓ unverified
 
 ---
 
@@ -773,12 +773,12 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 | ARM instructions | arm.gba, armwrestler, FuzzARM | ✅ Working |
 | Thumb instructions | thumb.gba, FuzzARM | ✅ Working |
 | BIOS SWI | bios.gba | ⚠️ Partial |
-| PPU rendering | shades.gba, stripes.gba, helloWorld.gba, hello_world.gba | ✅ Verified (4 ROMs, all pixel-match mGBA golden) |
+| PPU rendering | shades.gba, stripes.gba, helloWorld.gba, hello_world.gba, bgx.gba | ✅ Verified (5 ROMs, all pixel-match mGBA golden) |
 | PPU rendering | hello.gba | ⚠️ Partial (runs, text visible at frame=1; no golden comparison; BXEQ fix 2026-07-23) |
 | PPU rendering | other ROMs | ⚠️ Unverified (32 goldens exist, comparison not wired) |
 | PPU timing | line_timing.gba, lyc_midline.gba | ⚠️ Partial |
 | IRQ handling | isr.gba, if_ack.gba, irq_delay | ⚠️ Implemented, unverified against goldens |
-| DMA transfers | dma_priority.gba, window_midframe.pcmxx | ⚠️ Implemented (4 channels), unverified against goldens |
+| DMA transfers | dma_priority.gba, window_midframe.pcmxx, bgx.gba | ⚠️ Implemented (4 channels), HBlank DMA verified via bgx (2026-07-27) |
 | Timer | timer_change.gba | ⚠️ Inaccurate |
 | Keypad | enhancedcontrolchecker.gba, joypad.gba | ✅ Working |
 | Audio | redline.gba, helloAudio.gba, test.gba | ❌ Not integrated |
@@ -808,7 +808,7 @@ All 68 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | armwrestler-gba-fixed.gba | 0 | 6060 | ❓ |
 | armwrestler.gba | 0 | 6070 | ❓ |
 | bgpd.gba | 0 | 580 | ⏰ (hangs at runtime) |
-| bgx.gba | 0 | 514 | ⏰ (hangs at runtime) |
+| bgx.gba | 0 | 514 | ✅ (0.0% diff, PASS — Mode 3 affine BG2 + HBlank DMA) |
 | bios.gba | 0 | 1238 | ✅ (1.06% diff, PASS) |
 | cond_invalid.gba | 0 | 1265 | ✅ (1.12% diff, PASS) |
 | dma_priority.gba | 0 | 1495 | ⏰ (hangs at runtime) |

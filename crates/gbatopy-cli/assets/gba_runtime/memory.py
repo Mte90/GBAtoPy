@@ -83,8 +83,6 @@ class Memory:
         self._timers: Optional[object] = None
         self._input: Optional[object] = None
         self._interrupts: Optional[object] = None
-        self._last_vcount_read: int = -1
-        self._last_dispstat_read: int = -1
 
         self.bios[0x00] = 0xEA
         self.bios[0x01] = 0x00
@@ -470,29 +468,6 @@ class Memory:
     def read_u16(self, addr: int) -> int:
         addr &= 0xFFFFFFFF
         mapped = self._map_address(addr)
-        # VCount polling detection: when the CPU reads REG_VCOUNT (0x04000006)
-        # and gets the same value as the last read, it's in a polling loop.
-        # Advance the scanline immediately so VCount changes and the loop exits.
-        if mapped == 0x04000006 and self._ppu is not None:
-            current = self.io[6]
-            if current == self._last_vcount_read:
-                self._ppu.step_scanline()
-                current = self.io[6]
-            self._last_vcount_read = current
-            return current
-        # DISPSTAT VBlank polling detection: when the CPU reads REG_DISPSTAT
-        # (0x04000004) and the VBlank bit (bit 0) is 0 with the same value
-        # as the last read, the ROM is spinning waiting for VBlank. Advance
-        # scanlines until VBlank fires so the loop exits.
-        if mapped == 0x04000004 and self._ppu is not None:
-            current = self.io[4] | (self.io[5] << 8)
-            if (current & 1) == 0 and current == self._last_dispstat_read:
-                for _ in range(228):
-                    self._ppu.step_scanline()
-                    if self.io[4] & 1:
-                        break
-            self._last_dispstat_read = current
-            return self.io[4] | (self.io[5] << 8)
         buf, start = self._buffer_for_addr(addr)
         if buf:
             return int.from_bytes(buf[start:start + 2], 'little')
@@ -502,17 +477,6 @@ class Memory:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
         mapped = self._map_address(addr)
-        if mapped == 0x04000004 and self._ppu is not None:
-            current = self.io[4] | (self.io[5] << 8)
-            if (current & 1) == 0 and current == self._last_dispstat_read:
-                for _ in range(228):
-                    self._ppu.step_scanline()
-                    if self.io[4] & 1:
-                        break
-            self._last_dispstat_read = current
-            lo = self.io[4] | (self.io[5] << 8)
-            hi = self.io[6] | (self.io[7] << 8)
-            return lo | (hi << 16)
         buf, off = self._buffer_for_addr(mapped)
         if buf is not None and off + 4 <= len(buf):
             return int.from_bytes(buf[off:off + 4], 'little')
@@ -525,18 +489,6 @@ class Memory:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
         mapped = self._map_address(addr)
-        # DISPSTAT VBlank polling detection (same as read_u16 path).
-        if mapped == 0x04000004 and self._ppu is not None:
-            current = self.io[4] | (self.io[5] << 8)
-            if (current & 1) == 0 and current == self._last_dispstat_read:
-                for _ in range(228):
-                    self._ppu.step_scanline()
-                    if self.io[4] & 1:
-                        break
-            self._last_dispstat_read = current
-            lo = self.io[4] | (self.io[5] << 8)
-            hi = self.io[6] | (self.io[7] << 8)
-            return lo | (hi << 16)
         buf, off = self._buffer_for_addr(mapped)
         if buf is not None and off + 4 <= len(buf):
             return int.from_bytes(buf[off:off + 4], 'little')

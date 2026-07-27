@@ -266,14 +266,85 @@ class DMA:
                     ch.pending = False
                     self._do_transfer(ch)
 
+    def _do_transfer_single(self, ch: DMAChannel):
+        """Transfer one unit, advance src/dst, keep channel enabled.
+
+        Per GBATEK, HBlank/VBlank DMA with the Repeat bit transfers a single
+        unit per trigger (not the full count at once). The channel stays enabled
+        until count is exhausted, then reloads if Repeat is set or disables.
+        """
+        if ch.busy:
+            return
+        ch.busy = True
+
+        src_ctrl = ch.get_src_increment()
+        dst_ctrl = ch.get_dst_increment()
+        transfer_size = ch.get_transfer_size()
+        src_step = self._step_for(src_ctrl, transfer_size)
+        dst_step = self._step_for(dst_ctrl, transfer_size)
+
+        src = ch.src_addr
+        dst = ch.dst_addr
+
+        if transfer_size == 4:
+            value = self.mem.read_u32(src)
+            if dst == DMA.FIFO_A_ADDR and self._apu:
+                self._apu.fifo_a.write(value & 0xFF)
+                self._apu.fifo_a.write((value >> 8) & 0xFF)
+                self._apu.fifo_a.write((value >> 16) & 0xFF)
+                self._apu.fifo_a.write((value >> 24) & 0xFF)
+            elif dst == DMA.FIFO_B_ADDR and self._apu:
+                self._apu.fifo_b.write(value & 0xFF)
+                self._apu.fifo_b.write((value >> 8) & 0xFF)
+                self._apu.fifo_b.write((value >> 16) & 0xFF)
+                self._apu.fifo_b.write((value >> 24) & 0xFF)
+            else:
+                self.mem.write_u32(dst, value)
+        else:
+            value = self.mem.read_u16(src)
+            if dst == DMA.FIFO_A_ADDR and self._apu:
+                self._apu.fifo_a.write(value & 0xFF)
+                self._apu.fifo_a.write((value >> 8) & 0xFF)
+            elif dst == DMA.FIFO_B_ADDR and self._apu:
+                self._apu.fifo_b.write(value & 0xFF)
+                self._apu.fifo_b.write((value >> 8) & 0xFF)
+            else:
+                self.mem.write_u16(dst, value)
+
+        ch.src_addr = src + src_step
+        ch.dst_addr = dst + dst_step
+        ch.count = max(0, ch.count - 1)
+
+        if ch.count == 0:
+            if ch.is_repeat():
+                ch.count = ch.get_count_value()
+                if dst_ctrl == 3:
+                    ch.dst_addr = ch._orig_dst if hasattr(ch, '_orig_dst') else ch.dst_addr
+                if src_ctrl == 3:
+                    ch.src_addr = ch._orig_src if hasattr(ch, '_orig_src') else ch.src_addr
+            else:
+                ch.control &= ~DMA_ENABLE
+                ch.enabled = False
+
+        ch.write_to_memory()
+        ch.busy = False
+        ch.pending = False
+
+        if ch.irq_enabled and self._interrupts:
+            self._interrupts.dma_irq(ch.channel_id)
+
     def vblank_fire(self):
         for ch in self.channels:
             ch.read_from_memory()
             if not ch.enabled or ch.busy:
                 continue
             if ch.is_vblank():
-                self._do_transfer(ch)
-                ch.pending = False
+                # Per GBATEK: VBlank/HBlank DMA transfer exactly ONE unit per
+                # trigger, regardless of the Repeat bit. Repeat only governs
+                # reload-vs-disable when count reaches 0 (handled inside
+                # _do_transfer_single). Bulk-transferring the whole count on
+                # a single trigger breaks per-scanline affine/palette updates.
+                self._do_transfer_single(ch)
 
     def hblank_fire(self):
         for ch in self.channels:
@@ -281,8 +352,8 @@ class DMA:
             if not ch.enabled or ch.busy:
                 continue
             if ch.is_hblank():
-                self._do_transfer(ch)
-                ch.pending = False
+                # See vblank_fire: one unit per trigger, not the whole count.
+                self._do_transfer_single(ch)
 
     def custom_fire(self):
         for ch in self.channels:
