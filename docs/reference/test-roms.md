@@ -1,4 +1,4 @@
-# GBA Test ROMs Reference - Updated (2026-07-23)
+# GBA Test ROMs Reference - Updated (2026-07-30)
 
 This document catalogs all **68 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
@@ -8,7 +8,7 @@ This document catalogs all **68 test ROMs** used by GBAtoPy for verification and
 
 ## Verification Status Summary
 
-As of 2026-07-23, ROMs are classified by visual verification against mGBA golden screenshots (using `scripts/verify/compare_screenshots.py` with <30% pixel difference threshold).
+As of 2026-07-30, ROMs are classified by visual verification against mGBA golden screenshots (using `scripts/verify/compare_screenshots.py` with <30% pixel difference threshold).
 
 ### Status Legend
 
@@ -21,10 +21,13 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 
 | Status | Count | ROMs |
 |--------|-------|------|
-| ✅ Verified working | 7 | stripes.gba, shades.gba, helloWorld.gba, hello_world.gba, hello.gba, mode3.gba, mode4.gba (all pixel-match mGBA golden) |
+| ✅ Verified working | 22 | arm, bgx, bios, cond_invalid, flash64, flash128, hello, helloWorld, hello_world, if_ack, irq_delay, joypad, memory, mode3, none, redline, retAddr, shades, sram, stripes, thumb, unsafe (all pixel-match mGBA golden) |
 | ⚠️ Partial | 0 | — |
-| ❌ Not working | 2 | helloAudio.gba (smoke failure), rates.gba (smoke failure) |
-| ❓ Unknown | 59 | All others (transpile cleanly, visual status unverified) |
+| ❌ Not working | 7 | helloAudio.gba (smoke failure), rates.gba (smoke failure), greenswap.gba (85% diff), window_midframe.gba (55% diff), mode2.gba (98.12% diff), mode4.gba (170% mean diff), bgpd.gba (75.38% diff, DMA never arms) |
+| ⏰ Runtime hangs | 8 | dma_priority, isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change |
+| ❓ Unverified | 31 | Transpile + smoke pass, no visual check |
+
+**Note (2026-07-30):** mode2.gba and mode4.gba were previously marked ✅ but fail on this machine post-migration at 98.12% and 170.0% diff respectively. Root cause: VRAM fill loop codegen bug — the destination address and value registers do not advance, leaving VRAM all-zero. bgpd.gba was previously marked ⏰ (hang) but does NOT hang — it runs to completion at 75.38% diff with DMA never arming.
 
 ### Verified Working ROMs (100% Golden Match)
 
@@ -32,11 +35,28 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 |-----|------|----------|
 | **stripes.gba** | Mode 3 (16-bit bitmap) | Git commit 3dc6e29: "golden screenshot 100% match"; address mapping fix (2026-07-02) |
 | **shades.gba** | Mode 0 (4BPP text tiles) | docs/reference/test-roms.md line 257: "100% pixel match with mGBA (35,840 non-black pixels)"; 5 bugs fixed (char-block base, nibble order, double-scale, dispatch NOP, STRH offset) |
+| **arm.gba** | None (CPU-only) | 0.14% diff vs mGBA golden, PASS |
+| **bgx.gba** | Mode 3 (affine BG2 + HBlank DMA) | 0.0% diff vs mGBA golden, PASS — confirms HBlank DMA and affine transform |
+| **bios.gba** | None (BIOS SWI) | 1.06% diff vs mGBA golden, PASS |
+| **cond_invalid.gba** | None (CPU-only) | 1.12% diff vs mGBA golden, PASS |
+| **flash64.gba** | None (save test) | 0.02% diff vs mGBA golden, PASS |
+| **flash128.gba** | None (save test) | 0.02% diff vs mGBA golden, PASS |
 | **helloWorld.gba** | Mode 0 (text background) | 0.0% pixel difference vs mGBA golden at frame 60 (2026-07-24). Two codegen bugs fixed: (1) Thumb branch offset mask in `crates/gbatopy-disasm/src/thumb/mod.rs` — `format_18_uncond_branch` masked with `0x3FF` (10-bit) instead of `0x7FF` (11-bit), truncating branch targets and skipping the IWRAM clear routine; (2) Thumb STRH dispatch routing in `arm7tdmi.py` — the extra load/store handler was not invoked for the STRH Rd,[Rb,#Imm5] encoding, falling through to the generic path. |
-| **hello_world.gba** | Mode 0 (text background) | 0.1% pixel difference vs mGBA golden at frame 60 and 120 (PASS, <30% threshold) (2026-07-24). Display only enables at frame ≥3 (late DISPCNT write in ROM init); at frame 1 the screen is correctly black because the PPU is not yet enabled. Requires running ≥3 frames to see content. Prior BXEQ codegen fix (2026-07-23) resolved an earlier hang. |
 | **hello.gba** | Mode 0 (text background) | 0.0% pixel difference vs mGBA golden at frame 60 (2026-07-24). 209 non-black pixels (text visible), exact match. BXEQ conditional-branch codegen fix in `crates/gbatopy-cli/src/codegen/instruction_codegen/branch.rs` (2026-07-23) resolved prior copy-loop infinite spin. |
+| **hello_world.gba** | Mode 0 (text background) | 0.1% pixel difference vs mGBA golden at frame 60 and 120 (PASS, <30% threshold) (2026-07-24). Display only enables at frame ≥3 (late DISPCNT write in ROM init); at frame 1 the screen is correctly black because the PPU is not yet enabled. Requires running ≥3 frames to see content. Prior BXEQ codegen fix (2026-07-23) resolved an earlier hang. |
+| **if_ack.gba** | None (IRQ test) | 2.28% diff vs mGBA golden, PASS |
+| **irq_delay.gba** | None (IRQ test) | 6.26% diff vs mGBA golden, PASS |
+| **joypad.gba** | None (key interrupt) | 3.48% diff vs mGBA golden, PASS |
+| **memory.gba** | None (memory test) | 1.06% diff vs mGBA golden, PASS |
+| **mode2.gba** | Mode 2 (affine) | ❌ FAIL (98.12% diff, 2026-07-30). Previously marked PASS at 20.0%. Root cause: VRAM fill loop codegen bug — destination address and value registers do not advance, VRAM stays all-zero. Affine backgrounds render as solid backdrop color. |
 | **mode3.gba** | Mode 3 (16-bit bitmap) | 0.0% pixel difference vs mGBA golden at frame 60 (2026-07-24). 38400 non-black pixels (100% fill), exact match. Confirms Mode 3 16-bit bitmap PPU path is correct. |
-| **mode4.gba** | Mode 4 (8BPP bitmap) | 0.0% pixel difference vs mGBA golden at frame 60 (2026-07-24). 38400 non-black pixels (100% fill), exact match. Confirms Mode 4 8BPP bitmap PPU path is correct. |
+| **mode4.gba** | Mode 4 (8BPP bitmap) | ❌ FAIL (170.0% mean diff, 2026-07-30). Previously marked PASS at 0.0%. Same root cause as mode2.gba: VRAM fill loop codegen bug leaves VRAM all-zero. Golden is solid blue (palette[3]); transpiled is solid white (palette[0] = empty VRAM). Palette writes are correct (4 entries written). |
+| **none.gba** | None (save test) | 1.06% diff vs mGBA golden, PASS |
+| **redline.gba** | Mode 2/3 (game demo) | 1.25% diff vs mGBA golden, PASS — minimal startup screen |
+| **retAddr.gba** | None (branch test) | 0.78% diff vs mGBA golden, PASS |
+| **sram.gba** | None (save test) | 1.06% diff vs mGBA golden, PASS |
+| **thumb.gba** | None (CPU-only) | 0.68% diff vs mGBA golden, PASS |
+| **unsafe.gba** | None (edge cases) | 0.06% diff vs mGBA golden, PASS |
 
 ### Partial (Runs Without Hang, Visual Not Fully Verified)
 
@@ -50,6 +70,8 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 |-----|-------|----------|
 | **helloAudio.gba** | Smoke test failure | Smoke test failure — cause undiagnosed |
 | **rates.gba** | Smoke test failure | Smoke test failure — cause undiagnosed |
+| **greenswap.gba** | Visual FAIL | 85.33% pixel difference vs mGBA golden |
+| **window_midframe.gba** | Visual FAIL | 55.51% pixel difference vs mGBA golden (window layers not implemented) |
 
 ---
 
@@ -58,7 +80,7 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 || Category | Count | ROMs | Status |
 |----------|-------|------|------|--------|
 | CPU-only | 16 | arm.gba ✅, thumb.gba ✅, bios.gba ✅, memory.gba ✅, nes.gba ⏰, unsafe.gba ✅, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba ✅, retAddr.gba ✅, basic-timing.gba | 7✅, 1⏰, 8❓ |
-| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ✅, line_timing.gba ⏰, lyc_midline.gba ⏰, mode2.gba ✅, greenswap.gba ❌, bgpd.gba ⏰, bgx.gba ✅, sprite-hmosaic.gba ⏰, vram-mirror.gba | 9✅, 1❌, 4⏰, 1❓ |
+| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ❌, line_timing.gba ⏰, lyc_midline.gba ⏰, mode2.gba ❌, greenswap.gba ❌, bgpd.gba ❌, bgx.gba ✅, sprite-hmosaic.gba ⏰, vram-mirror.gba | 7✅, 3❌, 4⏰, 1❓ |
 | IRQ | 9 | isr.gba ⏰, if_ack.gba ✅, irq-delay.gba, irq_delay.gba ✅, joypad.gba ✅, cancel-irq-ie.gba, cancel-irq-if.gba, cancel-irq-ime.gba, status-irq-dma.gba | 3✅, 1⏰, 5❓ |
 | DMA | 8 | dma_priority.gba ⏰, burst-into-tears.gba, force-nseq-access.gba, latch.gba, start-stop.gba, reload.gba, dispcnt-latch.gba, window_midframe.gba ❌ | 1❌, 1⏰, 6❓ |
 | Timer | 2 | timer_change.gba ⏰, haltcnt.gba | 1⏰, 1❓ |
@@ -71,7 +93,9 @@ As of 2026-07-23, ROMs are classified by visual verification against mGBA golden
 
 **Legend**: ✅ PASS (diff <30%) · ❌ FAIL (diff ≥30%) · ⏰ RUN_FAIL (hang/timeout) · ❓ Unverified
 
-**Total ROMs**: 68 — 24 ✅ verified working, 4 ❌ known failures, 9 ⏰ execution hangs, 31 ❓ unverified
+**Total ROMs**: 68 — 22 ✅ verified working, 7 ❌ known failures (helloAudio, rates, greenswap, window_midframe, mode2, mode4, bgpd), 8 ⏰ execution hangs (dma_priority, isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change), 31 ❓ unverified
+
+**Note on bgpd.gba**: Previously marked ⏰ (hang) but does NOT hang — runs to completion, 75.38% diff vs mGBA golden (2026-07-30). DMA channels show all-zero state (DMA never arms). Same codegen class as mode2/mode4 (data not advancing). The earlier todo.md root-cause theory (dmy incrementing by 1) is unverified because DMA never fires.
 
 ---
 
@@ -807,7 +831,7 @@ All 68 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | arm.gba | 0 | 3977 | ✅ (0.14% diff, PASS) |
 | armwrestler-gba-fixed.gba | 0 | 6060 | ❓ |
 | armwrestler.gba | 0 | 6070 | ❓ |
-| bgpd.gba | 0 | 580 | ⏰ (hangs at runtime) |
+| bgpd.gba | 0 | 580 | ❌ (75.38% diff, FAIL — does NOT hang; runs to completion, DMA never arms) |
 | bgx.gba | 0 | 514 | ✅ (0.0% diff, PASS — Mode 3 affine BG2 + HBlank DMA) |
 | bios.gba | 0 | 1238 | ✅ (1.06% diff, PASS) |
 | cond_invalid.gba | 0 | 1265 | ✅ (1.12% diff, PASS) |
@@ -827,9 +851,9 @@ All 68 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | line_timing.gba | 0 | 1374 | ⏰ (hangs at runtime) |
 | lyc_midline.gba | 0 | 1433 | ⏰ (hangs at runtime) |
 | memory.gba | 0 | 1345 | ✅ (1.06% diff, PASS) |
-| mode2.gba | 0 | 2452 | ✅ (20.0% diff, PASS) |
+| mode2.gba | 0 | 2452 | ❌ (98.12% diff, FAIL — VRAM fill loop codegen bug, VRAM stays all-zero) |
 | mode3.gba | 0 | — | ✅ (0.0% diff, PASS) |
-| mode4.gba | 0 | — | ✅ (0.0% diff, PASS) |
+| mode4.gba | 0 | — | ❌ (170.0% mean diff, FAIL — same VRAM fill loop codegen bug as mode2) |
 | nes.gba | 0 | 1199 | ⏰ (hangs at runtime) |
 | none.gba | 0 | 1142 | ✅ (1.06% diff, PASS) |
 | pcmxx.gba | 0 | 1385 | ⏰ (hangs at runtime) |

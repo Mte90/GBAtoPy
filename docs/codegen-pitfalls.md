@@ -70,3 +70,24 @@ Catalogue of codegen bugs fixed across sessions.
 **Root cause:** BL code generation emitted same code as plain B, setting only PC and never writing return address to LR (R14).
 **Fix:** Added registers[14]=registers[15]+4 assignment before PC update for BL.
 **File:** crates/gbatopy-cli/src/codegen/instruction_codegen/branch.rs
+
+## 11. DMA Double-Stepping (Fallback Interpreter + Main Loop)
+
+**Symptom:** DMA transfers fire twice per scanline, exhausting the DMA source table by scanline ~94. In bgpd.gba, BG2PD plateaus at 159, producing a vertically stretched gradient.
+**Root cause:** Both the fallback interpreter (_interp_fallback) and the main execution loop called step_scanline(). Each scanline advanced the PPU twice, firing HBlank DMA twice per scanline.
+**Fix:** Fallback interpreter is now a pure CPU executor (no step_scanline()). Main loop is instruction-counted: advances PPU one scanline per instr_per_scanline CPU instructions. DMA uses _do_transfer_single() for one unit per HBlank/VBlank trigger.
+**Files:** crates/gbatopy-cli/assets/gba_runtime/dma.py, crates/gbatopy-cli/src/pipeline_cmd.rs
+
+## 12. Fast-Forward DISPSTAT Read (Memory Read Methods)
+
+**Symptom:** Tight IWRAM poll loops reading DISPSTAT caused premature DMA source table exhaustion. In bgpd.gba, each DISPSTAT read called step_scanline() up to 228 times.
+**Root cause:** read_u16 and read_u32 in memory.py had a fast-forward path calling self._ppu.step_scanline() during DISPSTAT/VCount reads.
+**Fix:** Removed the fast-forward DISPSTAT reads from memory.py. Removed _last_vcount_read and _last_dispstat_read attributes. PPU stepping is exclusively in the main loop.
+**File:** crates/gbatopy-cli/assets/gba_runtime/memory.py
+
+## 13. Per-Scanline Affine Parameter Snapshots (PPU)
+
+**Symptom:** Affine background rendering in Mode 3/4/5 used stale affine parameters — HBlank DMA updates to BG2PD were not reflected per-scanline.
+**Root cause:** _render_mode3/4/5 read affine parameters directly from live registers once per frame, ignoring per-scanline HBlank DMA updates.
+**Fix:** step_scanline() captures BG2PA/PB/PC/PD/X/Y into _bg2_affine_snapshots[vcount] before DMA fires. _render_mode3/4/5 read from snapshots, falling back to live read if snapshot is None. step_scanline() takes a capture_snapshot=True flag (main loop=True, fallback=False).
+**Files:** crates/gbatopy-cli/assets/gba_runtime/ppu.py

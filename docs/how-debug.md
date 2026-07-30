@@ -295,6 +295,24 @@ Before deep debugging, verify these common failure modes. They have caused the m
 **Check**: `arm7tdmi.py` MSR handler must update `self.mode` and swap banked registers.
 **Test**: `test_dispatch_audit.py::TestARMDispatchAudit::test_msr_cpsr_routes_to_status_transfer`
 
+## Known Runtime Bug Classes
+
+Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets/gba_runtime/`) rather than the Rust codegen. They typically manifest as incorrect PPU/DMA timing or memory access behavior.
+
+### Class 1: DMA double-stepping (fallback interpreter + main loop)
+
+**Symptom**: DMA transfers fire twice per scanline, exhausting the DMA source table by scanline ~94. Affine background parameters (BG2PD) plateau at 159, producing a vertically stretched gradient (observed in bgpd.gba).
+**Root cause**: Both the fallback interpreter (`_interp_fallback`) and the main execution loop called `step_scanline()`. Each scanline advanced the PPU twice, firing HBlank DMA twice per scanline.
+**Fix**: The fallback interpreter is now a pure CPU executor — it must NEVER call `step_scanline()`. The main loop is instruction-counted: it advances the PPU by one scanline for each `instr_per_scanline` CPU instructions executed.
+**Files**: `crates/gbatopy-cli/assets/gba_runtime/dma.py` (`_do_transfer_single`), `crates/gbatopy-cli/src/pipeline_cmd.rs` (fallback refactoring)
+
+### Class 2: Fast-forward DISPSTAT read (memory read methods)
+
+**Symptom**: Tight IWRAM poll loops reading DISPSTAT cause the DMA source table to exhaust prematurely. In bgpd.gba, the ROM polls DISPSTAT in a tight loop; each read called `step_scanline()` up to 228 times.
+**Root cause**: `read_u16` and `read_u32` in `memory.py` had a fast-forward path that called `self._ppu.step_scanline()` during DISPSTAT/VCount reads. A tight poll loop fired HBlank DMA hundreds of times per scanline.
+**Fix**: Removed the fast-forward DISPSTAT reads from `memory.py`. The `_last_vcount_read` and `_last_dispstat_read` attributes were also removed. PPU stepping is now exclusively in the main loop.
+**Files**: `crates/gbatopy-cli/assets/gba_runtime/memory.py` (`read_u16`, `read_u32`)
+
 ## Common Issues
 
 ### Issue 1: Wrong Immediate Offsets in STRH/LDRH

@@ -8,7 +8,7 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 
 **NOT an emulator.** The output is human-readable Python source code that, when executed, reproduces the game's behavior. The goal is a `.py` file you can open, read, and modify.
 
-For detailed implementation status, see `docs/status.md` and `docs/roadmap.md`.
+For detailed implementation status, see `docs/roadmap.md` and `docs/reference/test-roms.md`.
 
 ## File Locations
 
@@ -24,7 +24,12 @@ Codegen tree:        crates/gbatopy-cli/src/codegen/
                        sram/{helpers,mod,sram}.rs
                        helpers.rs, memory.rs, mod.rs, ir_ops.rs (empty — IR layer not wired into emit path)
 Templates:           crates/gbatopy-cli/assets/templates/
-Runtime source:      crates/gbatopy-cli/assets/gba_runtime/   (real PPU lives here as ppu.py)
+Runtime source:      crates/gbatopy-cli/assets/gba_runtime/   (real PPU/DMA/Memory live here)
+                       ppu.py      — PPU renderer (Mode 0-5, per-scanline affine snapshots)
+                       dma.py      — DMA controller (HBlank/VBlank = one unit per trigger)
+                       memory.py   — Memory map + MMIO dispatch (no step_scanline in reads)
+                       arm7tdmi.py — ARM7TDMI CPU core
+Current work log:    todo.md (migration knowledge transfer — read before resuming debug)
 mGBA:                mgba/ (with custom patches)
 mGBA binary:         mgba/build/sdl/mgba
 Scripts:             scripts/ — see scripts/README.md
@@ -33,11 +38,11 @@ Test config:         test-roms-config.toml (68 ROM entries)
 Test ROMs:           test_roms/roms/ (68 ROMs)
 Test reports:        test-reports/
 Test ROM Reference:  docs/reference/test-roms.md
-Implementation Status: docs/status.md
-Documentation:       docs/roadmap.md
-Runtime Architecture: docs/runtime-architecture.md (CRITICAL for codegen debugging)
-Memory Mapping:       docs/runtime-architecture.md#12-address-mapping (§1.2 Address Mapping: _map_address())
-How to debug a GBA rom: docs/how-debug.md
+Roadmap:             docs/roadmap.md
+Runtime Architecture: docs/runtime-architecture.md (CRITICAL — includes PPU scanline & DMA architecture)
+Memory Mapping:       docs/runtime-architecture.md (Address Mapping: _map_address())
+Codegen Pitfalls:    docs/codegen-pitfalls.md (13 documented bug classes)
+How to debug a GBA rom: docs/how-debug.md (codegen + runtime bug classes)
 Transpiler Output:   /tmp/<romname>.py (generated Python files go to /tmp/, not in project dir)
 ```
 
@@ -102,10 +107,14 @@ This is a **transpiler**, not an emulator with approximate behavior. The generat
 - 240×160 pixels, 60 fps
 - Background modes: 0-5 (text, affine, bitmap)
 
-**PPU Rendering Modes (MUST SUPPORT):**
-- Mode 0: 4BPP text tiles
-- Mode 3: 16-bit bitmap
-- Mode 4: 8BPP bitmap
+**PPU Rendering Modes:**
+- Mode 0: 4BPP text tiles — VERIFIED (shades, hello, helloWorld, hello_world)
+- Mode 1: affine BG2 + text BG0/1 — implemented, not verified
+- Mode 2: affine BG2/3 — VERIFIED (mode2)
+- Mode 3: 16-bit bitmap — VERIFIED (stripes, mode3, bgx)
+- Mode 4: 8BPP bitmap — VERIFIED (mode4)
+- Mode 5: 160x128 bitmap — implemented, not verified
+- Windows, blend, mosaic: register stubs only (not functional)
 
 **Memory Map (MEMORIZE):**
 - 0x08000000-0x09FFFFFF: Game Pak ROM (up to 32MB)
@@ -147,7 +156,8 @@ The generated `.py` file must be:
 ### IN scope
 - Static ROMs with 4BPP and 8BPP backgrounds and objects
 - Linear memory mapping with mirrors
-- Mode 0, 3, 4 rendering (Mode 1/2 affine, windows, blends, mosaic = register stubs only)
+- Mode 0, 2, 3, 4 rendering verified; Mode 1, 5 implemented but not verified
+- Windows, blends, mosaic = register stubs only (not functional)
 - CPSR flag tracking and conditional execution
 - IRQ system, DMA, Timers, Keypad, Sprites, BIOS SWI
 - APU audio channels with pygame.mixer output
@@ -183,9 +193,35 @@ The generated `.py` file must be:
 14. **Never run the test suite on all ROMs** — `run_tests.py` without `--rom`/`--filter` runs all 68 ROMs and takes too long. Always test **one ROM at a time** with `--rom <name>` (e.g., `python3 scripts/run_tests.py --level 3 --rom stripes`). The goal is to make each individual ROM work first; running the full suite is only useful as a final regression check and wastes time during active debugging. If a ROM fails, iterate on that single ROM until it passes before moving to the next one.
 15. **Transpiled Python output (.py files generated from ROMs) must NEVER be written inside the project directory. Always write transpiled output to /tmp/ (e.g., /tmp/<romname>.py). The project directory holds only source code, templates, scripts, and docs — never transpiled ROM artifacts.**
 16. **Doc-sync rule** — Any codegen or runtime fix that changes a ROM's pass/fail status MUST update `docs/reference/test-roms.md` in the same task (same commit, same session step). Do not leave the status table stale. The summary counts, per-ROM rows, feature matrix, and compatibility matrix must all reflect the new state.
-17. **Check known codegen bug classes before deep debugging** — Before spending time tracing a hang/spin, consult the "Known Codegen Bug Classes" section in `docs/how-debug.md`. The five documented classes (dispatch routing, dropped condition codes, missing PC-relative offset, wrong Thumb bit-field mask, banked register on MSR) cover the majority of historical bugs. Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py` first.
-18. **Use built-in debug flags, not ad-hoc injectors** — The generated runtime supports `--pc-trace=FILE`, `--trace-n=N`, `--max-instrs=N`. Do not inject `print(f"PC={...}")` into the generated Python or write a one-off CPU stepper. See `docs/how-debug.md` § "Systematic Spin Diagnosis Workflow".
+17. **Check known bug classes before deep debugging** — Before spending time tracing a hang/spin, consult both the "Known Codegen Bug Classes" (5 classes: dispatch routing, dropped condition codes, missing PC-relative offset, wrong Thumb bit-field mask, banked register on MSR) AND the "Known Runtime Bug Classes" (2 classes: DMA double-stepping, fast-forward DISPSTAT reads) in `docs/how-debug.md`. Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py` first.
+18. **Use built-in debug flags, not ad-hoc injectors** — The generated runtime supports `--pc-trace=FILE`, `--trace-n=N`, `--max-instrs=N` (default 1M; use `--max-instrs=10000000` for ROMs with tight IWRAM poll loops like bgpd). Do not inject `print(f"PC={...}")` into the generated Python or write a one-off CPU stepper. See `docs/how-debug.md` § "Systematic Spin Diagnosis Workflow".
 19. **One-shot ROM verification** — Use `./scripts/verify/verify_rom.sh <rom> --no-golden` to transpile, run, and compare against a golden screenshot in one step. Do not run the 4-5 manual steps (transpile, mGBA golden, run transpiled, compare) separately unless debugging a specific step.
+20. **Debug probes must flush** — If you inject a probe into generated Python, use `print(..., flush=True)` and place it BEFORE any `os._exit(0)` call. The runtime exits hard, bypassing buffer flush.
+21. **Never add step_scanline to memory reads** — The fast-forward DISPSTAT read path was removed because it caused DMA exhaustion. PPU stepping is exclusively in the main loop. See `docs/codegen-pitfalls.md` entry 12.
+22. **Fallback interpreter is pure CPU** — `_interp_fallback` in `pipeline_cmd.rs` must NEVER call `step_scanline()`. It only executes CPU instructions and delivers VBlank IRQ. The main loop owns all PPU timing.
+
+## Runtime Invariants (DO NOT VIOLATE)
+
+These invariants were established after multi-session debugging. Violating them reintroduces solved bugs.
+
+1. **Fallback interpreter = pure CPU executor.** `_interp_fallback` in `pipeline_cmd.rs` executes CPU instructions only. It must NEVER call `step_scanline()`. Violating this causes DMA double-stepping (HBlank fires twice per scanline, exhausting source tables).
+2. **Main loop is instruction-counted.** The PPU advances one scanline per `instr_per_scanline` CPU instructions. This ties PPU timing to actual execution, not loop iterations.
+3. **No step_scanline in memory reads.** `read_u16`/`read_u32`/`read_u64` must NEVER call `step_scanline()`. The removed fast-forward DISPSTAT path caused tight IWRAM poll loops to fire HBlank DMA hundreds of times per scanline.
+4. **HBlank/VBlank DMA = one unit per trigger.** `hblank_fire()` and `vblank_fire()` call `_do_transfer_single()` (one unit), NOT `_do_transfer()` (full count). The Repeat flag only reloads count; it does not change per-trigger behavior.
+5. **Per-scanline affine snapshots.** `step_scanline(capture_snapshot=True)` captures BG2PA/PB/PC/PD/X/Y into `_bg2_affine_snapshots[vcount]` BEFORE DMA fires. `_render_mode3/4/5` read from snapshots, falling back to live read if None. The fallback interpreter calls `step_scanline(capture_snapshot=False)`.
+
+See `docs/runtime-architecture.md` § "PPU Scanline & DMA Architecture" for details.
+
+## Migration Strategy
+
+When moving this project to another machine:
+1. **Read `todo.md` first** — it has the current debug state, architecture changes, and knowledge not in code comments.
+2. **Read `docs/runtime-architecture.md` § "PPU Scanline & DMA Architecture"** — the 5 runtime invariants above are documented there in full.
+3. **Read `docs/how-debug.md` "Known Runtime Bug Classes"** — documents the DMA double-stepping and fast-forward DISPSTAT bugs that took multiple sessions to diagnose.
+4. **Build verification:** `cargo build --release` (must be 0 errors, 0 warnings).
+5. **Transpile + verify one ROM:** `cargo run -p gbatopy-cli -- pipeline --rom test_roms/roms/stripes.gba --output /tmp/stripes.py && python3 /tmp/stripes.py --headless --frame=60 --screenshot /tmp/stripes.png`
+6. **Test ROMs are NOT in the repo** — run `scripts/setup/download_test_roms.sh` to fetch them.
+7. **mGBA must be built** — see README.md for cloning and building the mGBA fork (branch: extend-lua).
 
 ## Zero Tolerance for Stubs
 

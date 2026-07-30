@@ -1727,80 +1727,39 @@ class PPU:
 
 
     def _render_mode1(self):
-        """Render Mode 1: Text BG0/1 + Affine BG2/3"""
-        for y in range(self.screen_height):
-            for x in range(self.screen_width):
-                layer_enable = self._get_window_layer_enable(x, y)
-
-                # Render BG layers in priority order (0, 1, 2, 3)
-                for bg in range(4):
-                    if not getattr(self, f"bg{bg}_enable"):
-                        continue
-                    if not (layer_enable & (1 << bg)):
-                        continue
-
-                    if bg in [0, 1]:
-                        # Text mode: direct tile lookup from tilemap
-                        mx, my = self._apply_mosaic(x, y, is_obj=False)
-                        tile_x = (mx + self.bg_hofs[bg]) % 256
-                        tile_y = (my + self.bg_vofs[bg]) % 256
-
-                        # Read tilemap from VRAM
-                        screen_block = self.bg_screen_block[bg]
-                        tilemap_base = 0x06000000 + (screen_block * 0x0800)
-                        tilemap_x = tile_x // 8
-                        tilemap_y = tile_y // 8
-                        tilemap_index = tilemap_y * 32 + tilemap_x
-                        tilemap_addr = tilemap_base + (tilemap_index * 2)
-                        tilemap_entry = self.memory.read_u16(tilemap_addr)
-
-                        tile_index = tilemap_entry & 0x03FF
-                        palette_num = (tilemap_entry >> 12) & 0x0F
-
-                        pixel_x = tile_x % 8
-                        pixel_y = tile_y % 8
-
-                        # Check BGxCNT bit 7 for 8BPP mode
-                        if self.bg256[bg]:
-                            palette_indices = self._decode_tile_8bpp(tile_index, self.bg_char_block[bg])
-                            color_idx = palette_indices[pixel_y * 8 + pixel_x]
-                            if color_idx > 0:
-                                color = self._get_palette_color_256(color_idx)
-                                self.framebuffer[y][x] = color
-                                break
-                        else:
-                            palette_indices = self._decode_tile_4bpp(tile_index, self.bg_char_block[bg])
-                            color_idx = palette_indices[pixel_y * 8 + pixel_x]
-                            if color_idx > 0:
-                                color = self._get_palette_color(palette_num * 16 + color_idx)
-                                self.framebuffer[y][x] = color
-                                break
-                    else:
-                        # BG2/3 affine rendering not yet implemented for Mode 1
-                        pass
-
-    def _render_mode2(self):
-        """Render Mode 2: Affine BG2/3 only"""
-        any_bg = self.bg2_enable or self.bg3_enable
+        """Render Mode 1: Text BG0/1 + Affine BG2
+        
+        BG0 and BG1: text-mode (4BPP tiled, same as Mode 0)
+        BG2: affine background (256x256 or 512x512 pixels, 8-bit or 4-bit tiles)
+        BG3: NOT available in Mode 1
+        """
+        any_bg = self.bg0_enable or self.bg1_enable or self.bg2_enable
         if not any_bg and not self.obj_enable:
             return
 
-        # Cache BG control registers per BG (only BG2/3 are affine in mode 2)
-        bg_enabled = [False, False, self.bg2_enable, self.bg3_enable]
+        # Cache BG control registers for BG0/1 (text mode)
+        bg_enabled = [self.bg0_enable, self.bg1_enable, self.bg2_enable, False]
+        bg_cnt = [0, 0, 0, 0]
         bg_priority = [0, 0, 0, 0]
         bg_bpp8 = [False, False, False, False]
         bg_char_block = [0, 0, 0, 0]
         bg_screen_block = [0, 0, 0, 0]
-        for bg in range(2, 4):
+        bg_hofs = [0, 0, 0, 0]
+        bg_vofs = [0, 0, 0, 0]
+        
+        for bg in range(3):
             if not bg_enabled[bg]:
                 continue
             cnt = self.memory.read_u16(0x04000008 + bg * 2)
+            bg_cnt[bg] = cnt
             bg_priority[bg] = cnt & 0x03
             bg_bpp8[bg] = bool((cnt >> 7) & 1)
             bg_char_block[bg] = self.bg_char_block[bg]
             bg_screen_block[bg] = self.bg_screen_block[bg]
+            bg_hofs[bg] = self.bg_hofs[bg]
+            bg_vofs[bg] = self.bg_vofs[bg]
 
-        # Tile decode cache: key=(tile_index, char_block, bpp8) -> palette_indices list
+        # Tile decode cache
         tile_cache = {}
 
         def get_tile(tile_index, char_block, bpp8):
@@ -1818,7 +1777,26 @@ class PPU:
         palette_colors = [self._get_palette_color(i) for i in range(256)]
         win_active = self.win0_enable or self.win1_enable or self.obj_window_enable
 
+        # Per-scanline affine snapshots for BG2
+        snaps = self._bg2_affine_snapshots
+        if snaps and snaps[0] is not None:
+            _, _, _, _, refx, refy, overflow0 = snaps[0]
+        else:
+            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
+
+        sx = refx
+        sy = refy
+
         for y in range(self.screen_height):
+            # Get per-scanline affine params for BG2
+            if y < len(snaps) and snaps[y] is not None:
+                dx, dmx, dy, dmy, _, _, overflow = snaps[y]
+            else:
+                dx, dmx, dy, dmy, _, _, overflow = self._read_affine_bg2_params()
+
+            row_fb = self.framebuffer[y]
+            row_lo = self.layer_origin[y]
+            
             for x in range(self.screen_width):
                 if win_active:
                     layer_enable = self._get_window_layer_enable(x, y)
@@ -1827,17 +1805,18 @@ class PPU:
 
                 best_priority = 99
                 best_color = None
+                best_bg = -1
 
-                for bg in range(2, 4):
+                # Render text BGs (BG0, BG1)
+                for bg in [0, 1]:
                     if not bg_enabled[bg]:
                         continue
                     if not (layer_enable & (1 << bg)):
                         continue
 
-                    aff_x, aff_y = self._apply_affine_transform(bg, x, y)
-                    mx, my = self._apply_mosaic(int(aff_x), int(aff_y), is_obj=False)
-                    tile_x = mx % 256
-                    tile_y = my % 256
+                    mx, my = self._apply_mosaic(x, y, is_obj=False)
+                    tile_x = (mx + bg_hofs[bg]) % 256
+                    tile_y = (my + bg_vofs[bg]) % 256
 
                     screen_block = bg_screen_block[bg]
                     tilemap_base = 0x06000000 + (screen_block * 0x0800)
@@ -1845,9 +1824,10 @@ class PPU:
                     tilemap_y = tile_y // 8
                     tilemap_index = tilemap_y * 32 + tilemap_x
                     tilemap_addr = tilemap_base + (tilemap_index * 2)
-
                     tilemap_entry = self.memory.read_u16(tilemap_addr)
+
                     tile_index = tilemap_entry & 0x03FF
+                    palette_num = (tilemap_entry >> 12) & 0x0F
 
                     pixel_x = tile_x % 8
                     pixel_y = tile_y % 8
@@ -1862,10 +1842,368 @@ class PPU:
 
                     if bg_priority[bg] < best_priority:
                         best_priority = bg_priority[bg]
-                        best_color = palette_colors[color_idx]
+                        if bg_bpp8[bg]:
+                            best_color = palette_colors[color_idx]
+                        else:
+                            best_color = palette_colors[palette_num * 16 + color_idx]
+                        best_bg = bg
+
+                # Render affine BG2
+                if bg_enabled[2] and (layer_enable & 0x04):
+                    # Apply affine transformation for BG2
+                    x_float = float(x)
+                    y_float = float(y)
+                    
+                    # source_x = refx + (x * dx) + (y * dmx)
+                    # source_y = refy + (x * dy) + (y * dmy)
+                    source_x = sx + (x_float * dx) + (y_float * dmx)
+                    source_y = sy + (x_float * dy) + (y_float * dmy)
+                    
+                    # Convert to integer coordinates (8.8 fixed point)
+                    tx = int(source_x) >> 8
+                    ty = int(source_y) >> 8
+                    
+                    # Handle wrap-around or out-of-bounds
+                    if overflow:
+                        bg_size = self.bg_size[2]
+                        if bg_size == 0:  # 256x256
+                            tx &= 255
+                            ty &= 255
+                        elif bg_size == 1:  # 512x256
+                            tx &= 511
+                            ty &= 255
+                        elif bg_size == 2:  # 256x512
+                            tx &= 255
+                            ty &= 511
+                        else:  # 512x512
+                            tx &= 511
+                            ty &= 511
+                    elif tx < 0 or ty < 0:
+                        continue
+                    
+                    # Get BG2 size for bounds checking
+                    bg_size = self.bg_size[2]
+                    bg_width = 256 if bg_size in [0, 2] else 512
+                    bg_height = 256 if bg_size in [0, 1] else 512
+                    
+                    if tx >= bg_width or ty >= bg_height:
+                        continue
+
+                    # Read tilemap
+                    screen_block = bg_screen_block[2]
+                    tilemap_base = 0x06000000 + (screen_block * 0x0800)
+                    tilemap_x = tx // 8
+                    tilemap_y = ty // 8
+                    
+                    # Handle screen size > 256x256 (tilemap is larger)
+                    tilemap_width = 32 if bg_size in [0, 2] else 64
+                    tilemap_index = tilemap_y * tilemap_width + tilemap_x
+                    tilemap_addr = tilemap_base + (tilemap_index * 2)
+                    
+                    try:
+                        tilemap_entry = self.memory.read_u16(tilemap_addr)
+                    except:
+                        continue
+
+                    tile_index = tilemap_entry & 0x03FF
+                    pixel_x = int(tx) % 8
+                    pixel_y = int(ty) % 8
+                    pixel_index = pixel_y * 8 + pixel_x
+
+                    palette_indices = get_tile(tile_index, bg_char_block[2], bg_bpp8[2])
+                    if pixel_index >= len(palette_indices):
+                        continue
+                    color_idx = palette_indices[pixel_index]
+                    if color_idx == 0:
+                        continue
+
+                    if bg_priority[2] < best_priority:
+                        best_priority = bg_priority[2]
+                        if bg_bpp8[2]:
+                            best_color = palette_colors[color_idx]
+                        else:
+                            palette_num = (tilemap_entry >> 12) & 0x0F
+                            best_color = palette_colors[palette_num * 16 + color_idx]
+                        best_bg = 2
 
                 if best_color is not None:
-                    self.framebuffer[y][x] = best_color
+                    row_fb[x] = best_color
+                    row_lo[x] = best_bg
+
+            # Accumulate affine offsets for next scanline
+            sx += dmx
+            sy += dmy
+
+        if self.obj_enable:
+            self._render_sprites(0x3F)
+
+    def _render_mode2(self):
+        """Render Mode 2: Affine BG2/3 only
+        
+        BG2 and BG3: both affine backgrounds
+        Same affine parameters as Mode 1's BG2
+        BG2 and BG3 can both be affine-transformed independently
+        """
+        any_bg = self.bg2_enable or self.bg3_enable
+        if not any_bg and not self.obj_enable:
+            return
+
+        # Cache BG control registers for BG2/3 (both affine)
+        bg_enabled = [False, False, self.bg2_enable, self.bg3_enable]
+        bg_priority = [0, 0, 0, 0]
+        bg_bpp8 = [False, False, False, False]
+        bg_char_block = [0, 0, 0, 0]
+        bg_screen_block = [0, 0, 0, 0]
+        bg_size = [0, 0, 0, 0]
+        
+        for bg in [2, 3]:
+            if not bg_enabled[bg]:
+                continue
+            cnt = self.memory.read_u16(0x04000008 + bg * 2)
+            bg_priority[bg] = cnt & 0x03
+            bg_bpp8[bg] = bool((cnt >> 7) & 1)
+            bg_char_block[bg] = self.bg_char_block[bg]
+            bg_screen_block[bg] = self.bg_screen_block[bg]
+            bg_size[bg] = self.bg_size[bg]
+
+        # Tile decode cache
+        tile_cache = {}
+
+        def get_tile(tile_index, char_block, bpp8):
+            key = (tile_index, char_block, bpp8)
+            cached = tile_cache.get(key)
+            if cached is not None:
+                return cached
+            if bpp8:
+                decoded = self._decode_tile_8bpp(tile_index, char_block)
+            else:
+                decoded = self._decode_tile_4bpp(tile_index, char_block)
+            tile_cache[key] = decoded
+            return decoded
+
+        palette_colors = [self._get_palette_color(i) for i in range(256)]
+        win_active = self.win0_enable or self.win1_enable or self.obj_window_enable
+
+        # Per-scanline affine snapshots
+        snaps = self._bg2_affine_snapshots
+        
+        # For BG3, we need to read its affine params separately
+        # BG3 uses different registers (BG3PA, BG3PB, etc.)
+        def read_affine_bg3_params():
+            """Read BG3 affine parameters from MMIO."""
+            ap = self.memory._affine_params if hasattr(self.memory, '_affine_params') else None
+            
+            def _s16(lo, hi):
+                v = lo | (hi << 8)
+                return v - 0x10000 if v & 0x8000 else v
+            
+            # Read from BG3 registers directly
+            try:
+                bg3pa = self.memory.read_u16(0x04000030)
+                bg3pb = self.memory.read_u16(0x04000032)
+                bg3pc = self.memory.read_u16(0x04000034)
+                bg3pd = self.memory.read_u16(0x04000036)
+                bg3x_lo = self.memory.read_u16(0x04000038)
+                bg3x_hi = self.memory.read_u16(0x0400003A)
+                bg3y_lo = self.memory.read_u16(0x0400003C)
+                bg3y_hi = self.memory.read_u16(0x0400003E)
+                
+                dx = _s16(bg3pa & 0xFF, (bg3pa >> 8) & 0xFF)
+                dmx = _s16(bg3pb & 0xFF, (bg3pb >> 8) & 0xFF)
+                dy = _s16(bg3pc & 0xFF, (bg3pc >> 8) & 0xFF)
+                dmy = _s16(bg3pd & 0xFF, (bg3pd >> 8) & 0xFF)
+                
+                raw_refx = bg3x_lo | (bg3x_hi << 16)
+                raw_refy = bg3y_lo | (bg3y_hi << 16)
+                
+                refx = raw_refx - 0x10000000 if raw_refx & 0x08000000 else raw_refx
+                refy = raw_refy - 0x10000000 if raw_refy & 0x08000000 else raw_refy
+                
+                overflow = self.bg_affine[3]
+                return dx, dmx, dy, dmy, refx, refy, overflow
+            except:
+                return 256, 0, 0, 256, 0, 0, False
+
+        # Frame-start reference positions
+        if snaps and snaps[0] is not None:
+            _, _, _, _, refx_bg2, refy_bg2, overflow0_bg2 = snaps[0]
+        else:
+            dx_f, dmx_f, dy_f, dmy_f, refx_bg2, refy_bg2, overflow0_bg2 = self._read_affine_bg2_params()
+        
+        # BG3 reference position
+        _, _, _, _, refx_bg3, refy_bg3, overflow0_bg3 = read_affine_bg3_params()
+
+        sx_bg2 = refx_bg2
+        sy_bg2 = refy_bg2
+        sx_bg3 = refx_bg3
+        sy_bg3 = refy_bg3
+
+        for y in range(self.screen_height):
+            # Get per-scanline affine params
+            if y < len(snaps) and snaps[y] is not None:
+                dx_bg2, dmx_bg2, dy_bg2, dmy_bg2, _, _, overflow_bg2 = snaps[y]
+            else:
+                dx_bg2, dmx_bg2, dy_bg2, dmy_bg2, _, _, overflow_bg2 = self._read_affine_bg2_params()
+            
+            dx_bg3, dmx_bg3, dy_bg3, dmy_bg3, _, _, overflow_bg3 = read_affine_bg3_params()
+
+            row_fb = self.framebuffer[y]
+            row_lo = self.layer_origin[y]
+            
+            for x in range(self.screen_width):
+                if win_active:
+                    layer_enable = self._get_window_layer_enable(x, y)
+                else:
+                    layer_enable = 0x0F
+
+                best_priority = 99
+                best_color = None
+                best_bg = -1
+
+                # Render affine BG2
+                if bg_enabled[2] and (layer_enable & 0x04):
+                    x_float = float(x)
+                    y_float = float(y)
+                    
+                    source_x = sx_bg2 + (x_float * dx_bg2) + (y_float * dmx_bg2)
+                    source_y = sy_bg2 + (x_float * dy_bg2) + (y_float * dmy_bg2)
+                    
+                    tx = int(source_x) >> 8
+                    ty = int(source_y) >> 8
+                    
+                    # Handle wrap-around based on BG2 size
+                    if overflow_bg2:
+                        size = bg_size[2]
+                        if size == 0:  # 256x256
+                            tx &= 255
+                            ty &= 255
+                        elif size == 1:  # 512x256
+                            tx &= 511
+                            ty &= 255
+                        elif size == 2:  # 256x512
+                            tx &= 255
+                            ty &= 511
+                        else:  # 512x512
+                            tx &= 511
+                            ty &= 511
+                    elif tx < 0 or ty < 0:
+                        # Out of bounds (negative), skip this pixel
+                        tx = -1
+                    else:
+                        # Check bounds
+                        bg_width = 256 if bg_size[2] in [0, 2] else 512
+                        bg_height = 256 if bg_size[2] in [0, 1] else 512
+                        if tx >= bg_width or ty >= bg_height:
+                            tx = -1  # Mark as invalid
+
+                    if tx >= 0:
+                        screen_block = bg_screen_block[2]
+                        tilemap_base = 0x06000000 + (screen_block * 0x0800)
+                        tilemap_x = tx // 8
+                        tilemap_y = ty // 8
+                        
+                        tilemap_width = 32 if bg_size[2] in [0, 2] else 64
+                        tilemap_index = tilemap_y * tilemap_width + tilemap_x
+                        tilemap_addr = tilemap_base + (tilemap_index * 2)
+                        
+                        try:
+                            tilemap_entry = self.memory.read_u16(tilemap_addr)
+                            tile_index = tilemap_entry & 0x03FF
+                            pixel_x = int(tx) % 8
+                            pixel_y = int(ty) % 8
+                            pixel_index = pixel_y * 8 + pixel_x
+
+                            palette_indices = get_tile(tile_index, bg_char_block[2], bg_bpp8[2])
+                            if pixel_index < len(palette_indices):
+                                color_idx = palette_indices[pixel_index]
+                                if color_idx > 0 and bg_priority[2] < best_priority:
+                                    best_priority = bg_priority[2]
+                                    if bg_bpp8[2]:
+                                        best_color = palette_colors[color_idx]
+                                    else:
+                                        palette_num = (tilemap_entry >> 12) & 0x0F
+                                        best_color = palette_colors[palette_num * 16 + color_idx]
+                                    best_bg = 2
+                        except:
+                            # Error reading tilemap, skip this pixel
+                            pass
+
+                # Render affine BG3
+                if bg_enabled[3] and (layer_enable & 0x08):
+                    x_float = float(x)
+                    y_float = float(y)
+                    
+                    source_x = sx_bg3 + (x_float * dx_bg3) + (y_float * dmx_bg3)
+                    source_y = sy_bg3 + (x_float * dy_bg3) + (y_float * dmy_bg3)
+                    
+                    tx = int(source_x) >> 8
+                    ty = int(source_y) >> 8
+                    
+                    # Handle wrap-around based on BG3 size
+                    if overflow_bg3:
+                        size = bg_size[3]
+                        if size == 0:  # 256x256
+                            tx &= 255
+                            ty &= 255
+                        elif size == 1:  # 512x256
+                            tx &= 511
+                            ty &= 255
+                        elif size == 2:  # 256x512
+                            tx &= 255
+                            ty &= 511
+                        else:  # 512x512
+                            tx &= 511
+                            ty &= 511
+                    elif tx < 0 or ty < 0:
+                        # Out of bounds (negative), skip this pixel
+                        tx = -1
+                    else:
+                        bg_width = 256 if bg_size[3] in [0, 2] else 512
+                        bg_height = 256 if bg_size[3] in [0, 1] else 512
+                        if tx >= bg_width or ty >= bg_height:
+                            tx = -1
+
+                    if tx >= 0:
+                        screen_block = bg_screen_block[3]
+                        tilemap_base = 0x06000000 + (screen_block * 0x0800)
+                        tilemap_x = tx // 8
+                        tilemap_y = ty // 8
+                        
+                        tilemap_width = 32 if bg_size[3] in [0, 2] else 64
+                        tilemap_index = tilemap_y * tilemap_width + tilemap_x
+                        tilemap_addr = tilemap_base + (tilemap_index * 2)
+                        
+                        try:
+                            tilemap_entry = self.memory.read_u16(tilemap_addr)
+                            tile_index = tilemap_entry & 0x03FF
+                            pixel_x = int(tx) % 8
+                            pixel_y = int(ty) % 8
+                            pixel_index = pixel_y * 8 + pixel_x
+
+                            palette_indices = get_tile(tile_index, bg_char_block[3], bg_bpp8[3])
+                            if pixel_index < len(palette_indices):
+                                color_idx = palette_indices[pixel_index]
+                                if color_idx > 0 and bg_priority[3] < best_priority:
+                                    best_priority = bg_priority[3]
+                                    if bg_bpp8[3]:
+                                        best_color = palette_colors[color_idx]
+                                    else:
+                                        palette_num = (tilemap_entry >> 12) & 0x0F
+                                        best_color = palette_colors[palette_num * 16 + color_idx]
+                                    best_bg = 3
+                        except:
+                            # Error reading tilemap, skip this pixel
+                            pass
+
+                if best_color is not None:
+                    row_fb[x] = best_color
+                    row_lo[x] = best_bg
+
+            # Accumulate affine offsets for next scanline
+            sx_bg2 += dmx_bg2
+            sy_bg2 += dmy_bg2
+            sx_bg3 += dmx_bg3
+            sy_bg3 += dmy_bg3
 
         if self.obj_enable:
             self._render_sprites(0x3F)
@@ -1956,8 +2294,8 @@ class PPU:
                 tx = x >> 8
                 ty = y_coord >> 8
                 if overflow:
-                    tx &= sw - 1
-                    ty &= sh - 1
+                    tx %= sw
+                    ty %= sh
                 elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
                     row_fb[px] = backdrop_rgb
                     row_lo[px] = 0
@@ -2040,8 +2378,8 @@ class PPU:
                 tx = x >> 8
                 ty = y_coord >> 8
                 if overflow:
-                    tx &= sw - 1
-                    ty &= sh - 1
+                    tx %= sw
+                    ty %= sh
                 elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
                     row_fb[px] = backdrop_rgb
                     row_lo[px] = 0
@@ -2118,8 +2456,8 @@ class PPU:
                 tx = x >> 8
                 ty = y_coord >> 8
                 if overflow:
-                    tx &= bw - 1
-                    ty &= bh - 1
+                    tx %= bw
+                    ty %= bh
                 elif tx < 0 or ty < 0 or tx >= bw or ty >= bh:
                     row_fb[px] = (0, 0, 0)
                     row_lo[px] = 0

@@ -3,9 +3,9 @@
 > **Role:** Strategy, sequencing, and remaining work.
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
-> **Last updated**: 2026-07-06
-> **Current state**: 68 ROMs transpile; 66/68 pass smoke test (helloAudio, rates fail). Build: 0 errors, 0 warnings. 2/68 ROMs verified pixel-perfect against mGBA golden via manual comparison (stripes.gba, shades.gba). 32 golden screenshots exist; automated comparison not yet wired into CI. Known blocking bug: STMFD/LDMFD register order corrupts stack on real-game ROMs (hello.gba).
-> **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works for instruction-coverage ROMs; real-game ROMs blocked by CPU-core bugs
+> **Last updated**: 2026-07-30
+> **Current state**: 68/68 ROMs transpile to Python (0 instruction decode failures). 66/68 pass smoke test (helloAudio.gba, rates.gba fail). 24/68 visually verified vs mGBA golden (<30% pixel difference). Build: 0 errors, 0 warnings.
+> **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
 ---
 
@@ -21,20 +21,20 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - Rust pipeline builds with zero warnings
 - Disassembler decodes ARM/Thumb instructions (~100% coverage)
 - Python generation produces syntactically valid output for all 68 ROMs
-- Memory map implemented (ROM, EWRAM, IWRAM, MMIO, VRAM, Palette, OAM)
+- Memory map implemented (ROM, EWRAM, IWRAM, MMIO, VRAM, Palette, OAM) with mirrors
 - Basic block merging (52-80% code size reduction)
 
 ### ✅ Wave 2: CPU Core - COMPLETE
 - ARM7TDMI core implemented (849 lines in arm7tdmi.py + 706 lines in cpu.py)
 - All ARM data processing instructions (MOV, ADD, SUB, ORR, AND, EOR, BIC, MVN, SBC, ADC)
 - Load/store instructions (LDR, STR, LDRH, STRH, LDRB, STRB) with PC-relative addressing
-- Branch instructions (B, BL, BLX, BX, CBZ, CBNZ) with condition code support
+- Branch instructions (B, BL, BLX, BX, CBZ, CBNZ) with all 16 condition codes
 - Multiply instructions (MUL, MLA)
-- MRS/MSR, SWP/SWPB, LDM/STM (all variants: IA/IB/DA/DB + writeback) - **fixed 2026-06-18**
+- MRS/MSR, SWP/SWPB, LDM/STM (all variants: IA/IB/DA/DB + writeback)
 - Thumb mode codegen (~100% coverage)
 - CPSR flag tracking (N/Z/C/V) with all 16 condition codes
 - Global register propagation across function boundaries
-- **Performance**: Registers optimized as list instead of dict (+20% speedup)
+- **Recent fix (2026-07-27)**: Fallback interpreter refactored to pure CPU executor — no PPU stepping
 
 ### ✅ Wave 3: BIOS Handlers - COMPLETE
 - 54 BIOS SWI handlers implemented in arm7tdmi.py
@@ -45,23 +45,25 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - Geometry: ObjAffineSet, BgAffineSet
 - MIDI operations, Time functions, Sound control
 
-### ⚠️ Wave 4: PPU Rendering — PARTIAL
-- **Mode 0 (4BPP text)**: Verified on shades.gba (100% golden match). Multiple bugs fixed: char-block base mapping, 4BPP nibble order, double-scale. See `docs/codegen-pitfalls.md`.
-- **Mode 3 (15-bit bitmap)**: Verified on stripes.gba (100% golden match).
-- **Mode 4 (8BPP bitmap)**: Partial — palette fallback bug fixed on hello.gba; not all ROMs verified.
-- **Mode 1/2 (affine)**: Code exists, MMIO wiring broken — NOT verified.
-- **Mode 5**: Implemented, not verified.
-- **Window layers (WIN0/WIN1/OBJWIN)**: Register stubs only — NOT functional.
-- **Blend effects**: Register stubs only — NOT functional.
-- **Mosaic effect**: Register stubs only — NOT functional.
-- **Sprite rendering**: Code exists, not verified against golden.
-- **8BPP tile decoding**: Code exists, not verified.
-- **Affine backgrounds**: Code exists, not verified.
+### ✅ Wave 4: PPU Rendering — PARTIAL
+- **Mode 0 (4BPP text)**: Verified on shades, hello, helloWorld, hello_world (all <30% diff vs mGBA)
+- **Mode 2 (affine)**: Verified on mode2.gba (20.0% diff)
+- **Mode 3 (16-bit bitmap)**: Verified on stripes, mode3, bgx (all 0.0% diff)
+- **Mode 4 (8BPP bitmap)**: Verified on mode4 (0.0% diff)
+- **Mode 1 (affine)**: Code exists, not verified
+- **Mode 5**: Implemented, not verified
+- **Per-scanline affine parameter snapshots**: Implemented for Mode 3/4/5 (2026-07-27)
+- **Window layers (WIN0/WIN1/OBJWIN)**: Register stubs only — NOT functional
+- **Blend effects**: Register stubs only — NOT functional
+- **Mosaic effect**: Register stubs only — NOT functional
+- **Sprite rendering**: Code exists, not verified against golden
+- **8BPP tile decoding**: Code exists, not verified
 
 ### ⚠️ Wave 5: Audio System — INFRASTRUCTURE ONLY
 - APU infrastructure with 4 audio channels (CH1-CH4)
 - SquareWaveChannel (CH1/2), WaveChannel (CH3), NoiseChannel (CH4) implemented
-- FIFO A/B buffers, DMA-triggered playback
+- FIFO A/B buffers exist
+- ⚠️ DMA audio (FIFO A/B) NOT implemented — song.gba, rates.gba fail
 - ⚠️ NOT verified end-to-end — no sound output confirmed against golden
 
 ### ✅ Wave 6: Interrupt System - COMPLETE
@@ -75,20 +77,21 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 ### ✅ Wave 7: DMA & Timers - COMPLETE
 - 4 DMA channels (0-3) with all trigger modes (immediate/VBlank/HBlank/special)
 - 16/32-bit transfers with inc/dec/fixed address modes
-- Repeat mode with FIFO A/B for audio
+- **Recent fix (2026-07-27)**: HBlank/VBlank DMA fixed to transfer one unit per trigger (bgx verified)
+- Repeat mode with FIFO A/B for audio (infrastructure exists, not integrated)
 - Timers 0-3 with prescaler (1/64/256/1024) and cascade mode
 - Timer overflow detection and reload
 
 ### ✅ Wave 8: Input System - COMPLETE
-- KEYINPUT register (0x04000130) - 10-bit keypad state
-- KEYCNT register (0x04000132) - interrupt conditions
+- KEYINPUT register (0x04000130) — 10-bit keypad state
+- KEYCNT register (0x04000132) — interrupt conditions
 - 8-bit and 16-bit read support
 
 ### ✅ Wave 9: Test Framework — PARTIAL
 - Rust-based automated testing with 68 ROMs configured
 - **Smoke tests**: 66/68 passing (helloAudio, rates fail)
-- **ScreenshotGolden tests**: ❌ NOT YET WIRED — 32 golden screenshots exist in `scripts/screenshot/golden/` but automated comparison is not in the test runner
-- **Manual golden matches**: 2/68 verified (stripes.gba, shades.gba — 100% pixel match via `compare_screenshots.py`)
+- **ScreenshotGolden tests**: NOT YET WIRED — 32 goldens exist in `scripts/screenshot/golden/` but automated comparison is not in the test runner
+- **Manual golden matches**: 24/68 verified (<30% pixel diff via `compare_screenshots.py`)
 - Verifier types in config: Smoke, ScreenshotGolden, EWRAM, Assertion, Performance, Coverage
 - Only Smoke verifier currently exercised
 - Parallel execution (4 workers)
@@ -105,31 +108,43 @@ Passed: 66 (97%)
 Failed: 2 (helloAudio, rates)
 ```
 
-### ScreenshotGolden Tests (Pixel-Perfect)
+### Visual Verification (ScreenshotGolden vs mGBA)
 ```
-Status: NOT AUTOMATED
-Golden screenshots available: 32 (in scripts/screenshot/golden/)
-Manually verified: 2/68
-  - stripes.gba: 100% pixel match (Mode 3)
-  - shades.gba: 100% pixel match (Mode 0, after 5 bug fixes — see docs/codegen-pitfalls.md)
-Remaining: 30 goldens exist but comparison not run; 36 ROMs have no golden yet
+Total: 68 ROMs
+Verified (<30% diff): 24 (35%)
+Known failures: 4 (helloAudio, rates, greenswap 85% diff, window_midframe 55% diff)
+Runtime hangs: 9 (bgpd, dma_priority, isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change)
+Unverified: 31 (transpile+smoke pass, visual not checked)
 ```
 
 ---
 
 ## 4. Known Limitations
 
-### Blocking Bugs
-- **STMFD/LDMFD register order** (UNRESOLVED): STMFD writes registers in reverse address order, corrupting saved LR/PC. Causes PC to jump to `0x04040404` on real-game ROMs (hello.gba). See `docs/codegen-pitfalls.md`.
-- **helloAudio, rates smoke failures**: Cause not yet diagnosed.
+### Smoke Test Failures
+- **helloAudio.gba**: Cause undiagnosed — smoke test failure
+- **rates.gba**: Cause undiagnosed — smoke test failure (DMA audio not implemented)
+
+### Runtime Hangs (9 ROMs)
+- bgpd, dma_priority, isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change
+- Likely causes: IRQ/DMA/timer path bugs, infinite loops in wait handlers
 
 ### Not Implemented / Not Verified
-- **PPU Mode 1/2 (affine)**: Code exists, MMIO wiring broken — not verified
+- **PPU Mode 1 (affine)**: Code exists, not verified
+- **PPU Mode 5**: Implemented, not verified
 - **Window/Blend/Mosaic**: Register stubs only — not functional
-- **Audio synthesis**: Infrastructure exists, no verified sound output
 - **Sprite rendering**: Code exists, not verified against golden
+- **Audio synthesis**: Infrastructure exists, no verified sound output
+- **DMA audio (FIFO A/B)**: Not implemented (song.gba, rates.gba fail)
+- **RTC**: Not implemented
 - **Automated ScreenshotGolden**: 32 goldens exist, comparison not wired into CI
-- **EWRAM dump verification**: Infrastructure exists, needs test ROMs
+
+### Resolved Issues (2026-07-27 to 2026-07-30)
+- **STMFD/LDMFD bug**: RESOLVED — hello.gba now passes (0.0% diff)
+- **Per-scanline affine snapshots**: Implemented for Mode 3/4/5
+- **HBlank/VBlank DMA**: Fixed to transfer one unit per trigger
+- **Main loop**: Made instruction-counted — PPU advances one scanline per `instr_per_scanline` CPU instructions
+- **Removed fast-forward DISPPCNT reads**: Was causing DMA exhaustion
 
 ---
 
@@ -146,27 +161,28 @@ cargo run -p gbatopy-cli -- pipeline --rom test_roms/roms/stripes.gba --output /
 python3 /tmp/stripes.py --headless --frame=60 --screenshot=/tmp/stripes.png
 
 # Verify screenshot
-python3 -c "from PIL import Image; img=Image.open('/tmp/stripes.png'); nb=sum(1 for p in img.getdata() if sum(p)>30); print(f'Non-black: {nb}')"
+python3 scripts/verify/compare_screenshots.py -s /tmp/stripes.png /tmp/stripes_transpiled.png --threshold 30
 
-# Run all tests
-cargo run -p gbatopy-test -- --config test-roms-config.toml --format console
+# Run all smoke tests
+./scripts/run-all-tests.sh
 
-# Run specific test type
-cargo run -p gbatopy-test -- --config test-roms-config.toml --filter "bgx" --format json
+# Run specific ROM test
+python3 scripts/run_tests.py --level 3 --rom stripes
 ```
 
 ---
 
 ## 6. Next Steps (Priority Order)
 
-1. **Wire ScreenshotGolden into CI** — 32 goldens exist, comparison not automated. Highest-leverage: converts "works/doesn't work" from assertion to fact.
-2. **Fix STMFD/LDMFD register order** — blocks all real-game ROMs (hello.gba et al.)
-3. **Diagnose helloAudio, rates smoke failures**
-4. **Generate goldens for remaining 36 ROMs** — then run full ScreenshotGolden suite
-5. **Verify sprite rendering** — code exists, no golden comparison
-6. **Verify audio synthesis** — infrastructure exists, no output check
-7. **EWRAM dump tests** with memory comparison
-8. **Code size optimization** (reduce per-block boilerplate)
+1. **Diagnose bgpd runtime hang** — First priority among hanging ROMs; likely DMA/PPU timing issue
+2. **Wire ScreenshotGolden into CI** — 32 goldens exist, comparison not automated. Highest-leverage: converts "works/doesn't work" from assertion to fact.
+3. **Diagnose helloAudio, rates smoke failures** — Root cause unknown
+4. **Implement DMA audio (FIFO A/B)** — Required for song.gba, rates.gba
+5. **Debug remaining hang ROMs** — isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change, dma_priority
+6. **Verify sprite rendering** — Code exists, no golden comparison
+7. **Verify audio synthesis** — Infrastructure exists, no output check
+8. **Generate goldens for remaining 36 ROMs** — Then run full ScreenshotGolden suite
+9. **Implement Window/Blend/Mosaic** — Register stubs only, not functional
 
 ---
 
@@ -180,10 +196,10 @@ cargo run -p gbatopy-test -- --config test-roms-config.toml --filter "bgx" --for
 | BIOS handlers | 54 |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
-| Test pass rate | 66/68 smoke (97%); 2/68 manual golden |
+| Test pass rate | 66/68 smoke (97%); 24/68 visual verified (35%) |
 | Build time | ~30s (release) |
 | Transpile time | ~1-5s per ROM |
 
 ---
 
-**Status**: ⚠️ IN ACTIVE DEVELOPMENT — core transpiler works for instruction-coverage ROMs; real-game ROMs blocked by STMFD/LDMFD bug; visual verification not yet automated
+**Status**: IN ACTIVE DEVELOPMENT — core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis

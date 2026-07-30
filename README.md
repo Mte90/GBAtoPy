@@ -1,68 +1,56 @@
 # GBAtoPy
-[![License](https://img.shields.io/badge/License-MIT%20v1-blue.svg)](https://spdx.org/licenses/MIT.html#licenseText)   
+
+[![License](https://img.shields.io/badge/License-MIT%20v1-blue.svg)](https://spdx.org/licenses/MIT.html#licenseText)
 [![Tests](https://img.shields.io/badge/tests-66%2F68%20smoke%20pass-yellow.svg)](docs/testing-framework.md)
 [![Status](https://img.shields.io/badge/status-In%20Development-yellow.svg)](docs/roadmap.md)
 
-Transform Game Boy Advance ROMs into standalone Python files.
+GBAtoPy is a **transpiler** (a Rust CLI) that converts Game Boy Advance ROMs (`.gba`) into standalone Python files that run with [pygame](https://www.pygame.org/). The output is human-readable, modifiable Python source code that, when executed, reproduces the game's behavior. It is **NOT an emulator** — the goal is a `.py` file you can open, read, and edit.
 
-> **NOT an emulator.** GBAtoPy transpiles GBA ROMs into human-readable Python code that, when executed, reproduces the game's behavior. The goal is a `.py` file you can open, read, and modify.
-
----
-
-## In Active Development
-
-- ✅ **68/68 ROMs** transpile to syntactically valid Python
-- ✅ **23/68 ROMs** verified pixel-perfect against mGBA golden at frame 60 (stripes, shades, hello, helloWorld, hello_world, mode3, mode4, redline, arm, thumb, bios, memory, unsafe, cond_invalid, retAddr, if_ack, irq_delay, joypad, mode2, sram, flash64, flash128, none — see [`docs/reference/test-roms.md`](docs/reference/test-roms.md) for per-ROM evidence)
-- ✅ **PPU Mode 0** (4BPP text tiles) verified on shades.gba, hello.gba, helloWorld.gba, hello_world.gba; **Mode 2** (affine) verified on mode2.gba; **Mode 3** (16-bit bitmap) verified on stripes.gba, mode3.gba; **Mode 4** (8BPP bitmap) verified on mode4.gba — all exact pixel matches
-- ⚠️ **Mode 1/2 affine**, windows, blends, mosaic = register stubs only
-- ⚠️ **Audio system** infrastructure exists, synthesis not verified end-to-end
-- ⚠️ **4/68 ROMs** known failures: helloAudio.gba, rates.gba (runtime hang), window_midframe.gba (55% diff), greenswap.gba (85% diff)
-- ⏰ **10/68 ROMs** hang at runtime (bgx, bgpd, nes, timer_change, pcmxx, line_timing, sprite-hmosaic, lyc_midline, dma_priority, isr) — likely codegen bugs in IRQ/DMA/timer paths
-- ✅ **Test framework** includes smoke tests and screenshot-golden comparison via `scripts/verify/verify_rom.sh <rom> --no-golden`
-
-**Last updated**: 2026-07-24
+**Tech stack:** Rust (transpiler), Python (generated runtime), pygame (display).
 
 ---
 
-## Architecture
+## Implementation Status
 
-GBAtoPy converts ARM/Thumb assembly → Python code using a Rust pipeline:
+Project is in active development. The transpilation pipeline works end-to-end; per-ROM visual verification is tracked in [`docs/reference/test-roms.md`](docs/reference/test-roms.md). See [`docs/roadmap.md`](docs/roadmap.md) for strategy and remaining work.
 
-```
-ROM bytes → Disassembly → Python Code Gen → Executable Python
-```
+### Test coverage (68 test ROMs)
 
-### Key Components
+| Check | Result |
+|-------|--------|
+| Transpile to Python (0 instruction decode failures) | 68/68 |
+| Smoke test (transpile + syntax check) | 66/68 — `helloAudio.gba`, `rates.gba` fail |
+| Visually verified vs mGBA golden (<30% pixel difference) | 24/68 |
+| Known failures (smoke or visual) | 4/68 |
+| Hang at runtime (IRQ/DMA/timer paths) | 9/68 |
+| Transpile + smoke pass, visual not yet verified | 31/68 |
 
-- **Disassembler** (`crates/gbatopy-disasm/`) - Decodes ARM/Thumb instructions
-- **Code Generator** (`crates/gbatopy-cli/src/codegen/`) - ARM/Thumb → Python translation (600+ opcodes)
-- **Memory Model** - GBA memory map (0x08000000 ROM, 0x06000000 VRAM, 0x04000000 MMIO)
-- **Game Loop** - pygame-based display and input
-- **Python Runtime** - Core emulation modules (CPU, PPU, Memory, DMA, Timers, APU) embedded in generated Python (see `crates/gbatopy-cli/assets/gba_runtime/`).
-- **Test Framework** (`crates/gbatopy-test/`) - Rust-based automated test infrastructure with parallel execution, 6 verifier types (smoke, screenshot_golden, mgba_oracle, ewram_dump, pass_fail, assertion_text), and configurable per-ROM testing via `test-roms-config.toml`.
+The 24 visually verified ROMs (all pass the <30% threshold vs mGBA golden): `arm`, `bgx`, `bios`, `cond_invalid`, `flash64`, `flash128`, `hello`, `helloWorld`, `hello_world`, `if_ack`, `irq_delay`, `joypad`, `memory`, `mode2`, `mode3`, `mode4`, `none`, `redline`, `retAddr`, `shades`, `sram`, `stripes`, `thumb`, `unsafe`.
 
-### Generated Output Structure
+Known failures: `helloAudio.gba` and `rates.gba` (smoke failure), `greenswap.gba` (85% diff), `window_midframe.gba` (55% diff).
+Runtime hangs: `bgpd`, `dma_priority`, `isr`, `line_timing`, `lyc_midline`, `nes`, `pcmxx`, `sprite-hmosaic`, `timer_change`.
 
-```python
-# ROM data embedded
-ROM_DATA = bytearray([...])
+### What works
 
-def func_08000000():
-    global r0, r1, ..., r15
-    r0 = r1 + r2  # Example: ADD instruction
-    memory.write_32(0x08000100, value)  # Example: STR instruction
+- **CPU core** — ARM7TDMI: ARM mode (~160 unique opcodes) and Thumb mode (~60 unique opcodes), CPSR flag tracking, all 16 condition codes, global register propagation.
+- **BIOS SWI handlers** — 54 handlers (Halt, Div, Sqrt, CpuSet/CpuFastSet, LZ77/Huffman/RLE decompression, ArcTan, ObjAffineSet, BgAffineSet, and more).
+- **PPU rendering** — Mode 0 (4BPP text tiles) verified on `shades`, `hello`, `helloWorld`, `hello_world`; Mode 2 (affine) verified on `mode2`; Mode 3 (16-bit bitmap) verified on `stripes`, `mode3`, `bgx`; Mode 4 (8BPP bitmap) verified on `mode4`.
+- **Interrupt system** — VBlank/HBlank/VCount dispatch, timer IRQs (0-3), DMA IRQs, keypad IRQ, IE/IF/IME handling with ARM/Thumb mode switching.
+- **DMA** — 4 channels with all trigger modes; HBlank DMA verified via `bgx`.
+- **Timers** — 0-3 with prescaler (1/64/256/1024) and cascade mode.
+- **Input** — KEYINPUT / KEYCNT registers.
+- **Save types** — SRAM, Flash64, Flash128, none.
+- **Memory map** — ROM, EWRAM, IWRAM, MMIO, VRAM, Palette RAM, OAM with mirrors.
 
-def main_entry():
-    # ROM execution loop with pygame display
-    while True:
-        call_func(r15)
-```
+### What does NOT work (or is not verified)
 
----
-
-## Status
-
-Project is in active development. Transpilation pipeline works for the test ROM set; per-ROM visual verification status is tracked in [`docs/reference/test-roms.md`](docs/reference/test-roms.md).
+- **PPU Mode 1 affine** — code exists, not verified.
+- **Window layers (WIN0/WIN1/OBJWIN), blend, mosaic** — register stubs only, not functional.
+- **Sprite rendering** — code exists, not verified against golden.
+- **Audio synthesis** — APU infrastructure (4 channels, FIFO A/B) exists, not verified end-to-end; no sound output confirmed.
+- **DMA audio (FIFO A/B)** — not implemented (`song.gba`, `rates.gba` fail).
+- **RTC** — not implemented.
+- **Automated screenshot-golden comparison** — 32 golden screenshots exist in `scripts/screenshot/golden/`, but comparison is not wired into CI; verification is currently manual.
 
 ---
 
@@ -72,7 +60,7 @@ Project is in active development. Transpilation pipeline works for the test ROM 
 
 - **Rust toolchain** (1.70+): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - **Python 3.10+**
-- **Pygame**: `pip install pygame`
+- **pygame**: `pip install pygame`
 - **SDL2** (optional, for display): `sudo apt install libsdl2-dev`
 
 ### Build
@@ -84,123 +72,94 @@ cargo build --release
 ### Transpile a ROM
 
 ```bash
-cargo run --release -p gbatopy-cli -- pipeline --rom test_roms/roms/arm.gba --output /tmp/test.py
+cargo run -p gbatopy-cli -- pipeline --rom <rom.gba> --output /tmp/<name>.py
 ```
 
-### Run Generated Python
-
-**Headless mode** (for testing):
+Example:
 
 ```bash
-python3 /tmp/test.py --headless --frame=60 --screenshot /tmp/test.png
+cargo run --release -p gbatopy-cli -- pipeline --rom test_roms/roms/stripes.gba --output /tmp/stripes.py
 ```
 
-**Interactive mode** (with display):
+### Run the generated Python
+
+Headless mode (for testing / screenshots):
 
 ```bash
-python3 /tmp/test.py --scale=2
+python3 /tmp/<name>.py --headless --frame=60 --screenshot /tmp/<name>.png
 ```
 
-### CLI Arguments
+Interactive mode (with display):
 
-- `--headless`: Run without display (for testing/screenshot)
-- `--frame=N`: Run exactly N frames then exit
-- `--screenshot=FILE`: Save screenshot at end
-- `--scale=N`: Scale display by N (e.g., 3 = 720×480 pixels)
+```bash
+python3 /tmp/<name>.py --scale=2
+```
+
+### CLI arguments (generated runtime)
+
+- `--headless`: run without display (for testing/screenshot)
+- `--frame=N`: run exactly N frames then exit
+- `--screenshot=FILE`: save a screenshot at end
+- `--scale=N`: scale the display by N (e.g., 3 = 720x480 pixels)
+- `--pc-trace=FILE`, `--trace-n=N`, `--max-instrs=N`: built-in execution tracing (see `docs/how-debug.md`)
 
 ---
 
 ## Test ROMs
 
-Test ROMs are downloaded automatically via `scripts/setup/download_roms.sh` (**68 ROMs**):
+Test ROMs are **not included** in the repository (see `.gitignore`). Download and organize the 68 test ROMs with:
 
 ```bash
-# First time setup
 bash scripts/setup/download_roms.sh
 ```
 
+This populates `test_roms/roms/`. The ROM catalog with per-ROM hardware analysis is in [`docs/reference/test-roms.md`](docs/reference/test-roms.md).
+
 ---
 
-## Development
+## Verification
 
-### Building
+mGBA is the reference implementation: if mGBA renders a ROM correctly, the transpiled Python must produce pixel-matching output. Verify with screenshots, not just "does it run".
 
-```bash
-# Debug
-cargo build
+### One-shot verification
 
-# Release (faster)
-cargo build --release
-
-# All crates
-cargo build --workspace
-```
-
-### Testing
+Transpile, run, and compare against a golden screenshot in one step:
 
 ```bash
-# Rust unit tests
-cargo test --workspace
-
-# Rust test framework (gbatopy-test) - runs all 68 ROMs
-cargo run -p gbatopy-test -- --config test-roms-config.toml
-
-# Subset of tests (filter by name)
-cargo run -p gbatopy-test -- --config test-roms-config.toml --filter stripes
-
-# Python tests (inside gba_runtime module)
-python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/ -v
-
-# Transpile smoke test
-bash scripts/setup/download_roms.sh  # First time only
-for rom in test_roms/roms/*.gba; do
-  cargo run --release -p gbatopy-cli -- pipeline --rom "$rom" --output /tmp/test.py && \
-  python3 -m py_compile /tmp/test.py && \
-  echo "✓ $(basename "$rom")"
-done
+./scripts/verify/verify_rom.sh <rom> --no-golden
 ```
 
-### Run Test Framework
-
-The `gbatopy-test` crate provides automated testing with multiple verification strategies:
+### Manual verification
 
 ```bash
-# Full test suite (all 68 ROMs)
-cargo run -p gbatopy-test -- --config test-roms-config.toml
+# Transpile
+cargo run --release -p gbatopy-cli -- pipeline --rom test_roms/roms/stripes.gba --output /tmp/stripes.py
 
-# Run specific verifier types
-# smoke: Transpile + syntax check
-# screenshot_golden: Compare against expected.png
-# mgba_oracle: Compare against mGBA reference
-# ewram_dump: Parse FuzzARM eWRAM dumps
-# pass_fail: Detect blank/failed screens
-# assertion_text: Parse assertion messages from ROM output
+# Run transpiled output
+python3 /tmp/stripes.py --headless --frame=60 --screenshot /tmp/stripes_transpiled.png
+
+# Compare against mGBA golden (PASS if <30% difference)
+python3 scripts/verify/compare_screenshots.py -s /tmp/stripes.png /tmp/stripes_transpiled.png --threshold 30
 ```
 
-Reports are generated in multiple formats:
-- Console: Color-coded pass/fail output
-- JSON: `test-reports/results.json`
-- JUnit XML: `test-reports/results-junit.xml`
-
-### Verify Generated Python
+### Smoke test (syntax only)
 
 ```bash
-# Generate ROM
-cargo run --release -p gbatopy-cli -- pipeline --rom test_roms/roms/arm.gba --output /tmp/test.py
-
-# Check syntax
-python3 -m py_compile /tmp/test.py
-
-# Verify stripes.gba golden match
-python3 scripts/screenshot/compare_screenshots.py test_roms/roms/stripes.gba
-# Expected: 100% pixel match
+# All ROMs — transpile + syntax check only (does NOT verify graphics/audio)
+./scripts/run-all-tests.sh
 ```
 
-### mGBA Integration
+> **Note:** `run-all-tests.sh` only checks that the generated Python compiles. It does NOT verify graphics or audio. For full verification use the screenshot comparison above.
 
-For golden screenshots and debugging, GBAtoPy uses **mGBA** with custom patches for Lua scripting via `--script` flag.
+---
 
-mGBA source is NOT included in this repository (see `.gitignore`). To build:
+## mGBA Integration
+
+For golden screenshots and debugging, GBAtoPy uses **mGBA** with custom patches that add a `--script` flag and Lua scripting hooks. mGBA source is **not** included in this repository.
+
+The custom patches live in [`mgba-custom-patches.diff`](mgba-custom-patches.diff). The upstream Lua scripting extension is tracked in [mGBA PR #3752](https://github.com/mgba-emu/mgba/pull/3752).
+
+### Build mGBA with scripting
 
 ```bash
 # Clone mGBA
@@ -215,30 +174,55 @@ cmake -B build -DENABLE_SCRIPTING=ON -DBUILD_PYTHON=OFF -DUSE_QT=OFF
 cmake --build build -j$(nproc)
 ```
 
-#### Taking Golden Screenshots
+### Take a golden screenshot
 
 ```bash
-# Single ROM
-./build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/stripes.gba
-
-# Full comparison (golden + transpile + compare)
-python3 scripts/screenshot/compare_screenshots.py test_roms/roms/stripes.gba
+./mgba/build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/stripes.gba
 ```
 
-The Lua API exposed by mGBA (after patching):
-- `emu:currentFrame()` - Get current frame number
-- `emu:runFrame()` - Advance one frame
-- `emu:screenshot(filename)` - Save screenshot to PNG
-- `callbacks:add("frame", fn)` - Register per-frame callback
+Lua API exposed by the patched mGBA:
 
-See [mgba-custom-patches.diff](mgba-custom-patches.diff) for the full diff against upstream mGBA.
-See [PR #3752](https://github.com/mgba-emu/mgba/pull/3752) for the upstream Lua scripting extension.
+- `emu:currentFrame()` — get current frame number
+- `emu:runFrame()` — advance one frame
+- `emu:screenshot(filename)` — save a screenshot to PNG
+- `callbacks:add("frame", fn)` — register a per-frame callback
+
+---
+
+## Architecture
+
+```
+ROM bytes -> Disassembly -> Python code gen -> Executable Python
+```
+
+- **Disassembler** (`crates/gbatopy-disasm/`) — decodes ARM/Thumb instructions (~100% coverage).
+- **Code generator** (`crates/gbatopy-cli/src/codegen/`) — ARM/Thumb to Python translation.
+- **Python runtime** (`crates/gbatopy-cli/assets/gba_runtime/`) — CPU, PPU, memory, DMA, timers, APU modules embedded into the generated Python.
+- **Test framework** (`crates/gbatopy-test/`) — Rust-based test runner with parallel execution and configurable per-ROM testing via `test-roms-config.toml`.
+
+The generated `.py` file is standalone (depends only on `pygame`, plus `numpy` if needed), readable, and modifiable.
+
+---
+
+## Repository Notes
+
+- `.gitignore` excludes: `test_roms/`, `mgba/build/`, generated Python (`*.py`, `output_python/`), and `/target/`.
+- Transpiled Python output is written to `/tmp/`, never inside the project directory.
+- Rust crates live under `crates/`; runtime templates under `crates/gbatopy-cli/assets/gba_runtime/`; codegen templates under `crates/gbatopy-cli/assets/templates/`.
 
 ---
 
 ## References
 
-- [GBA Hardware Manual](https://gbdev.io/gbafaq/)
-- [GBA Memory Map](docs/reference/memory-map.md)
+- [GBA Hardware Manual (GBATEK)](https://github.com/mgba-emu/gbatek/blob/gh-pages/gba.md)
+- [Roadmap & Status](docs/roadmap.md)
 - [Test ROM Catalog](docs/reference/test-roms.md)
+- [Runtime Architecture](docs/runtime-architecture.md)
+- [Debugging Guide](docs/how-debug.md)
 - [mGBA Scripting PR #3752](https://github.com/mgba-emu/mgba/pull/3752)
+
+---
+
+## License
+
+MIT v1.

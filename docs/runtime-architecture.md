@@ -114,18 +114,93 @@ def write_u8(self, addr: int, value: int):
 
 | Method | Size | Mapping | Notes |
 |--------|------|---------|-------|
-| `read_u8(addr)` | 8-bit | Yes | Calls `_map_address()` internally |
-| `read_u16(addr)` | 16-bit | Yes | Calls `_map_address()` internally |
-| `read_u32(addr)` | 32-bit | Yes | Calls `_map_address()` internally |
-| `write_u8(addr, value)` | 8-bit | Conditional | Skips mapping if already absolute |
-| `write_u16(addr, value)` | 16-bit | Yes | Calls `_map_address()` internally |
-| `write_u32(addr, value)` | 32-bit | Yes | Calls `_map_address()` internally |
+| `read_u8(addr)` | 8-bit | Yes | Calls `_map_address()` internally; NO scanline advancement |
+| `read_u16(addr)` | 16-bit | Yes | Calls `_map_address()` internally; NO scanline advancement |
+| `read_u32(addr)` | 32-bit | Yes | Calls `_map_address()` internally; NO scanline advancement |
+| `write_u8(addr, value)` | 8-bit | Conditional | Skips mapping if already absolute; NO scanline advancement |
+| `write_u16(addr, value)` | 16-bit | Yes | Calls `_map_address()` internally; NO scanline advancement |
+| `write_u32(addr, value)` | 32-bit | Yes | Calls `_map_address()` internally; NO scanline advancement |
 
 **Key Insight**: All read/write methods call `_map_address()` internally. The "conditional mapping" in `write_u8()` is a workaround for the double-mapping issue when called from `write_u16()`/`write_u32()`.
 
+**⚠️ CRITICAL**: Memory read/write methods do NOT advance the PPU scanline. Scanline advancement is owned exclusively by the main loop (see Section 2.5). This ensures that memory accesses during HBlank/VBlank do not interfere with PPU timing.
+
 ---
 
-## 2. Code Generation Pipeline
+## 2. PPU Scanline & DMA Architecture
+
+### 2.1 Per-Scanline Affine Parameter Snapshots
+
+Affine background parameters (BG2PA, BG2PB, BG2PC, BG2PD, BG2X, BG2Y) are captured into a snapshot array at the start of each scanline, BEFORE HBlank DMA fires.
+
+**Implementation**:
+
+- `_bg2_affine_snapshots`: Array of 160 elements (one per scanline), each storing a 6-tuple of affine parameters.
+- `step_scanline(capture_snapshot=True)`: Captures current affine register values into `self._bg2_affine_snapshots[self.vcount]` before rendering.
+- The main loop passes `capture_snapshot=True`; the fallback interpreter passes `False`.
+
+**Why this matters**: HBlank DMA can update affine parameters during the HBlank period. By capturing snapshots BEFORE DMA fires, we ensure that the correct parameter set is used for rendering each scanline.
+
+**Rendering fallback**:
+
+- `_render_mode3/4/5` read affine parameters from `self._bg2_affine_snapshots[y]`.
+- If the snapshot is `None` (e.g., when called from fallback interpreter), falls back to reading live registers.
+
+### 2.2 Fallback Interpreter Contract
+
+The fallback interpreter (`_interp_fallback` in `pipeline_cmd.rs`) is a PURE CPU executor with strict boundaries:
+
+**What it DOES**:
+- Executes CPU instructions (ARM/Thumb)
+- Handles branch targets not in the dispatch table
+- Delivers VBlank IRQ before breaking on VBlank detection
+
+**What it does NOT DO**:
+- NEVER calls `step_scanline()`
+- NEVER advances PPU scanlines
+- NEVER handles DMA transfers
+
+**Why**: PPU timing is owned exclusively by the main loop. The fallback interpreter exists only to execute CPU instructions that cannot be dispatched via the generated code path.
+
+### 2.3 Instruction-Counted Main Loop
+
+The main loop synchronizes CPU execution with PPU timing using instruction counting:
+
+**Algorithm**:
+
+1. Track CPU instructions executed since last scanline advance
+2. When `instr_count >= instr_per_scanline`:
+   - Call `step_scanline(capture_snapshot=True)`
+   - Reset instruction counter
+3. Continue until VBlank IRQ or frame complete
+
+**Key properties**:
+
+- `step_scanline()` is called ONLY from the main loop, never from memory reads or the fallback interpreter.
+- PPU timing is proportional to actual CPU execution, not loop iterations.
+- This ensures accurate synchronization between CPU and PPU.
+
+### 2.4 DMA Single-Unit-Per-Trigger Semantics
+
+HBlank and VBlank DMA transfers follow single-unit-per-trigger semantics:
+
+**Implementation**:
+
+- `_do_transfer_single()`: Transfers exactly ONE unit (word) per call.
+- `_do_transfer()`: Transfers the full count (used for manual/one-shot DMA).
+- `hblank_fire()` and `vblank_fire()` call `_do_transfer_single()` once per trigger.
+
+**Repeat flag behavior**:
+
+- The Repeat flag controls count reload, NOT per-trigger transfer size.
+- On each HBlank/VBlank trigger, exactly one unit is transferred.
+- If Repeat is set, the count is reloaded after the transfer; otherwise, DMA is disabled.
+
+**Why this matters**: This matches GBA hardware behavior. Transferring the full count on every trigger would corrupt memory and produce incorrect graphics.
+
+---
+
+## 3. Code Generation Pipeline
 
 The transpiler uses a **3-stage pipeline**:
 
@@ -137,7 +212,7 @@ Stage 2: Asset Extraction
 Stage 3: Python Code Generation
 ```
 
-### 2.1 Stage 1: Disassembly
+### 3.1 Stage 1: Disassembly
 
 **Location**: `gbatopy_disasm` crate (separate from codegen)
 
@@ -153,7 +228,7 @@ Stage 3: Python Code Generation
 - `operands`: List of operand types (Register, Immediate, MemoryAddress)
 - `width`: Instruction size (2 for Thumb, 4 for ARM)
 
-### 2.2 Stage 2: Asset Extraction
+### 3.2 Stage 2: Asset Extraction
 
 **Location**: `asset_extractor` module
 
@@ -166,7 +241,7 @@ Stage 3: Python Code Generation
 
 **Output**: `Assets` struct with embedded bytearray data
 
-### 2.3 Stage 3: Python Code Generation
+### 3.3 Stage 3: Python Code Generation
 
 **Location**: `pipeline_cmd.rs` (main entry point)
 
@@ -208,12 +283,14 @@ Stage 3: Python Code Generation
    ```
 
 6. **Game loop** (lines 889-1080):
-   - Executes instructions via dispatch table
-   - Handles pygame events
-   - Manages frame timing
-   - Supports headless mode and screenshots
+    - Counts CPU instructions executed
+    - Advances PPU by one scanline per `instr_per_scanline` instructions
+    - Calls `step_scanline(capture_snapshot=True)` to capture affine parameters and render
+    - Handles pygame events
+    - Manages frame timing
+    - Supports headless mode and screenshots
 
-### 2.4 Basic Block Merging
+### 3.4 Basic Block Merging
 
 **Algorithm** (lines 527-599 in pipeline_cmd.rs):
 
@@ -258,9 +335,9 @@ grep -n "0x000003E" rom.py  # Should find func_080000F8
 
 ---
 
-## 3. MMIO Register Handling
+## 4. MMIO Register Handling
 
-### 3.1 MMIO Register Map
+### 4.1 MMIO Register Map
 
 | Range | Purpose | Key Registers |
 |-------|---------|---------------|
@@ -272,7 +349,7 @@ grep -n "0x000003E" rom.py  # Should find func_080000F8
 | 0x04000130-0x04000133 | Input | KEYINPUT, KEYCNT |
 | 0x04000200-0x04000208 | IRQ | IE, IF, IME |
 
-### 3.2 Dispatch Mechanism
+### 4.2 Dispatch Mechanism
 
 **`_dispatch_hal_write()`** (lines 136-159 in memory.py):
 
@@ -316,7 +393,7 @@ def _dispatch_hal_write(self, addr: int, value: int):
             self._handle_interrupt_write(addr, value)
 ```
 
-### 3.3 Register Handlers
+### 4.3 Register Handlers
 
 **DISPCNT (0x04000000)**:
 - Controls display mode (bits 0-2)
@@ -337,7 +414,7 @@ def _handle_timer_write(self, addr: int, value: int):
         self._timers.set_control(timer_idx, value & 0xFFFF)
 ```
 
-### 3.4 Register Registration
+### 4.4 Register Registration
 
 **`register_mmio_write()`** (lines 113-119 in memory.py):
 ```python
@@ -356,9 +433,9 @@ memory.register_mmio_write(0x04, timers.handle_timer1_write)
 
 ---
 
-## 4. Common Pitfalls for AI Agents
+## 5. Common Pitfalls for AI Agents
 
-### 4.1 Never Modify .gba ROM Files
+### 5.1 Never Modify .gba ROM Files
 
 **Rule**: All debugging/fixes must be done in the **generated Python**, not the ROM.
 
@@ -373,7 +450,7 @@ memory.register_mmio_write(0x04, timers.handle_timer1_write)
 3. Patch Python code to fix bug
 4. Fix the codegen (Rust) to prevent future occurrences
 
-### 4.2 Address Mapping Gotchas
+### 5.2 Address Mapping Gotchas
 
 **Absolute vs Relative Addresses**:
 - Most ROMs use absolute addresses (0x06000000 for VRAM)
@@ -389,7 +466,7 @@ memory.write_u32(0x06000000, value)
 memory.write_u32(r0 + 0, value)
 ```
 
-### 4.3 Double Mapping Bug
+### 5.3 Double Mapping Bug
 
 **Symptoms**:
 - Writes go to wrong memory regions
@@ -402,7 +479,7 @@ if not (0x04000000 <= addr <= 0x07FFFFFF):
     addr = self._map_address(addr)
 ```
 
-### 4.4 PC-Relative LDR/STR
+### 5.4 PC-Relative LDR/STR
 
 **Problem**: PC-relative loads use PC+8 offset (ARM) or PC+4 (Thumb):
 ```python
@@ -415,7 +492,7 @@ if not (0x04000000 <= addr <= 0x07FFFFFF):
 - For ARM: `PC + 8 + offset`
 - For Thumb: `PC + 4 + offset`
 
-### 4.5 LDM/STM Parsing Limitations
+### 5.5 LDM/STM Parsing Limitations
 
 **Known Issue**: LDM/STM instruction parsing is imperfect.
 
@@ -425,7 +502,7 @@ if not (0x04000000 <= addr <= 0x07FFFFFF):
 
 **Workaround**: Test with simple LDM/STM cases first. Complex cases may need manual codegen.
 
-### 4.6 CPSR Flag Tracking
+### 5.6 CPSR Flag Tracking
 
 **Critical**: All conditional instructions must track CPSR flags.
 
@@ -445,7 +522,7 @@ cpsr['z'] = 1 if result == 0 else 0
 # ... carry, overflow
 ```
 
-### 4.7 Basic Block Boundaries
+### 5.7 Basic Block Boundaries
 
 **Rule**: Branch instructions always start and terminate their own block.
 
@@ -460,7 +537,7 @@ Block 2: target: ... (starts new block)
 Block 1: ... → BNE target → next instruction
 ```
 
-### 4.8 Dispatch Table Indexing
+### 5.8 Dispatch Table Indexing
 
 **Formula**: `idx = (pc - 0x08000000) >> 2`
 
@@ -475,9 +552,9 @@ PC = 0x08000008 → idx = 2
 
 ---
 
-## 5. Runtime Module Reference
+## 6. Runtime Module Reference
 
-### 5.1 Core Modules
+### 6.1 Core Modules
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
@@ -487,7 +564,7 @@ PC = 0x08000008 → idx = 2
 | `ppu.py` | 1000+ | Graphics rendering (Modes 0-5) |
 | `bios.py` | 500+ | SWI handlers (54 functions) |
 
-### 5.2 Optional Modules
+### 6.2 Optional Modules
 
 | Module | Enabled by | Purpose |
 |--------|------------|---------|
@@ -496,7 +573,7 @@ PC = 0x08000008 → idx = 2
 | `timers.py` | `--timers` | Timer units (4 timers) |
 | `interrupts.py` | `--irq` | IRQ handling (VBlank, HBlank, etc.) |
 
-### 5.3 Feature Detection
+### 6.3 Feature Detection
 
 **Auto-detection** (lines 42-127 in pipeline_cmd.rs):
 - Scans instructions for MMIO register accesses
@@ -505,9 +582,9 @@ PC = 0x08000008 → idx = 2
 
 ---
 
-## 6. Debugging Checklist
+## 7. Debugging Checklist
 
-### 6.1 Visual Issues
+### 7.1 Visual Issues
 
 1. **Check DISPCNT register** (0x04000000):
    - Mode bits (0-2) match expected mode
@@ -521,7 +598,7 @@ PC = 0x08000008 → idx = 2
    - Check `memory.palette` for color data
    - Verify palette index in tilemap
 
-### 6.2 Execution Issues
+### 7.2 Execution Issues
 
 1. **Check dispatch table**:
    - Is PC in expected range?
@@ -535,7 +612,7 @@ PC = 0x08000008 → idx = 2
    - Are branch targets starting new blocks?
    - Are branch instructions terminating blocks?
 
-### 6.3 Memory Issues
+### 7.3 Memory Issues
 
 1. **Address mapping**:
    - Is address already absolute (0x04000000+)?
@@ -547,9 +624,9 @@ PC = 0x08000008 → idx = 2
 
 ---
 
-## 7. Quick Reference
+## 8. Quick Reference
 
-### 7.1 Memory Map (Absolute Addresses)
+### 8.1 Memory Map (Absolute Addresses)
 
 ```
 0x00000000-0x00003FFF  BIOS (16KB)
@@ -563,7 +640,7 @@ PC = 0x08000008 → idx = 2
 0x0A000000-0x0A00FFFF  SRAM (64KB)
 ```
 
-### 7.2 Relative Address Mapping
+### 8.2 Relative Address Mapping
 
 ```
 0x00000-0x0FFFF  → MMIO (0x04000000)
@@ -572,7 +649,7 @@ PC = 0x08000008 → idx = 2
 0x60000-0x603FF  → OAM (0x07000000)
 ```
 
-### 7.3 Key Functions
+### 8.3 Key Functions
 
 | Function | Purpose |
 |----------|---------|
@@ -584,6 +661,9 @@ PC = 0x08000008 → idx = 2
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2026-06-26  
+**Document Version**: 1.1  
+**Last Updated**: 2026-07-30  
 **Maintained By**: GBAtoPy Core Team
+
+**Changelog**:
+- v1.1 (2026-07-30): Added Section 2 documenting PPU scanline architecture, affine parameter snapshots, fallback interpreter contract, instruction-counted main loop, and DMA single-unit semantics. Updated Section 1.4 to clarify that memory reads/writes do not advance scanlines. Renumbered subsequent sections.
