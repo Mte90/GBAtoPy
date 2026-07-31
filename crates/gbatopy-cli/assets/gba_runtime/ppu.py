@@ -1534,15 +1534,10 @@ class PPU:
         Updates VCount in MMIO, fires HBlank/VBlank DMA and IRQs.
         Called 160+ times per frame by the main loop between instruction batches.
         Does NOT render pixels — use render_frame() for that."""
-        self.vcount = (self.vcount + 1) % 228
-        self.vblank = self.vcount >= self.screen_height
-
-        # Reset per-scanline affine snapshots at frame start (vcount wraps to 0).
-        # Fixed-size array (not list) so duplicate calls from main loop + fallback
-        # interpreter for the same vcount overwrite the same slot instead of
-        # appending duplicates and shifting every subsequent index.
         if self.vcount == 0:
             self._bg2_affine_snapshots = [None] * self.screen_height
+        self.vcount = (self.vcount + 1) % 228
+        self.vblank = self.vcount >= self.screen_height
 
         io = self.memory.io
         # Write VCount to MMIO (0x04000006) so CPU reads see the current scanline

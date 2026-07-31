@@ -1101,7 +1101,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
     _vblank_irq_delivered = False
-    instr_per_scanline = max(50, (int(gba_hz / 60.0) // 4) // 160)
+    instr_per_scanline = max(50, (int(gba_hz / 60.0) // 4) // 228)
     def _deliver_vblank_irq():
         nonlocal _vblank_irq_delivered
         global _cpu_halted
@@ -1218,9 +1218,9 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         # Execute instructions for this frame, stepping PPU scanlines
         # Each scanline: run a batch of instructions, then advance VCount + fire HBlank DMA
         target_cycles_per_frame = int(gba_hz / 60.0)
-        instr_per_scanline = max(50, (target_cycles_per_frame // 4) // 160)
-        max_inner_stalls = 10
-        for _scanline in range(160):
+        instr_per_scanline = max(50, (target_cycles_per_frame // 4) // 228)
+        max_inner_stalls = 10000
+        for _scanline in range(228):
             if ic >= mi:
                 break
             inner_loop_stalls = 0

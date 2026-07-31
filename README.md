@@ -204,14 +204,6 @@ The generated `.py` file is standalone (depends only on `pygame`, plus `numpy` i
 
 ---
 
-## Repository Notes
-
-- `.gitignore` excludes: `test_roms/`, `mgba/build/`, generated Python (`*.py`, `output_python/`), and `/target/`.
-- Transpiled Python output is written to `/tmp/`, never inside the project directory.
-- Rust crates live under `crates/`; runtime templates under `crates/gbatopy-cli/assets/gba_runtime/`; codegen templates under `crates/gbatopy-cli/assets/templates/`.
-
----
-
 ## References
 
 - [GBA Hardware Manual (GBATEK)](https://github.com/mgba-emu/gbatek/blob/gh-pages/gba.md)
@@ -222,7 +214,3 @@ The generated `.py` file is standalone (depends only on `pygame`, plus `numpy` i
 - [mGBA Scripting PR #3752](https://github.com/mgba-emu/mgba/pull/3752)
 
 ---
-
-## License
-
-MIT v1.

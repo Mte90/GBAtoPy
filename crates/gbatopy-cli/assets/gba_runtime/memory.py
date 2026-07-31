@@ -567,6 +567,7 @@ class Memory:
             param_idx = byte_offset // 2
             self._affine_params[param_idx * 2] = value & 0xFF
             self._affine_params[param_idx * 2 + 1] = (value >> 8) & 0xFF
+            self._dispatch_hal_write(mapped_addr, value)
             return
 
         self.write_u8(mapped_addr, value & 0xFF)
