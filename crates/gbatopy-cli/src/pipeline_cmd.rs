@@ -1047,14 +1047,12 @@ def _interp_fallback(registers, cpsr):
         _pc = _interp_cpu.registers[15]
         if 0x08000000 <= _pc < 0x0A000000:
             _idx = (_pc - 0x08000000) >> 1
-            if _idx in dispatch_table:
-                if _idx in dispatch_table_arm and _idx not in dispatch_table_thumb:
-                    _interp_cpu.thumb_mode = False
-                elif _idx in dispatch_table_thumb and _idx not in dispatch_table_arm:
-                    _interp_cpu.thumb_mode = True
-                break
-            if _step_count > 0:
-                break
+            if _interp_cpu.thumb_mode:
+                if _idx in dispatch_table_thumb:
+                    break
+            else:
+                if _idx in dispatch_table_arm:
+                    break
         if _pc == 0x03000128:
             irq = memory._interrupts
             if irq is not None:

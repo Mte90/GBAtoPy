@@ -62,6 +62,9 @@ class DMAChannel:
         self.busy: bool = False
         self.pending: bool = False
         self._interrupts = None
+        self._orig_src = 0
+        self._orig_dst = 0
+        self._orig_count = 0
 
     def attach_interrupts(self, interrupts):
         self._interrupts = interrupts
@@ -105,11 +108,28 @@ class DMAChannel:
 
     def read_from_memory(self):
         b = self._base() - 0x04000000
-        self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
-        self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
-        self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
-        self.control = self.mem.io[b+10] | (self.mem.io[b+11] << 8)
-        self.enabled = (self.control & DMA_ENABLE) != 0
+        new_control = self.mem.io[b+10] | (self.mem.io[b+11] << 8)
+        new_enabled = (new_control & DMA_ENABLE) != 0
+
+        if new_enabled and not self.enabled:
+            self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
+            self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
+            self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
+            self._orig_src = self.src_addr
+            self._orig_dst = self.dst_addr
+            self._orig_count = self.count
+        elif not new_enabled:
+            self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
+            self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
+            self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
+
+        self.control = new_control
+        self.enabled = new_enabled
+
+    def _write_control_to_memory(self):
+        b = self._base() - 0x04000000
+        self.mem.io[b+10] = self.control & 0xFF
+        self.mem.io[b+11] = (self.control >> 8) & 0xFF
 
     def write_to_memory(self):
         b = self._base() - 0x04000000
@@ -243,12 +263,15 @@ class DMA:
             ch.src_addr = src
 
         if ch.is_repeat():
-            ch.count = ch.get_count_value()
+            ch.count = ch._orig_count if ch._orig_count else ch.get_count_value()
+            if ch.is_repeat() and src_ctrl == 3:
+                ch.src_addr = orig_src
+            if ch.is_repeat() and dst_ctrl == 3:
+                ch.dst_addr = orig_dst
         else:
             ch.control &= ~DMA_ENABLE
             ch.enabled = False
-
-        ch.write_to_memory()
+            ch._write_control_to_memory()
 
         ch.busy = False
         ch.pending = False
@@ -317,16 +340,16 @@ class DMA:
 
         if ch.count == 0:
             if ch.is_repeat():
-                ch.count = ch.get_count_value()
+                ch.count = ch._orig_count if ch._orig_count else 0x10000
                 if dst_ctrl == 3:
-                    ch.dst_addr = ch._orig_dst if hasattr(ch, '_orig_dst') else ch.dst_addr
+                    ch.dst_addr = ch._orig_dst
                 if src_ctrl == 3:
-                    ch.src_addr = ch._orig_src if hasattr(ch, '_orig_src') else ch.src_addr
+                    ch.src_addr = ch._orig_src
             else:
                 ch.control &= ~DMA_ENABLE
                 ch.enabled = False
+                ch._write_control_to_memory()
 
-        ch.write_to_memory()
         ch.busy = False
         ch.pending = False
 
@@ -339,21 +362,15 @@ class DMA:
             if not ch.enabled or ch.busy:
                 continue
             if ch.is_vblank():
-                # Per GBATEK: VBlank/HBlank DMA transfer exactly ONE unit per
-                # trigger, regardless of the Repeat bit. Repeat only governs
-                # reload-vs-disable when count reaches 0 (handled inside
-                # _do_transfer_single). Bulk-transferring the whole count on
-                # a single trigger breaks per-scanline affine/palette updates.
-                self._do_transfer_single(ch)
+                self._do_transfer(ch)
 
-    def hblank_fire(self):
+    def hblank_fire(self, vcount: int = 0):
         for ch in self.channels:
             ch.read_from_memory()
             if not ch.enabled or ch.busy:
                 continue
             if ch.is_hblank():
-                # See vblank_fire: one unit per trigger, not the whole count.
-                self._do_transfer_single(ch)
+                self._do_transfer(ch)
 
     def custom_fire(self):
         for ch in self.channels:

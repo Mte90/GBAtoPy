@@ -239,7 +239,6 @@ class Memory:
                 ch.count = value & 0xFFFF
         elif reg_offset == 10:
             ch.control = value & 0xFFFF
-        ch.write_to_memory()
         ch.read_from_memory()
         if ch.enabled and not was_enabled:
             if ch.is_immediate():
@@ -370,7 +369,10 @@ class Memory:
             return (addr & 0x000003FF) | 0x05000000
 
         if 0x06000000 <= addr <= 0x06FFFFFF:
-            return (addr & 0x00017FFF) | 0x06000000
+            offset = addr & 0x0001FFFF
+            if offset >= MemoryMap.VRAM_SIZE:
+                offset -= MemoryMap.VRAM_SIZE
+            return offset | 0x06000000
 
         if 0x07000000 <= addr <= 0x07FFFFFF:
             return (addr & 0x000003FF) | 0x07000000

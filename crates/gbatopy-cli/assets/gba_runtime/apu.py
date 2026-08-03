@@ -380,6 +380,10 @@ class APU:
         self._audio_started = False
         self._audio_channel = None
 
+    def read_register(self, addr: int) -> int:
+        """Handle MMIO reads from sound registers (write-only on hardware, return 0)."""
+        return 0
+
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to sound registers"""
         if addr == 0x04000060:

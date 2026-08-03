@@ -1536,30 +1536,37 @@ class PPU:
         Does NOT render pixels — use render_frame() for that."""
         if self.vcount == 0:
             self._bg2_affine_snapshots = [None] * self.screen_height
-        self.vcount = (self.vcount + 1) % 228
-        self.vblank = self.vcount >= self.screen_height
 
-        io = self.memory.io
-        # Write VCount to MMIO (0x04000006) so CPU reads see the current scanline
-        io[6] = self.vcount & 0xFF
-        io[7] = 0
-
-        # Snapshot BG2 affine params for this scanline BEFORE HBlank-DMA can modify them.
-        # render_frame() reads snaps[vcount] so per-scanline affine changes take effect.
-        # Indexed by vcount (not appended) so re-entry for the same scanline is idempotent.
+        # Snapshot BG2 affine params for the CURRENT scanline BEFORE HBlank-DMA
+        # modifies them. On hardware the PPU latches the affine matrix at the
+        # start of the scanline; HBlank DMA fires later and prepares the
+        # value for the NEXT scanline. Capturing before the vcount increment
+        # guarantees snapshot[0] is populated.
         if 0 <= self.vcount < self.screen_height:
             try:
                 self._bg2_affine_snapshots[self.vcount] = self._read_affine_bg2_params()
             except Exception:
                 self._bg2_affine_snapshots[self.vcount] = None
 
-        # Update DISPSTAT (0x04000004): bit0=VBlank, bit1=HBlank, bit2=VCount trigger
+        # Fire HBlank DMA AFTER the snapshot so DMA-written values land in the
+        # next scanline's snapshot, not the current one.
+        dma = self.memory._dma
+        if dma is not None:
+            dma.hblank_fire(self.vcount)
+
+        self.vcount = (self.vcount + 1) % 228
+        self.vblank = self.vcount >= self.screen_height
+
+        io = self.memory.io
+        io[6] = self.vcount & 0xFF
+        io[7] = 0
+
         dispstat = io[4] | (io[5] << 8)
         if self.vblank:
             dispstat |= 0x0001
         else:
             dispstat &= ~0x0001
-        dispstat |= 0x0002  # HBlank bit set during scanline
+        dispstat |= 0x0002
 
         lyc = io[8] & 0xFF
         if self.vcount == lyc:
@@ -1569,14 +1576,10 @@ class PPU:
         io[4] = dispstat & 0xFF
         io[5] = (dispstat >> 8) & 0xFF
 
-        # Fire DMA triggers
-        dma = self.memory._dma
         if dma is not None:
             if self.vblank:
                 dma.vblank_fire()
-            dma.hblank_fire()
 
-        # Fire interrupts
         irq = self.memory._interrupts
         if irq is not None:
             if self.vblank and (dispstat & 0x0008):
@@ -1586,12 +1589,12 @@ class PPU:
             if (dispstat & 0x0004) and (dispstat & 0x0020):
                 irq.vcounter_irq()
 
-        # Signal VBlank to generated code (unblocks VBlank wait loops)
         if self.vblank:
             import sys
             mod = sys.modules.get("generated_rom")
             if mod is not None:
                 mod.z = 1
+
 
     def render_frame(self):
         """Render one frame of graphics. Called once per frame after all scanlines."""
@@ -2230,12 +2233,9 @@ class PPU:
     def _render_mode3(self):
         """Render Mode 3: 240x160 16-bit bitmap via affine BG2 transformation.
 
-        Matches mGBA's GBAVideoSoftwareRendererDrawBackgroundMode3:
-        - Frame start: sx=BG2X, sy=BG2Y (latched once, accumulated internally)
-        - Per scanline: x=sx-dx, y=sy-dy, then per pixel x+=dx, y+=dy
-        - After scanline: sx+=dmx(BG2PB), sy+=dmy(BG2PD)
-        - BG2PA/PB/PC/PD are latched per-scanline so HBlank-DMA updates take effect
-        - Out-of-bounds: backdrop if no overflow, wrap if overflow set
+        mGBA's GBAVideoSoftwareRendererDrawBackgroundMode3 applies the BG2 affine
+        matrix per scanline. Per-scanline snapshots captured by step_scanline()
+        before HBlank DMA provide the correct dx/dy/dmx/dmy values.
         """
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
@@ -2244,14 +2244,6 @@ class PPU:
             vram_bytes = bytes(vram_arr[vram_off:vram_off + self.screen_height * self.screen_width * 2])
         except Exception:
             vram_bytes = bytes(self.screen_height * self.screen_width * 2)
-
-        # Per-scanline affine snapshots captured by step_scanline() before HBlank-DMA.
-        # Fall back to a single read if no snapshots exist (e.g. headless without stepping).
-        snaps = self._bg2_affine_snapshots
-        if snaps and snaps[0] is not None:
-            _, _, _, _, refx, refy, overflow0 = snaps[0]
-        else:
-            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
 
         try:
             bdv = self.memory.read_u16(0x05000000)
@@ -2263,8 +2255,12 @@ class PPU:
         except Exception:
             backdrop_rgb = (0, 0, 0)
 
-        sx = refx
-        sy = refy
+        snaps = self._bg2_affine_snapshots
+        if snaps and snaps[0] is not None:
+            _, _, _, _, refx, refy, overflow0 = snaps[0]
+        else:
+            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
+
         fb = self.framebuffer
         lo = self.layer_origin
         sw = self.screen_width
@@ -2272,13 +2268,14 @@ class PPU:
         vlen = len(vram_bytes)
         n_snaps = len(snaps)
 
+        sx = refx
+        sy = refy
+
         for y in range(sh):
-            # Use per-scanline latched matrix; fall back to frame-start read
             if y < n_snaps and snaps[y] is not None:
                 dx, dmx, dy, dmy, _, _, overflow = snaps[y]
             else:
                 dx, dmx, dy, dmy, _, _, overflow = self._read_affine_bg2_params()
-
             row_fb = fb[y]
             row_lo = lo[y]
             x = sx - dx
