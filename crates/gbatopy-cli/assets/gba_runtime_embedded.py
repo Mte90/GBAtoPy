@@ -2842,6 +2842,7 @@ class Memory:
 
         self.rom: Optional[bytearray] = None
         self.rom_size: int = 0
+        self.rom_mirror_size: int = MemoryMap.ROM_MAX_SIZE
         self.open_bus: int = 0
 
         self._mmio_write_handlers: dict[int, Callable[[int, int], None]] = {}
@@ -2977,7 +2978,7 @@ class Memory:
         if addr < MemoryMap.ROM_START or addr > 0x0EFFFFFF:
             return -1
 
-        offset = (addr - MemoryMap.ROM_START) % MemoryMap.ROM_MAX_SIZE
+        offset = (addr - MemoryMap.ROM_START) % self.rom_mirror_size
         if offset >= self.rom_size:
             return -1
         return offset
@@ -3178,6 +3179,10 @@ class Memory:
             data = data.encode("latin-1")
         self.rom = bytearray(data)
         self.rom_size = len(data)
+        _ms = 1
+        while _ms < self.rom_size:
+            _ms <<= 1
+        self.rom_mirror_size = max(_ms, 1)
 
         if self.rom_size >= 4:
             self.iwram[0:4] = self.rom[0:4]

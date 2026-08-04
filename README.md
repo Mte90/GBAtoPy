@@ -18,12 +18,12 @@ Project is in active development. The transpilation pipeline works end-to-end; p
 
 | Check | Result |
 |-------|--------|
-| Transpile to Python (0 instruction decode failures) | 68/68 |
-| Smoke test (transpile + syntax check) | 66/68 — `helloAudio.gba`, `rates.gba` fail |
-| Visually verified vs mGBA golden (<30% pixel difference) | 24/68 |
-| Known failures (smoke or visual) | 4/68 |
-| Hang at runtime (IRQ/DMA/timer paths) | 9/68 |
-| Transpile + smoke pass, visual not yet verified | 31/68 |
+| Transpile to Python (0 instruction decode failures) | 66/66 |
+| Smoke test (transpile + syntax check) | 64/66 — `helloAudio.gba`, `rates.gba` fail |
+| Visually verified vs mGBA golden (<30% pixel difference) | 24/66 |
+| Known failures (smoke or visual) | 4/66 |
+| Hang at runtime (IRQ/DMA/timer paths) | 9/66 |
+| Transpile + smoke pass, visual not yet verified | 29/66 |
 
 The 24 visually verified ROMs (all pass the <30% threshold vs mGBA golden): `arm`, `bgx`, `bios`, `cond_invalid`, `flash64`, `flash128`, `hello`, `helloWorld`, `hello_world`, `if_ack`, `irq_delay`, `joypad`, `memory`, `mode2`, `mode3`, `mode4`, `none`, `redline`, `retAddr`, `shades`, `sram`, `stripes`, `thumb`, `unsafe`.
 

@@ -1,5 +1,5 @@
 # GBAtoPy Test Configuration
-# Test runner configuration for all 68 ROMs
+# Test runner configuration for all 66 ROMs
 
 roms_dir = "test_roms/roms"
 output_dir = "test-reports/artifacts"
@@ -17,37 +17,37 @@ parallel = 4
 [[tests]]
 name = "arm"
 rom_path = "arm.gba"
-test_type = "Smoke"
+test_type = "PassFailScreen"
 
 [[tests]]
 name = "ARM_Any"
 rom_path = "ARM_Any.gba"
-test_type = "Smoke"
+test_type = "EwramDump"
 
 [[tests]]
 name = "ARM_DataProcessing"
 rom_path = "ARM_DataProcessing.gba"
-test_type = "Smoke"
+test_type = "EwramDump"
 
 [[tests]]
 name = "FuzzARM"
 rom_path = "FuzzARM.gba"
-test_type = "Smoke"
+test_type = "EwramDump"
 
 [[tests]]
 name = "THUMB_Any"
 rom_path = "THUMB_Any.gba"
-test_type = "Smoke"
+test_type = "EwramDump"
 
 [[tests]]
 name = "THUMB_DataProcessing"
 rom_path = "THUMB_DataProcessing.gba"
-test_type = "Smoke"
+test_type = "EwramDump"
 
 [[tests]]
 name = "armwrestler"
 rom_path = "armwrestler.gba"
-test_type = "Smoke"
+test_type = "PassFailScreen"
 
 [[tests]]
 name = "armwrestler-fixed"
@@ -62,17 +62,17 @@ test_type = "Smoke"
 [[tests]]
 name = "bgpd"
 rom_path = "bgpd.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "bgx"
 rom_path = "bgx.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "bios"
 rom_path = "bios.gba"
-test_type = "Smoke"
+test_type = "PassFailScreen"
 
 [[tests]]
 name = "burst-into-tears"
@@ -97,7 +97,7 @@ test_type = "Smoke"
 [[tests]]
 name = "cond_invalid"
 rom_path = "cond_invalid.gba"
-test_type = "Smoke"
+test_type = "PassFailScreen"
 
 [[tests]]
 name = "dispcnt-latch"
@@ -137,7 +137,7 @@ test_type = "Smoke"
 [[tests]]
 name = "greenswap"
 rom_path = "greenswap.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "haltcnt"
@@ -152,17 +152,17 @@ test_type = "Smoke"
 [[tests]]
 name = "hello"
 rom_path = "hello.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "hello_world"
 rom_path = "hello_world.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "helloWorld"
 rom_path = "helloWorld.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "if_ack"
@@ -207,7 +207,7 @@ test_type = "Smoke"
 [[tests]]
 name = "memory"
 rom_path = "memory.gba"
-test_type = "Smoke"
+test_type = "PassFailScreen"
 
 [[tests]]
 name = "mode2"
@@ -217,12 +217,12 @@ test_type = "Smoke"
 [[tests]]
 name = "mode3"
 rom_path = "mode3.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "mode4"
 rom_path = "mode4.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "nes"
@@ -272,7 +272,7 @@ test_type = "Smoke"
 [[tests]]
 name = "shades"
 rom_path = "shades.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "song"
@@ -282,21 +282,11 @@ test_type = "Smoke"
 [[tests]]
 name = "sprite-hmosaic"
 rom_path = "sprite-hmosaic.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "sram"
 rom_path = "sram.gba"
-test_type = "Smoke"
-
-[[tests]]
-name = "sram-test"
-rom_path = "sram-test.gba"
-test_type = "Smoke"
-
-[[tests]]
-name = "sram_test"
-rom_path = "sram_test.gba"
 test_type = "Smoke"
 
 [[tests]]
@@ -317,7 +307,7 @@ test_type = "Smoke"
 [[tests]]
 name = "stripes"
 rom_path = "stripes.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "test"
@@ -327,7 +317,7 @@ test_type = "Smoke"
 [[tests]]
 name = "thumb"
 rom_path = "thumb.gba"
-test_type = "Smoke"
+test_type = "PassFailScreen"
 
 [[tests]]
 name = "timer_change"
@@ -342,7 +332,7 @@ test_type = "Smoke"
 [[tests]]
 name = "vram-mirror"
 rom_path = "vram-mirror.gba"
-test_type = "Smoke"
+test_type = "ScreenshotMgba"
 
 [[tests]]
 name = "window_midframe"

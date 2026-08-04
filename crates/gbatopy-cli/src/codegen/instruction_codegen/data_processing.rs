@@ -110,12 +110,12 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let ops = resolve_pc_operands(&inst.operands, inst.address, base_opcode);
 
     let code = match base_opcode {
-        "MOV" => generate_mov(&ops),
-        "MVN" => generate_mvn(&ops),
-        "ADD" | "ADC" => generate_add(&ops, base_opcode),
+        "MOV" => generate_mov(&ops, inst.sets_flags),
+        "MVN" => generate_mvn(&ops, inst.sets_flags),
+        "ADD" | "ADC" => generate_add(&ops, base_opcode, inst.sets_flags),
         "SUB" | "SBC" | "RSB" | "RSC" => generate_sub(&ops, base_opcode, inst.sets_flags),
-        "AND" | "EOR" | "ORR" | "BIC" => generate_logic(&ops, base_opcode),
-        "LSL" | "LSR" | "ASR" | "ROR" => generate_shift(&ops, base_opcode),
+        "AND" | "EOR" | "ORR" | "BIC" => generate_logic(&ops, base_opcode, inst.sets_flags),
+        "LSL" | "LSR" | "ASR" | "ROR" => generate_shift(&ops, base_opcode, inst.sets_flags),
         "CLZ" => generate_clz(&ops),
         "CMP" => generate_cmp(&ops),
         "CMN" => generate_cmn(&ops),
@@ -144,59 +144,81 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     Some(code)
 }
 
-fn generate_mov(ops: &[Operand]) -> Option<String> {
+fn generate_mov(ops: &[Operand], sets_flags: bool) -> Option<String> {
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
-            // CRITICAL: MOV to PC (R15) is a branch!
             if rd == 15 {
-                // MOV PC, #imm - direct jump to immediate address
                 if ops.len() >= 2 {
                     if let Operand::Immediate(imm) = &ops[1] {
                         return Some(format!("registers[15] = 0x{:08X}", imm));
                     }
                 }
-                // MOV PC, Rn - indirect jump via register
                 if ops.len() >= 2 {
                     if let Operand::Register(rn) = &ops[1] {
                         return Some(format!("registers[15] = registers[{}] & 0xFFFFFFFC", rn));
                     }
                 }
             }
-            
+
             let src = if ops.len() >= 2 { operand_to_expr(&ops[1]) } else { "0".to_string() };
+            if sets_flags {
+                return Some(format!(
+                    "registers[{}] = {}\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    rd, src, rd
+                ));
+            }
             return Some(format!("registers[{}] = {}", rd, src));
         }
     }
     None
 }
 
-fn generate_mvn(ops: &[Operand]) -> Option<String> {
+fn generate_mvn(ops: &[Operand], sets_flags: bool) -> Option<String> {
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
             let src = if ops.len() >= 2 { operand_to_expr(&ops[1]) } else { "0".to_string() };
+            if sets_flags {
+                return Some(format!(
+                    "registers[{}] = {} ^ 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    rd, src, rd
+                ));
+            }
             return Some(format!("registers[{}] = {} ^ 0xFFFFFFFF", rd, src));
         }
     }
     None
 }
 
-fn generate_add(ops: &[Operand], op: &str) -> Option<String> {
+fn generate_add(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
-            // Handle 2-operand form: ADD Rd, op2 (same as ADD Rd, Rd, op2)
+            let is_adc = op == "ADC";
             if ops.len() == 2 {
                 let rd_str = format!("registers[{}]", rd);
                 let op2 = operand_to_expr(&ops[1]);
-                if op == "ADC" {
+                if sets_flags {
+                    let carry = if is_adc { " + (1 if cpsr.get('c', 0) else 0)" } else { "" };
+                    return Some(format!(
+                        "_rn_val = {}\n_op2_val = {}\n_full = _rn_val + _op2_val{}\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _full >= 0x100000000 else 0\n_rn_s = _rn_val if _rn_val < 0x80000000 else _rn_val - 0x100000000\n_op2_s = _op2_val if _op2_val < 0x80000000 else _op2_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_rn_s >= 0 and _op2_s >= 0 and _result_s < 0) or (_rn_s < 0 and _op2_s < 0 and _result_s >= 0) else 0",
+                        rd_str, op2, carry, rd
+                    ));
+                }
+                if is_adc {
                     return Some(format!("{} = ({} + {} + (1 if cpsr['c'] else 0)) & 0xFFFFFFFF", rd_str, rd_str, op2));
                 }
                 return Some(format!("{} = ({} + {}) & 0xFFFFFFFF", rd_str, rd_str, op2));
             }
-            // Handle 3-operand form: ADD Rd, Rn, op2
             if ops.len() >= 3 {
                 let rn = operand_to_expr(&ops[1]);
                 let op2 = operand_to_expr(&ops[2]);
-                if op == "ADC" {
+                if sets_flags {
+                    let carry = if is_adc { " + (1 if cpsr.get('c', 0) else 0)" } else { "" };
+                    return Some(format!(
+                        "_rn_val = {}\n_op2_val = {}\n_full = _rn_val + _op2_val{}\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _full >= 0x100000000 else 0\n_rn_s = _rn_val if _rn_val < 0x80000000 else _rn_val - 0x100000000\n_op2_s = _op2_val if _op2_val < 0x80000000 else _op2_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_rn_s >= 0 and _op2_s >= 0 and _result_s < 0) or (_rn_s < 0 and _op2_s < 0 and _result_s >= 0) else 0",
+                        rn, op2, carry, rd
+                    ));
+                }
+                if is_adc {
                     return Some(format!("registers[{}] = ({} + {} + (1 if cpsr['c'] else 0)) & 0xFFFFFFFF", rd, rn, op2));
                 }
                 return Some(format!("registers[{}] = ({} + {}) & 0xFFFFFFFF", rd, rn, op2));
@@ -209,60 +231,60 @@ fn generate_add(ops: &[Operand], op: &str) -> Option<String> {
 fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
+            let with_borrow = op == "SBC" || op == "RSC";
+            let is_reversed = op == "RSB" || op == "RSC";
+
             if ops.len() == 2 {
                 let rd_str = format!("registers[{}]", rd);
                 let op2 = operand_to_expr(&ops[1]);
-                let result_var = format!("result_sub_{}", rd);
-                let sub_code = match op {
-                    "RSB" => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, op2, rd_str),
-                    "RSC" => format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", result_var, op2, rd_str),
-                    "SBC" => format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", result_var, rd_str, op2),
-                    _ => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, rd_str, op2),
+                let (a, b) = if is_reversed {
+                    (op2.as_str(), rd_str.as_str())
+                } else {
+                    (rd_str.as_str(), op2.as_str())
                 };
                 if sets_flags {
-                    let flag_code = format!(
-                        "{}\n{} = {}\nresult_sub_cmp = {} & 0xFFFFFFFF\ncpsr['z'] = 1 if result_sub_cmp == 0 else 0\ncpsr['n'] = 1 if result_sub_cmp >= 0x80000000 else 0",
-                        sub_code, rd_str, result_var, result_var
-                    );
-                    return Some(flag_code);
-                } else {
-                    return Some(format!("{}\n{} = {}", sub_code, rd_str, result_var));
+                    let borrow = if with_borrow { " - (0 if cpsr.get('c', 0) else 1)" } else { "" };
+                    return Some(format!(
+                        "_a_val = {}\n_b_val = {}\n_full = _a_val - _b_val{}\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _full >= 0 else 0\n_a_s = _a_val if _a_val < 0x80000000 else _a_val - 0x100000000\n_b_s = _b_val if _b_val < 0x80000000 else _b_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_a_s >= 0 and _b_s < 0 and _result_s < 0) or (_a_s < 0 and _b_s >= 0 and _result_s >= 0) else 0",
+                        a, b, borrow, rd
+                    ));
                 }
+                if with_borrow {
+                    return Some(format!("registers[{}] = ({} - {} - (0 if cpsr.get('c', 0) else 1)) & 0xFFFFFFFF", rd, a, b));
+                }
+                return Some(format!("registers[{}] = ({} - {}) & 0xFFFFFFFF", rd, a, b));
             }
             if ops.len() >= 3 {
                 let rn = operand_to_expr(&ops[1]);
                 let op2 = operand_to_expr(&ops[2]);
-                let result_var = format!("result_sub_{}", rd);
-                let sub_code = match op {
-                    "RSB" => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, op2, rn),
-                    "RSC" => format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", result_var, op2, rn),
-                    "SBC" => format!("{} = ({} - {} - (0 if cpsr['c'] else 1)) & 0xFFFFFFFF", result_var, rn, op2),
-                    _ => format!("{} = ({} - {}) & 0xFFFFFFFF", result_var, rn, op2),
+                let (a, b) = if is_reversed {
+                    (op2.as_str(), rn.as_str())
+                } else {
+                    (rn.as_str(), op2.as_str())
                 };
                 if sets_flags {
-                    let flag_code = format!(
-                        "{}\nregisters[{}] = {}\nresult_sub_cmp = {} & 0xFFFFFFFF\ncpsr['z'] = 1 if result_sub_cmp == 0 else 0\ncpsr['n'] = 1 if result_sub_cmp >= 0x80000000 else 0",
-                        sub_code, rd, result_var, result_var
-                    );
-                    return Some(flag_code);
-                } else {
-                    return Some(format!("{}\nregisters[{}] = {}", sub_code, rd, result_var));
+                    let borrow = if with_borrow { " - (0 if cpsr.get('c', 0) else 1)" } else { "" };
+                    return Some(format!(
+                        "_a_val = {}\n_b_val = {}\n_full = _a_val - _b_val{}\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _full >= 0 else 0\n_a_s = _a_val if _a_val < 0x80000000 else _a_val - 0x100000000\n_b_s = _b_val if _b_val < 0x80000000 else _b_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_a_s >= 0 and _b_s < 0 and _result_s < 0) or (_a_s < 0 and _b_s >= 0 and _result_s >= 0) else 0",
+                        a, b, borrow, rd
+                    ));
                 }
+                if with_borrow {
+                    return Some(format!("registers[{}] = ({} - {} - (0 if cpsr.get('c', 0) else 1)) & 0xFFFFFFFF", rd, a, b));
+                }
+                return Some(format!("registers[{}] = ({} - {}) & 0xFFFFFFFF", rd, a, b));
             }
         }
     }
     None
 }
 
-fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
+fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
     if ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
-            // CRITICAL: Writing to PC (R15) is a branch!
             if rd == 15 {
-                // ORR PC, Rn, #imm - this is a branch to computed address
                 if ops.len() == 3 {
                     if let Operand::Register(rn_reg) = &ops[1] {
-                        // ORR PC, Rn, #imm - jump to Rn | imm
                         let imm = match &ops[2] {
                             Operand::Immediate(i) => *i,
                             _ => 0,
@@ -274,8 +296,7 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
                     }
                 }
             }
-            
-            // Handle 2-operand form: ORR Rd, #imm or ORR Rd, Rm
+
             if ops.len() == 2 {
                 let src = operand_to_expr(&ops[1]);
                 let py_op = match op {
@@ -285,11 +306,15 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
                     "BIC" => "& ~",
                     _ => "&",
                 };
+                if sets_flags {
+                    return Some(format!(
+                        "registers[{}] = (registers[{}] {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                        rd, rd, py_op, src, rd
+                    ));
+                }
                 return Some(format!("registers[{}] = (registers[{}] {} {}) & 0xFFFFFFFF", rd, rd, py_op, src));
             }
-            
-            // Handle 3-operand form: ORR Rd, Rn, #imm/Rm/shifted
-            // Use operand_to_expr for Rn to handle PC-relative (already resolved to Immediate)
+
             if ops.len() >= 3 {
                 let rn = operand_to_expr(&ops[1]);
                 let op2 = operand_to_expr(&ops[2]);
@@ -300,6 +325,12 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
                     "BIC" => "& ~",
                     _ => "&",
                 };
+                if sets_flags {
+                    return Some(format!(
+                        "registers[{}] = ({} {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                        rd, rn, py_op, op2, rd
+                    ));
+                }
                 return Some(format!("registers[{}] = ({} {} {}) & 0xFFFFFFFF", rd, rn, py_op, op2));
             }
         }
@@ -307,7 +338,7 @@ fn generate_logic(ops: &[Operand], op: &str) -> Option<String> {
     None
 }
 
-fn generate_shift(ops: &[Operand], op: &str) -> Option<String> {
+fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
     if ops.len() >= 3 {
         if let Operand::Register(rd) = ops[0] {
             let rn = match &ops[1] {
@@ -326,6 +357,12 @@ fn generate_shift(ops: &[Operand], op: &str) -> Option<String> {
                 "ROR" => "|",
                 _ => "<<",
             };
+            if sets_flags {
+                return Some(format!(
+                    "registers[{}] = ({} {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    rd, rn, py_op, shift, rd
+                ));
+            }
             return Some(format!("registers[{}] = ({} {} {})", rd, rn, py_op, shift));
         }
     }

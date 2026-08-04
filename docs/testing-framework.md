@@ -111,13 +111,13 @@ cargo run -p gbatopy-test -- --config /path/to/custom.toml
 ```
 === GBAtoPy Test Suite ===
 Config: test-roms-config.toml
-ROMs: 68
+ROMs: 66
 Parallel workers: 4
 
-[1/68] stripes ........... PASS (smoke)
-[2/68] hello ............. PASS (screenshot_golden) 98.5% match
-[3/68] arm ............... PASS (pass_fail)
-[4/68] FuzzARM ........... PASS (ewram_dump) 0 failures / 10000 tests
+[1/66] stripes ........... PASS (smoke)
+[2/66] hello ............. PASS (screenshot_golden) 98.5% match
+[3/66] arm ............... PASS (pass_fail)
+[4/66] FuzzARM ........... PASS (ewram_dump) 0 failures / 10000 tests
 ...
 
 === Summary ===
@@ -153,7 +153,7 @@ cat test-reports/results-junit.xml
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="gbatopy-test" tests="68" failures="3" time="234.567">
+<testsuite name="gbatopy-test" tests="66" failures="3" time="234.567">
   <testcase name="stripes" classname="smoke" time="5.234"/>
   ...
 </testsuite>
@@ -261,7 +261,7 @@ def parse_assertion(screenshot):
 | assertion_text | status-irq-dma, vram-mirror, burst-into-tears, force-nseq-access, latch, start-stop, reload, 128kb-boundary, haltcnt, timer_change | 10 |
 | smoke | nes, enhancedcontrolchecker, redline, rtc-demo, helloAudio, test, song, rates, pcmxx, basic-timing, exact-timing, start-delay, sram, flash64, flash128, none, mode2, mode3, mode4, ram-access-timing, cancel-irq-ie, cancel-irq-if, cancel-irq-ime | 23 |
 
-**Total**: 68 ROMs
+**Total**: 66 ROMs
 
 ---
 

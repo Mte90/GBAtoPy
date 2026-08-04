@@ -112,7 +112,7 @@ The output is a single `.py` file with all runtime code inlined. The only extern
 |-----------|--------|-------|
 | Rust pipeline | ✅ Builds | Zero compiler warnings |
 | Disassembler | ✅ Working | ~100% ARM/Thumb coverage |
-| Python generation | ✅ Working | All 68 ROMs produce valid Python |
+| Python generation | ✅ Working | All 66 ROMs produce valid Python |
 | Memory map | ✅ Working | Full GBA memory layout with mirrors |
 | CPU core | ⚠️ Partial | Code-gen generates Python functions; runtime uses PyBoyAdvance modules; STMFD/LDMFD register order bug corrupts stack |
 | PPU Mode 3 | ✅ Verified | stripes.gba 100% golden match |

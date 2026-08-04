@@ -1098,29 +1098,40 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = 1000000; ic = 0
-    _vblank_irq_delivered = False
+    _irq_return_pc = None
     instr_per_scanline = max(50, (int(gba_hz / 60.0) // 4) // 228)
-    def _deliver_vblank_irq():
-        nonlocal _vblank_irq_delivered
+    def _deliver_irq():
+        nonlocal _irq_return_pc
         global _cpu_halted
         _cpu_halted = False
-        if not _vblank_irq_delivered:
-            _irq = getattr(memory, '_interrupts', None)
-            if _irq is not None and (_irq.ime_reg & 0x0001):
-                _pending = _irq.if_reg & _irq.ie_reg
-                if _pending:
-                    _handler = memory.read_u32(0x03007FFC)
-                    if 0x02000000 <= _handler < 0x0A000000:
-                        registers[14] = registers[15]
-                        registers[15] = _handler & 0xFFFFFFFE
-                        cpsr['t'] = 1 if (_handler & 1) else 0
-                        _vblank_irq_delivered = True
+        _irq = getattr(memory, '_interrupts', None)
+        if _irq is None or not (_irq.ime_reg & 0x0001):
+            return
+        _pending = _irq.if_reg & _irq.ie_reg
+        if not _pending:
+            return
+        # Re-entry guard: block while inside a previously delivered handler.
+        if _irq_return_pc is not None:
+            if registers[15] != _irq_return_pc:
+                return
+            # Handler returned — clear guard so the next IRQ can fire later.
+            _irq_return_pc = None
+            return
+        _handler = memory.read_u32(0x03007FFC)
+        if not (0x02000000 <= _handler < 0x0A000000):
+            return
+        _irq_return_pc = registers[15]
+        registers[14] = registers[15]
+        registers[15] = _handler & 0xFFFFFFFE
+        cpsr['t'] = 1 if (_handler & 1) else 0
     while ic < mi:
         if _cpu_halted:
             for _ in range(228):
                 ppu_instance.step_scanline()
-                if ppu_instance.vblank:
-                    _deliver_vblank_irq()
+                if timers_instance is not None:
+                    timers_instance.step(instr_per_scanline * 4)
+                _deliver_irq()
+                if not _cpu_halted:
                     break
             continue
         pc = registers[15]
@@ -1132,21 +1143,16 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         else:
             func(registers, cpsr); ic += 1
             if registers[15] == pc:
-                # B . idle loop — step PPU immediately for responsiveness
                 ppu_instance.step_scanline()
-                if ppu_instance.vblank:
-                    _deliver_vblank_irq()
-                else:
-                    _vblank_irq_delivered = False
+                if timers_instance is not None:
+                    timers_instance.step(instr_per_scanline * 4)
+                _deliver_irq()
                 continue
-        # Step PPU periodically (covers fallback-only execution paths
-        # where the dispatch table is never hit)
         if ic % instr_per_scanline == 0:
             ppu_instance.step_scanline()
-            if ppu_instance.vblank:
-                _deliver_vblank_irq()
-            else:
-                _vblank_irq_delivered = False
+            if timers_instance is not None:
+                timers_instance.step(instr_per_scanline * 4)
+            _deliver_irq()
         if frame_limit and fc >= frame_limit: break
         if ic % 1000 == 0: fc += 1
     return fc
@@ -1190,7 +1196,29 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     fc = 0; running = True; mi = max_instrs; ic = 0
     loop_stall_count = 0
     max_loop_stalls = 10000
-    _vblank_irq_delivered = False
+    _irq_return_pc = None
+    def _deliver_irq():
+        nonlocal _irq_return_pc
+        global _cpu_halted
+        _cpu_halted = False
+        _irq = getattr(memory, '_interrupts', None)
+        if _irq is None or not (_irq.ime_reg & 0x0001):
+            return
+        _pending = _irq.if_reg & _irq.ie_reg
+        if not _pending:
+            return
+        if _irq_return_pc is not None:
+            if registers[15] != _irq_return_pc:
+                return
+            _irq_return_pc = None
+            return
+        _handler = memory.read_u32(0x03007FFC)
+        if not (0x02000000 <= _handler < 0x0A000000):
+            return
+        _irq_return_pc = registers[15]
+        registers[14] = registers[15]
+        registers[15] = _handler & 0xFFFFFFFE
+        cpsr['t'] = 1 if (_handler & 1) else 0
     # print(f"PC=0x{registers[15]:08X}")
     while running and ic < mi and fc < (frame_limit or 10000):
         for e in pygame.event.get():
@@ -1250,21 +1278,9 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         print("Execution paused at breakpoint")
                         break
             ppu_instance.step_scanline()
-            if ppu_instance.vblank:
-                _cpu_halted = False
-                if not _vblank_irq_delivered:
-                    _irq = getattr(memory, '_interrupts', None)
-                    if _irq is not None and (_irq.ime_reg & 0x0001):
-                        _pending = _irq.if_reg & _irq.ie_reg
-                        if _pending:
-                            _handler = memory.read_u32(0x03007FFC)
-                            if 0x02000000 <= _handler < 0x0A000000:
-                                registers[14] = registers[15]
-                                registers[15] = _handler & 0xFFFFFFFE
-                                cpsr['t'] = 1 if (_handler & 1) else 0
-                                _vblank_irq_delivered = True
-            else:
-                _vblank_irq_delivered = False
+            if timers_instance is not None:
+                timers_instance.step(instr_per_scanline * 4)
+            _deliver_irq()
         # Render the completed frame
         ppu_instance.render_frame()
         # Update APU audio

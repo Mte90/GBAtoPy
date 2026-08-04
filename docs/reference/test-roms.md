@@ -1,6 +1,6 @@
 # GBA Test ROMs Reference - Updated (2026-07-30)
 
-This document catalogs all **68 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
+This document catalogs all **66 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
 **Note**: Previous version claimed 41 ROMs. This is now updated to reflect the complete inventory including hw-test/, gba-sound-demo/, and other directories.
 
@@ -97,14 +97,14 @@ As of 2026-07-30, ROMs are classified by visual verification against mGBA golden
 | Timer | 2 | timer_change.gba ⚠️, haltcnt.gba | 1⚠️, 1❓ |
 | Keypad | 1 | enhancedcontrolchecker.gba | ❓ |
 | Audio | 6 | helloAudio.gba ✅, test.gba, song.gba, rates.gba ❌, redline.gba ✅, pcmxx.gba ⚠️ | 2✅, 1❌, 1⚠️, 2❓ |
-| Save | 6 | sram.gba ✅, flash64.gba ✅, flash128.gba ✅, none.gba ✅, sram_test.gba ❓, sram-test.gba ❓ | 4✅, 2❓ |
+| Save | 4 | sram.gba ✅, flash64.gba ✅, flash128.gba ✅, none.gba ✅ | 4✅ |
 | Memory | 2 | 128kb-boundary.gba, ram-access-timing.gba | ❓ |
 | RTC | 1 | rtc-demo.gba | ❓ |
 | Timing | 2 | exact-timing.gba, start-delay.gba | ❓ |
 
 **Legend**: ✅ PASS (diff <30%) · ❌ FAIL (diff ≥30%) · ⏰ RUN_FAIL (hang/timeout) · ❓ Unverified
 
-**Total ROMs**: 68 — 27 ✅ verified working, 8 ⚠️ partial (run without hang; 7 pass 30% threshold with visual mismatch), 3 ❌ known failures (rates, window_midframe, nes), 0 ⏰ execution hangs, 30 ❓ unverified
+**Total ROMs**: 66 — 27 ✅ verified working, 8 ⚠️ partial (run without hang; 7 pass 30% threshold with visual mismatch), 3 ❌ known failures (rates, window_midframe, nes), 0 ⏰ execution hangs, 28 ❓ unverified
 
 **Note on bgpd.gba**: ✅ FIXED (2026-07-31). 0.0% diff vs mGBA golden at frame 200. Two root causes: (1) HBlank DMA burst behavior — `hblank_fire` in `dma.py` must call `_do_transfer` (full-count burst) not `_do_transfer_single` (one per HBlank), matching mGBA's `GBADMAService` which completes all pending transfers on the first HBlank trigger. (2) Mode 3 affine rendering — `_render_mode3` in `ppu.py` must read per-scanline BG2 affine snapshots (like `_render_mode4`), not assume identity matrix; mGBA applies BG2 affine registers in Mode 3, updated via HBlank DMA to BG2PD.
 
@@ -828,7 +828,7 @@ As of 2026-07-30, ROMs are classified by visual verification against mGBA golden
 
 ## Transpiler Status
 
-All 68 test ROMs transpile to syntactically valid Python with **0 instruction parsing failures**.
+All 66 test ROMs transpile to syntactically valid Python with **0 instruction parsing failures**.
 
 **Note**: "Status" column below shows **visual verification** (Level 3), not just syntax validation. Most ROMs are ❓ Unknown because they have NOT been compared against mGBA golden screenshots.
 
@@ -917,11 +917,11 @@ All 68 test ROMs transpile to syntactically valid Python with **0 instruction pa
 ```bash
 # Count ROM files
 ls test_roms/roms/*.gba | wc -l
-# Output: 68
+# Output: 66
 
 # Count structured entries in this document
 grep -c "^### " docs/reference/test-roms.md
-# Should be 70 (68 ROMs + 2 sound demos)
+# Should be 68 (66 ROMs + 2 sound demos)
 
 # Verify gba-sound-demo ROMs are documented
 grep -c "song.gba\|rates.gba" docs/reference/test-roms.md

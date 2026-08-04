@@ -4,7 +4,7 @@
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
 > **Last updated**: 2026-07-30
-> **Current state**: 68/68 ROMs transpile to Python (0 instruction decode failures). 66/68 pass smoke test (helloAudio.gba, rates.gba fail). 24/68 visually verified vs mGBA golden (<30% pixel difference). Build: 0 errors, 0 warnings.
+> **Current state**: 66/66 ROMs transpile to Python (0 instruction decode failures). 64/66 pass smoke test (helloAudio.gba, rates.gba fail). 24/66 visually verified vs mGBA golden (<30% pixel difference). Build: 0 errors, 0 warnings.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
 ---
@@ -20,7 +20,7 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 ### ✅ Wave 1: Core Infrastructure - COMPLETE
 - Rust pipeline builds with zero warnings
 - Disassembler decodes ARM/Thumb instructions (~100% coverage)
-- Python generation produces syntactically valid output for all 68 ROMs
+- Python generation produces syntactically valid output for all 66 ROMs
 - Memory map implemented (ROM, EWRAM, IWRAM, MMIO, VRAM, Palette, OAM) with mirrors
 - Basic block merging (52-80% code size reduction)
 
@@ -88,10 +88,10 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - 8-bit and 16-bit read support
 
 ### ✅ Wave 9: Test Framework — PARTIAL
-- Rust-based automated testing with 68 ROMs configured
-- **Smoke tests**: 66/68 passing (helloAudio, rates fail)
+- Rust-based automated testing with 66 ROMs configured
+- **Smoke tests**: 64/66 passing (helloAudio, rates fail)
 - **ScreenshotGolden tests**: NOT YET WIRED — 32 goldens exist in `scripts/screenshot/golden/` but automated comparison is not in the test runner
-- **Manual golden matches**: 24/68 verified (<30% pixel diff via `compare_screenshots.py`)
+- **Manual golden matches**: 24/66 verified (<30% pixel diff via `compare_screenshots.py`)
 - Verifier types in config: Smoke, ScreenshotGolden, EWRAM, Assertion, Performance, Coverage
 - Only Smoke verifier currently exercised
 - Parallel execution (4 workers)
@@ -103,14 +103,14 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 
 ### Smoke Tests (Transpile + Syntax)
 ```
-Total: 68 ROMs
+Total: 66 ROMs
 Passed: 66 (97%)
 Failed: 2 (helloAudio, rates)
 ```
 
 ### Visual Verification (ScreenshotGolden vs mGBA)
 ```
-Total: 68 ROMs
+Total: 66 ROMs
 Verified (<30% diff): 24 (35%)
 Known failures: 4 (helloAudio, rates, greenswap 85% diff, window_midframe 55% diff)
 Runtime hangs: 9 (bgpd, dma_priority, isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change)
@@ -192,11 +192,11 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 |--------|-------|
 | Rust source lines | ~15,000 (across 3 crates) |
 | Python runtime lines | ~4,500 (ppu.py + apu.py + cpu.py + helpers.py) |
-| Test ROMs | 68 |
+| Test ROMs | 66 |
 | BIOS handlers | 54 |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
-| Test pass rate | 66/68 smoke (97%); 24/68 visual verified (35%) |
+| Test pass rate | 64/66 smoke (97%); 24/66 visual verified (35%) |
 | Build time | ~30s (release) |
 | Transpile time | ~1-5s per ROM |
 

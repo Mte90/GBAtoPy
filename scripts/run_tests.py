@@ -35,14 +35,14 @@ from time import time
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ROMS_DIR = PROJECT_ROOT / "test_roms" / "roms"
-GOLDEN_DIR = PROJECT_ROOT / "scripts" / "screenshot" / "golden"
+GOLDEN_DIR = PROJECT_ROOT / "test-reports" / "goldens"
 GBATOPY_BIN = PROJECT_ROOT / "target" / "release" / "gbatopy-cli"
 COMPARE_SCRIPT = PROJECT_ROOT / "scripts" / "verify" / "compare_screenshots.py"
 OUTPUT_DIR = PROJECT_ROOT / "test-reports" / "artifacts"
 TEST_CONFIG_PATH = PROJECT_ROOT / "test-roms-config.toml"
 
 # Test types that use L3 screenshot comparison
-VISUAL_TEST_TYPES = {"ScreenshotMgba"}
+VISUAL_TEST_TYPES = {"ScreenshotMgba", "ScreenshotGolden"}
 
 
 def load_test_types():
@@ -134,13 +134,15 @@ def execute_rom(output_path, frame=10, timeout=90):
 def compare_screenshot(transpiled_screenshot, rom_name, frame=60):
     """Compare transpiled screenshot with golden. Returns (status, details)."""
     rom_base = rom_name.replace('.gba', '')
-    golden_path = GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}.png"
-
-    if not golden_path.exists():
-        # Try frame 10 as fallback
-        golden_path = GOLDEN_DIR / f"golden_{rom_base}_frame_10.png"
-        if not golden_path.exists():
-            return "no_golden", "No golden screenshot available"
+    candidates = [
+        GOLDEN_DIR / f"{rom_base}_f{frame}.png",
+        GOLDEN_DIR / f"{rom_base}_f10.png",
+        GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}.png",
+        GOLDEN_DIR / f"golden_{rom_base}_frame_10.png",
+    ]
+    golden_path = next((p for p in candidates if p.exists()), None)
+    if golden_path is None:
+        return "no_golden", "No golden screenshot available"
 
     result = subprocess.run(
         ["python3", str(COMPARE_SCRIPT), "-s", str(golden_path), str(transpiled_screenshot)],
