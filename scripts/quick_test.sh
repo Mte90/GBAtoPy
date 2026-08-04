@@ -2,7 +2,9 @@
 # Quick transpiler test - compile once, test all ROMs
 
 set -e
-cd /home/archimede/Desktop/projects/GBAtoPy
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 echo "Building release binary..."
 cargo build --release -p gbatopy-cli 2>&1 | tail -3

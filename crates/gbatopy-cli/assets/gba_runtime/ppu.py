@@ -290,7 +290,7 @@ class PPU:
         Filters out sprites with Y=224+ (off-screen vertically).
         Returns list of sprite dictionaries with parsed attributes.
         """
-        self.sprites = []
+        self.sprite_list = []
         
         for i in range(128):
             oam_addr = 0x07000000 + (i * 8)
@@ -643,9 +643,9 @@ class PPU:
 
     # Window registers
     REG_WIN0H = 0x04000040
-    REG_WIN1H = 0x04000041
-    REG_WIN0V = 0x04000042
-    REG_WIN1V = 0x04000043
+    REG_WIN1H = 0x04000042
+    REG_WIN0V = 0x04000044
+    REG_WIN1V = 0x04000046
     REG_WININ = 0x04000048
     REG_WINOUT = 0x0400004A
     REG_WINOBJ = 0x0400004C
@@ -676,7 +676,7 @@ class PPU:
         self.bg1_tilemap = [0] * 1024
         self.bg2_tilemap = [0] * 1024
         self.bg3_tilemap = [0] * 1024
-        self.sprites = []
+        self.sprite_list = []
 
         # Display control - use sensible defaults (mode 3, all BGs)
         # But read actual DISPCNT from memory if available

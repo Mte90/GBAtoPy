@@ -1068,26 +1068,27 @@ class ARM7TDMI:
         h1 = (instr >> 7) & 1
         h2 = (instr >> 6) & 1
 
-        if op == 3 and h1 == 0 and h2 == 1:  # BX
-            target = self.registers[rs + (h1 << 3)]
+        if op == 3 and h1 == 0:  # BX
+            target = self.registers[rs + (h2 << 3)]
             self.thumb_mode = (target & 1) != 0
             self.registers[15] = target & 0xFFFFFFFE
-        else:
-            rdn = rd + (h1 << 3)
-            rm = rs + (h2 << 3)
+            return 1
 
-            if op == 0:  # ADD
-                result = (self.registers[rdn] + self.registers[rm]) & 0xFFFFFFFF
-                self.write_register(rdn, result)
-            elif op == 1:  # CMP
-                result = (self.registers[rdn] - self.registers[rm]) & 0xFFFFFFFF
-                self.cpsr = (
-                    (self.cpsr & 0x0FFFFFFF)
-                    | ((result >> 31) << 28)
-                    | (0 if result == 0 else (1 << 30))
-                )
-            elif op == 2:  # MOV
-                self.write_register(rdn, self.registers[rm])
+        rdn = rd + (h1 << 3)
+        rm = rs + (h2 << 3)
+
+        if op == 0:  # ADD
+            result = (self.registers[rdn] + self.registers[rm]) & 0xFFFFFFFF
+            self.write_register(rdn, result)
+        elif op == 1:  # CMP
+            result = (self.registers[rdn] - self.registers[rm]) & 0xFFFFFFFF
+            self.cpsr = (
+                (self.cpsr & 0x0FFFFFFF)
+                | ((result >> 31) << 28)
+                | (0 if result == 0 else (1 << 30))
+            )
+        elif op == 2:  # MOV
+            self.write_register(rdn, self.registers[rm])
 
         self.registers[15] += 2
         return 1

@@ -1103,7 +1103,6 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     def _deliver_irq():
         nonlocal _irq_return_pc
         global _cpu_halted
-        _cpu_halted = False
         _irq = getattr(memory, '_interrupts', None)
         if _irq is None or not (_irq.ime_reg & 0x0001):
             return
@@ -1120,6 +1119,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         _handler = memory.read_u32(0x03007FFC)
         if not (0x02000000 <= _handler < 0x0A000000):
             return
+        _cpu_halted = False
         _irq_return_pc = registers[15]
         registers[14] = registers[15]
         registers[15] = _handler & 0xFFFFFFFE
@@ -1200,7 +1200,6 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     def _deliver_irq():
         nonlocal _irq_return_pc
         global _cpu_halted
-        _cpu_halted = False
         _irq = getattr(memory, '_interrupts', None)
         if _irq is None or not (_irq.ime_reg & 0x0001):
             return
@@ -1215,6 +1214,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         _handler = memory.read_u32(0x03007FFC)
         if not (0x02000000 <= _handler < 0x0A000000):
             return
+        _cpu_halted = False
         _irq_return_pc = registers[15]
         registers[14] = registers[15]
         registers[15] = _handler & 0xFFFFFFFE

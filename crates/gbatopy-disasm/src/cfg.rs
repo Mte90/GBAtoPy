@@ -30,6 +30,40 @@ pub fn writes_to_pc(opcode: &str, operands: &[Operand]) -> bool {
     false
 }
 
+/// Detects LDR-Literal (PC-relative load) instructions and computes the
+/// literal pool address they reference. The pool address must be marked as
+/// data so the CFG builder does not decode it as an instruction.
+fn literal_pool_addr(opcode: &str, operands: &[Operand], addr: u32, mode: ArmMode) -> Option<u32> {
+    if !opcode.starts_with("LDR") {
+        return None;
+    }
+    match mode {
+        ArmMode::Thumb => {
+            if operands.len() == 2 {
+                if let Operand::Immediate(target) = &operands[1] {
+                    return Some(*target);
+                }
+            }
+            None
+        }
+        ArmMode::Arm => {
+            if operands.len() >= 2 {
+                if let Operand::MemoryAddress {
+                    base: 15,
+                    offset: AddressingMode::ImmediateOffset(off),
+                    ..
+                } = &operands[1]
+                {
+                    let pc = addr.wrapping_add(8);
+                    let literal = pc.wrapping_add(*off as u32) & !3;
+                    return Some(literal);
+                }
+            }
+            None
+        }
+    }
+}
+
 /// Tracks constant values in registers for indirect jump resolution.
 /// Only tracks simple cases: MOV rN, #imm and LDR rN, =imm
 #[derive(Debug, Default)]
@@ -97,6 +131,7 @@ impl CfgBuilder {
         // common_entry_point at 0x08000500 (ARM) would visit 0x08000504 in ARM
         // mode before the main BFS reaches it in Thumb mode via a BX.
         let mut to_visit: Vec<(u32, ArmMode)> = Vec::new();
+        let mut data_addresses: HashSet<u32> = HashSet::new();
 
         let common_entry_points = [
             0x080000A0,
@@ -128,6 +163,9 @@ impl CfgBuilder {
         let mut instruction_count = 0;
 
         while let Some((addr, current_mode)) = to_visit.pop() {
+            if data_addresses.contains(&addr) {
+                continue;
+            }
             if visited.contains(&(addr, current_mode)) {
                 continue;
             }
@@ -177,6 +215,10 @@ impl CfgBuilder {
                 }
             };
 
+            if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
+                data_addresses.insert(pool_addr);
+            }
+
             self.instruction_addresses.push(addr);
             self.mode_map.push((addr, current_mode));
 
@@ -197,6 +239,7 @@ impl CfgBuilder {
             if !is_uncond_branch {
                 let next_addr = addr + instr_width;
                 if !visited.contains(&(next_addr, current_mode))
+                    && !data_addresses.contains(&next_addr)
                     && next_addr >= 0x08000000
                     && ((next_addr - 0x08000000) as usize) < rom.len()
                 {
@@ -222,7 +265,9 @@ impl CfgBuilder {
                 } else {
                     raw_target & !3
                 };
-                if !visited.contains(&(target, target_mode)) {
+                if !visited.contains(&(target, target_mode))
+                    && !data_addresses.contains(&target)
+                {
                     to_visit.push((target, target_mode));
                 }
                 if !self.branch_targets.contains(&target) {
@@ -290,6 +335,9 @@ impl CfgBuilder {
             let mut mini_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini_queue: Vec<(u32, ArmMode)> = new_targets;
             while let Some((addr, current_mode)) = mini_queue.pop() {
+                if data_addresses.contains(&addr) {
+                    continue;
+                }
                 if mini_visited.contains(&(addr, current_mode)) || visited.contains(&(addr, current_mode)) {
                     continue;
                 }
@@ -322,6 +370,10 @@ impl CfgBuilder {
                     }
                 };
 
+                if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
+                    data_addresses.insert(pool_addr);
+                }
+
                 self.instruction_addresses.push(addr);
                 self.mode_map.push((addr, current_mode));
 
@@ -336,6 +388,7 @@ impl CfgBuilder {
                     let next_addr = addr + instr_width;
                     if !mini_visited.contains(&(next_addr, current_mode))
                         && !visited.contains(&(next_addr, current_mode))
+                        && !data_addresses.contains(&next_addr)
                         && next_addr >= 0x08000000
                         && ((next_addr - 0x08000000) as usize) < rom.len()
                     {
@@ -357,7 +410,10 @@ impl CfgBuilder {
                     } else {
                         raw_target & !3
                     };
-                    if !mini_visited.contains(&(target, target_mode)) && !visited.contains(&(target, target_mode)) {
+                    if !mini_visited.contains(&(target, target_mode))
+                        && !visited.contains(&(target, target_mode))
+                        && !data_addresses.contains(&target)
+                    {
                         mini_queue.push((target, target_mode));
                     }
                     if !self.branch_targets.contains(&target) {
@@ -443,6 +499,9 @@ impl CfgBuilder {
             let mut mini2_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini2_queue: Vec<(u32, ArmMode)> = rom_wide_targets;
             while let Some((addr, current_mode)) = mini2_queue.pop() {
+                if data_addresses.contains(&addr) {
+                    continue;
+                }
                 if mini2_visited.contains(&(addr, current_mode))
                     || visited.contains(&(addr, current_mode))
                 {
@@ -477,6 +536,10 @@ impl CfgBuilder {
                     }
                 };
 
+                if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
+                    data_addresses.insert(pool_addr);
+                }
+
                 self.instruction_addresses.push(addr);
                 self.mode_map.push((addr, current_mode));
 
@@ -491,6 +554,7 @@ impl CfgBuilder {
                     let next_addr = addr + instr_width;
                     if !mini2_visited.contains(&(next_addr, current_mode))
                         && !visited.contains(&(next_addr, current_mode))
+                        && !data_addresses.contains(&next_addr)
                         && next_addr >= 0x08000000
                         && ((next_addr - 0x08000000) as usize) < rom.len()
                     {
@@ -514,6 +578,7 @@ impl CfgBuilder {
                     };
                     if !mini2_visited.contains(&(target, target_mode))
                         && !visited.contains(&(target, target_mode))
+                        && !data_addresses.contains(&target)
                     {
                         mini2_queue.push((target, target_mode));
                     }

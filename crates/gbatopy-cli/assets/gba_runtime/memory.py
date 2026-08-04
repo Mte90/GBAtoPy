@@ -75,8 +75,8 @@ class Memory:
         self._mmio_read_handlers: dict[int, Callable[[int], int]] = {}
         # GBA hardware default: DISPCNT = 0x0080 (Mode 0, display not forced blank, all BGs off)
         # The ROM writes to DISPCNT will set the correct mode and enable bits
-        self.io[0x00] = 0x00  # Mode 0
-        self.io[0x01] = 0x80  # Display enabled (bit 7=0 = no forced blank)
+        self.io[0x00] = 0x80  # DISPCNT low byte: Mode 0, BG3 display on
+        self.io[0x01] = 0x00  # DISPCNT high byte: no forced blank
 
         self._ppu: Optional[object] = None
         self._dma: Optional[object] = None

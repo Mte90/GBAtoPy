@@ -40,6 +40,7 @@ class Timers:
         self._channels = [TimerChannel() for _ in range(4)]
         self._overflow_flags = [False] * 4
         self._interrupts = None
+        self._cycle_subcount = [0] * 4
 
     def attach_interrupts(self, interrupts):
         """Attach interrupt controller for timer IRQ callbacks"""
@@ -119,27 +120,21 @@ class Timers:
             # Cascade mode: increment only when previous timer overflows
             if channel.cascade:
                 if i == 0:
-                    # Timer0 in cascade mode - should not happen, but handle it
                     continue
-                # Check if previous timer overflowed (saved before reset)
                 if not cascade_flags[i - 1]:
                     continue
-                # Increment by 1 for cascade
                 increment = 1
             else:
-                # Normal mode: increment based on prescaler
                 prescaler = channel.prescaler_value
-                increment = cycles // prescaler
+                total = self._cycle_subcount[i] + cycles
+                increment = total // prescaler
+                self._cycle_subcount[i] = total % prescaler
 
             if increment > 0:
-                old_count = channel.count
-                channel.count = (channel.count + increment) & 0xFFFF
-
-                # Check for overflow (wrapped around)
-                if channel.count < old_count:
+                new_count = channel.count + increment
+                if new_count > 0xFFFF:
                     self._overflow_flags[i] = True
-                    # Reload from reload value on overflow
-                    channel.count = channel.reload
-                    # Fire timer interrupt if enabled
+                    new_count = (new_count - 0x10000) + channel.reload
                     if channel.irq_enable and self._interrupts:
                         self._interrupts.timer_irq(i)
+                channel.count = new_count & 0xFFFF
