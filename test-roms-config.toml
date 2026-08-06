@@ -50,7 +50,7 @@ rom_path = "armwrestler.gba"
 test_type = "PassFailScreen"
 
 [[tests]]
-name = "armwrestler-fixed"
+name = "armwrestler-gba-fixed"
 rom_path = "armwrestler-gba-fixed.gba"
 test_type = "Smoke"
 

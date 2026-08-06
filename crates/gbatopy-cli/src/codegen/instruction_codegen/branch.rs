@@ -27,28 +27,30 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     }
     if base_opcode == "BX" || base_opcode == "BLX" {
         if let Some(Operand::Register(rn)) = ops.first() {
-            // BX/BLX Rm: bit 0 of Rm selects Thumb (1) or ARM (0) mode.
-            // The disassembler stores the condition in inst.condition (not in
-            // the opcode string), so we must read it separately for conditional
-            // variants like BXEQ, BXNE, etc.
             let cond_str = match inst.condition {
                 Some(c) if c != Condition::Al => c.name().to_uppercase(),
                 _ => String::new(),
             };
-            let blx_link = if base_opcode == "BLX" {
-                "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n"
-            } else {
-                ""
-            };
+            let is_blx = base_opcode == "BLX";
             if !cond_str.is_empty() {
+                let lr_set = if is_blx {
+                    format!("    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n")
+                } else {
+                    String::new()
+                };
                 return Some(format!(
-                    "if cpsr_check('{}'):\n    {}cpsr['t'] = registers[{}] & 1\n    registers[15] = registers[{}] & 0xFFFFFFFE\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
-                    cond_str, blx_link, rn, rn
+                    "if cpsr_check('{}'):\n{}    cpsr['t'] = registers[{}] & 1\n    registers[15] = registers[{}] & 0xFFFFFFFE\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
+                    cond_str, lr_set, rn, rn
                 ));
             }
+            let lr_set = if is_blx {
+                format!("registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n")
+            } else {
+                String::new()
+            };
             return Some(format!(
                 "{}cpsr['t'] = registers[{}] & 1\nregisters[15] = registers[{}] & 0xFFFFFFFE",
-                blx_link, rn, rn
+                lr_set, rn, rn
             ));
         }
         return Some(format!("# {} branch exchange", base_opcode));

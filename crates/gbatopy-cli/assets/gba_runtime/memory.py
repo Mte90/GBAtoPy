@@ -171,6 +171,10 @@ class Memory:
                 self._handle_interrupt_write(addr, value)
 
     def _dispatch_hal_read(self, addr: int) -> Optional[int]:
+        # PPU registers (0x04000000-0x0400005F) — return live values from PPU
+        if 0x04000000 <= addr <= 0x0400005F and self._ppu is not None:
+            val16 = self._ppu.read_register(addr & ~1)
+            return (val16 >> (8 * (addr & 1))) & 0xFF
         # Window registers (0x04000048-0x0400004F)
         if 0x04000048 <= addr <= 0x0400004F:
             return self._handle_window_read(addr)
@@ -179,6 +183,14 @@ class Memory:
         # Sound registers (0x04000060-0x0400008F, exclusive of affine range)
         if 0x04000060 <= addr <= 0x0400008F:
             return self._handle_sound_read(addr)
+        # Interrupt registers: IE (0x04000200), IF (0x04000202), IME (0x04000208)
+        if self._interrupts is not None:
+            if addr == 0x04000200 or addr == 0x04000201:
+                return (self._interrupts.ie_reg >> (8 * (addr & 1))) & 0xFF
+            if addr == 0x04000202 or addr == 0x04000203:
+                return (self._interrupts.if_reg >> (8 * (addr & 1))) & 0xFF
+            if addr == 0x04000208 or addr == 0x04000209:
+                return (self._interrupts.ime_reg >> (8 * (addr & 1))) & 0xFF
         if 0x04000100 <= addr <= 0x0400010F:
             if self._timers:
                 return self._handle_timer_read(addr)
@@ -471,6 +483,10 @@ class Memory:
     def read_u16(self, addr: int) -> int:
         addr &= 0xFFFFFFFF
         mapped = self._map_address(addr)
+        if MemoryMap.IO_START <= mapped <= MemoryMap.IO_END:
+            lo = self.read_u8(mapped)
+            hi = self.read_u8(mapped + 1)
+            return lo | (hi << 8)
         buf, start = self._buffer_for_addr(addr)
         if buf:
             return int.from_bytes(buf[start:start + 2], 'little')
@@ -480,6 +496,12 @@ class Memory:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
         mapped = self._map_address(addr)
+        if MemoryMap.IO_START <= mapped <= MemoryMap.IO_END:
+            b0 = self.read_u8(mapped)
+            b1 = self.read_u8(mapped + 1)
+            b2 = self.read_u8(mapped + 2)
+            b3 = self.read_u8(mapped + 3)
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
         buf, off = self._buffer_for_addr(mapped)
         if buf is not None and off + 4 <= len(buf):
             return int.from_bytes(buf[off:off + 4], 'little')
@@ -492,6 +514,12 @@ class Memory:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
         mapped = self._map_address(addr)
+        if MemoryMap.IO_START <= mapped <= MemoryMap.IO_END:
+            b0 = self.read_u8(mapped)
+            b1 = self.read_u8(mapped + 1)
+            b2 = self.read_u8(mapped + 2)
+            b3 = self.read_u8(mapped + 3)
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
         buf, off = self._buffer_for_addr(mapped)
         if buf is not None and off + 4 <= len(buf):
             return int.from_bytes(buf[off:off + 4], 'little')

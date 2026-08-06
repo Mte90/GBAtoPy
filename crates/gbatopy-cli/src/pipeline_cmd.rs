@@ -668,10 +668,13 @@ pub fn run_pipeline(
 
     fn writes_r15(inst: &gbatopy_disasm::DecodedInstruction) -> bool {
         let op = inst.opcode.as_str();
+        let base_op = op.trim_end_matches(|c: char| c.is_ascii_lowercase());
 
         // Branch family: unconditional (B/BL/BX/BLX/CBZ/CBNZ) and conditional (BEQ, BNE, ...).
         // BL_SUFFIX is the Thumb BL branch half that writes PC.
-        if matches!(op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ" | "BL_SUFFIX")
+        // Use base_op (condition suffix stripped) so conditional variants like
+        // BXeq, BLXne are recognized as block terminators.
+        if matches!(base_op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ" | "BL_SUFFIX")
             || is_conditional_branch(op)
         {
             return true;
@@ -1029,7 +1032,7 @@ def swi_handler(swi_field):
     # 0x0F ObjAffineSet, 0x11/0x12 LZ77) are not commonly needed for
     # ROM startup; left as no-ops.
 
-def _interp_fallback(registers, cpsr):
+def _interp_fallback(registers, cpsr, max_steps=2000):
     global _interp_cpu
     if _interp_cpu is None:
         _interp_cpu = ARM7TDMI(memory)
@@ -1043,7 +1046,7 @@ def _interp_fallback(registers, cpsr):
     _interp_cpu.cpsr = _cpsr_val
     _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
     _step_count = 0
-    while _step_count < 2000:
+    while _step_count < max_steps:
         _pc = _interp_cpu.registers[15]
         if 0x08000000 <= _pc < 0x0A000000:
             _idx = (_pc - 0x08000000) >> 1
@@ -1097,9 +1100,10 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     def ror(v, a):
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
-    fc = 0; mi = 1000000; ic = 0
+    fc = 0; mi = 10000000; ic = 0
     _irq_return_pc = None
-    instr_per_scanline = max(50, (int(gba_hz / 60.0) // 4) // 228)
+    instr_per_scanline = max(50, (int(gba_hz / 60.0) // 2) // 228)
+    _instr_per_frame = instr_per_scanline * 228
     def _deliver_irq():
         nonlocal _irq_return_pc
         global _cpu_halted
@@ -1129,7 +1133,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             for _ in range(228):
                 ppu_instance.step_scanline()
                 if timers_instance is not None:
-                    timers_instance.step(instr_per_scanline * 4)
+                    timers_instance.step(instr_per_scanline * 2)
                 _deliver_irq()
                 if not _cpu_halted:
                     break
@@ -1139,25 +1143,29 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
         func = _dt.get(idx)
         if func is None:
-            _steps = _interp_fallback(registers, cpsr); ic += max(1, _steps)
+            _budget = instr_per_scanline - (ic % instr_per_scanline)
+            if _budget <= 0:
+                _budget = instr_per_scanline
+            _steps = _interp_fallback(registers, cpsr, max_steps=_budget)
+            ic += max(1, _steps)
         else:
             func(registers, cpsr); ic += 1
             if registers[15] == pc:
                 ppu_instance.step_scanline()
                 if timers_instance is not None:
-                    timers_instance.step(instr_per_scanline * 4)
+                    timers_instance.step(instr_per_scanline * 2)
                 _deliver_irq()
                 continue
         if ic % instr_per_scanline == 0:
             ppu_instance.step_scanline()
             if timers_instance is not None:
-                timers_instance.step(instr_per_scanline * 4)
+                timers_instance.step(instr_per_scanline * 2)
             _deliver_irq()
         if frame_limit and fc >= frame_limit: break
-        if ic % 1000 == 0: fc += 1
+        if ic % _instr_per_frame == 0: fc += 1
     return fc
 
-def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None, pc_trace=None, trace_n=0, max_instrs=1000000):
+def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None, pc_trace=None, trace_n=0, max_instrs=10000000):
     global _cpu_halted
     # Initialize HookManager if hook file provided
     hook_manager = HookManager() if hook_file else None
@@ -1244,7 +1252,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         # Execute instructions for this frame, stepping PPU scanlines
         # Each scanline: run a batch of instructions, then advance VCount + fire HBlank DMA
         target_cycles_per_frame = int(gba_hz / 60.0)
-        instr_per_scanline = max(50, (target_cycles_per_frame // 4) // 228)
+        instr_per_scanline = max(50, (target_cycles_per_frame // 2) // 228)
         max_inner_stalls = 10000
         for _scanline in range(228):
             if ic >= mi:
@@ -1259,7 +1267,11 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
                 func = _dt.get(idx)
                 if func is None:
-                    _steps = _interp_fallback(registers, cpsr); ic += max(1, _steps)
+                    _budget = instr_per_scanline - (ic - _inner_ic_start)
+                    if _budget <= 0:
+                        _budget = 1
+                    _steps = _interp_fallback(registers, cpsr, max_steps=_budget)
+                    ic += max(1, _steps)
                     continue
                 func(registers, cpsr); ic += 1
                 if pc_trace and trace_file:
@@ -1279,7 +1291,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         break
             ppu_instance.step_scanline()
             if timers_instance is not None:
-                timers_instance.step(instr_per_scanline * 4)
+                timers_instance.step(instr_per_scanline * 2)
             _deliver_irq()
         # Render the completed frame
         ppu_instance.render_frame()
@@ -1347,7 +1359,7 @@ if __name__ == "__main__":
     parser.add_argument("--hook-file", type=str, help="Python script with debugging hooks (breakpoints, tracing, etc.)")
     parser.add_argument("--pc-trace", type=str, help="Log PC + registers each step to a file")
     parser.add_argument("--trace-n", type=int, default=0, help="Print first N PCs to stdout then stop tracing")
-    parser.add_argument("--max-instrs", type=int, default=1000000, help="Maximum instructions before aborting (default 1M)")
+    parser.add_argument("--max-instrs", type=int, default=10000000, help="Maximum instructions before aborting (default 10M)")
     args = parser.parse_args()
     frames = run_with_pygame(
         headless=args.headless, 

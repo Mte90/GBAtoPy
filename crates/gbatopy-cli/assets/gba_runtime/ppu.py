@@ -15,7 +15,7 @@ except ImportError:
     prange = None
     _HAS_NUMBA = False
 
-_NUMBA_ENABLED = True
+_NUMBA_ENABLED = False
 _NUMBA_PPU_ENABLED = True  # Separate flag for PPU JIT
 
 
@@ -1699,9 +1699,16 @@ class PPU:
 
                     tilemap_entry = self.memory.read_u16(tilemap_addr)
                     tile_index = tilemap_entry & 0x03FF
+                    palette_bank = (tilemap_entry >> 12) & 0xF
+                    h_flip = bool((tilemap_entry >> 10) & 1)
+                    v_flip = bool((tilemap_entry >> 11) & 1)
 
                     pixel_x = tile_x % 8
                     pixel_y = tile_y % 8
+                    if h_flip:
+                        pixel_x = 7 - pixel_x
+                    if v_flip:
+                        pixel_y = 7 - pixel_y
                     pixel_index = pixel_y * 8 + pixel_x
 
                     palette_indices = get_tile(tile_index, bg_char_block[bg], bg_bpp8[bg])
@@ -1713,7 +1720,10 @@ class PPU:
 
                     if bg_priority[bg] < best_priority:
                         best_priority = bg_priority[bg]
-                        best_color = palette_colors[color_idx]
+                        if bg_bpp8[bg]:
+                            best_color = palette_colors[color_idx]
+                        else:
+                            best_color = palette_colors[palette_bank * 16 + color_idx]
                         best_bg = bg
 
                 if best_color is not None:

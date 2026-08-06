@@ -20,7 +20,7 @@ except ImportError:
         return decorator
     _HAS_NUMBA = False
 
-_NUMBA_ENABLED = True
+_NUMBA_ENABLED = False
 
 
 def jit_compile(func):
@@ -924,26 +924,42 @@ class ARM7TDMI:
             return self.exec_thumb_bl_suffix(instr)
 
     def exec_thumb_move_shift(self, instr: int) -> int:
-        """Thumb move shifted."""
+        """Thumb move shifted register (format 1: LSL/LSR/ASR Rd, Rs, #Offset5). Sets N, Z, C."""
         op = (instr >> 11) & 3
         offset = (instr >> 6) & 0x1F
         rs = (instr >> 3) & 7
         rd = instr & 7
-
         val = self.registers[rs]
+        c = (self.cpsr >> 29) & 1
         if op == 0:  # LSL
-            val = (val << offset) & 0xFFFFFFFF
+            if offset == 0:
+                result = val
+            else:
+                c = (val >> (32 - offset)) & 1
+                result = (val << offset) & 0xFFFFFFFF
         elif op == 1:  # LSR
-            val = val >> offset
+            if offset == 0:
+                offset = 32
+            c = (val >> (offset - 1)) & 1
+            result = val >> offset
         elif op == 2:  # ASR
-            val = (val >> offset) | ((val & 0x80000000) * offset)
-
-        self.write_register(rd, val)
+            if offset == 0:
+                offset = 32
+            c = (val >> (offset - 1)) & 1
+            if val & 0x80000000:
+                result = (val >> offset) | ((0xFFFFFFFF << (32 - offset)) & 0xFFFFFFFF)
+            else:
+                result = val >> offset
+        self.write_register(rd, result)
+        n = (result >> 31) & 1
+        z = 1 if result == 0 else 0
+        v = (self.cpsr >> 28) & 1
+        self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         self.registers[15] += 2
         return 1
 
     def exec_thumb_add_sub(self, instr: int) -> int:
-        """Thumb ADD/SUB."""
+        """Thumb ADD/SUB (format 2). Sets N, Z, C, V."""
         is_imm = (instr >> 10) & 1
         is_sub = (instr >> 9) & 1
         rs = (instr >> 6) & 7
@@ -958,105 +974,182 @@ class ARM7TDMI:
         op1 = self.registers[rn]
         if is_sub:
             result = (op1 - offset) & 0xFFFFFFFF
+            c = 1 if op1 >= offset else 0
+            v = 1 if ((op1 ^ offset) & (op1 ^ result) & 0x80000000) else 0
         else:
             result = (op1 + offset) & 0xFFFFFFFF
+            c = 1 if result < op1 else 0
+            v = 1 if ((~(op1 ^ offset) & 0xFFFFFFFF) & (op1 ^ result) & 0x80000000) else 0
 
         self.write_register(rd, result)
+        n = (result >> 31) & 1
+        z = 1 if result == 0 else 0
+        self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         self.registers[15] += 2
         return 1
 
     def exec_thumb_imm3(self, instr: int) -> int:
-        """Thumb MOV/CMP/ADD/SUB Rd, #Imm8 (format 3)."""
+        """Thumb MOV/CMP/ADD/SUB Rd, #Imm8 (format 3). All set N, Z; ADD/SUB/CMP also set C, V."""
         op = (instr >> 11) & 3  # bits 12-11
         rd = (instr >> 8) & 7   # bits 10-8
         imm8 = instr & 0xFF     # bits 7-0
 
         if op == 0:  # MOV Rd, #Imm8
-            self.write_register(rd, imm8)
+            result = imm8 & 0xFFFFFFFF
+            self.write_register(rd, result)
+            n = (result >> 31) & 1
+            z = 1 if result == 0 else 0
+            c = (self.cpsr >> 29) & 1
+            v = (self.cpsr >> 28) & 1
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         elif op == 1:  # CMP Rd, #Imm8
-            result = (self.registers[rd] - imm8) & 0xFFFFFFFF
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
+            op1 = self.registers[rd]
+            result = (op1 - imm8) & 0xFFFFFFFF
+            c = 1 if op1 >= imm8 else 0
+            v = 1 if ((op1 ^ imm8) & (op1 ^ result) & 0x80000000) else 0
+            n = (result >> 31) & 1
+            z = 1 if result == 0 else 0
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         elif op == 2:  # ADD Rd, #Imm8
-            result = (self.registers[rd] + imm8) & 0xFFFFFFFF
+            op1 = self.registers[rd]
+            result = (op1 + imm8) & 0xFFFFFFFF
             self.write_register(rd, result)
+            c = 1 if result < op1 else 0
+            v = 1 if ((~(op1 ^ imm8) & 0xFFFFFFFF) & (op1 ^ result) & 0x80000000) else 0
+            n = (result >> 31) & 1
+            z = 1 if result == 0 else 0
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         elif op == 3:  # SUB Rd, #Imm8
-            result = (self.registers[rd] - imm8) & 0xFFFFFFFF
+            op1 = self.registers[rd]
+            result = (op1 - imm8) & 0xFFFFFFFF
             self.write_register(rd, result)
+            c = 1 if op1 >= imm8 else 0
+            v = 1 if ((op1 ^ imm8) & (op1 ^ result) & 0x80000000) else 0
+            n = (result >> 31) & 1
+            z = 1 if result == 0 else 0
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
 
         self.registers[15] += 2
         return 1
 
     def exec_thumb_alu(self, instr: int) -> int:
-        """Thumb ALU operations."""
+        """Thumb ALU operations. All set N and Z; arithmetic/shift ops also set C and V."""
         op = (instr >> 6) & 0xF
         rs = (instr >> 3) & 7
         rd = instr & 7
 
         val = self.registers[rs]
+        rd_val = self.registers[rd]
+
+        c = (self.cpsr >> 29) & 1
+        v = (self.cpsr >> 28) & 1
 
         if op == 0:  # AND
-            result = self.registers[rd] & val
+            result = rd_val & val
         elif op == 1:  # EOR
-            result = self.registers[rd] ^ val
+            result = rd_val ^ val
         elif op == 2:  # LSL
-            result = (self.registers[rd] << (val & 0xFF)) & 0xFFFFFFFF
+            shift = val & 0xFF
+            if shift == 0:
+                result = rd_val
+            elif shift < 32:
+                c = (rd_val >> (32 - shift)) & 1
+                result = (rd_val << shift) & 0xFFFFFFFF
+            elif shift == 32:
+                c = rd_val & 1
+                result = 0
+            else:
+                c = 0
+                result = 0
         elif op == 3:  # LSR
-            result = self.registers[rd] >> (val & 0xFF)
+            shift = val & 0xFF
+            if shift == 0:
+                result = rd_val
+            elif shift < 32:
+                c = (rd_val >> (shift - 1)) & 1
+                result = rd_val >> shift
+            elif shift == 32:
+                c = (rd_val >> 31) & 1
+                result = 0
+            else:
+                c = 0
+                result = 0
         elif op == 4:  # ASR
-            result = (self.registers[rd] >> (val & 0xFF)) | (
-                (self.registers[rd] & 0x80000000) * (val & 0xFF)
-            )
+            shift = val & 0xFF
+            if shift == 0:
+                result = rd_val
+            elif shift < 32:
+                c = (rd_val >> (shift - 1)) & 1
+                if rd_val & 0x80000000:
+                    result = (rd_val >> shift) | ((0xFFFFFFFF << (32 - shift)) & 0xFFFFFFFF)
+                else:
+                    result = rd_val >> shift
+            else:
+                c = (rd_val >> 31) & 1
+                result = 0xFFFFFFFF if rd_val & 0x80000000 else 0
         elif op == 5:  # ADC
-            c = (self.cpsr >> 29) & 1
-            result = (self.registers[rd] + val + c) & 0xFFFFFFFF
+            carry_in = (self.cpsr >> 29) & 1
+            raw = rd_val + val + carry_in
+            result = raw & 0xFFFFFFFF
+            c = 1 if raw > 0xFFFFFFFF else 0
+            v = 1 if ((rd_val ^ result) & (val ^ result) & 0x80000000) else 0
         elif op == 6:  # SBC
-            c = (self.cpsr >> 29) & 1
-            result = (self.registers[rd] - val - (1 - c)) & 0xFFFFFFFF
+            carry_in = (self.cpsr >> 29) & 1
+            not_c = 1 - carry_in
+            result = (rd_val - val - not_c) & 0xFFFFFFFF
+            c = 1 if rd_val >= (val + not_c) else 0
+            v = 1 if ((rd_val ^ val) & (rd_val ^ result) & 0x80000000) else 0
         elif op == 7:  # ROR
             shift = val & 0x1F
-            result = (
-                (self.registers[rd] >> shift) | (self.registers[rd] << (32 - shift))
-            ) & 0xFFFFFFFF
+            if shift == 0:
+                c = (rd_val >> 31) & 1
+                result = rd_val
+            else:
+                result = ((rd_val >> shift) | (rd_val << (32 - shift))) & 0xFFFFFFFF
+                c = (rd_val >> (shift - 1)) & 1
         elif op == 8:  # TST
-            result = self.registers[rd] & val
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
+            result = rd_val & val
+            n = (result >> 31) & 1
+            z = 1 if result == 0 else 0
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
+            self.registers[15] += 2
             return 1
-        elif op == 9:  # NEG
+        elif op == 9:  # NEG (RSB Rd, Rs, #0)
             result = (0 - val) & 0xFFFFFFFF
+            c = 1 if val == 0 else 0
+            v = 1 if (val & result & 0x80000000) else 0
         elif op == 0xA:  # CMP
-            result = (self.registers[rd] - val) & 0xFFFFFFFF
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
+            result = (rd_val - val) & 0xFFFFFFFF
+            c = 1 if rd_val >= val else 0
+            v = 1 if ((rd_val ^ val) & (rd_val ^ result) & 0x80000000) else 0
+            n = (result >> 31) & 1
+            z = 1 if result == 0 else 0
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
+            self.registers[15] += 2
             return 1
         elif op == 0xB:  # CMN
-            result = (self.registers[rd] + val) & 0xFFFFFFFF
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
+            raw = rd_val + val
+            result = raw & 0xFFFFFFFF
+            c = 1 if raw > 0xFFFFFFFF else 0
+            v = 1 if ((rd_val ^ result) & (val ^ result) & 0x80000000) else 0
+            n = (result >> 31) & 1
+            z = 1 if result == 0 else 0
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
+            self.registers[15] += 2
             return 1
         elif op == 0xC:  # ORR
-            result = self.registers[rd] | val
+            result = rd_val | val
         elif op == 0xD:  # MUL
-            result = (self.registers[rd] * val) & 0xFFFFFFFF
+            result = (rd_val * val) & 0xFFFFFFFF
         elif op == 0xE:  # BIC
-            result = self.registers[rd] & ~val
-        elif op == 0xF:  # MVN
+            result = rd_val & (~val & 0xFFFFFFFF)
+        else:  # 0xF: MVN
             result = (~val) & 0xFFFFFFFF
 
         self.write_register(rd, result)
+        n = (result >> 31) & 1
+        z = 1 if result == 0 else 0
+        self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         self.registers[15] += 2
         return 1
 
@@ -1069,7 +1162,8 @@ class ARM7TDMI:
         h2 = (instr >> 6) & 1
 
         if op == 3 and h1 == 0:  # BX
-            target = self.registers[rs + (h2 << 3)]
+            rm_reg = rs + (h2 << 3)
+            target = self._operand(rm_reg)
             self.thumb_mode = (target & 1) != 0
             self.registers[15] = target & 0xFFFFFFFE
             return 1
@@ -1078,17 +1172,17 @@ class ARM7TDMI:
         rm = rs + (h2 << 3)
 
         if op == 0:  # ADD
-            result = (self.registers[rdn] + self.registers[rm]) & 0xFFFFFFFF
+            result = (self._operand(rdn) + self._operand(rm)) & 0xFFFFFFFF
             self.write_register(rdn, result)
         elif op == 1:  # CMP
-            result = (self.registers[rdn] - self.registers[rm]) & 0xFFFFFFFF
+            result = (self._operand(rdn) - self._operand(rm)) & 0xFFFFFFFF
             self.cpsr = (
                 (self.cpsr & 0x0FFFFFFF)
                 | ((result >> 31) << 28)
                 | (0 if result == 0 else (1 << 30))
             )
         elif op == 2:  # MOV
-            self.write_register(rdn, self.registers[rm])
+            self.write_register(rdn, self._operand(rm))
 
         self.registers[15] += 2
         return 1

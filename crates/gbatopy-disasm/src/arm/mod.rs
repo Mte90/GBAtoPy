@@ -499,7 +499,7 @@ impl ArmDecoder {
             if l_bit { "LDR" } else { "STR" }
         };
 
-        if rn == 15 {
+        if rn == 15 && !i_bit {
             let imm = word & 0xFFF;
             let offset = if u_bit { imm as i32 } else { -(imm as i32) };
 
@@ -521,9 +521,12 @@ impl ArmDecoder {
 
         // Register offset fields (bit 25 = I: 0=immediate, 1=register)
         let rm = (word & 0xF) as u8;
-        let shift_bits = (word >> 5) & 0x3;
+        let shift_type_bits = ((word >> 5) & 0x3) as u8;
         let shift_imm = (word >> 7) & 0x1F;
-        let is_unshifted_reg = i_bit && shift_bits == 0 && shift_imm == 0;
+        // Extract shift type from bits [6:5]
+        let shift_type = crate::ShiftType::from_bits(shift_type_bits);
+        // Unshifted = I=1 AND (shift_type=LSL OR invalid) AND shift_imm=0
+        let is_unshifted_reg = i_bit && (shift_type_bits == 0 || shift_type.is_none()) && shift_imm == 0;
 
         let writeback = w_bit || !p_bit;
 
@@ -533,7 +536,17 @@ impl ArmDecoder {
             if is_unshifted_reg {
                 crate::operand::AddressingMode::PostIndexedRegister { base: rn, reg: rm }
             } else if i_bit {
-                crate::operand::AddressingMode::PostIndexed { base: rn, offset: 0, writeback: true }
+                // I=1 with shift: use actual shift type from bits [6:5]
+                if let Some(shift) = shift_type {
+                    crate::operand::AddressingMode::ScaledRegisterOffset {
+                        reg: rm,
+                        shift,
+                        amount: shift_imm as u8,
+                    }
+                } else {
+                    // Invalid shift type - treat as unshifted register offset
+                    crate::operand::AddressingMode::RegisterOffset(rm)
+                }
             } else {
                 crate::operand::AddressingMode::PostIndexed { base: rn, offset: signed_imm, writeback: true }
             }
@@ -542,12 +555,15 @@ impl ArmDecoder {
             if i_bit {
                 if is_unshifted_reg {
                     crate::operand::AddressingMode::RegisterOffset(rm)
-                } else {
+                } else if let Some(shift) = shift_type {
                     crate::operand::AddressingMode::ScaledRegisterOffset {
                         reg: rm,
-                        shift: crate::operand::ShiftType::Lsl,
+                        shift,
                         amount: shift_imm as u8,
                     }
+                } else {
+                    // Invalid shift type - treat as unshifted
+                    crate::operand::AddressingMode::RegisterOffset(rm)
                 }
             } else {
                 crate::operand::AddressingMode::PreIndexed { base: rn, offset: signed_imm, writeback: true }
@@ -557,12 +573,15 @@ impl ArmDecoder {
             if i_bit {
                 if is_unshifted_reg {
                     crate::operand::AddressingMode::RegisterOffset(rm)
-                } else {
+                } else if let Some(shift) = shift_type {
                     crate::operand::AddressingMode::ScaledRegisterOffset {
                         reg: rm,
-                        shift: crate::operand::ShiftType::Lsl,
+                        shift,
                         amount: shift_imm as u8,
                     }
+                } else {
+                    // Invalid shift type - treat as unshifted
+                    crate::operand::AddressingMode::RegisterOffset(rm)
                 }
             } else {
                 crate::operand::AddressingMode::ImmediateOffset(signed_imm)

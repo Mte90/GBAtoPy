@@ -5,12 +5,22 @@ pub fn generate_thumb_branch_instruction(ops: &[String]) -> String {
 
 pub fn generate_thumb_blx_instruction(ops: &[String]) -> String {
     // BLX Rm - Branch and link exchange. Bit 0 of Rm selects Thumb/ARM mode.
-    format!("registers[14] = (registers[15] + 4) & 0xFFFFFFFF; cpsr['t'] = registers[{}] & 1; registers[15] = registers[{}] & 0xFFFFFFFE", ops[0], ops[0])
+    // When Rm is R15 (PC), the Thumb pipeline makes PC read as current + 4.
+    if ops[0] == "15" {
+        format!("_bx_pc = (registers[15] + 4) & 0xFFFFFFFF; registers[14] = (registers[15] + 4) & 0xFFFFFFFF; cpsr['t'] = _bx_pc & 1; registers[15] = _bx_pc & 0xFFFFFFFE")
+    } else {
+        format!("registers[14] = (registers[15] + 4) & 0xFFFFFFFF; cpsr['t'] = registers[{}] & 1; registers[15] = registers[{}] & 0xFFFFFFFE", ops[0], ops[0])
+    }
 }
 
 pub fn generate_thumb_bx_instruction(ops: &[String]) -> String {
     // BX Rm - Branch and exchange. Bit 0 of Rm selects Thumb/ARM mode.
-    format!("cpsr['t'] = registers[{}] & 1; registers[15] = registers[{}] & 0xFFFFFFFE", ops[0], ops[0])
+    // When Rm is R15 (PC), the Thumb pipeline makes PC read as current + 4.
+    if ops[0] == "15" {
+        format!("_bx_pc = (registers[15] + 4) & 0xFFFFFFFF; cpsr['t'] = _bx_pc & 1; registers[15] = _bx_pc & 0xFFFFFFFE")
+    } else {
+        format!("cpsr['t'] = registers[{}] & 1; registers[15] = registers[{}] & 0xFFFFFFFE", ops[0], ops[0])
+    }
 }
 
 pub fn generate_thumb_bl_prefix_instruction(ops: &[String]) -> String {

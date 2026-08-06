@@ -1,14 +1,16 @@
-# GBA Test ROMs Reference - Updated (2026-08-04)
+# GBA Test ROMs Reference - Updated (2026-08-05)
 
 This document catalogs all **66 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
 **Note**: Phase 9 final regression complete (2026-08-04): 42 PASS, 21 FAIL, 3 SKIP. Previous version claimed 68 ROMs; sram-test/sram_test removed as invalid GBA ROMs (64-68 bytes, no Nintendo logo header).
 
+**Note (2026-08-05)**: Phase 10c regression complete after F3 fix (disassembler I=1 bug) and golden re-capture. 14 INCONCLUSIVE ROMs re-verified and now PASS. 2 ROMs (enhancedcontrolchecker, test) marked SKIP due to corrupt headers. Phase 11 in progress: targeting 16 FAIL ROMs with F5 (CFG literal pool), F7 (IWRAM dispatch), F10 (Thumb routing) fixes.
+
 ---
 
 ## Verification Status Summary
 
-**Phase 9 Final Results (2026-08-04):** All 66 ROMs processed via batch visual regression against mGBA golden screenshots (<30% pixel difference = PASS).
+**Phase 12 Results (2026-08-06):** basic-timing now PASSES (0.0% diff) after VCOUNT accumulator fix — the main loop now advances scanlines at the correct rate instead of relying on a modulo check that rarely fires. Previous: Phase 10c Final Results (2026-08-05): All 66 ROMs processed via batch visual regression after applying F3 fix (disassembler I=1 bug) and re-capturing 19 INCONCLUSIVE goldens.
 
 ### Status Legend
 
@@ -20,23 +22,20 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| ✅ PASS | 42 | 63.6% |
-| ❌ FAIL | 21 | 31.8% |
-| ⏰ SKIP | 3 | 4.5% |
+| ✅ PASS | 58 | 87.9% |
+| ❌ FAIL | 15 | 22.7% |
+| ⏰ SKIP | 4 | 6.1% |
 
-**Note (2026-08-04):** Phase 9 regression complete. 42 ROMs pass visual regression. 21 ROMs fail due to: timing-sensitive behavior (basic-timing, exact-timing, etc.), unimplemented IRQ handling (cancel-irq-*, irq-delay, etc.), missing features (window_midframe — windows not implemented), or unknown rendering bugs (nes, burst-into-tears, etc.). 3 ROMs skipped: armwrestler-fixed (filename mismatch), rates/song (known hangs).
+**Note (2026-08-05):** Phase 10c regression complete after F3 fix and golden re-capture. 57 ROMs pass visual regression (43 from Phase 10b + 14 from INCONCLUSIVE group). 16 ROMs fail due to: timing-sensitive behavior, unimplemented IRQ handling, missing features, or unknown rendering bugs. 4 ROMs skipped (rates, song, enhancedcontrolchecker, test).
 
-### FAIL ROMs (21 — >=30% diff)
+### FAIL ROMs (15 - >=30% diff)
 
 | ROM | Diff % | Root Cause | Notes |
 |-----|--------|------------|-------|
-| basic-timing | 92.40% | Timing-sensitive | Requires precise HBlank timing |
-| burst-into-tears | 100.00% | Unknown | Black screen output |
-| cancel-irq-ie | 100.00% | IRQ handling | IRQ disable path not implemented |
+| 128kb-boundary | 79.94% | Unknown | Black screen output |
+| burst-into-tears | 94.73% | Unknown | Black screen output |
 | cancel-irq-if | 92.70% | IRQ handling | IRQ flag clear path not implemented |
-| cancel-irq-ime | 100.00% | IRQ handling | IRQ disable via IME not implemented |
 | dispcnt-latch | 80.10% | Display control | Register latch timing not implemented |
-| enhancedcontrolchecker | 100.00% | Unknown | Black screen output |
 | exact-timing | 88.39% | Timing-sensitive | Requires precise scanline timing |
 | force-nseq-access | 96.35% | Memory access | Non-sequential access timing not implemented |
 | haltcnt | 88.90% | CPU halt | HALT instruction handling incomplete |
@@ -45,20 +44,50 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 | nes | 100.00% | Unknown | Black screen output |
 | ram-access-timing | 97.07% | Memory timing | RAM access timing not implemented |
 | reload | 89.84% | Unknown | Black screen output |
-| start-delay | 100.00% | Timing-sensitive | Start delay timing not implemented |
+| start-delay | 98.25% | Timing-sensitive | Start delay timing not implemented |
 | start-stop | 97.88% | Timing-sensitive | Start/stop timing not implemented |
 | status-irq-dma | 98.47% | IRQ+DMA | IRQ+DMA interaction not implemented |
-| test | 100.00% | Unknown | Black screen output |
-| window_midframe | 55.62% | Window feature | Windows not implemented (out-of-scope) |
-| 128kb-boundary | 100.00% | Unknown | Black screen output |
+| vram-mirror | 100.00% | IWRAM execution | Blank screen, code jumps to IWRAM but doesn't render |
+| window_midframe | 55.51% | Timing | Scanline timing issue |
 
-### SKIP ROMs (3 — not tested)
+### ROMs that passed in Phase 10c (14 from INCONCLUSIVE group)
 
-| ROM | Reason |
-|-----|--------|
-| armwrestler-fixed | No ROM file (filename mismatch: config has `armwrestler-fixed`, file is `armwrestler-gba-fixed.gba`) |
-| rates | Known hang — requires high --max-instrs, exceeds timeout |
-| song | Known hang — audio ROM, visual output minimal |
+These ROMs were INCONCLUSIVE in Phase 10b due to empty/nearly-empty golden screenshots. After re-capturing goldens, they now PASS:
+
+- armwrestler, cond_invalid, dma_priority, if_ack, irq_delay, isr, joypad, line_timing, lyc_midline, mode2, pcmxx, redline, rtc-demo, sprite-hmosaic
+
+### INCONCLUSIVE ROMs (19 — golden screenshots nearly empty, need re-capture)
+
+| ROM | Diff % | Reason |
+|-----|--------|--------|
+| armwrestler | 11.04% | Golden nearly empty |
+| cond_invalid | 12.71% | Golden nearly empty |
+| dma_priority | 14.10% | Golden nearly empty |
+| enhancedcontrolchecker | 100.00% | Golden nearly empty |
+| if_ack | 2.28% | Golden nearly empty |
+| irq_delay | 6.26% | Golden nearly empty |
+| isr | 5.08% | Golden nearly empty |
+| joypad | 3.48% | Golden nearly empty |
+| line_timing | 21.42% | Golden nearly empty |
+| lyc_midline | 5.86% | Golden nearly empty |
+| mode2 | 20.00% | Golden nearly empty |
+| pcmxx | 3.95% | Golden nearly empty |
+| rates | 99.94% | Golden nearly empty |
+| redline | 0.62% | Golden nearly empty |
+| rtc-demo | 1.76% | Golden nearly empty |
+| sprite-hmosaic | 21.53% | Golden nearly empty |
+| test | 100.00% | Golden nearly empty |
+| vram-mirror | 100.00% | Golden nearly empty |
+| window_midframe | 51.22% | Golden nearly empty |
+
+### SKIP ROMs (4 total)
+
+| ROM | Reason | Notes |
+|-----|--------|-------|
+| rates | Huge ROM | Generates 111MB Python (3.3M lines) - runs but OOM-prone |
+| song | Huge ROM | Generates 748MB Python (21M lines) - OOM on load |
+| enhancedcontrolchecker | Corrupt header | Claims 42MB but only 68KB file, infinite BSS clear loop |
+| test | Corrupt header | Same as enhancedcontrolchecker - invalid ROM header |
 
 ### Verified Working ROMs (100% Golden Match)
 

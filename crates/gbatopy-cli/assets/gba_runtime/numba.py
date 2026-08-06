@@ -6,7 +6,7 @@ except ImportError:
     prange = None
     _HAS_NUMBA = False
 
-_NUMBA_ENABLED = True
+_NUMBA_ENABLED = False
 
 
 def jit_compile(func):

@@ -11,9 +11,8 @@ impl ThumbDecoder {
             0x08..=0x0F => self.format_1_shift(halfword),
             0x10..=0x17 => self.format_1_shift(halfword),
             0x18..=0x1F => self.format_2_add_sub(halfword),
-            0x20..=0x23 => self.format_3_mov(halfword),
-            0x24..=0x27 => self.format_3_cmp(halfword),
-            0x28..=0x2F => self.format_3_sub(halfword),
+            0x20..=0x27 => self.format_3_mov(halfword),
+            0x28..=0x2F => self.format_3_cmp(halfword),
             0x30..=0x37 => self.format_3_add(halfword),
             0x38..=0x3F => self.format_3_sub(halfword),
             0x40..=0x43 => self.format_4_alu(halfword),
@@ -385,7 +384,10 @@ impl ThumbDecoder {
             let target = (address as i32 + 4 + (off << 12)) as u32;
             ("BL_PREFIX".to_string(), vec![self.imm(target)], false)
         } else {
-            ("BL_SUFFIX".to_string(), vec![self.imm(offset << 1)], false)
+            // BL suffix offset is unsigned. The combined BL offset is 22-bit
+            // (offset_high << 11 | offset_low), sign-extended from bit 21.
+            // The prefix already handles sign extension via offset_high.
+            ("BL_SUFFIX".to_string(), vec![self.imm((offset << 1) as u32)], false)
         }
     }
 }

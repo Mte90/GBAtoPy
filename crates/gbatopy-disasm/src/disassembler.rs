@@ -750,12 +750,13 @@ impl Disassembler {
                         rom[rom_offset + 3],
                     ]);
                     let (opcode, operands, sets_flags) = arm_decoder.decode(word, decode_addr);
+                    let condition = crate::decode_condition(((word >> 28) & 0xF) as u8);
                     
                     instructions.push(DecodedInstruction {
                         address: addr,
                         opcode,
                         operands,
-                        condition: None,
+                        condition,
                         raw: word,
                         sets_flags,
                         width: 4,
