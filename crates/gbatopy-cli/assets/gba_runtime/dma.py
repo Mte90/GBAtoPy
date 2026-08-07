@@ -65,7 +65,7 @@ class DMAChannel:
         self._orig_src = 0
         self._orig_dst = 0
         self._orig_count = 0
-
+        self.latch: int = 0
     def attach_interrupts(self, interrupts):
         self._interrupts = interrupts
 
@@ -225,7 +225,9 @@ class DMA:
 
         for _ in range(count):
             if transfer_size == 4:
-                value = self.mem.read_u32(src)
+                if src >= 0x02000000:
+                    ch.latch = self.mem.read_u32(src)
+                value = ch.latch
                 if dst == DMA.FIFO_A_ADDR and self._apu:
                     self._apu.fifo_a.write(value & 0xFF)
                     if count > 1:
@@ -241,7 +243,10 @@ class DMA:
                 else:
                     self.mem.write_u32(dst, value)
             else:
-                value = self.mem.read_u16(src)
+                if src >= 0x02000000:
+                    ch.latch = self.mem.read_u16(src)
+                    ch.latch = ch.latch | (ch.latch << 16)
+                value = (ch.latch >> (8 * (dst & 2))) & 0xFFFF
                 if dst == DMA.FIFO_A_ADDR and self._apu:
                     self._apu.fifo_a.write(value & 0xFF)
                     self._apu.fifo_a.write((value >> 8) & 0xFF)
@@ -250,8 +255,6 @@ class DMA:
                     self._apu.fifo_b.write((value >> 8) & 0xFF)
                 else:
                     self.mem.write_u16(dst, value)
-            src += src_step
-            dst += dst_step
 
         if ch.is_repeat() and dst_ctrl == 3:
             ch.dst_addr = orig_dst
@@ -310,7 +313,9 @@ class DMA:
         dst = ch.dst_addr
 
         if transfer_size == 4:
-            value = self.mem.read_u32(src)
+            if src >= 0x02000000:
+                ch.latch = self.mem.read_u32(src)
+            value = ch.latch
             if dst == DMA.FIFO_A_ADDR and self._apu:
                 self._apu.fifo_a.write(value & 0xFF)
                 self._apu.fifo_a.write((value >> 8) & 0xFF)
@@ -324,7 +329,10 @@ class DMA:
             else:
                 self.mem.write_u32(dst, value)
         else:
-            value = self.mem.read_u16(src)
+            if src >= 0x02000000:
+                ch.latch = self.mem.read_u16(src)
+                ch.latch = ch.latch | (ch.latch << 16)
+            value = (ch.latch >> (8 * (dst & 2))) & 0xFFFF
             if dst == DMA.FIFO_A_ADDR and self._apu:
                 self._apu.fifo_a.write(value & 0xFF)
                 self._apu.fifo_a.write((value >> 8) & 0xFF)
@@ -333,7 +341,6 @@ class DMA:
                 self._apu.fifo_b.write((value >> 8) & 0xFF)
             else:
                 self.mem.write_u16(dst, value)
-
         ch.src_addr = src + src_step
         ch.dst_addr = dst + dst_step
         ch.count = max(0, ch.count - 1)

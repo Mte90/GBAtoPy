@@ -281,9 +281,11 @@ class ARM7TDMI:
             return self.exec_bx(instr)
 
         if (instr & 0x0C000000) == 0:
-            op_lo = instr & 0xF0
-            if op_lo == 0xB0 or op_lo == 0xD0 or op_lo == 0xF0:
-                return self.exec_extra_load_store(instr)
+            is_immediate = (instr >> 25) & 1
+            if not is_immediate:
+                op_lo = instr & 0xF0
+                if op_lo == 0xB0 or op_lo == 0xD0 or op_lo == 0xF0:
+                    return self.exec_extra_load_store(instr)
             return self.exec_data_processing(instr)
 
         if (instr & 0xC000000) == 0x4000000:
@@ -748,8 +750,10 @@ class ARM7TDMI:
         return 2
 
     def exec_swi(self, instr: int) -> int:
-        """Execute SWI (software interrupt)."""
-        swi_num = instr & 0xFFFFFF
+        """Execute SWI (software interrupt).
+        GBA BIOS extracts the SWI number from bits 23:16 of the 24-bit
+        comment field (mGBA: immediate >> 16)."""
+        swi_num = (instr >> 16) & 0xFF
         self.swi_handler(swi_num)
         self.registers[15] += 4
         return 2

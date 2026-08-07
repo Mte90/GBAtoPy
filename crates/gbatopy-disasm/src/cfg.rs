@@ -341,7 +341,7 @@ impl CfgBuilder {
                 if mini_visited.contains(&(addr, current_mode)) || visited.contains(&(addr, current_mode)) {
                     continue;
                 }
-                mini_visited.insert((addr, current_mode));
+                visited.insert((addr, current_mode));
 
                 let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
                 if decode_addr < 0x08000000 {
@@ -598,6 +598,7 @@ impl CfgBuilder {
         self.instruction_addresses.sort();
         self.branch_targets.sort();
         self.mode_map.sort_by_key(|(a, _)| *a);
+        self.mode_map.dedup();
     }
 
     /// Track register values for MOV rN, #imm, LDR rN, =imm, and

@@ -788,6 +788,10 @@ class PPU:
         self.win1_top = 0
         self.win1_bottom = 160
 
+        # Per-scanline latched window flags
+        self._win0_active = False
+        self._win1_active = False
+
         # Window control bits (which layers enabled in each window)
         self.win0_in_enable = 0  # Bits: 0-3 = BG0-3, 4 = OBJ, 5 = Blend
         self.win0_out_enable = 0
@@ -1394,28 +1398,13 @@ class PPU:
         return value / 256.0
 
     def _is_in_window(self, x: int, y: int, win_num: int) -> bool:
-        """Check if coordinate is inside specified window"""
+        """Check if coordinate is inside specified window using latched flags"""
         if win_num == 0:
-            left, right = self.win0_left, self.win0_right
-            top, bottom = self.win0_top, self.win0_bottom
+            return self._win0_active
         elif win_num == 1:
-            left, right = self.win1_left, self.win1_right
-            top, bottom = self.win1_top, self.win1_bottom
+            return self._win1_active
         else:
             return False
-
-        # Handle edge cases
-        if left <= right:
-            in_h = left <= x <= right
-        else:
-            in_h = x >= left or x <= right
-
-        if top <= bottom:
-            in_v = top <= y <= bottom
-        else:
-            in_v = y >= top or y <= bottom
-
-        return in_h and in_v
 
     def _is_in_obj_window(self, x: int, y: int) -> bool:
         for sx, sy, w, h in self._obj_window_rects:
@@ -1506,6 +1495,27 @@ class PPU:
             self.bg_hofs[bg] = self.memory.read_u16(self.REG_BG0HOFS + bg * 4) & 0x1FF
             self.bg_vofs[bg] = self.memory.read_u16(self.REG_BG0VOFS + bg * 4) & 0x1FF
 
+        # Window geometry registers
+        win0h = self.memory.read_u16(self.REG_WIN0H)
+        self.win0_left = win0h & 0xFF
+        self.win0_right = (win0h >> 8) & 0xFF
+        win1h = self.memory.read_u16(self.REG_WIN1H)
+        self.win1_left = win1h & 0xFF
+        self.win1_right = (win1h >> 8) & 0xFF
+        win0v = self.memory.read_u16(self.REG_WIN0V)
+        self.win0_top = win0v & 0xFF
+        self.win0_bottom = (win0v >> 8) & 0xFF
+        win1v = self.memory.read_u16(self.REG_WIN1V)
+        self.win1_top = win1v & 0xFF
+        self.win1_bottom = (win1v >> 8) & 0xFF
+        winin = self.memory.read_u16(self.REG_WININ)
+        self.win0_in_enable = winin & 0x3F
+        self.win1_in_enable = (winin >> 8) & 0x3F
+        winout = self.memory.read_u16(self.REG_WINOUT)
+        self.win0_out_enable = winout & 0x1F
+        self.win1_out_enable = (winout >> 8) & 0x1F
+        self.winout_obj_enable = bool(winout & 0x10)
+
         # Pre-scan OAM for OBJ window sprites (obj_mode == 3) once per frame
         self._obj_window_rects = []
         if self.obj_window_enable:
@@ -1536,6 +1546,36 @@ class PPU:
         Does NOT render pixels — use render_frame() for that."""
         if self.vcount == 0:
             self._bg2_affine_snapshots = [None] * self.screen_height
+            self._win0_active = False
+            self._win1_active = False
+
+        # Edge-triggered Y-latch: read LIVE WIN0V/WIN1V registers so
+        # mid-frame writes via VCount IRQ take effect. The window activates
+        # when scanline crosses y1 and deactivates when it crosses y2.
+        # GBATEK: y1 >= y2 is interpreted as y2 = 160.
+        try:
+            win0v = self.memory.read_u16(self.REG_WIN0V)
+            win0_y1 = win0v & 0xFF
+            win0_y2 = (win0v >> 8) & 0xFF
+            if win0_y1 >= win0_y2:
+                win0_y2 = 160
+            win1v = self.memory.read_u16(self.REG_WIN1V)
+            win1_y1 = win1v & 0xFF
+            win1_y2 = (win1v >> 8) & 0xFF
+            if win1_y1 >= win1_y2:
+                win1_y2 = 160
+        except Exception:
+            win0_y1, win0_y2 = self.win0_top, self.win0_bottom
+            win1_y1, win1_y2 = self.win1_top, self.win1_bottom
+
+        if self.vcount == win0_y1:
+            self._win0_active = True
+        if self.vcount == win0_y2:
+            self._win0_active = False
+        if self.vcount == win1_y1:
+            self._win1_active = True
+        if self.vcount == win1_y2:
+            self._win1_active = False
 
         # Snapshot BG2 affine params for the CURRENT scanline BEFORE HBlank-DMA
         # modifies them. On hardware the PPU latches the affine matrix at the
@@ -1568,7 +1608,7 @@ class PPU:
             dispstat &= ~0x0001
         dispstat |= 0x0002
 
-        lyc = io[8] & 0xFF
+        lyc = (dispstat >> 8) & 0xFF
         if self.vcount == lyc:
             dispstat |= 0x0004
         else:
@@ -2278,6 +2318,9 @@ class PPU:
         vlen = len(vram_bytes)
         n_snaps = len(snaps)
 
+        # Check if windows are active
+        win_active = self.win0_enable or self.win1_enable or self.obj_window_enable
+
         sx = refx
         sy = refy
 
@@ -2293,6 +2336,15 @@ class PPU:
             for px in range(sw):
                 x += dx
                 y_coord += dy
+                
+                # Apply window masking
+                if win_active:
+                    layer_enable = self._get_window_layer_enable(px, y)
+                    if not (layer_enable & 0x04):  # BG2 bit is 2
+                        row_fb[px] = backdrop_rgb
+                        row_lo[px] = 0
+                        continue
+                
                 tx = x >> 8
                 ty = y_coord >> 8
                 if overflow:

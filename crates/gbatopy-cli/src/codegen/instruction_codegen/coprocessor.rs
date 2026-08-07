@@ -49,9 +49,10 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     }
     if base_opcode == "SWI" || base_opcode == "SVC" {
         // SWI/SVC: software interrupt - call the global swi_handler(swi_num)
-        // with the 24-bit immediate SWI number embedded in the instruction.
+        // GBA BIOS extracts the SWI number from bits 23:16 of the 24-bit
+        // comment field (mGBA: immediate >> 16).
         let swi_num = match ops.first() {
-            Some(Operand::Immediate(n)) => *n & 0xFFFFFF,
+            Some(Operand::Immediate(n)) => (*n >> 16) & 0xFF,
             _ => 0,
         };
         return Some(format!("swi_handler({:#X})", swi_num));

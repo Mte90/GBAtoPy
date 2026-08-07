@@ -462,15 +462,40 @@ class BIOS:
                 self.memory.write_u8(addr, 0)
 
     def swi_halt(self):
-        """Halt CPU until next interrupt fires.
+        """Halt CPU until any enabled interrupt fires.
 
-        Return immediately - the main loop will handle VBlank timing.
-        The interrupt will be checked on next frame render.
+        Mirrors swi_vblank_intr_wait but waits for ANY enabled IRQ (VBlank,
+        HBlank, VCount, timer, DMA). Advances PPU scanlines until an enabled
+        interrupt becomes pending, then returns so the main loop can dispatch
+        the ISR.
         """
-        self._sleep_mode = True
-        # Don't busy-wait - let the main loop continue rendering frames
-        # The interrupt controller will be checked on next render_frame() call
-        # This allows the PPU to generate VBlank interrupts while "halted"
+        memory = getattr(self, "memory", None)
+        if memory is None:
+            self._sleep_mode = True
+            return
+
+        interrupts = getattr(memory, "_interrupts", None)
+        ppu = getattr(memory, "_ppu", None)
+
+        if interrupts is None or ppu is None:
+            self._sleep_mode = True
+            return
+
+        # If an enabled interrupt is already pending, consume and return.
+        if interrupts.has_pending_interrupt():
+            self._sleep_mode = False
+            return
+
+        # Advance PPU scanlines until an enabled interrupt fires.
+        # Bounded by a full frame (228 scanlines) as a safety net.
+        for _ in range(228):
+            ppu.step_scanline()
+            if interrupts.has_pending_interrupt():
+                self._sleep_mode = False
+                return
+
+        # No interrupt within one frame: release halt anyway.
+        self._sleep_mode = False
 
     def swi_vsync(self):
         """Trigger a VBlank interrupt."""

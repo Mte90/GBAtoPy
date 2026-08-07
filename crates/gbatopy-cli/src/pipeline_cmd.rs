@@ -954,8 +954,9 @@ _interp_cpu = None
 
 def swi_handler(swi_field):
     """Handle BIOS SWI calls using the global registers/memory.
-    The GBA BIOS uses the low 8 bits of the 24-bit SWI comment field
-    as the function number. Upper bits are ignored (comment/checksum)."""
+    ARM codegen extracts bits 23:16 of the 24-bit comment field (GBA BIOS
+    convention, mGBA: immediate >> 16). Thumb codegen extracts bits 7:0.
+    Handler receives the 8-bit SWI number directly."""
     global _cpu_halted
     swi_num = swi_field & 0xFF
     if swi_num == 0x00:  # SoftReset
@@ -1152,14 +1153,10 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             func(registers, cpsr); ic += 1
             if registers[15] == pc:
                 ppu_instance.step_scanline()
-                if timers_instance is not None:
-                    timers_instance.step(instr_per_scanline * 2)
                 _deliver_irq()
                 continue
         if ic % instr_per_scanline == 0:
             ppu_instance.step_scanline()
-            if timers_instance is not None:
-                timers_instance.step(instr_per_scanline * 2)
             _deliver_irq()
         if frame_limit and fc >= frame_limit: break
         if ic % _instr_per_frame == 0: fc += 1

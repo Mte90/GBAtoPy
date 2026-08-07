@@ -34,8 +34,8 @@ mGBA:                mgba/ (with custom patches)
 mGBA binary:         mgba/build/sdl/mgba
 Scripts:             scripts/ — see scripts/README.md
 Test framework:      crates/gbatopy-test/
-Test config:         test-roms-config.toml (68 ROM entries)
-Test ROMs:           test_roms/roms/ (68 ROMs)
+Test config:         test-roms-config.toml (66 ROM entries)
+Test ROMs:           test_roms/roms/ (66 ROMs)
 Test reports:        test-reports/
 Test ROM Reference:  docs/reference/test-roms.md
 Roadmap:             docs/roadmap.md
@@ -190,7 +190,7 @@ The generated `.py` file must be:
 11. **Debug workflow** — Modify generated Python first to verify fix, then apply to Rust
 12. **Check dispatch table completeness** — NOP block bug may skip initialization code
 13. **Verify STRH/LDRH offsets** — Disassembler may use wrong bit field (bits 7-3 vs bits 3-0)
-14. **Never run the test suite on all ROMs** — `run_tests.py` without `--rom`/`--filter` runs all 68 ROMs and takes too long. Always test **one ROM at a time** with `--rom <name>` (e.g., `python3 scripts/run_tests.py --level 3 --rom stripes`). The goal is to make each individual ROM work first; running the full suite is only useful as a final regression check and wastes time during active debugging. If a ROM fails, iterate on that single ROM until it passes before moving to the next one.
+14. **Never run the test suite on all ROMs** — `run_tests.py` without `--rom`/`--filter` runs all 66 ROMs and takes too long. Always test **one ROM at a time** with `--rom <name>` (e.g., `python3 scripts/run_tests.py --level 3 --rom stripes`). The goal is to make each individual ROM work first; running the full suite is only useful as a final regression check and wastes time during active debugging. If a ROM fails, iterate on that single ROM until it passes before moving to the next one.
 15. **Transpiled Python output (.py files generated from ROMs) must NEVER be written inside the project directory. Always write transpiled output to /tmp/ (e.g., /tmp/<romname>.py). The project directory holds only source code, templates, scripts, and docs — never transpiled ROM artifacts.**
 16. **Doc-sync rule** — Any codegen or runtime fix that changes a ROM's pass/fail status MUST update `docs/reference/test-roms.md` in the same task (same commit, same session step). Do not leave the status table stale. The summary counts, per-ROM rows, feature matrix, and compatibility matrix must all reflect the new state.
 17. **Check known bug classes before deep debugging** — Before spending time tracing a hang/spin, consult both the "Known Codegen Bug Classes" (5 classes: dispatch routing, dropped condition codes, missing PC-relative offset, wrong Thumb bit-field mask, banked register on MSR) AND the "Known Runtime Bug Classes" (2 classes: DMA double-stepping, fast-forward DISPSTAT reads) in `docs/how-debug.md`. Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py` first.
@@ -199,6 +199,7 @@ The generated `.py` file must be:
 20. **Debug probes must flush** — If you inject a probe into generated Python, use `print(..., flush=True)` and place it BEFORE any `os._exit(0)` call. The runtime exits hard, bypassing buffer flush.
 21. **Never add step_scanline to memory reads** — The fast-forward DISPSTAT read path was removed because it caused DMA exhaustion. PPU stepping is exclusively in the main loop. See `docs/codegen-pitfalls.md` entry 12.
 22. **Fallback interpreter is pure CPU** — `_interp_fallback` in `pipeline_cmd.rs` must NEVER call `step_scanline()`. It only executes CPU instructions and delivers VBlank IRQ. The main loop owns all PPU timing.
+23. **Parallelize with subagents** — When work has 2+ independent parts, dispatch them as parallel subagents in one message instead of serializing. Independent investigation lanes (e.g., reading 3 unrelated ROM sources, exploring codegen + runtime + docs simultaneously, researching multiple failing ROMs) MUST run concurrently. Use `@explorer` for codebase recon, `@librarian` for external docs/research, `@oracle` for architecture/risk analysis, `@fixer` for bounded implementation, `@designer` for UI/UX. Track each task ID, keep working on non-overlapping lanes while they run, and reconcile results when they return. Never serialize work that can run in parallel — it wastes wall-clock time. Exception: a single trivial one-file edit (<20 lines) is faster done directly.
 
 ## Runtime Invariants (DO NOT VIOLATE)
 
@@ -207,7 +208,7 @@ These invariants were established after multi-session debugging. Violating them 
 1. **Fallback interpreter = pure CPU executor.** `_interp_fallback` in `pipeline_cmd.rs` executes CPU instructions only. It must NEVER call `step_scanline()`. Violating this causes DMA double-stepping (HBlank fires twice per scanline, exhausting source tables).
 2. **Main loop is instruction-counted.** The PPU advances one scanline per `instr_per_scanline` CPU instructions. This ties PPU timing to actual execution, not loop iterations.
 3. **No step_scanline in memory reads.** `read_u16`/`read_u32`/`read_u64` must NEVER call `step_scanline()`. The removed fast-forward DISPSTAT path caused tight IWRAM poll loops to fire HBlank DMA hundreds of times per scanline.
-4. **HBlank/VBlank DMA = one unit per trigger.** `hblank_fire()` and `vblank_fire()` call `_do_transfer_single()` (one unit), NOT `_do_transfer()` (full count). The Repeat flag only reloads count; it does not change per-trigger behavior.
+4. **HBlank/VBlank DMA = full-count burst on first trigger.** `hblank_fire()` and `vblank_fire()` call `_do_transfer()` (full count burst), NOT `_do_transfer_single()` (one unit). mGBA's `GBADMAService` completes all pending transfers when the HBlank/VBlank event fires — the entire `count` is transferred in one burst (~2 cycles per unit), then the channel disables itself for non-Repeat DMA. The old one-unit-per-trigger behavior caused bgpd's gradient to render with a 32-row period instead of the correct ~50-row period.
 5. **Per-scanline affine snapshots.** `step_scanline(capture_snapshot=True)` captures BG2PA/PB/PC/PD/X/Y into `_bg2_affine_snapshots[vcount]` BEFORE DMA fires. `_render_mode3/4/5` read from snapshots, falling back to live read if None. The fallback interpreter calls `step_scanline(capture_snapshot=False)`.
 
 See `docs/runtime-architecture.md` § "PPU Scanline & DMA Architecture" for details.
