@@ -390,7 +390,13 @@ pub fn run_pipeline(
     code.push_str("\n");
 
     code.push_str("registers[15] = 0x08000000\n");
-    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0}\n");
+    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x1F, 'i': 0, 'f': 0, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
+    code.push_str("\ndef _cpsr_to_int(c):\n");
+    code.push_str("    return ((c['n'] & 1) << 31) | ((c['z'] & 1) << 30) | ((c['c'] & 1) << 29) | ((c['v'] & 1) << 28) | ((c['i'] & 1) << 7) | ((c['f'] & 1) << 6) | ((c['t'] & 1) << 5) | (c['mode'] & 0x1F)\n");
+    code.push_str("\ndef _cpsr_from_int(c, val):\n");
+    code.push_str("    c['n'] = (val >> 31) & 1; c['z'] = (val >> 30) & 1; c['c'] = (val >> 29) & 1; c['v'] = (val >> 28) & 1; c['i'] = (val >> 7) & 1; c['f'] = (val >> 6) & 1; c['t'] = (val >> 5) & 1; c['mode'] = val & 0x1F\n");
+    code.push_str("\n_MODE_TO_SPSR_IDX = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1B: 4, 0x11: 5, 0x12: 6}\n");
+    code.push_str("_MODES_WITH_SPSR = frozenset({0x11, 0x12, 0x13, 0x17, 0x1B})\n");
     code.push_str("\ndef cpsr_check(cond):\n");
     code.push_str("    n = cpsr['n']\n");
     code.push_str("    z = cpsr['z']\n");
@@ -666,6 +672,25 @@ pub fn run_pipeline(
         )
     }
 
+    /// Returns true for conditional non-branch instructions (e.g. LDREQ, ADDNE).
+    /// Branches handle their own control flow; this identifies data-processing
+    /// and load/store instructions with a condition code that are NOT branches.
+    fn is_conditional_non_branch(inst: &gbatopy_disasm::DecodedInstruction) -> bool {
+        let op = inst.opcode.as_str();
+        let full_op = op.split_whitespace().next().unwrap_or(op);
+        let base_op = full_op.trim_end_matches(|c: char| c.is_ascii_lowercase());
+        let cond_suffix = &full_op[base_op.len()..];
+        if cond_suffix.is_empty() || cond_suffix.eq_ignore_ascii_case("al") {
+            return false;
+        }
+        if matches!(base_op, "B" | "BL" | "BX" | "BLX" | "CBZ" | "CBNZ" | "BL_SUFFIX")
+            || is_conditional_branch(op)
+        {
+            return false;
+        }
+        true
+    }
+
     fn writes_r15(inst: &gbatopy_disasm::DecodedInstruction) -> bool {
         let op = inst.opcode.as_str();
         let base_op = op.trim_end_matches(|c: char| c.is_ascii_lowercase());
@@ -770,10 +795,18 @@ pub fn run_pipeline(
             }
         }
         // End of block: always advance PC for dispatch loop
-        let last_addr = func_instructions.last().unwrap().address as u64;
-        if !writes_r15(func_instructions.last().unwrap()) {
+        let last_inst = func_instructions.last().unwrap();
+        let last_addr = last_inst.address as u64;
+        if !writes_r15(last_inst) {
             let end_addr = last_addr + instr_size;
             body.push_str(&format!("    registers[15] = 0x{:08X}\n", end_addr));
+        } else if is_conditional_non_branch(last_inst) {
+            // Conditional non-branch that writes R15 (e.g. LDRLS PC, [PC, Rn, LSL #2])
+            // sets PC only when the condition is true. When false, PC must still
+            // advance to the fall-through address or the interpreter stalls.
+            let end_addr = last_addr + instr_size;
+            body.push_str("    else:\n");
+            body.push_str(&format!("        registers[15] = 0x{:08X}\n", end_addr));
         }
 
         // Check if block is pure NOP (only comments and sequential PC advances)
@@ -951,13 +984,14 @@ def calibrate_gba_timing(measure_cycles=100000):
     return speed_ratio, calibrated_delay, cycles_per_second, gba_hz
 
 _interp_cpu = None
+_halt_reason = None  # None, "any" (Halt), or "vblank" (VBlankIntrWait)
 
 def swi_handler(swi_field):
     """Handle BIOS SWI calls using the global registers/memory.
     ARM codegen extracts bits 23:16 of the 24-bit comment field (GBA BIOS
     convention, mGBA: immediate >> 16). Thumb codegen extracts bits 7:0.
     Handler receives the 8-bit SWI number directly."""
-    global _cpu_halted
+    global _cpu_halted, _halt_reason
     swi_num = swi_field & 0xFF
     if swi_num == 0x00:  # SoftReset
         registers[0] = 0
@@ -981,14 +1015,17 @@ def swi_handler(swi_field):
         if flags & 0x10:
             for addr in range(0x07000000, 0x07000400, 2):
                 memory.write_u16(addr, 0)
-    elif swi_num == 0x02:  # Halt
+    elif swi_num == 0x02:  # Halt — wakes on ANY enabled IRQ
         _cpu_halted = True
+        _halt_reason = "any"
         return
-    elif swi_num == 0x03 or swi_num == 0x04:  # IntrWait
+    elif swi_num == 0x03 or swi_num == 0x04:  # IntrWait — wakes on any IRQ
         _cpu_halted = True
+        _halt_reason = "any"
         return
-    elif swi_num == 0x05:  # VBlankIntrWait
+    elif swi_num == 0x05:  # VBlankIntrWait — wakes on VBlank IRQ ONLY
         _cpu_halted = True
+        _halt_reason = "vblank"
         return
     elif swi_num == 0x06:  # Div (signed)
         dividend = registers[0]
@@ -1016,35 +1053,44 @@ def swi_handler(swi_field):
         src = registers[0]
         dst = registers[1]
         n = registers[2] & 0x1FFFFF
-        units = (registers[2] >> 26) & 1  # 0=16-bit, 1=32-bit
-        if units:
-            for i in range(n):
-                memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
-        else:
+        is_16bit = bool(registers[2] & 0x01000000)  # bit 24 = 16-bit flag
+        if is_16bit:
             for i in range(n):
                 memory.write_u16(dst + i*2, memory.read_u16(src + i*2))
+        else:
+            for i in range(n):
+                memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
     elif swi_num == 0x0C:  # CpuFastSet
         src = registers[0]
         dst = registers[1]
         n = registers[2] & 0x1FFFFF
-        for i in range(n):
-            memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
+        if registers[2] & 0x01000000:  # fixed source (fill mode)
+            val = memory.read_u32(src)
+            for i in range(n):
+                memory.write_u32(dst + i*4, val)
+        else:
+            for i in range(n):
+                memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
     # Other SWIs (0x09 ArcTan, 0x0A ArcTan2, 0x0E BgAffineSet,
     # 0x0F ObjAffineSet, 0x11/0x12 LZ77) are not commonly needed for
     # ROM startup; left as no-ops.
 
 def _interp_fallback(registers, cpsr, max_steps=2000):
     global _interp_cpu
+    global _cpu_halted, _halt_reason
     if _interp_cpu is None:
         _interp_cpu = ARM7TDMI(memory)
+        memory.cpu = _interp_cpu
     for i in range(16):
         _interp_cpu.registers[i] = registers[i]
-    _cpsr_val = 0
-    if cpsr.get('n', 0): _cpsr_val |= 0x80000000
-    if cpsr.get('z', 0): _cpsr_val |= 0x40000000
-    if cpsr.get('c', 0): _cpsr_val |= 0x20000000
-    if cpsr.get('v', 0): _cpsr_val |= 0x10000000
+    _cpsr_val = _cpsr_to_int(cpsr)
     _interp_cpu.cpsr = _cpsr_val
+    _interp_cpu.mode = cpsr.get('mode', 0x1F) & 0x1F
+    _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x12, 6)] = cpsr.get('spsr_irq', 0) & 0xFFFFFFFF
+    _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x13, 2)] = cpsr.get('spsr_svc', 0) & 0xFFFFFFFF
+    _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x17, 3)] = cpsr.get('spsr_abt', 0) & 0xFFFFFFFF
+    _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1B, 4)] = cpsr.get('spsr_und', 0) & 0xFFFFFFFF
+    _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1F, 1)] = cpsr.get('spsr_sys', 0) & 0xFFFFFFFF
     _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
     _step_count = 0
     while _step_count < max_steps:
@@ -1085,81 +1131,114 @@ def _interp_fallback(registers, cpsr, max_steps=2000):
             continue
         _interp_cpu.step()
         _step_count += 1
+        if getattr(_interp_cpu, '_halted', False):
+            _interp_cpu._halted = False
+            _cpu_halted = True
+            _halt_reason = "vblank"  # _halted is only set by swi_vblank_intr_wait
+            break
     for i in range(16):
         registers[i] = _interp_cpu.registers[i]
-    _cpsr_val = _interp_cpu.cpsr
-    cpsr['n'] = (_cpsr_val >> 31) & 1
-    cpsr['z'] = (_cpsr_val >> 30) & 1
-    cpsr['c'] = (_cpsr_val >> 29) & 1
-    cpsr['v'] = (_cpsr_val >> 28) & 1
-    cpsr['t'] = 1 if _interp_cpu.thumb_mode else 0
+    _cpsr_from_int(cpsr, _interp_cpu.cpsr)
+    cpsr['mode'] = _interp_cpu.mode & 0x1F
+    cpsr['spsr_irq'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x12, 6)] & 0xFFFFFFFF
+    cpsr['spsr_svc'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x13, 2)] & 0xFFFFFFFF
+    cpsr['spsr_abt'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x17, 3)] & 0xFFFFFFFF
+    cpsr['spsr_und'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1B, 4)] & 0xFFFFFFFF
+    cpsr['spsr_sys'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1F, 1)] & 0xFFFFFFFF
     return _step_count
 
-def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1):
+def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, max_instrs=10000000, pc_trace=None, trace_n=0):
     global _cpu_halted
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     def ror(v, a):
         a = a & 31
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
-    fc = 0; mi = 10000000; ic = 0
+    fc = 0; mi = max_instrs; ic = 0
     _irq_return_pc = None
+    _trace_file = open(pc_trace, "w") if pc_trace else None
+    _trace_count = 0
     instr_per_scanline = max(50, (int(gba_hz / 60.0) // 2) // 228)
     _instr_per_frame = instr_per_scanline * 228
     def _deliver_irq():
         nonlocal _irq_return_pc
-        global _cpu_halted
+        global _cpu_halted, _halt_reason
         _irq = getattr(memory, '_interrupts', None)
-        if _irq is None or not (_irq.ime_reg & 0x0001):
+        if _irq is None:
             return
+        if _cpu_halted:
+            if _halt_reason == "vblank":
+                if _irq.if_reg & (1 << 0):
+                    _cpu_halted = False
+                    _halt_reason = None
+            elif _halt_reason == "any":
+                if _irq.if_reg & _irq.ie_reg:
+                    _cpu_halted = False
+                    _halt_reason = None
+            if _cpu_halted:
+                return
         _pending = _irq.if_reg & _irq.ie_reg
         if not _pending:
             return
-        # Re-entry guard: block while inside a previously delivered handler.
+        if not (_irq.ime_reg & 0x0001):
+            return
         if _irq_return_pc is not None:
             if registers[15] != _irq_return_pc:
                 return
-            # Handler returned — clear guard so the next IRQ can fire later.
             _irq_return_pc = None
             return
         _handler = memory.read_u32(0x03007FFC)
         if not (0x02000000 <= _handler < 0x0A000000):
             return
-        _cpu_halted = False
         _irq_return_pc = registers[15]
-        registers[14] = registers[15]
+        _cpsr_int = _cpsr_to_int(cpsr)
+        cpsr['spsr_irq'] = _cpsr_int
+        cpsr['mode'] = 0x12
+        cpsr['i'] = 1
+        registers[14] = registers[15] | (1 if cpsr.get('t', 0) else 0)
         registers[15] = _handler & 0xFFFFFFFE
         cpsr['t'] = 1 if (_handler & 1) else 0
     while ic < mi:
-        if _cpu_halted:
-            for _ in range(228):
-                ppu_instance.step_scanline()
-                if timers_instance is not None:
-                    timers_instance.step(instr_per_scanline * 2)
-                _deliver_irq()
-                if not _cpu_halted:
-                    break
-            continue
-        pc = registers[15]
-        idx = (pc - 0x08000000) >> 1
-        _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
-        func = _dt.get(idx)
-        if func is None:
-            _budget = instr_per_scanline - (ic % instr_per_scanline)
-            if _budget <= 0:
-                _budget = instr_per_scanline
-            _steps = _interp_fallback(registers, cpsr, max_steps=_budget)
-            ic += max(1, _steps)
-        else:
-            func(registers, cpsr); ic += 1
-            if registers[15] == pc:
-                ppu_instance.step_scanline()
-                _deliver_irq()
-                continue
-        if ic % instr_per_scanline == 0:
-            ppu_instance.step_scanline()
-            _deliver_irq()
         if frame_limit and fc >= frame_limit: break
-        if ic % _instr_per_frame == 0: fc += 1
+        for _scanline in range(228):
+            if ic >= mi:
+                break
+            _inner_stalls = 0
+            _inner_ic_start = ic
+            while (ic - _inner_ic_start) < instr_per_scanline:
+                if _cpu_halted or ic >= mi:
+                    break
+                pc = registers[15]
+                if _trace_file:
+                    if trace_n == 0 or _trace_count < trace_n:
+                        _trace_file.write(f"PC=0x{pc:08X} R0={registers[0]:08X} R1={registers[1]:08X} R2={registers[2]:08X} R3={registers[3]:08X} R8={registers[8]:08X} R9={registers[9]:08X} R10={registers[10]:08X} R12={registers[12]:08X} LR={registers[14]:08X} SP={registers[13]:08X} mode={cpsr.get('mode', 0):#x} i={cpsr.get('i', 0)} t={cpsr.get('t', 0)}\n")
+                        _trace_count += 1
+                idx = (pc - 0x08000000) >> 1
+                _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
+                func = _dt.get(idx)
+                if func is None:
+                    _budget = instr_per_scanline - (ic - _inner_ic_start)
+                    if _budget <= 0:
+                        _budget = 1
+                    _steps = _interp_fallback(registers, cpsr, max_steps=_budget)
+                    ic += max(1, _steps)
+                else:
+                    func(registers, cpsr); ic += 1
+                    if registers[15] == pc:
+                        _inner_stalls += 1
+                        if _inner_stalls > 10000:
+                            break
+                    else:
+                        _inner_stalls = 0
+            ppu_instance.step_scanline()
+            if timers_instance is not None:
+                timers_instance.step(instr_per_scanline * 2)
+            _deliver_irq()
+        ppu_instance.render_frame()
+        fc += 1
+    if screenshot_path:
+        import pygame
+        surf = ppu_instance.get_surface()
+        pygame.image.save(surf, screenshot_path)
     return fc
 
 def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None, pc_trace=None, trace_n=0, max_instrs=10000000):
@@ -1182,34 +1261,29 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 hook_module.setup_hooks(hook_manager)
                 print(f"Hooks loaded from: {hook_file}")
         except Exception as e:
-            print(f"Warning: Failed to load hook file {hook_file}: {e}", file=sys.stderr)
-    speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
-    
-    # Load state if requested
-    if load_state and save_state_mgr:
-        print(f"Loading state from: {load_state}")
-        if not save_state_mgr.load(load_state):
-            print(f"Warning: Failed to load state from {load_state}", file=sys.stderr)
-    
-    pygame.init()
-    if not headless:
-        screen = pygame.display.set_mode((240 * scale, 160 * scale))
-        pygame.display.set_caption("GBAtoPy")
-    else:
-        screen = pygame.Surface((240 * scale, 160 * scale))
-    clock = pygame.time.Clock()
-    fc = 0; running = True; mi = max_instrs; ic = 0
-    loop_stall_count = 0
-    max_loop_stalls = 10000
+            print(f"Warning: Failed to load hooks from {hook_file}: {e}", file=sys.stderr)
     _irq_return_pc = None
     def _deliver_irq():
         nonlocal _irq_return_pc
-        global _cpu_halted
+        global _cpu_halted, _halt_reason
         _irq = getattr(memory, '_interrupts', None)
-        if _irq is None or not (_irq.ime_reg & 0x0001):
+        if _irq is None:
             return
+        if _cpu_halted:
+            if _halt_reason == "vblank":
+                if _irq.if_reg & (1 << 0):
+                    _cpu_halted = False
+                    _halt_reason = None
+            elif _halt_reason == "any":
+                if _irq.if_reg & _irq.ie_reg:
+                    _cpu_halted = False
+                    _halt_reason = None
+            if _cpu_halted:
+                return
         _pending = _irq.if_reg & _irq.ie_reg
         if not _pending:
+            return
+        if not (_irq.ime_reg & 0x0001):
             return
         if _irq_return_pc is not None:
             if registers[15] != _irq_return_pc:
@@ -1219,12 +1293,17 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         _handler = memory.read_u32(0x03007FFC)
         if not (0x02000000 <= _handler < 0x0A000000):
             return
-        _cpu_halted = False
         _irq_return_pc = registers[15]
-        registers[14] = registers[15]
+        _cpsr_int = _cpsr_to_int(cpsr)
+        cpsr['spsr_irq'] = _cpsr_int
+        cpsr['mode'] = 0x12
+        cpsr['i'] = 1
+        registers[14] = registers[15] | (1 if cpsr.get('t', 0) else 0)
         registers[15] = _handler & 0xFFFFFFFE
         cpsr['t'] = 1 if (_handler & 1) else 0
     # print(f"PC=0x{registers[15]:08X}")
+    running = True
+    fc = 0; mi = max_instrs; ic = 0
     while running and ic < mi and fc < (frame_limit or 10000):
         for e in pygame.event.get():
             if e.type == pygame.QUIT: running = False
@@ -1358,20 +1437,31 @@ if __name__ == "__main__":
     parser.add_argument("--trace-n", type=int, default=0, help="Print first N PCs to stdout then stop tracing")
     parser.add_argument("--max-instrs", type=int, default=10000000, help="Maximum instructions before aborting (default 10M)")
     args = parser.parse_args()
-    frames = run_with_pygame(
-        headless=args.headless, 
-        frame_limit=args.frame, 
-        screenshot_path=args.screenshot, 
-        scale=args.scale,
-        dump_memory=args.dump_memory,
-        dump_region=args.dump_region,
-        load_state=args.load_state,
-        save_state=args.save_state,
-        hook_file=args.hook_file,
-        pc_trace=args.pc_trace,
-        trace_n=args.trace_n,
-        max_instrs=args.max_instrs
-    )
+    if args.headless:
+        frames = run_transpiled(
+            headless=True,
+            frame_limit=args.frame,
+            screenshot_path=args.screenshot,
+            scale=args.scale,
+            max_instrs=args.max_instrs,
+            pc_trace=args.pc_trace,
+            trace_n=args.trace_n,
+        )
+    else:
+        frames = run_with_pygame(
+            headless=args.headless, 
+            frame_limit=args.frame, 
+            screenshot_path=args.screenshot, 
+            scale=args.scale,
+            dump_memory=args.dump_memory,
+            dump_region=args.dump_region,
+            load_state=args.load_state,
+            save_state=args.save_state,
+            hook_file=args.hook_file,
+            pc_trace=args.pc_trace,
+            trace_n=args.trace_n,
+            max_instrs=args.max_instrs
+        )
     print(f"{frames} frames")
     import os; os._exit(0)
 "#

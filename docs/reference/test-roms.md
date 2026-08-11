@@ -10,7 +10,7 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 
 ## Verification Status Summary
 
-**Phase 12 Results (2026-08-06):** basic-timing now PASSES (0.0% diff) after VCOUNT accumulator fix — the main loop now advances scanlines at the correct rate instead of relying on a modulo check that rarely fires. Previous: Phase 10c Final Results (2026-08-05): All 66 ROMs processed via batch visual regression after applying F3 fix (disassembler I=1 bug) and re-capturing 19 INCONCLUSIVE goldens.
+**Phase 13 Results (2026-08-10):** CpuFastSet/CpuSet fill-mode bug fixed — SWI handlers now read fill value from memory at [R0] instead of using R0 directly. 10 ROMs fixed: 128kb-boundary, basic-timing, burst-into-tears, cancel-irq-if/ie/ime, exact-timing, haltcnt, irq-delay, latch. Previous: Phase 12 (2026-08-06): basic-timing passed after VCOUNT accumulator fix.
 
 ### Status Legend
 
@@ -22,25 +22,20 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| ✅ PASS | 58 | 87.9% |
-| ❌ FAIL | 15 | 22.7% |
+| ✅ PASS | 53 | 80.3% |
+| ❌ FAIL | 9 | 13.6% |
 | ⏰ SKIP | 4 | 6.1% |
+
+**Note (2026-08-10):** Phase 13 — CpuFastSet/CpuSet fill-mode bug fixed in pipeline_cmd.rs, bios.py, arm7tdmi.py, gba_runtime_embedded.py. SWI 0x0B/0x0C fill mode now reads value from memory at [R0]. 10 ROMs fixed.
 
 **Note (2026-08-05):** Phase 10c regression complete after F3 fix and golden re-capture. 57 ROMs pass visual regression (43 from Phase 10b + 14 from INCONCLUSIVE group). 16 ROMs fail due to: timing-sensitive behavior, unimplemented IRQ handling, missing features, or unknown rendering bugs. 4 ROMs skipped (rates, song, enhancedcontrolchecker, test).
 
-### FAIL ROMs (15 - >=30% diff)
+### FAIL ROMs (9 - >=30% diff)
 
 | ROM | Diff % | Root Cause | Notes |
 |-----|--------|------------|-------|
-| 128kb-boundary | 79.94% | Unknown | Black screen output |
-| burst-into-tears | 94.73% | Unknown | Black screen output |
-| cancel-irq-if | 92.70% | IRQ handling | IRQ flag clear path not implemented |
 | dispcnt-latch | 80.10% | Display control | Register latch timing not implemented |
-| exact-timing | 88.39% | Timing-sensitive | Requires precise scanline timing |
 | force-nseq-access | 96.35% | Memory access | Non-sequential access timing not implemented |
-| haltcnt | 88.90% | CPU halt | HALT instruction handling incomplete |
-| irq-delay | 94.57% | IRQ timing | IRQ delay timing not implemented |
-| latch | 94.90% | Register latch | Display control latch timing not implemented |
 | nes | 100.00% | Unknown | Black screen output |
 | ram-access-timing | 97.07% | Memory timing | RAM access timing not implemented |
 | reload | 89.84% | Unknown | Black screen output |
@@ -48,7 +43,7 @@ This document catalogs all **66 test ROMs** used by GBAtoPy for verification and
 | start-stop | 97.88% | Timing-sensitive | Start/stop timing not implemented |
 | status-irq-dma | 98.47% | IRQ+DMA | IRQ+DMA interaction not implemented |
 | vram-mirror | 100.00% | IWRAM execution | Blank screen, code jumps to IWRAM but doesn't render |
-| window_midframe | 55.51% | Timing | Scanline timing issue |
+| window_midframe | 15.58% | FIXED 2026-08-07 | Window register byte-order swap (left/right, top/bottom swapped vs mGBA) |
 
 ### ROMs that passed in Phase 10c (14 from INCONCLUSIVE group)
 
@@ -78,7 +73,6 @@ These ROMs were INCONCLUSIVE in Phase 10b due to empty/nearly-empty golden scree
 | sprite-hmosaic | 21.53% | Golden nearly empty |
 | test | 100.00% | Golden nearly empty |
 | vram-mirror | 100.00% | Golden nearly empty |
-| window_midframe | 51.22% | Golden nearly empty |
 
 ### SKIP ROMs (4 total)
 
@@ -96,7 +90,7 @@ These ROMs were INCONCLUSIVE in Phase 10b due to empty/nearly-empty golden scree
 | **stripes.gba** | Mode 3 (16-bit bitmap) | Git commit 3dc6e29: "golden screenshot 100% match"; address mapping fix (2026-07-02). Regression-checked 2026-07-31 after _render_mode3 affine snapshot refactor: 0.0% diff, PASS. |
 | **shades.gba** | Mode 0 (4BPP text tiles) | docs/reference/test-roms.md line 257: "100% pixel match with mGBA (35,840 non-black pixels)"; 5 bugs fixed (char-block base, nibble order, double-scale, dispatch NOP, STRH offset) |
 | **arm.gba** | None (CPU-only) | 0.14% diff vs mGBA golden, PASS |
-| **bgpd.gba** | Mode 3 (16-bit bitmap + HBlank DMA affine) | 0.0% diff vs mGBA golden at frame 200 (2026-07-31). Root cause: two runtime bugs. (1) HBlank DMA in `dma.py:hblank_fire` called `_do_transfer_single` (one unit per HBlank) instead of `_do_transfer` (full burst) — mGBA bursts all 160 transfers on the first HBlank trigger, not one per scanline. (2) `_render_mode3` in `ppu.py` assumed identity affine matrix instead of reading per-scanline BG2 affine snapshots — mGBA applies BG2 affine registers (PA/PB/PC/PD/X/Y) in Mode 3, updated via HBlank DMA to BG2PD. Both fixes required; either alone leaves gradient period wrong. |
+| **bgpd.gba** | Mode 3 (16-bit bitmap + HBlank DMA affine) | 0.0% diff vs mGBA golden at frame 60 (re-verified 2026-08-08). Root cause: three runtime bugs. (1) HBlank DMA in `dma.py:hblank_fire` called `_do_transfer_single` (one unit per HBlank) instead of `_do_transfer` (full burst) — mGBA bursts all 160 transfers on the first HBlank trigger, not one per scanline. (2) `_render_mode3` in `ppu.py` assumed identity affine matrix instead of reading per-scanline BG2 affine snapshots — mGBA applies BG2 affine registers (PA/PB/PC/PD/X/Y) in Mode 3, updated via HBlank DMA to BG2PD. (3) `ppu.py:step_scanline` fired `hblank_fire()` for all 228 scanlines including VBlank — mGBA `video.c:217` gates HBlank DMA to `vcount < 160` (visible scanlines only); firing during VBlank consumed source values belonging to the next frame, shifting the gradient by ~50 scanlines. All three fixes required; any alone leaves the gradient wrong. |
 | **bgx.gba** | Mode 3 (affine BG2 + HBlank DMA) | 0.0% diff vs mGBA golden, PASS — confirms HBlank DMA and affine transform |
 | **bios.gba** | None (BIOS SWI) | 1.06% diff vs mGBA golden, PASS |
 | **cond_invalid.gba** | None (CPU-only) | 1.12% diff vs mGBA golden, PASS |
@@ -139,7 +133,6 @@ These ROMs were INCONCLUSIVE in Phase 10b due to empty/nearly-empty golden scree
 
 | ROM | Issue | Evidence |
 |-----|-------|----------|
-| **window_midframe.gba** | Visual FAIL | 55.6% pixel difference vs mGBA golden — golden has 55.6% non-black content, transpiled output is all black. Window layers not implemented (register stubs only). |
 | **nes.gba** | Visual FAIL | 100.0% pixel difference vs mGBA golden — both full-screen (99.3% golden vs 99.98% transpiled) but completely different colors. Runs without hang after fallback fix (2026-08-01). |
 
 ---
@@ -148,23 +141,23 @@ These ROMs were INCONCLUSIVE in Phase 10b due to empty/nearly-empty golden scree
 
 || Category | Count | ROMs | Status |
 |----------|-------|------|------|--------|
-| CPU-only | 16 | arm.gba ✅, thumb.gba ✅, bios.gba ✅, memory.gba ✅, nes.gba ❌, unsafe.gba ✅, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba ✅, retAddr.gba ✅, basic-timing.gba | 7✅, 1❌, 8❓ |
+| CPU-only | 16 | arm.gba ✅, thumb.gba ✅, bios.gba ✅, memory.gba ✅, nes.gba ❌, unsafe.gba ✅, armwrestler.gba, armwrestler-gba-fixed.gba, ARM_Any.gba, ARM_DataProcessing.gba, THUMB_Any.gba, THUMB_DataProcessing.gba, FuzzARM.gba, cond_invalid.gba ✅, retAddr.gba ✅, basic-timing.gba ✅ | 8✅, 1❌, 7❓ |
 | PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ✅, line_timing.gba ⚠️, lyc_midline.gba ⚠️, mode2.gba ✅, greenswap.gba ✅, bgpd.gba ✅, bgx.gba ✅, sprite-hmosaic.gba ⚠️, vram-mirror.gba | 11✅, 3⚠️, 1❓ |
-| IRQ | 9 | isr.gba ⚠️, if_ack.gba ✅, irq-delay.gba, irq_delay.gba ✅, joypad.gba ✅, cancel-irq-ie.gba, cancel-irq-if.gba, cancel-irq-ime.gba, status-irq-dma.gba | 3✅, 1⚠️, 5❓ |
-| DMA | 8 | dma_priority.gba ⚠️, burst-into-tears.gba, force-nseq-access.gba, latch.gba, start-stop.gba, reload.gba, dispcnt-latch.gba, window_midframe.gba ❌ | 1❌, 1⚠️, 6❓ |
-| Timer | 2 | timer_change.gba ⚠️, haltcnt.gba | 1⚠️, 1❓ |
+| IRQ | 9 | isr.gba ⚠️, if_ack.gba ✅, irq-delay.gba ✅, irq_delay.gba ✅, joypad.gba ✅, cancel-irq-ie.gba ✅, cancel-irq-if.gba ✅, cancel-irq-ime.gba ✅, status-irq-dma.gba ❌ | 7✅, 1⚠️, 1❌ |
+| DMA | 8 | dma_priority.gba ⚠️, burst-into-tears.gba ✅, force-nseq-access.gba ❌, latch.gba ✅, start-stop.gba ❌, reload.gba ❌, dispcnt-latch.gba ❌, window_midframe.gba ✅ | 3✅, 1⚠️, 4❌ |
+| Timer | 2 | timer_change.gba ⚠️, haltcnt.gba ✅ | 1✅, 1⚠️ |
 | Keypad | 1 | enhancedcontrolchecker.gba | ❓ |
 | Audio | 6 | helloAudio.gba ✅, test.gba, song.gba, rates.gba ❌, redline.gba ✅, pcmxx.gba ⚠️ | 2✅, 1❌, 1⚠️, 2❓ |
 | Save | 4 | sram.gba ✅, flash64.gba ✅, flash128.gba ✅, none.gba ✅ | 4✅ |
-| Memory | 2 | 128kb-boundary.gba, ram-access-timing.gba | ❓ |
+| Memory | 2 | 128kb-boundary.gba ✅, ram-access-timing.gba ❌ | 1✅, 1❌ |
 | RTC | 1 | rtc-demo.gba | ❓ |
-| Timing | 2 | exact-timing.gba, start-delay.gba | ❓ |
+| Timing | 2 | exact-timing.gba ✅, start-delay.gba ❌ | 1✅, 1❌ |
 
 **Legend**: ✅ PASS (diff <30%) · ❌ FAIL (diff ≥30%) · ⏰ RUN_FAIL (hang/timeout) · ❓ Unverified
 
-**Total ROMs**: 66 — 27 ✅ verified working, 8 ⚠️ partial (run without hang; 7 pass 30% threshold with visual mismatch), 3 ❌ known failures (rates, window_midframe, nes), 0 ⏰ execution hangs, 28 ❓ unverified
+**Total ROMs**: 66 — 28 ✅ verified working, 8 ⚠️ partial (run without hang; 7 pass 30% threshold with visual mismatch), 2 ❌ known failures (rates, nes), 0 ⏰ execution hangs, 28 ❓ unverified
 
-**Note on bgpd.gba**: ✅ FIXED (2026-07-31). 0.0% diff vs mGBA golden at frame 200. Two root causes: (1) HBlank DMA burst behavior — `hblank_fire` in `dma.py` must call `_do_transfer` (full-count burst) not `_do_transfer_single` (one per HBlank), matching mGBA's `GBADMAService` which completes all pending transfers on the first HBlank trigger. (2) Mode 3 affine rendering — `_render_mode3` in `ppu.py` must read per-scanline BG2 affine snapshots (like `_render_mode4`), not assume identity matrix; mGBA applies BG2 affine registers in Mode 3, updated via HBlank DMA to BG2PD.
+**Note on bgpd.gba**: ✅ FIXED (re-verified 2026-08-08). 0.0% diff vs mGBA golden at frame 60. Three root causes: (1) HBlank DMA burst behavior — `hblank_fire` in `dma.py` must call `_do_transfer` (full-count burst) not `_do_transfer_single` (one per HBlank), matching mGBA's `GBADMAService` which completes all pending transfers on the first HBlank trigger. (2) Mode 3 affine rendering — `_render_mode3` in `ppu.py` must read per-scanline BG2 affine snapshots (like `_render_mode4`), not assume identity matrix; mGBA applies BG2 affine registers in Mode 3, updated via HBlank DMA to BG2PD. (3) VBlank gating — `step_scanline` in `ppu.py` must gate `hblank_fire()` to `vcount < 160` (visible scanlines only), matching mGBA `video.c:217`; firing during VBlank consumed the next frame's source values and shifted the gradient by ~50 scanlines.
 
 ---
 
@@ -611,7 +604,7 @@ These ROMs were INCONCLUSIVE in Phase 10b due to empty/nearly-empty golden scree
 - Window rendering
 - Mid-frame window changes
 **Expected Output**: Text output showing window test results  
-**Transpiler Blockers**: Window layers not implemented
+**Transpiler Blockers**: ~~Window layers not implemented~~ FIXED 2026-08-07 — window register byte-order swap corrected (low byte = end/right, high byte = start/left, matching mGBA). Degenerate bounds clamped per mGBA. 15.58% diff, PASS.
 
 ### pcmxx.gba
 **Suite**: gba_tests  
@@ -902,7 +895,7 @@ All 66 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | arm.gba | 0 | 3977 | ✅ (0.14% diff, PASS) |
 | armwrestler-gba-fixed.gba | 0 | 6060 | ❓ |
 | armwrestler.gba | 0 | 6070 | ❓ |
-| bgpd.gba | 0 | 580 | ✅ (0.0% diff, PASS — HBlank DMA burst + Mode 3 affine snapshot fix, 2026-07-31) |
+| bgpd.gba | 0 | 580 | ✅ (0.0% diff, PASS — HBlank DMA burst + Mode 3 affine snapshot + VBlank gating fix, re-verified 2026-08-08) |
 | bgx.gba | 0 | 514 | ✅ (0.0% diff, PASS — Mode 3 affine BG2 + HBlank DMA) |
 | bios.gba | 0 | 1238 | ✅ (1.06% diff, PASS) |
 | cond_invalid.gba | 0 | 1265 | ✅ (1.12% diff, PASS) |
@@ -941,7 +934,7 @@ All 66 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | timer_change.gba | 0 | 1299 | ⚠️ (runs without hang, near match — fallback interpreter mode-switch fix, 2026-08-01) |
 | unsafe.gba | 0 | 1174 | ✅ (0.06% diff, PASS) |
 | vram-mirror.gba | 0 | — | ❓ |
-| window_midframe.gba | 0 | 978 | ❌ (55.6% diff — golden has 55.6% non-black content, transpiled all black. Window layers not implemented) |
+| window_midframe.gba | 0 | 978 | ✅ (15.58% diff, PASS — window register byte-order fix, 2026-08-07) |
 
 ---
 

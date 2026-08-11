@@ -352,6 +352,7 @@ class PPU:
                 "priority": priority,
                 "palette_num": palette_num,
                 "matrix_idx": matrix_idx,
+                "mosaic": mosaic,
             })
 
     def _render_sprites(self):
@@ -416,13 +417,14 @@ class PPU:
         
         for py in range(height):
             for px in range(width):
-                # Calculate tile coordinates within sprite
-                tile_x = px // 8
-                tile_y = py // 8
-                
-                # Calculate local pixel within tile
-                local_x = px % 8
-                local_y = py % 8
+                if sprite.get("mosaic", 0) and self.mosaic_enabled:
+                    src_px, src_py = self._apply_mosaic(px, py, is_obj=True)
+                else:
+                    src_px, src_py = px, py
+                tile_x = src_px // 8
+                tile_y = src_py // 8
+                local_x = src_px % 8
+                local_y = src_py % 8
                 
                 # Handle horizontal flip
                 if sprite["flip_h"]:
@@ -532,11 +534,12 @@ class PPU:
         # Render sprite with affine transformation
         for py in range(height):
             for px in range(width):
-                # Calculate position relative to center
-                rel_x = px - cx
-                rel_y = py - cy
-                
-                # Apply inverse affine transformation
+                if sprite.get("mosaic", 0) and self.mosaic_enabled:
+                    mpx, mpy = self._apply_mosaic(px, py, is_obj=True)
+                else:
+                    mpx, mpy = px, py
+                rel_x = mpx - cx
+                rel_y = mpy - cy
                 src_x = pa * rel_x + pb * rel_y + cx
                 src_y = pc * rel_x + pd * rel_y + cy
                 
@@ -792,6 +795,12 @@ class PPU:
         self._win0_active = False
         self._win1_active = False
 
+        # Per-scanline window snapshots: (left, right, top, bottom) for WIN0/WIN1
+        # captured at the start of each scanline, before VBlank IRQs update them.
+        # Mirrors _bg2_affine_snapshots so mid-frame WIN0V/WIN1V writes take effect.
+        self._win0_snapshots = [None] * self.screen_height
+        self._win1_snapshots = [None] * self.screen_height
+
         # Window control bits (which layers enabled in each window)
         self.win0_in_enable = 0  # Bits: 0-3 = BG0-3, 4 = OBJ, 5 = Blend
         self.win0_out_enable = 0
@@ -977,19 +986,32 @@ class PPU:
                 self.bg3_y -= 0x10000000
 
         # Window registers
+        # mGBA layout: low byte = end (right/bottom), high byte = start (left/top)
         elif addr == self.REG_WIN0H:
-            # WIN0H: bits 0-7 = left, bits 8-15 = right
-            self.win0_left = (value >> 0) & 0xFF
-            self.win0_right = (value >> 8) & 0xFF
+            self.win0_right = value & 0xFF
+            self.win0_left = (value >> 8) & 0xFF
+            if self.win0_left > 240 and self.win0_left > self.win0_right:
+                self.win0_left = 0
+            if self.win0_right > 240:
+                self.win0_right = 240
+                if self.win0_left > 240:
+                    self.win0_left = 240
         elif addr == self.REG_WIN1H:
-            self.win1_left = (value >> 0) & 0xFF
-            self.win1_right = (value >> 8) & 0xFF
+            self.win1_right = value & 0xFF
+            self.win1_left = (value >> 8) & 0xFF
+            if self.win1_left > 240 and self.win1_left > self.win1_right:
+                self.win1_left = 0
+            if self.win1_right > 240:
+                self.win1_right = 240
+                if self.win1_left > 240:
+                    self.win1_left = 240
         elif addr == self.REG_WIN0V:
-            self.win0_top = (value >> 0) & 0xFF
-            self.win0_bottom = (value >> 8) & 0xFF
+            self.win0_bottom = value & 0xFF
+            self.win0_top = (value >> 8) & 0xFF
+
         elif addr == self.REG_WIN1V:
-            self.win1_top = (value >> 0) & 0xFF
-            self.win1_bottom = (value >> 8) & 0xFF
+            self.win1_bottom = value & 0xFF
+            self.win1_top = (value >> 8) & 0xFF
         elif addr == self.REG_WININ:
             # WININ: bits 0-5 = window 0 in, bits 8-13 = window 1 in
             self.win0_in_enable = value & 0x3F
@@ -999,6 +1021,7 @@ class PPU:
             self.win0_out_enable = value & 0x1F
             self.win1_out_enable = (value >> 8) & 0x1F
             self.winout_obj_enable = bool((value >> 4) & 1)
+
         elif addr == self.REG_WINOBJ:
             # WINOBJ: bits 0-5 = OBJ window enable
             self.win_obj_enable = value & 0x3F
@@ -1110,13 +1133,13 @@ class PPU:
 
         # Window registers
         elif addr == self.REG_WIN0H:
-            return self.win0_left | (self.win0_right << 8)
+            return self.win0_right | (self.win0_left << 8)
         elif addr == self.REG_WIN1H:
-            return self.win1_left | (self.win1_right << 8)
+            return self.win1_right | (self.win1_left << 8)
         elif addr == self.REG_WIN0V:
-            return self.win0_top | (self.win0_bottom << 8)
+            return self.win0_bottom | (self.win0_top << 8)
         elif addr == self.REG_WIN1V:
-            return self.win1_top | (self.win1_bottom << 8)
+            return self.win1_bottom | (self.win1_top << 8)
         elif addr == self.REG_WININ:
             return self.win0_in_enable | (self.win1_in_enable << 8)
         elif addr == self.REG_WINOUT:
@@ -1398,13 +1421,24 @@ class PPU:
         return value / 256.0
 
     def _is_in_window(self, x: int, y: int, win_num: int) -> bool:
-        """Check if coordinate is inside specified window using latched flags"""
+        """Check if coordinate is inside specified window using per-scanline snapshots.
+        The Y range is implicit: a scanline only has a snapshot if it falls within
+        the window's Y bounds at step_scanline time. The X check is geometric:
+        left <= x < right, with GBATEK's left >= right => full width (right=240)."""
+        if not (0 <= y < self.screen_height):
+            return False
         if win_num == 0:
-            return self._win0_active
+            snap = self._win0_snapshots[y]
         elif win_num == 1:
-            return self._win1_active
+            snap = self._win1_snapshots[y]
         else:
             return False
+        if snap is None:
+            return False
+        left, right = snap
+        if left >= right:
+            return False
+        return left <= x < right
 
     def _is_in_obj_window(self, x: int, y: int) -> bool:
         for sx, sy, w, h in self._obj_window_rects:
@@ -1496,22 +1530,36 @@ class PPU:
             self.bg_vofs[bg] = self.memory.read_u16(self.REG_BG0VOFS + bg * 4) & 0x1FF
 
         # Window geometry registers
+        # Window geometry registers (mGBA layout: low byte = end, high byte = start)
         win0h = self.memory.read_u16(self.REG_WIN0H)
-        self.win0_left = win0h & 0xFF
-        self.win0_right = (win0h >> 8) & 0xFF
+        self.win0_right = win0h & 0xFF
+        self.win0_left = (win0h >> 8) & 0xFF
+        if self.win0_left > 240 and self.win0_left > self.win0_right:
+            self.win0_left = 0
+        if self.win0_right > 240:
+            self.win0_right = 240
+            if self.win0_left > 240:
+                self.win0_left = 240
         win1h = self.memory.read_u16(self.REG_WIN1H)
-        self.win1_left = win1h & 0xFF
-        self.win1_right = (win1h >> 8) & 0xFF
+        self.win1_right = win1h & 0xFF
+        self.win1_left = (win1h >> 8) & 0xFF
+        if self.win1_left > 240 and self.win1_left > self.win1_right:
+            self.win1_left = 0
+        if self.win1_right > 240:
+            self.win1_right = 240
+            if self.win1_left > 240:
+                self.win1_left = 240
         win0v = self.memory.read_u16(self.REG_WIN0V)
-        self.win0_top = win0v & 0xFF
-        self.win0_bottom = (win0v >> 8) & 0xFF
+        self.win0_bottom = win0v & 0xFF
+        self.win0_top = (win0v >> 8) & 0xFF
         win1v = self.memory.read_u16(self.REG_WIN1V)
-        self.win1_top = win1v & 0xFF
-        self.win1_bottom = (win1v >> 8) & 0xFF
+        self.win1_bottom = win1v & 0xFF
+        self.win1_top = (win1v >> 8) & 0xFF
         winin = self.memory.read_u16(self.REG_WININ)
         self.win0_in_enable = winin & 0x3F
         self.win1_in_enable = (winin >> 8) & 0x3F
         winout = self.memory.read_u16(self.REG_WINOUT)
+
         self.win0_out_enable = winout & 0x1F
         self.win1_out_enable = (winout >> 8) & 0x1F
         self.winout_obj_enable = bool(winout & 0x10)
@@ -1546,36 +1594,28 @@ class PPU:
         Does NOT render pixels — use render_frame() for that."""
         if self.vcount == 0:
             self._bg2_affine_snapshots = [None] * self.screen_height
-            self._win0_active = False
-            self._win1_active = False
+            self._win0_snapshots = [None] * self.screen_height
+            self._win1_snapshots = [None] * self.screen_height
 
-        # Edge-triggered Y-latch: read LIVE WIN0V/WIN1V registers so
-        # mid-frame writes via VCount IRQ take effect. The window activates
-        # when scanline crosses y1 and deactivates when it crosses y2.
-        # GBATEK: y1 >= y2 is interpreted as y2 = 160.
-        try:
-            win0v = self.memory.read_u16(self.REG_WIN0V)
-            win0_y1 = win0v & 0xFF
-            win0_y2 = (win0v >> 8) & 0xFF
+        # Per-scanline window snapshot: capture (left, right) from WIN0H/WIN1H
+        # for the CURRENT scanline if it falls within the window's Y range.
+        # Using the PPU's cached fields (self.win0_top etc.) which are updated
+        # from MMIO writes, so mid-frame VCount-IRQ writes to WIN0V/WIN1V
+        # take effect on subsequent scanlines.
+        # GBATEK: y1 >= y2 means the window covers the full screen (y2=160).
+        # GBATEK: left >= right means the window covers the full width (right=240).
+        if 0 <= self.vcount < self.screen_height:
+            win0_y1, win0_y2 = self.win0_top, self.win0_bottom
             if win0_y1 >= win0_y2:
                 win0_y2 = 160
-            win1v = self.memory.read_u16(self.REG_WIN1V)
-            win1_y1 = win1v & 0xFF
-            win1_y2 = (win1v >> 8) & 0xFF
+            if win0_y1 <= self.vcount < win0_y2:
+                self._win0_snapshots[self.vcount] = (self.win0_left, self.win0_right)
+
+            win1_y1, win1_y2 = self.win1_top, self.win1_bottom
             if win1_y1 >= win1_y2:
                 win1_y2 = 160
-        except Exception:
-            win0_y1, win0_y2 = self.win0_top, self.win0_bottom
-            win1_y1, win1_y2 = self.win1_top, self.win1_bottom
-
-        if self.vcount == win0_y1:
-            self._win0_active = True
-        if self.vcount == win0_y2:
-            self._win0_active = False
-        if self.vcount == win1_y1:
-            self._win1_active = True
-        if self.vcount == win1_y2:
-            self._win1_active = False
+            if win1_y1 <= self.vcount < win1_y2:
+                self._win1_snapshots[self.vcount] = (self.win1_left, self.win1_right)
 
         # Snapshot BG2 affine params for the CURRENT scanline BEFORE HBlank-DMA
         # modifies them. On hardware the PPU latches the affine matrix at the
@@ -1590,8 +1630,12 @@ class PPU:
 
         # Fire HBlank DMA AFTER the snapshot so DMA-written values land in the
         # next scanline's snapshot, not the current one.
+        # mGBA (video.c:217) gates GBADMARunHblank on vcount < 160: HBlank DMA
+        # fires only on visible scanlines, never during VBlank. Firing during
+        # VBlank consumes source values that belong to the next frame's visible
+        # lines, shifting per-scanline gradients (bgpd) by ~50 scanlines.
         dma = self.memory._dma
-        if dma is not None:
+        if dma is not None and self.vcount < self.screen_height:
             dma.hblank_fire(self.vcount)
 
         self.vcount = (self.vcount + 1) % 228
@@ -1622,7 +1666,7 @@ class PPU:
 
         irq = self.memory._interrupts
         if irq is not None:
-            if self.vblank and (dispstat & 0x0008):
+            if self.vcount == self.screen_height and (dispstat & 0x0008):
                 irq.vblank_irq()
             if dispstat & 0x0010:
                 irq.hblank_irq()
@@ -1640,7 +1684,8 @@ class PPU:
         """Render one frame of graphics. Called once per frame after all scanlines."""
         self._read_registers()
         self._init_framebuffer()
-
+        _fc = getattr(self, '_frame_count', 0) + 1
+        self._frame_count = _fc
         # Get current display mode
         mode = self.mode
 
@@ -2403,10 +2448,7 @@ class PPU:
         snaps = self._bg2_affine_snapshots
         if snaps and snaps[0] is not None:
             _, _, _, _, refx, refy, overflow0 = snaps[0]
-        else:
-            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
-
-        backdrop_rgb = palette_rgb[0]
+            _ap = snaps[0]
 
         sx = refx
         sy = refy
@@ -2483,10 +2525,7 @@ class PPU:
         snaps = self._bg2_affine_snapshots
         if snaps and snaps[0] is not None:
             _, _, _, _, refx, refy, overflow0 = snaps[0]
-        else:
-            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
-
-        sx = refx
+            _ap = snaps[0]
         sy = refy
         fb = self.framebuffer
         lo = self.layer_origin

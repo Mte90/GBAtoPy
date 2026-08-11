@@ -180,23 +180,25 @@ The main loop synchronizes CPU execution with PPU timing using instruction count
 - PPU timing is proportional to actual CPU execution, not loop iterations.
 - This ensures accurate synchronization between CPU and PPU.
 
-### 2.4 DMA Single-Unit-Per-Trigger Semantics
+### 2.4 DMA Full-Count Burst Semantics
 
-HBlank and VBlank DMA transfers follow single-unit-per-trigger semantics:
+HBlank and VBlank DMA transfers follow full-count burst-on-trigger semantics:
 
 **Implementation**:
 
-- `_do_transfer_single()`: Transfers exactly ONE unit (word) per call.
-- `_do_transfer()`: Transfers the full count (used for manual/one-shot DMA).
-- `hblank_fire()` and `vblank_fire()` call `_do_transfer_single()` once per trigger.
+- `_do_transfer()`: Transfers the entire `count` in one burst (used by HBlank/VBlank/manual DMA).
+- `_do_transfer_single()`: Transfers exactly ONE unit per call (unused by HBlank/VBlank path; retained for other internal uses).
+- `hblank_fire()` and `vblank_fire()` call `_do_transfer()` once per trigger.
 
 **Repeat flag behavior**:
 
 - The Repeat flag controls count reload, NOT per-trigger transfer size.
-- On each HBlank/VBlank trigger, exactly one unit is transferred.
-- If Repeat is set, the count is reloaded after the transfer; otherwise, DMA is disabled.
+- On each HBlank/VBlank trigger, the full `count` is transferred in one burst (~2 cycles per unit).
+- If Repeat is set, the count is reloaded after the burst; otherwise, DMA is disabled.
 
-**Why this matters**: This matches GBA hardware behavior. Transferring the full count on every trigger would corrupt memory and produce incorrect graphics.
+**VBlank gating**: `step_scanline()` fires `hblank_fire()` only when `vcount < 160` (visible scanlines), matching mGBA `video.c:217`. Firing during VBlank consumes source values that belong to the next frame's visible lines, shifting per-scanline gradients (bgpd) by ~50 scanlines.
+
+**Why this matters**: This matches mGBA's `GBADMAService` behavior. The old per-unit-per-trigger model caused bgpd's gradient to render with a ~128-scanline period instead of the correct ~52-scanline period (verified pixel-perfect, 0.0% diff).
 
 ---
 

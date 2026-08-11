@@ -256,6 +256,9 @@ class DMA:
                 else:
                     self.mem.write_u16(dst, value)
 
+            src += src_step
+            dst += dst_step
+
         if ch.is_repeat() and dst_ctrl == 3:
             ch.dst_addr = orig_dst
         else:

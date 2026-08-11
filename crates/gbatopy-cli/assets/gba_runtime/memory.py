@@ -528,13 +528,9 @@ class Memory:
         b2 = self.read_u8(mapped + 2)
         b3 = self.read_u8(mapped + 3)
         return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-    def write_u8(self, addr: int, value: int):
+    def write_u8(self, addr: int, value: int, _from_multibyte: bool = False):
         addr &= 0xFFFFFFFF
         value &= 0xFF
-        # Note: write_u8 is called from write_u32/write_u16 AFTER _map_address
-        # so we don't map again - the address is already absolute
-        # Only map if this is a direct call (not from write_u32/write_u16)
-        # We detect this by checking if addr is already in an absolute region
         if not (0x04000000 <= addr <= 0x07FFFFFF):
             addr = self._map_address(addr)
 
@@ -557,6 +553,11 @@ class Memory:
             offset = addr - MemoryMap.IO_START
             self.io[offset] = value
             self.open_bus = value
+            if not _from_multibyte and 0x04000000 <= addr <= 0x0400005F:
+                reg_base = addr & ~1
+                base_offset = reg_base - MemoryMap.IO_START
+                merged = self.io[base_offset] | (self.io[base_offset + 1] << 8)
+                self._dispatch_hal_write(reg_base, merged)
             return
 
         if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
@@ -601,10 +602,9 @@ class Memory:
             self._dispatch_hal_write(mapped_addr, value)
             return
 
-        self.write_u8(mapped_addr, value & 0xFF)
-        self.write_u8(mapped_addr + 1, (value >> 8) & 0xFF)
+        self.write_u8(mapped_addr, value & 0xFF, _from_multibyte=True)
+        self.write_u8(mapped_addr + 1, (value >> 8) & 0xFF, _from_multibyte=True)
 
-        # Dispatch MMIO handlers using mapped_addr (not original addr)
         if MemoryMap.IO_START <= mapped_addr <= MemoryMap.IO_END:
             self._dispatch_hal_write(mapped_addr, value)
 
@@ -613,12 +613,11 @@ class Memory:
         value &= 0xFFFFFFFF
         mapped_addr = self._map_address(addr)
 
-        self.write_u8(mapped_addr, value & 0xFF)
-        self.write_u8(mapped_addr + 1, (value >> 8) & 0xFF)
-        self.write_u8(mapped_addr + 2, (value >> 16) & 0xFF)
-        self.write_u8(mapped_addr + 3, (value >> 24) & 0xFF)
+        self.write_u8(mapped_addr, value & 0xFF, _from_multibyte=True)
+        self.write_u8(mapped_addr + 1, (value >> 8) & 0xFF, _from_multibyte=True)
+        self.write_u8(mapped_addr + 2, (value >> 16) & 0xFF, _from_multibyte=True)
+        self.write_u8(mapped_addr + 3, (value >> 24) & 0xFF, _from_multibyte=True)
 
-        # Dispatch MMIO handlers using mapped_addr (not original addr)
         if MemoryMap.IO_START <= mapped_addr <= MemoryMap.IO_END:
             self._dispatch_hal_write(mapped_addr, value)
 

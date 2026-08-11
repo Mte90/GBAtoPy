@@ -22,6 +22,9 @@ except ImportError:
 
 _NUMBA_ENABLED = False
 
+_MODE_TO_SPSR_IDX = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1B: 4, 0x11: 5, 0x12: 6}
+_MODES_WITH_SPSR = frozenset({0x11, 0x12, 0x13, 0x17, 0x1B})
+
 
 def jit_compile(func):
     """Decorator to optionally compile functions with numba for 10x speedup."""
@@ -96,7 +99,7 @@ class ARM7TDMI:
         self.memory = memory
         self.registers = [0] * 16  # r0-r15
         self.cpsr = 0  # Current Program Status Register
-        self.spsr = [0] * 6  # Saved PSR for each mode
+        self.spsr = [0] * 7  # Saved PSR for each mode (USR, SYS, SVC, ABT, UND, FIQ, IRQ)
 
         # ARM condition codes
         self.COND_EQ = 0x0  # Z set
@@ -117,7 +120,6 @@ class ARM7TDMI:
         self.COND_NV = 0xF  # Never
 
         self.mode = 0x1F  # User mode
-        self.thumb_mode = False
         self.running = True
         self.cycles = 0
 
@@ -127,6 +129,17 @@ class ARM7TDMI:
     @property
     def r(self):
         return self.registers
+
+    @property
+    def thumb_mode(self) -> bool:
+        return bool((self.cpsr >> 5) & 1)
+
+    @thumb_mode.setter
+    def thumb_mode(self, value: bool):
+        if value:
+            self.cpsr |= (1 << 5)
+        else:
+            self.cpsr &= ~(1 << 5)
 
     @property
     def pc(self) -> int:
@@ -335,8 +348,8 @@ class ARM7TDMI:
             # MRS: Rd <- CPSR (or SPSR if bit 22 set)
             psr_sel = (instr >> 22) & 1
             if psr_sel:
-                mode_idx = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1A: 4, 0x11: 5}.get(self.mode, 0)
-                psr = self.spsr[mode_idx] if 0 <= mode_idx < 6 else 0
+                mode_idx = _MODE_TO_SPSR_IDX.get(self.mode, 0)
+                psr = self.spsr[mode_idx] if 0 <= mode_idx < len(self.spsr) else 0
             else:
                 psr = self.cpsr
             self.registers[rd_field] = psr & 0xFFFFFFFF
@@ -538,6 +551,14 @@ class ARM7TDMI:
 
         if rd != 15:
             self.registers[15] += 4
+        elif update_flags:
+            # SUBS/MOVS PC, Rm — exception return: restore CPSR from SPSR.
+            # Only privileged modes have an SPSR; User/System mode leaves CPSR unchanged.
+            if self.mode in _MODES_WITH_SPSR:
+                _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
+                if 0 <= _idx < len(self.spsr):
+                    self.cpsr = self.spsr[_idx] & 0xFFFFFFFF
+                    self.mode = self.cpsr & 0x1F
 
         return 1
 
@@ -851,7 +872,7 @@ class ARM7TDMI:
                 self.bios.swi_cpuset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
         elif num == 0x0C:  # CpuFastSet
             if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_cpufastset(self.registers[0], self.registers[1], self.registers[2], self.registers[3])
+                self.bios.swi_cpufastset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
         elif num == 0x0E:  # BgAffineSet
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_bg_affine_set(self.registers[0], self.registers[1], self.registers[2], self.registers[3])

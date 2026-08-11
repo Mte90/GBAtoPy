@@ -1,6 +1,7 @@
 """GBA Runtime - Python implementation of GBA hardware"""
 
 import pygame
+import threading
 from typing import Dict, Any, Optional
 
 from .memory import Memory
@@ -243,8 +244,6 @@ def main_entry(
 
         # Execute CPU with timeout to prevent infinite loops
         if hasattr(generated, "func_map") and 0x08000000 in generated.func_map:
-            import threading
-
             result = {"exception": None}
 
             def run_rom():

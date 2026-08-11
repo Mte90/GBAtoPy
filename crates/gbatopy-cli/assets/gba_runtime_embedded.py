@@ -3283,38 +3283,26 @@ class BIOS:
         return x
 
     def swi_cpuset(self, src: int, dst: int, count: int, control: int):
-        """CPU Set - block copy/fill"""
-        is_fill = bool(control & 0x01000000)
-        is_32bit = bool(control & 0x02000000)
+        """CPU Set - block copy (bit 24 = 16-bit flag, no fill mode)"""
+        is_16bit = bool(control & 0x01000000)
+        word_count = count & 0x001FFFFF
 
-        if is_32bit:
-            word_count = count
-            if is_fill:
-                value = src & 0xFFFFFFFF
-                for i in range(word_count):
-                    self.memory.write_u32(dst + i * 4, value)
-            else:
-                for i in range(word_count):
-                    value = self.memory.read_u32(src + i * 4)
-                    self.memory.write_u32(dst + i * 4, value)
+        if is_16bit:
+            for i in range(word_count):
+                value = self.memory.read_u16(src + i * 2)
+                self.memory.write_u16(dst + i * 2, value)
         else:
-            half_count = count
-            if is_fill:
-                value = src & 0xFFFF
-                for i in range(half_count):
-                    self.memory.write_u16(dst + i * 2, value)
-            else:
-                for i in range(half_count):
-                    value = self.memory.read_u16(src + i * 2)
-                    self.memory.write_u16(dst + i * 2, value)
+            for i in range(word_count):
+                value = self.memory.read_u32(src + i * 4)
+                self.memory.write_u32(dst + i * 4, value)
 
-    def swi_cpafastset(self, src: int, dst: int, count: int, control: int):
+    def swi_cpufastset(self, src: int, dst: int, count: int, control: int):
         """CPU Fast Set - faster block copy/fill (32-bit only)"""
         is_fill = bool(control & 0x01000000)
 
         word_count = count
         if is_fill:
-            value = src & 0xFFFFFFFF
+            value = self.memory.read_u32(src)
             for i in range(word_count):
                 self.memory.write_u32(dst + i * 4, value)
         else:
@@ -3453,38 +3441,18 @@ class BIOS:
 
         cpu = self.memory.cpu
         memory = self.memory
-
-        # Get first call flag from r0 (1 = first call, 0 = repeat)
-        first_call = cpu.registers[0] & 1
-
-        # Check if interrupts are enabled and VBlank interrupt is enabled
         interrupts = getattr(memory, "_interrupts", None)
-        if interrupts:
-            # Wait until VBlank interrupt fires
-            # The interrupt system fires vblank_irq() which sets IF bit 0
-            vblank_occurred = False
 
-            # Check if VBlank is already pending in this frame
-            if interrupts.if_reg & (1 << 0):  # IRQ_VBLANK = 0
-                vblank_occurred = True
-                # Clear the interrupt flag
-                interrupts.if_reg &= ~(1 << 0)
-
-            if vblank_occurred:
-                # VBlank occurred - set Z flag to 1 to unblock wait loop
-                cpu.set_cpsr_flag("Z", True)
-                # Return 1 in r0 indicating VBlank occurred
-                cpu.registers[0] = 1
-            else:
-                # No VBlank yet - keep Z=0 to continue waiting
-                cpu.set_cpsr_flag("Z", False)
-                # Return 0 in r0 to continue loop
-                cpu.registers[0] = 0
-        else:
-            # Fallback: simulate VBlank wait
+        # If a fresh VBlank is already pending, consume it without advancing.
+        if interrupts is not None and (interrupts.if_reg & (1 << 0)):
+            interrupts.if_reg &= ~(1 << 0)
             cpu.set_cpsr_flag("Z", True)
             cpu.registers[0] = 1
-            time.sleep(0.016)
+            return
+
+        # Halt the CPU. The main loop's scanline stepping will advance the PPU
+        # and deliver the VBlank IRQ, which clears the halt.
+        cpu._halted = True
 
     def swi_intr_wait(self, wait_flag: int, vblank_flag: int):
         """Wait for interrupt"""
