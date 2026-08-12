@@ -390,7 +390,26 @@ pub fn run_pipeline(
     code.push_str("\n");
 
     code.push_str("registers[15] = 0x08000000\n");
-    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x1F, 'i': 0, 'f': 0, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
+    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
+    code.push_str("banked_sp_lr = {0x11: {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0, 'lr': 0}, 0x13: {'sp': 0, 'lr': 0}, 0x17: {'sp': 0, 'lr': 0}, 0x1B: {'sp': 0, 'lr': 0}}\n");
+    code.push_str("\ndef _switch_mode(new_mode):\n");
+    code.push_str("    old_mode = cpsr.get('mode', 0x1F)\n");
+    code.push_str("    if new_mode == old_mode:\n");
+    code.push_str("        return\n");
+    code.push_str("    if old_mode in banked_sp_lr:\n");
+    code.push_str("        _b = banked_sp_lr[old_mode]\n");
+    code.push_str("        _b['sp'] = registers[13]; _b['lr'] = registers[14]\n");
+    code.push_str("        if old_mode == 0x11:\n");
+    code.push_str("            _b['r8'] = registers[8]; _b['r9'] = registers[9]; _b['r10'] = registers[10]; _b['r11'] = registers[11]; _b['r12'] = registers[12]\n");
+    code.push_str("    if new_mode in banked_sp_lr:\n");
+    code.push_str("        _b = banked_sp_lr[new_mode]\n");
+    code.push_str("        registers[13] = _b['sp']; registers[14] = _b['lr']\n");
+    code.push_str("        if new_mode == 0x11:\n");
+    code.push_str("            registers[8] = _b['r8']; registers[9] = _b['r9']; registers[10] = _b['r10']; registers[11] = _b['r11']; registers[12] = _b['r12']\n");
+    code.push_str("    cpsr['mode'] = new_mode\n");
+    code.push_str("\ndef _spsr_for_mode(mode):\n");
+    code.push_str("    _m = {0x11: 'spsr_fiq', 0x12: 'spsr_irq', 0x13: 'spsr_svc', 0x17: 'spsr_abt', 0x1B: 'spsr_und', 0x1F: 'spsr_sys'}\n");
+    code.push_str("    return cpsr.get(_m.get(mode, 'spsr_irq'), 0) & 0xFFFFFFFF\n");
     code.push_str("\ndef _cpsr_to_int(c):\n");
     code.push_str("    return ((c['n'] & 1) << 31) | ((c['z'] & 1) << 30) | ((c['c'] & 1) << 29) | ((c['v'] & 1) << 28) | ((c['i'] & 1) << 7) | ((c['f'] & 1) << 6) | ((c['t'] & 1) << 5) | (c['mode'] & 0x1F)\n");
     code.push_str("\ndef _cpsr_from_int(c, val):\n");
@@ -1134,7 +1153,7 @@ def _interp_fallback(registers, cpsr, max_steps=2000):
         if getattr(_interp_cpu, '_halted', False):
             _interp_cpu._halted = False
             _cpu_halted = True
-            _halt_reason = "vblank"  # _halted is only set by swi_vblank_intr_wait
+            _halt_reason = getattr(_interp_cpu, '_halt_reason', 'any')
             break
     for i in range(16):
         registers[i] = _interp_cpu.registers[i]
@@ -1185,6 +1204,18 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             if registers[15] != _irq_return_pc:
                 return
             _irq_return_pc = None
+            _saved = cpsr.get('spsr_irq', 0)
+            _saved_mode = _saved & 0x1F
+            if _saved_mode != cpsr.get('mode', 0x1F):
+                _switch_mode(_saved_mode)
+            cpsr['mode'] = _saved_mode
+            cpsr['i'] = (_saved >> 7) & 1
+            cpsr['f'] = (_saved >> 6) & 1
+            cpsr['t'] = (_saved >> 5) & 1
+            cpsr['n'] = (_saved >> 31) & 1
+            cpsr['z'] = (_saved >> 30) & 1
+            cpsr['c'] = (_saved >> 29) & 1
+            cpsr['v'] = (_saved >> 28) & 1
             return
         _handler = memory.read_u32(0x03007FFC)
         if not (0x02000000 <= _handler < 0x0A000000):
@@ -1192,7 +1223,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         _irq_return_pc = registers[15]
         _cpsr_int = _cpsr_to_int(cpsr)
         cpsr['spsr_irq'] = _cpsr_int
-        cpsr['mode'] = 0x12
+        _switch_mode(0x12)
         cpsr['i'] = 1
         registers[14] = registers[15] | (1 if cpsr.get('t', 0) else 0)
         registers[15] = _handler & 0xFFFFFFFE
@@ -1289,6 +1320,18 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             if registers[15] != _irq_return_pc:
                 return
             _irq_return_pc = None
+            _saved = cpsr.get('spsr_irq', 0)
+            _saved_mode = _saved & 0x1F
+            if _saved_mode != cpsr.get('mode', 0x1F):
+                _switch_mode(_saved_mode)
+            cpsr['mode'] = _saved_mode
+            cpsr['i'] = (_saved >> 7) & 1
+            cpsr['f'] = (_saved >> 6) & 1
+            cpsr['t'] = (_saved >> 5) & 1
+            cpsr['n'] = (_saved >> 31) & 1
+            cpsr['z'] = (_saved >> 30) & 1
+            cpsr['c'] = (_saved >> 29) & 1
+            cpsr['v'] = (_saved >> 28) & 1
             return
         _handler = memory.read_u32(0x03007FFC)
         if not (0x02000000 <= _handler < 0x0A000000):
@@ -1296,7 +1339,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         _irq_return_pc = registers[15]
         _cpsr_int = _cpsr_to_int(cpsr)
         cpsr['spsr_irq'] = _cpsr_int
-        cpsr['mode'] = 0x12
+        _switch_mode(0x12)
         cpsr['i'] = 1
         registers[14] = registers[15] | (1 if cpsr.get('t', 0) else 0)
         registers[15] = _handler & 0xFFFFFFFE

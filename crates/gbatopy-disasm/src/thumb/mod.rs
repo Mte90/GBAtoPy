@@ -31,6 +31,7 @@ impl ThumbDecoder {
             0xA0..=0xA7 => self.format_12_load_addr(halfword, address),
             0xA8..=0xAF => self.format_12_load_addr(halfword, address),
             0xB0 => self.format_13_add_offset_sp(halfword),
+            0xB2 => self.format_extend(halfword),
             0xB4..=0xB5 => self.format_14_push_pop(halfword),
             0xBC..=0xBD => self.format_14_push_pop(halfword),
             0xC0..=0xC7 => self.format_15_multiple(halfword),
@@ -294,6 +295,23 @@ impl ThumbDecoder {
         (
             name.to_string(),
             vec![self.reg(13), self.reg(13), self.imm(imm7)],
+            false,
+        )
+    }
+
+    fn format_extend(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
+        let op = (hw >> 6) & 0x3;
+        let rm = ((hw >> 3) & 0x7) as u8;
+        let rd = (hw & 0x7) as u8;
+        let name = match op {
+            0 => "SXTH",
+            1 => "SXTB",
+            2 => "UXTH",
+            _ => "UXTB",
+        };
+        (
+            name.to_string(),
+            vec![self.reg(rd), self.reg(rm)],
             false,
         )
     }

@@ -73,6 +73,7 @@ pub enum AddressingMode {
         increment: bool,
         pre_index: bool,
         writeback: bool,
+        s_bit: bool,
     },
 }
 

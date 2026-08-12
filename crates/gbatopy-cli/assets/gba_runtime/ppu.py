@@ -872,6 +872,8 @@ class PPU:
         self.layer_origin = [[5]*240 for _ in range(160)]
         # Second target framebuffer for blend operations
         self.second_target_framebuffer = [[None]*240 for _ in range(160)]
+        # Second target layer index for blend operations (5 = backdrop)
+        self.second_target_layer = [[5]*240 for _ in range(160)]
 
     def _get_vram_data(self) -> bytes:
         """Get VRAM data as bytes for JIT functions.
@@ -1703,12 +1705,12 @@ class PPU:
         elif mode == 5:
             self._render_mode5()
 
+        # Render sprites before blending so OBJ can be a blend target
+        self._render_sprites()
+
         # Apply blending if enabled
         if self._blending_enabled():
             self._apply_blending_to_framebuffer()
-
-        # Render sprites
-        self._render_sprites()
 
     def _render_mode0(self):
         """Render Mode 0: Text backgrounds (BG0-3) with priority-based compositing"""
@@ -1804,6 +1806,10 @@ class PPU:
                         continue
 
                     if bg_priority[bg] < best_priority:
+                        # Save previous color as second target (it was underneath)
+                        if best_color is not None:
+                            self.second_target_framebuffer[y][x] = best_color
+                            self.second_target_layer[y][x] = best_bg
                         best_priority = bg_priority[bg]
                         if bg_bpp8[bg]:
                             best_color = palette_colors[color_idx]
@@ -1934,6 +1940,10 @@ class PPU:
                         continue
 
                     if bg_priority[bg] < best_priority:
+                        # Save previous color as second target (it was underneath)
+                        if best_color is not None:
+                            self.second_target_framebuffer[y][x] = best_color
+                            self.second_target_layer[y][x] = best_bg
                         best_priority = bg_priority[bg]
                         if bg_bpp8[bg]:
                             best_color = palette_colors[color_idx]
@@ -2011,6 +2021,10 @@ class PPU:
                         continue
 
                     if bg_priority[2] < best_priority:
+                        # Save previous color as second target (it was underneath)
+                        if best_color is not None:
+                            self.second_target_framebuffer[y][x] = best_color
+                            self.second_target_layer[y][x] = best_bg
                         best_priority = bg_priority[2]
                         if bg_bpp8[2]:
                             best_color = palette_colors[color_idx]
@@ -2526,6 +2540,7 @@ class PPU:
         if snaps and snaps[0] is not None:
             _, _, _, _, refx, refy, overflow0 = snaps[0]
             _ap = snaps[0]
+        sx = refx
         sy = refy
         fb = self.framebuffer
         lo = self.layer_origin
@@ -2615,7 +2630,8 @@ class PPU:
                             else:
                                 # Look for 2nd target layer at this position
                                 stf_color = self.second_target_framebuffer[y][x]
-                                if stf_color is not None:
+                                stf_layer = self.second_target_layer[y][x]
+                                if stf_color is not None and ((second_target_mask >> stf_layer) & 1):
                                     second_r, second_g, second_b = stf_color
                             
                             # Apply blend formula: result = (pixel * eva + second_target * evb) / 16
@@ -2624,37 +2640,31 @@ class PPU:
                             b = (b * eva + second_b * evb) // 16
                         
                         self.framebuffer[y][x] = (r, g, b)
+        elif blend_mode == 2 or blend_mode == 3:  # Brightness up (2) / down (3)
+            first_target_mask = self.bldcnt & 0x3F
+            if first_target_mask == 0:
+                return
             evy = min(self.bldy, 16)
+            if evy == 0:
+                return
             factor = evy / 16.0
             for y in range(self.screen_height):
+                row = self.framebuffer[y]
+                origin_row = self.layer_origin[y]
                 for x in range(self.screen_width):
-                    r, g, b = self.framebuffer[y][x]
-                    r = min(int(r + (255 - r) * factor), 255)
-                    g = min(int(g + (255 - g) * factor), 255)
-                    b = min(int(b + (255 - b) * factor), 255)
-                    self.framebuffer[y][x] = (r, g, b)
-        elif blend_mode == 2:  # Brightness increase (add white)
-            # Formula: result = min(src + (255 - src) * Evy / 16, 255)
-            evy = min(self.bldy, 16)
-            factor = evy / 16.0
-            for y in range(self.screen_height):
-                for x in range(self.screen_width):
-                    r, g, b = self.framebuffer[y][x]
-                    r = min(int(r + (255 - r) * factor), 255)
-                    g = min(int(g + (255 - g) * factor), 255)
-                    b = min(int(b + (255 - b) * factor), 255)
-                    self.framebuffer[y][x] = (r, g, b)
-        elif blend_mode == 3:  # Brightness decrease (multiply by dark)
-            # Formula: result = int(src * (16 - Evy) / 16)
-            evy = min(self.bldy, 16)
-            factor = evy / 16.0
-            for y in range(self.screen_height):
-                for x in range(self.screen_width):
-                    r, g, b = self.framebuffer[y][x]
-                    r = int(r * (1.0 - factor))
-                    g = int(g * (1.0 - factor))
-                    b = int(b * (1.0 - factor))
-                    self.framebuffer[y][x] = (r, g, b)
+                    source_layer = origin_row[x]
+                    if not ((first_target_mask >> source_layer) & 1):
+                        continue
+                    r, g, b = row[x]
+                    if blend_mode == 2:
+                        r = min(int(r + (255 - r) * factor), 255)
+                        g = min(int(g + (255 - g) * factor), 255)
+                        b = min(int(b + (255 - b) * factor), 255)
+                    else:
+                        r = int(r * (1.0 - factor))
+                        g = int(g * (1.0 - factor))
+                        b = int(b * (1.0 - factor))
+                    row[x] = (r, g, b)
 
     def save_screenshot(self, path: str):
         """Save current framebuffer as screenshot"""
@@ -2866,6 +2876,9 @@ class PPU:
 
                             palette_idx = palette_num * 16 + color_idx
                             color = self._get_palette_color(palette_idx)
+                            # Save old color/layer as second target before overwriting
+                            self.second_target_framebuffer[screen_y][screen_x] = self.framebuffer[screen_y][screen_x]
+                            self.second_target_layer[screen_y][screen_x] = self.layer_origin[screen_y][screen_x]
                             self.framebuffer[screen_y][screen_x] = color
                             self.layer_origin[screen_y][screen_x] = 4  # OBJ layer
 

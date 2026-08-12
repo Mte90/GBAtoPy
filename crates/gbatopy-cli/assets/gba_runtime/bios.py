@@ -399,7 +399,7 @@ class BIOS:
         # If a fresh VBlank is already pending, consume it without advancing.
         if interrupts is not None and (interrupts.if_reg & (1 << 0)):
             interrupts.if_reg &= ~(1 << 0)
-            cpu.set_cpsr_flag("Z", True)
+            cpu.cpsr |= (1 << 30)
             cpu.registers[0] = 1
             return
 
@@ -408,9 +408,10 @@ class BIOS:
         cpu._halted = True
 
     def swi_intr_wait(self, wait_flag: int, vblank_flag: int):
-        """Wait for interrupt"""
-        if wait_flag:
-            time.sleep(0.016)
+        """Wait for interrupt. Halt CPU; wakes on any enabled IRQ (handled by _deliver_irq)."""
+        cpu = getattr(getattr(self, "memory", None), "cpu", None)
+        if cpu is not None:
+            cpu._halted = True
 
     def swi_soft_reset(self):
         """Soft reset - restart from reset vector"""

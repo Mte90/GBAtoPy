@@ -123,8 +123,49 @@ class ARM7TDMI:
         self.running = True
         self.cycles = 0
 
+        # Banked SP/LR per privileged mode (FIQ also banks r8-r12)
+        self.banked_sp_lr = {
+            0x11: {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0},  # FIQ
+            0x12: {'sp': 0, 'lr': 0},  # IRQ
+            0x13: {'sp': 0, 'lr': 0},  # SVC
+            0x17: {'sp': 0, 'lr': 0},  # ABT
+            0x1B: {'sp': 0, 'lr': 0},  # UND
+        }
+
         # Initialize BIOS for SWI handlers
         self.bios = BIOS(self.memory)
+
+    def _switch_mode(self, new_mode: int):
+        """Swap banked SP/LR (and r8-r12 for FIQ) on mode change."""
+        old_mode = self.mode
+        if new_mode == old_mode:
+            return
+
+        # Save outgoing mode's banked registers
+        if old_mode in self.banked_sp_lr:
+            bank = self.banked_sp_lr[old_mode]
+            bank['sp'] = self.registers[13]
+            bank['lr'] = self.registers[14]
+            if old_mode == 0x11:  # FIQ banks r8-r12
+                bank['r8'] = self.registers[8]
+                bank['r9'] = self.registers[9]
+                bank['r10'] = self.registers[10]
+                bank['r11'] = self.registers[11]
+                bank['r12'] = self.registers[12]
+
+        # Load incoming mode's banked registers
+        if new_mode in self.banked_sp_lr:
+            bank = self.banked_sp_lr[new_mode]
+            self.registers[13] = bank['sp']
+            self.registers[14] = bank['lr']
+            if new_mode == 0x11:  # FIQ banks r8-r12
+                self.registers[8] = bank['r8']
+                self.registers[9] = bank['r9']
+                self.registers[10] = bank['r10']
+                self.registers[11] = bank['r11']
+                self.registers[12] = bank['r12']
+
+        self.mode = new_mode
 
     @property
     def r(self):
@@ -297,6 +338,8 @@ class ARM7TDMI:
             is_immediate = (instr >> 25) & 1
             if not is_immediate:
                 op_lo = instr & 0xF0
+                if op_lo == 0x90:
+                    return self.exec_mul(instr)
                 if op_lo == 0xB0 or op_lo == 0xD0 or op_lo == 0xF0:
                     return self.exec_extra_load_store(instr)
             return self.exec_data_processing(instr)
@@ -309,9 +352,6 @@ class ARM7TDMI:
 
         if (instr & 0xE000000) == 0x8000000:
             return self.exec_block_transfer(instr)
-
-        if (instr & 0xFC000F0) == 0x0:
-            return self.exec_mul(instr)
 
         if (instr & 0xF000000) == 0xF000000:
             return self.exec_swi(instr)
@@ -557,8 +597,11 @@ class ARM7TDMI:
             if self.mode in _MODES_WITH_SPSR:
                 _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
                 if 0 <= _idx < len(self.spsr):
-                    self.cpsr = self.spsr[_idx] & 0xFFFFFFFF
-                    self.mode = self.cpsr & 0x1F
+                    new_cpsr = self.spsr[_idx] & 0xFFFFFFFF
+                    new_mode = new_cpsr & 0x1F
+                    self._switch_mode(new_mode)
+                    self.cpsr = new_cpsr
+                    self.mode = new_mode
 
         return 1
 
@@ -701,7 +744,7 @@ class ARM7TDMI:
         ARM encoding:
           bits 24: P (pre/post index)
           bit  23: U (up/down)
-          bit  22: S (force user mode - ignored here)
+          bit  22: S (force user mode, or restore CPSR on LDM PC^)
           bit  21: W (writeback)
           bit  20: L (load/store)
           bits 19-16: Rn (base)
@@ -709,6 +752,7 @@ class ARM7TDMI:
         """
         p_bit = (instr >> 24) & 1
         is_up = (instr >> 23) & 1
+        s_bit = (instr >> 22) & 1
         is_load = (instr >> 20) & 1
         w_bit = (instr >> 21) & 1
         rn = (instr >> 16) & 0xF
@@ -758,6 +802,15 @@ class ARM7TDMI:
 
         if not (is_load and (reg_list & (1 << 15))):
             self.registers[15] += 4
+        elif s_bit and self.mode in _MODES_WITH_SPSR:
+            # LDM ... PC^: exception return — restore CPSR from SPSR.
+            _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
+            if 0 <= _idx < len(self.spsr):
+                new_cpsr = self.spsr[_idx] & 0xFFFFFFFF
+                new_mode = new_cpsr & 0x1F
+                self._switch_mode(new_mode)
+                self.cpsr = new_cpsr
+                self.mode = new_mode
         return 2 + (n_regs * 2)
 
     @jit_compile
@@ -1355,6 +1408,16 @@ class ARM7TDMI:
                 addr += 4
                 self.thumb_mode = (val & 1) != 0
                 self.registers[15] = val & 0xFFFFFFFE
+                # Exception return from a privileged mode: restore CPSR from SPSR.
+                if self.mode in _MODES_WITH_SPSR:
+                    _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
+                    if 0 <= _idx < len(self.spsr):
+                        new_cpsr = self.spsr[_idx] & 0xFFFFFFFF
+                        new_mode = new_cpsr & 0x1F
+                        self._switch_mode(new_mode)
+                        self.cpsr = new_cpsr
+                        self.mode = new_mode
+                        self.thumb_mode = (new_cpsr >> 5) & 1
             else:
                 self.registers[15] += 2
             self.registers[13] = addr

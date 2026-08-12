@@ -75,7 +75,7 @@ Catalogue of codegen bugs fixed across sessions.
 
 **Symptom:** DMA transfers fire twice per scanline, exhausting the DMA source table by scanline ~94. In bgpd.gba, BG2PD plateaus at 159, producing a vertically stretched gradient.
 **Root cause:** Both the fallback interpreter (_interp_fallback) and the main execution loop called step_scanline(). Each scanline advanced the PPU twice, firing HBlank DMA twice per scanline.
-**Fix:** Fallback interpreter is now a pure CPU executor (no step_scanline()). Main loop is instruction-counted: advances PPU one scanline per instr_per_scanline CPU instructions. DMA uses _do_transfer_single() for one unit per HBlank/VBlank trigger.
+**Fix:** Fallback interpreter is now a pure CPU executor (no step_scanline()). Main loop is instruction-counted: advances PPU one scanline per instr_per_scanline CPU instructions. **HBlank/VBlank DMA uses full-count burst on first trigger via `_do_transfer()`** (not one-unit-per-trigger via `_do_transfer_single()`). The old one-unit-per-trigger behavior caused bgpd's gradient to render with a 32-row period instead of the correct ~50-row period. See AGENTS.md runtime invariant #4.
 **Files:** crates/gbatopy-cli/assets/gba_runtime/dma.py, crates/gbatopy-cli/src/pipeline_cmd.rs
 
 ## 12. Fast-Forward DISPSTAT Read (Memory Read Methods)

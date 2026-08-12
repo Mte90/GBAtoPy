@@ -134,12 +134,7 @@ impl CfgBuilder {
         let mut data_addresses: HashSet<u32> = HashSet::new();
 
         let common_entry_points = [
-            0x080000A0,
-            0x08000100,
-            0x08000200,
-            0x08000300,
-            0x08000400,
-            0x08000500,
+            0x080000C0,
         ];
 
         for &addr in &common_entry_points {
@@ -214,6 +209,11 @@ impl CfgBuilder {
                     (op, ops, thumb, 2)
                 }
             };
+
+            // Stop walking when we hit data that doesn't decode as valid instructions
+            if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" {
+                continue;
+            }
 
             if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
                 data_addresses.insert(pool_addr);
@@ -429,21 +429,24 @@ impl CfgBuilder {
             }
         }
 
-        // ROM-wide function pointer scan: scan every 4-byte aligned word in
-        // the ROM for values that look like function pointers (ROM addresses).
-        // This catches function pointers stored in data tables (e.g., init
-        // call tables, vtables) that are loaded via two-level indirection
-        // (LDR Rn, =table_addr; LDR Rm, [Rn]; BLX Rm) which the LDR-based
-        // scan above cannot resolve. False positives only add dead code to
-        // the dispatch table — they don't affect correctness.
+        // ROM-wide function pointer scan: use already-resolved LDR literal values.
+        // The LDR rN, =literal handler (line 606-631) already resolves two-level
+        // indirection by reading the function pointer from the literal pool.
+        // This scan just adds those resolved pointers as branch targets without
+        // the brute-force ROM scan that caused OOM on large ROMs.
         let mut rom_wide_targets: Vec<(u32, ArmMode)> = Vec::new();
-        for off in (0..rom.len().saturating_sub(3)).step_by(2) {
-            let value = u32::from_le_bytes([
-                rom[off], rom[off + 1], rom[off + 2], rom[off + 3],
-            ]);
-            if value < 0x08000000 || value >= 0x0A000000 {
-                continue;
+        let size_guard_limit = 5000;
+        
+        for (_, func_ptr) in &self.ldr_literals {
+            // Size guard: stop if we've discovered too many targets
+            if rom_wide_targets.len() >= size_guard_limit {
+                eprintln!("[CFG] Size guard triggered: {} rom-wide targets, stopping scan", size_guard_limit);
+                break;
             }
+            
+            let value = *func_ptr;
+            
+            // Determine target address and mode from the function pointer
             let (taddr, tmode) = if value & 1 == 1 {
                 (value & !1, ArmMode::Thumb)
             } else if value & 3 == 0 {
@@ -451,41 +454,11 @@ impl CfgBuilder {
             } else {
                 (value & !1, ArmMode::Thumb)
             };
+            
             if taddr < 0x08000000 || (taddr - 0x08000000) as usize >= rom.len() {
                 continue;
             }
-            if !visited.contains(&(taddr, tmode))
-                && !self.branch_targets.contains(&taddr)
-            {
-                self.branch_targets.push(taddr);
-                rom_wide_targets.push((taddr, tmode));
-            }
-        }
-        // ROM-wide function pointer scan: scan every 4-byte aligned word in
-        // the ROM for values that look like function pointers (ROM addresses).
-        // This catches function pointers stored in data tables (e.g., init
-        // call tables, vtables) that are loaded via two-level indirection
-        // (LDR Rn, =table_addr; LDR Rm, [Rn]; BLX Rm) which the LDR-based
-        // scan above cannot resolve. False positives only add dead code to
-        // the dispatch table — they don't affect correctness.
-        for off in (0..rom.len().saturating_sub(3)).step_by(2) {
-            let value = u32::from_le_bytes([
-                rom[off], rom[off + 1], rom[off + 2], rom[off + 3],
-            ]);
-            if value < 0x08000000 || value >= 0x0A000000 {
-                continue;
-            }
-            let (taddr, tmode) = if value & 1 == 1 {
-                (value & !1, ArmMode::Thumb)
-            } else if value & 3 == 0 {
-                (value, ArmMode::Arm)
-            } else {
-                // 2-byte-aligned but not 4-byte-aligned → Thumb
-                (value & !1, ArmMode::Thumb)
-            };
-            if taddr < 0x08000000 || (taddr - 0x08000000) as usize >= rom.len() {
-                continue;
-            }
+            
             if !visited.contains(&(taddr, tmode))
                 && !self.branch_targets.contains(&taddr)
             {

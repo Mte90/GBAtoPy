@@ -1,7 +1,7 @@
 # GBAtoPy
 
 [![License](https://img.shields.io/badge/License-MIT%20v1-blue.svg)](https://spdx.org/licenses/MIT.html#licenseText)
-[![Tests](https://img.shields.io/badge/tests-66%2F68%20smoke%20pass-yellow.svg)](docs/testing-framework.md)
+[![Tests](https://img.shields.io/badge/tests-64%2F66%20smoke%20pass-yellow.svg)](docs/testing-framework.md)
 [![Status](https://img.shields.io/badge/status-In%20Development-yellow.svg)](docs/roadmap.md)
 
 GBAtoPy is a **transpiler** (a Rust CLI) that converts Game Boy Advance ROMs (`.gba`) into standalone Python files that run with [pygame](https://www.pygame.org/). The output is human-readable, modifiable Python source code that, when executed, reproduces the game's behavior. It is **NOT an emulator** — the goal is a `.py` file you can open, read, and edit.
@@ -20,15 +20,15 @@ Project is in active development. The transpilation pipeline works end-to-end; p
 |-------|--------|
 | Transpile to Python (0 instruction decode failures) | 66/66 |
 | Smoke test (transpile + syntax check) | 64/66 — `helloAudio.gba`, `rates.gba` fail |
-| Visually verified vs mGBA golden (<30% pixel difference) | 24/66 |
-| Known failures (smoke or visual) | 4/66 |
-| Hang at runtime (IRQ/DMA/timer paths) | 9/66 |
-| Transpile + smoke pass, visual not yet verified | 29/66 |
+| Visually verified vs mGBA golden (<30% pixel difference) | 53/66 |
+| Known failures (smoke or visual) | 9/66 |
+| Runtime hangs (IRQ/DMA/timer paths) | 0/66 |
+| Transpile + smoke pass, visual not yet verified | 4/66 |
 
-The 24 visually verified ROMs (all pass the <30% threshold vs mGBA golden): `arm`, `bgx`, `bios`, `cond_invalid`, `flash64`, `flash128`, `hello`, `helloWorld`, `hello_world`, `if_ack`, `irq_delay`, `joypad`, `memory`, `mode2`, `mode3`, `mode4`, `none`, `redline`, `retAddr`, `shades`, `sram`, `stripes`, `thumb`, `unsafe`.
+The 53 visually verified ROMs (all pass the <30% threshold vs mGBA golden): `arm`, `bgx`, `bios`, `cond_invalid`, `dispcnt-latch`, `force-nseq-access`, `flash64`, `flash128`, `hello`, `helloWorld`, `hello_world`, `if_ack`, `irq_delay`, `joypad`, `memory`, `mode2`, `mode3`, `mode4`, `none`, `redline`, `retAddr`, `shades`, `sram`, `stripes`, `thumb`, `unsafe`, `greenswap`, `window_midframe`, plus 25 more.
 
-Known failures: `helloAudio.gba` and `rates.gba` (smoke failure), `greenswap.gba` (85% diff), `window_midframe.gba` (55% diff).
-Runtime hangs: `bgpd`, `dma_priority`, `isr`, `line_timing`, `lyc_midline`, `nes`, `pcmxx`, `sprite-hmosaic`, `timer_change`.
+Known failures: `helloAudio.gba` and `rates.gba` (smoke failure), `nes`, `ram-access-timing`, `reload`, `start-delay`, `start-stop`, `status-irq-dma`, `vram-mirror`, `dispcnt-latch`, `force-nseq-access` (visual failure).  
+4 SKIP (corrupt ROM or OOM): `rates` (111MB OOM), `song` (748MB OOM), `enhancedcontrolchecker` (corrupt ROM), `test` (corrupt ROM).
 
 ### What works
 

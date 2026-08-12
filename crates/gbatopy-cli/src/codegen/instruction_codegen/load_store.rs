@@ -3,7 +3,7 @@ use gbatopy_disasm::{DecodedInstruction, Operand};
 fn base_address_expr(base: u8, inst: &DecodedInstruction) -> String {
     if base == 15 {
         let pc = if inst.mode == gbatopy_disasm::ArmMode::Thumb {
-            inst.address + 4
+            (inst.address + 4) & !3
         } else {
             inst.address + 8
         };
@@ -378,13 +378,14 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
 
     if (base_opcode.starts_with("LDM") || base_opcode.starts_with("STM")) && ops.len() >= 1 {
         if let Operand::MemoryAddress { base, offset, writeback } = &ops[0] {
-            if let gbatopy_disasm::operand::AddressingMode::Multi { registers, increment, pre_index, writeback: wb, .. } = offset {
+            if let gbatopy_disasm::operand::AddressingMode::Multi { registers, increment, pre_index, writeback: wb, s_bit, .. } = offset {
                 let is_load = base_opcode.starts_with("LDM");
                 let base_reg = *base;
                 let reg_list = registers;
                 let do_writeback = *writeback || *wb;
                 let is_increment = *increment;
                 let is_pre_index = *pre_index;
+                let has_s_bit = *s_bit;
 
                 let mut code = String::new();
                 let num_regs = reg_list.len();
@@ -416,9 +417,20 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                 code.push_str(&format!("addr = {}\n", lowest_addr_expr));
 
                 // Walk the register list in order, incrementing address by 4 each time.
+                let has_pc = reg_list.iter().any(|&r| r == 15);
                 for (i, &reg) in reg_list.iter().enumerate() {
                     if is_load {
-                        code.push_str(&format!("registers[{}] = memory.read_u32(addr)\n", reg));
+                        if reg == 15 && has_s_bit {
+                            // LDM ... {PC}^ : exception return — load PC and restore CPSR from SPSR.
+                            code.push_str("registers[15] = memory.read_u32(addr)\n");
+                            code.push_str("_new_cpsr = _spsr_for_mode(cpsr['mode'])\n");
+                            code.push_str("_old_mode = cpsr['mode']\n");
+                            code.push_str("cpsr.clear()\n");
+                            code.push_str("cpsr.update(_cpsr_from_int(_new_cpsr))\n");
+                            code.push_str("_switch_mode(cpsr['mode'])\n");
+                        } else {
+                            code.push_str(&format!("registers[{}] = memory.read_u32(addr)\n", reg));
+                        }
                     } else {
                         code.push_str(&format!("memory.write_u32(addr, registers[{}])\n", reg));
                     }

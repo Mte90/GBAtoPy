@@ -74,14 +74,22 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     _ => return None,
                 };
                 let mut code = String::new();
+                if has_control {
+                    code.push_str(&format!("_new_mode = {} & 0x1F\n", source));
+                    code.push_str("if _new_mode != cpsr.get('mode', 0x1F):\n");
+                    code.push_str("    _switch_mode(_new_mode)\n");
+                    code.push_str("    cpsr['mode'] = _new_mode\n");
+                    code.push_str(&format!("cpsr['t'] = ({} >> 5) & 1\n", source));
+                    code.push_str(&format!("cpsr['i'] = ({} >> 7) & 1", source));
+                }
                 if has_flags {
+                    if has_control {
+                        code.push_str("\n");
+                    }
                     code.push_str(&format!("cpsr['n'] = ({} >> 31) & 1\n", source));
                     code.push_str(&format!("cpsr['z'] = ({} >> 30) & 1\n", source));
                     code.push_str(&format!("cpsr['c'] = ({} >> 29) & 1\n", source));
                     code.push_str(&format!("cpsr['v'] = ({} >> 28) & 1", source));
-                }
-                if has_control && !has_flags {
-                    code.push_str("pass  # MSR control field (mode/T bit) not tracked by runtime");
                 }
                 if code.is_empty() {
                     code.push_str("pass  # MSR no-op");

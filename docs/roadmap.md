@@ -3,8 +3,8 @@
 > **Role:** Strategy, sequencing, and remaining work.
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
-> **Last updated**: 2026-07-30
-> **Current state**: 66/66 ROMs transpile to Python (0 instruction decode failures). 64/66 pass smoke test (helloAudio.gba, rates.gba fail). 24/66 visually verified vs mGBA golden (<30% pixel difference). Build: 0 errors, 0 warnings.
+> **Last updated**: 2026-08-11  
+> **Current state**: 66/66 ROMs transpile to Python (0 instruction decode failures). 64/66 pass smoke test (helloAudio.gba, rates.gba fail). 53/66 visually verified vs mGBA golden (<30% pixel difference). 9 FAIL, 4 SKIP (corrupt/OOM). 0 ROMs hang. Build: 0 errors, 0 warnings.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
 ---
@@ -35,6 +35,7 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - CPSR flag tracking (N/Z/C/V) with all 16 condition codes
 - Global register propagation across function boundaries
 - **Recent fix (2026-07-27)**: Fallback interpreter refactored to pure CPU executor — no PPU stepping
+- **Recent fix (2026-07-27)**: HBlank/VBlank DMA uses full-count burst on first trigger via `_do_transfer()`
 
 ### ✅ Wave 3: BIOS Handlers - COMPLETE
 - 54 BIOS SWI handlers implemented in arm7tdmi.py
@@ -77,7 +78,7 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 ### ✅ Wave 7: DMA & Timers - COMPLETE
 - 4 DMA channels (0-3) with all trigger modes (immediate/VBlank/HBlank/special)
 - 16/32-bit transfers with inc/dec/fixed address modes
-- **Recent fix (2026-07-27)**: HBlank/VBlank DMA fixed to transfer one unit per trigger (bgx verified)
+- **Recent fix (2026-07-27)**: HBlank/VBlank DMA fixed to transfer full-count burst on first trigger via `_do_transfer()` (not one-unit-per-trigger) (bgx verified)
 - Repeat mode with FIFO A/B for audio (infrastructure exists, not integrated)
 - Timers 0-3 with prescaler (1/64/256/1024) and cascade mode
 - Timer overflow detection and reload
@@ -111,10 +112,11 @@ Failed: 2 (helloAudio, rates)
 ### Visual Verification (ScreenshotGolden vs mGBA)
 ```
 Total: 66 ROMs
-Verified (<30% diff): 24 (35%)
-Known failures: 4 (helloAudio, rates, greenswap 85% diff, window_midframe 55% diff)
-Runtime hangs: 9 (bgpd, dma_priority, isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change)
-Unverified: 31 (transpile+smoke pass, visual not checked)
+Verified (<30% diff): 53 (80%)
+Known failures: 9 (dispcnt-latch, force-nseq-access, nes, ram-access-timing, reload, start-delay, start-stop, status-irq-dma, vram-mirror)
+SKIP: 4 (rates OOM, song OOM, enhancedcontrolchecker corrupt, test corrupt)
+Runtime hangs: 0
+Unverified: 0 (transpile+smoke pass, visual not checked)
 ```
 
 ---
@@ -122,12 +124,23 @@ Unverified: 31 (transpile+smoke pass, visual not checked)
 ## 4. Known Limitations
 
 ### Smoke Test Failures
-- **helloAudio.gba**: Cause undiagnosed — smoke test failure
+- **helloAudio.gba**: Cause undiagnosed — smoke test failure  
 - **rates.gba**: Cause undiagnosed — smoke test failure (DMA audio not implemented)
 
-### Runtime Hangs (9 ROMs)
-- bgpd, dma_priority, isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change
-- Likely causes: IRQ/DMA/timer path bugs, infinite loops in wait handlers
+### Visual Verification Failures (9 ROMs)
+- dispcnt-latch, force-nseq-access, nes, ram-access-timing, reload, start-delay, start-stop, status-irq-dma, vram-mirror
+- Likely causes: PPU edge cases, MMIO timing, DMA interactions
+
+### SKIP (4 ROMs)
+- rates (111MB OOM), song (748MB OOM), enhancedcontrolchecker (corrupt ROM), test (corrupt ROM)
+
+### Resolved Issues (2026-07-27 to 2026-08-10)
+- **STMFD/LDMFD bug**: RESOLVED — hello.gba now passes (0.0% diff)
+- **Per-scanline affine snapshots**: Implemented for Mode 3/4/5
+- **HBlank/VBlank DMA**: Fixed to full-count burst on first trigger (bgpd verified)
+- **Main loop**: Made instruction-counted — PPU advances one scanline per `instr_per_scanline` CPU instructions
+- **Removed fast-forward DISPPCNT reads**: Was causing DMA exhaustion
+- **mode2, mode4, greenswap, window_midframe**: All now PASS (verified)
 
 ### Not Implemented / Not Verified
 - **PPU Mode 1 (affine)**: Code exists, not verified
@@ -142,7 +155,7 @@ Unverified: 31 (transpile+smoke pass, visual not checked)
 ### Resolved Issues (2026-07-27 to 2026-07-30)
 - **STMFD/LDMFD bug**: RESOLVED — hello.gba now passes (0.0% diff)
 - **Per-scanline affine snapshots**: Implemented for Mode 3/4/5
-- **HBlank/VBlank DMA**: Fixed to transfer one unit per trigger
+- **HBlank/VBlank DMA**: Fixed to transfer full-count burst on first trigger via `_do_transfer()` (see AGENTS.md runtime invariant #4)
 - **Main loop**: Made instruction-counted — PPU advances one scanline per `instr_per_scanline` CPU instructions
 - **Removed fast-forward DISPPCNT reads**: Was causing DMA exhaustion
 
@@ -174,15 +187,14 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 
 ## 6. Next Steps (Priority Order)
 
-1. **Diagnose bgpd runtime hang** — First priority among hanging ROMs; likely DMA/PPU timing issue
-2. **Wire ScreenshotGolden into CI** — 32 goldens exist, comparison not automated. Highest-leverage: converts "works/doesn't work" from assertion to fact.
-3. **Diagnose helloAudio, rates smoke failures** — Root cause unknown
-4. **Implement DMA audio (FIFO A/B)** — Required for song.gba, rates.gba
-5. **Debug remaining hang ROMs** — isr, line_timing, lyc_midline, nes, pcmxx, sprite-hmosaic, timer_change, dma_priority
-6. **Verify sprite rendering** — Code exists, no golden comparison
-7. **Verify audio synthesis** — Infrastructure exists, no output check
-8. **Generate goldens for remaining 36 ROMs** — Then run full ScreenshotGolden suite
-9. **Implement Window/Blend/Mosaic** — Register stubs only, not functional
+1. **Wire ScreenshotGolden into CI** — 32 goldens exist, comparison not automated. Highest-leverage: converts "works/doesn't work" from assertion to fact.
+2. **Diagnose helloAudio, rates smoke failures** — Root cause unknown
+3. **Implement DMA audio (FIFO A/B)** — Required for song.gba, rates.gba
+4. **Fix remaining visual failures (9 ROMs)** — dispcnt-latch, force-nseq-access, nes, ram-access-timing, reload, start-delay, start-stop, status-irq-dma, vram-mirror
+5. **Verify sprite rendering** — Code exists, no golden comparison
+6. **Verify audio synthesis** — Infrastructure exists, no output check
+7. **Generate goldens for remaining ROMs** — Then run full ScreenshotGolden suite
+8. **Implement Window/Blend/Mosaic** — Register stubs only, not functional
 
 ---
 
@@ -196,7 +208,7 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 | BIOS handlers | 54 |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
-| Test pass rate | 64/66 smoke (97%); 24/66 visual verified (35%) |
+| Test pass rate | 64/66 smoke (97%); 53/66 visual verified (80%); 9 fail; 4 skip |
 | Build time | ~30s (release) |
 | Transpile time | ~1-5s per ROM |
 

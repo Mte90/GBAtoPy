@@ -26,7 +26,7 @@ Codegen tree:        crates/gbatopy-cli/src/codegen/
 Templates:           crates/gbatopy-cli/assets/templates/
 Runtime source:      crates/gbatopy-cli/assets/gba_runtime/   (real PPU/DMA/Memory live here)
                        ppu.py      — PPU renderer (Mode 0-5, per-scanline affine snapshots)
-                       dma.py      — DMA controller (HBlank/VBlank = one unit per trigger)
+                       dma.py      — DMA controller (HBlank/VBlank = full-count burst on trigger)
                        memory.py   — Memory map + MMIO dispatch (no step_scanline in reads)
                        arm7tdmi.py — ARM7TDMI CPU core
 Current work log:    todo.md (migration knowledge transfer — read before resuming debug)
@@ -200,6 +200,9 @@ The generated `.py` file must be:
 21. **Never add step_scanline to memory reads** — The fast-forward DISPSTAT read path was removed because it caused DMA exhaustion. PPU stepping is exclusively in the main loop. See `docs/codegen-pitfalls.md` entry 12.
 22. **Fallback interpreter is pure CPU** — `_interp_fallback` in `pipeline_cmd.rs` must NEVER call `step_scanline()`. It only executes CPU instructions and delivers VBlank IRQ. The main loop owns all PPU timing.
 23. **Parallelize with subagents** — When work has 2+ independent parts, dispatch them as parallel subagents in one message instead of serializing. Independent investigation lanes (e.g., reading 3 unrelated ROM sources, exploring codegen + runtime + docs simultaneously, researching multiple failing ROMs) MUST run concurrently. Use `@explorer` for codebase recon, `@librarian` for external docs/research, `@oracle` for architecture/risk analysis, `@fixer` for bounded implementation, `@designer` for UI/UX. Track each task ID, keep working on non-overlapping lanes while they run, and reconcile results when they return. Never serialize work that can run in parallel — it wastes wall-clock time. Exception: a single trivial one-file edit (<20 lines) is faster done directly.
+24. **ZERO-SKIP policy — every ROM must PASS or FAIL, never SKIP** — SKIP is forbidden. When a ROM would be skipped (timeout, OOM, missing golden, special args), treat it as a FAIL and dispatch a subagent investigation to root-cause and fix it. Update `docs/reference/test-roms.md` to remove any SKIP row. The scripts/verify/regress_all.sh `SKIP_ROMS` list must be emptied once all entries are resolved. A SKIP means the bug was not investigated; that is unacceptable.
+25. **Timeout analysis is mandatory, not optional** — When a ROM times out, do NOT mark it SKIP or move on. Dispatch a parallel `@explorer` subagent with `--pc-trace=FILE --trace-n=N` to capture the hang point, identify the loop address, decode the surrounding instructions, and report root cause + proposed fix. The runtime supports `--max-instrs=N` (default 1M; use `--max-instrs=10000000` for tight IWRAM poll loops). Common root causes: (a) missing IRQ delivery (CPU spins on VBlank flag), (b) SIO/serial poll with no serial clock, (c) audio subsystem waiting on FIFO space, (d) infinite reset loop. File the fix as a todo before moving on.
+26. **Every FAIL/SKIP ROM gets a subagent** — Do not batch-debug ROMs serially in the orchestrator. For each failing/timing-out ROM, dispatch one `@explorer` subagent in parallel. Each subagent returns: (1) hang/spin address or failure point, (2) root cause category from `docs/how-debug.md`, (3) proposed fix with exact file + line, (4) verification command. The orchestrator reconciles results and assigns fixes to `@fixer` lanes.
 
 ## Runtime Invariants (DO NOT VIOLATE)
 

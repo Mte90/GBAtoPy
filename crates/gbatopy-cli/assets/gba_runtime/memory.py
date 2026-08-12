@@ -348,24 +348,9 @@ class Memory:
         return offset
 
     def _map_address(self, addr: int) -> int:
-        # Handle relative addresses used by some test ROMs (like stripes.gba)
-        # stripes.gba uses: 0x00002 → MMIO (DISPCNT), 0x10000 → VRAM
-        if 0x00000 <= addr <= 0x0FFFF:
-            # MMIO relative → absolute (0x04000000)
-            return ((addr - 0x00000) & 0x03FF) | 0x04000000
-        
-        if 0x10000 <= addr <= 0x37FFF:
-            # VRAM relative → absolute (0x06000000)
-            return ((addr - 0x10000) & 0x17FFF) | 0x06000000
-        
-        if 0x40000 <= addr <= 0x403FF:
-            # Palette RAM relative → absolute (0x05000000)
-            return ((addr - 0x40000) & 0x03FF) | 0x05000000
-        
-        if 0x60000 <= addr <= 0x603FF:
-            # OAM relative → absolute (0x07000000)
-            return ((addr - 0x60000) & 0x03FF) | 0x07000000
-
+        # GBA memory map: BIOS (0x0000-0x3FFF) is read-only; writes ignored.
+        # Small addresses are NOT remapped to MMIO — that corrupts ROMs (e.g. rates)
+        # whose IWRAM code legitimately uses small values as buffer pointers.
         if 0x00000000 <= addr <= 0x01FFFFFF:
             return addr & 0x00003FFF
 

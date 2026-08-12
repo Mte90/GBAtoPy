@@ -669,6 +669,7 @@ impl ArmDecoder {
                 increment: u_bit,
                 pre_index: p_bit,
                 writeback: w_bit,
+                s_bit,
             },
             writeback: w_bit,
         };

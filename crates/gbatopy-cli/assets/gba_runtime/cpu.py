@@ -64,10 +64,24 @@ class CPU:
         self.flag_c: bool = False  # Carry
         self.flag_v: bool = False  # Overflow
         self.thumb_mode: bool = False  # T bit - Thumb mode
+        self.mode: int = 0x1F  # Current mode (default: System mode)
+
+        # Banked SP/LR for each mode
+        self.banked_sp_lr = {
+            0x11: {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0},  # FIQ
+            0x12: {'sp': 0, 'lr': 0},  # IRQ
+            0x13: {'sp': 0, 'lr': 0},  # SVC
+            0x17: {'sp': 0, 'lr': 0},  # ABT
+            0x1B: {'sp': 0, 'lr': 0},  # UND
+        }
 
         # Cycle counter for interrupt-driven execution
         self.cycle_count: int = 0
         self.instruction_cycles: int = 1  # Default: 1 cycle per instruction (simplified)
+
+        # Halt state for SWI-based interrupt waiting
+        self._halted: bool = False
+        self._halt_reason: str | None = None
 
     def reset(self, entry_point: int) -> None:
         """
@@ -92,6 +106,49 @@ class CPU:
         self.flag_c = False
         self.flag_v = False
         self.thumb_mode = False
+        self.mode = 0x1F  # System mode
+        # Reset banked registers
+        for bank in self.banked_sp_lr.values():
+            bank['sp'] = 0
+            bank['lr'] = 0
+            if 'r8' in bank:
+                bank['r8'] = 0
+                bank['r9'] = 0
+                bank['r10'] = 0
+                bank['r11'] = 0
+                bank['r12'] = 0
+
+    def _switch_mode(self, new_mode: int):
+        """Swap banked SP/LR (and r8-r12 for FIQ) on mode change."""
+        old_mode = self.mode
+        if new_mode == old_mode:
+            return
+
+        # Save outgoing mode's banked registers
+        if old_mode in self.banked_sp_lr:
+            bank = self.banked_sp_lr[old_mode]
+            bank['sp'] = self.registers[13]
+            bank['lr'] = self.registers[14]
+            if old_mode == 0x11:  # FIQ banks r8-r12
+                bank['r8'] = self.registers[8]
+                bank['r9'] = self.registers[9]
+                bank['r10'] = self.registers[10]
+                bank['r11'] = self.registers[11]
+                bank['r12'] = self.registers[12]
+
+        # Load incoming mode's banked registers
+        if new_mode in self.banked_sp_lr:
+            bank = self.banked_sp_lr[new_mode]
+            self.registers[13] = bank['sp']
+            self.registers[14] = bank['lr']
+            if new_mode == 0x11:  # FIQ banks r8-r12
+                self.registers[8] = bank['r8']
+                self.registers[9] = bank['r9']
+                self.registers[10] = bank['r10']
+                self.registers[11] = bank['r11']
+                self.registers[12] = bank['r12']
+
+        self.mode = new_mode
 
     def get_register(self, index: int) -> int:
         """
@@ -283,6 +340,13 @@ class CPU:
         if (opcode & 0x0FB0FFF0) == 0x0120F000:
             rm = opcode & 0xF
             val = self.registers[rm]
+            # Extract mode bits (4:0) and check if mode changed
+            new_mode = val & 0x1F
+            if new_mode != self.mode:
+                self._switch_mode(new_mode)
+            # Update T and I bits (fast-interrupt disable not tracked)
+            self.thumb_mode = bool((val >> 5) & 1)
+            # Update flag bits if S bit is set
             if opcode & 0x00080000:
                 self.flag_n = bool(val & 0x80000000)
                 self.flag_z = bool(val & 0x40000000)
@@ -564,7 +628,14 @@ class CPU:
         return True
 
     def _arm_swi(self, opcode: int) -> bool:
-        """Execute ARM SWI instruction (no-op in interpreter fallback)"""
+        """Execute ARM SWI instruction"""
+        swi_num = (opcode >> 16) & 0xFF
+        if swi_num in (0x02, 0x03, 0x04):
+            self._halted = True
+            self._halt_reason = "any"
+        elif swi_num == 0x05:
+            self._halted = True
+            self._halt_reason = "vblank"
         return True
 
     def _arm_halfword_transfer(self, opcode: int) -> bool:

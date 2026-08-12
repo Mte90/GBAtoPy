@@ -148,6 +148,14 @@ fn generate_mov(ops: &[Operand], sets_flags: bool) -> Option<String> {
     if ops.len() >= 1 {
         if let Operand::Register(rd) = ops[0] {
             if rd == 15 {
+                // MOVS PC, LR: exception return — restore CPSR from SPSR, then set PC.
+                if sets_flags && ops.len() >= 2 {
+                    let src_expr = operand_to_expr(&ops[1]);
+                    return Some(format!(
+                        "_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = ({src}) & 0xFFFFFFFE\ncpsr.clear()\ncpsr.update(_cpsr_from_int(_new_cpsr))\n_switch_mode(cpsr['mode'])\ncpsr['t'] = 1 if (({src}) & 1) else 0",
+                        src = src_expr
+                    ));
+                }
                 if ops.len() >= 2 {
                     if let Operand::Immediate(imm) = &ops[1] {
                         return Some(format!("registers[15] = 0x{:08X}", imm));
@@ -234,6 +242,24 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
             let with_borrow = op == "SBC" || op == "RSC";
             let is_reversed = op == "RSB" || op == "RSC";
 
+            // SUBS PC, LR: exception return — restore CPSR from SPSR, then set PC.
+            if rd == 15 && sets_flags {
+                let (a, b) = if ops.len() >= 3 {
+                    (operand_to_expr(&ops[1]), operand_to_expr(&ops[2]))
+                } else if ops.len() == 2 {
+                    let rd_str = format!("registers[{}]", rd);
+                    let op2 = operand_to_expr(&ops[1]);
+                    if is_reversed { (op2, rd_str) } else { (rd_str, op2) }
+                } else {
+                    ("0".to_string(), "0".to_string())
+                };
+                let borrow = if with_borrow { " - (0 if cpsr.get('c', 0) else 1)" } else { "" };
+                return Some(format!(
+                    "_a_val = {a}\n_b_val = {b}\n_full = (_a_val - _b_val{borrow}) & 0xFFFFFFFF\n_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = _full & 0xFFFFFFFE\ncpsr.clear()\ncpsr.update(_cpsr_from_int(_new_cpsr))\n_switch_mode(cpsr['mode'])\ncpsr['t'] = 1 if (_full & 1) else 0",
+                    a = a, b = b, borrow = borrow
+                ));
+            }
+
             if ops.len() == 2 {
                 let rd_str = format!("registers[{}]", rd);
                 let op2 = operand_to_expr(&ops[1]);
@@ -282,6 +308,25 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
 fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
     if ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
+            if rd == 15 && sets_flags {
+                // ANDS/EORS/ORRS/BICS PC, ...: exception return.
+                let py_op = match op {
+                    "AND" => "&",
+                    "EOR" => "^",
+                    "ORR" => "|",
+                    "BIC" => "& ~",
+                    _ => "&",
+                };
+                let (a, b) = if ops.len() >= 3 {
+                    (operand_to_expr(&ops[1]), operand_to_expr(&ops[2]))
+                } else {
+                    (format!("registers[{}]", rd), operand_to_expr(&ops[1]))
+                };
+                return Some(format!(
+                    "_full = ({a} {py_op} {b}) & 0xFFFFFFFF\n_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = _full & 0xFFFFFFFE\ncpsr.clear()\ncpsr.update(_cpsr_from_int(_new_cpsr))\n_switch_mode(cpsr['mode'])\ncpsr['t'] = 1 if (_full & 1) else 0",
+                    a = a, py_op = py_op, b = b
+                ));
+            }
             if rd == 15 {
                 if ops.len() == 3 {
                     if let Operand::Register(rn_reg) = &ops[1] {
