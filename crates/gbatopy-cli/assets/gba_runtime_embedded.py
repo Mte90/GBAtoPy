@@ -13,13 +13,15 @@ import pygame
 import struct
 import sys
 import time
+from enum import Enum, auto
 from PIL import Image
+from typing import Callable, List, Dict, Tuple, Optional
+
+
 
 
 # === Start of memory.py ===
 
-import array as _array
-from typing import Callable, Optional
 
 
 class MemoryMap:
@@ -741,7 +743,6 @@ class MemoryDump:
         Returns:
             Path to saved file
         """
-        import json
 
         if self.dump_dir is None:
             raise ValueError("No dump directory set. Call set_dump_directory() first.")
@@ -750,7 +751,6 @@ class MemoryDump:
             filename = f"memory_dump_{dump.get('timestamp', 'unknown')}"
 
         # Ensure directory exists
-        import os
         os.makedirs(self.dump_dir, exist_ok=True)
 
         filepath = os.path.join(self.dump_dir, f"{filename}.json")
@@ -820,7 +820,6 @@ class MemoryDump:
             diff_result: Result of diff_memory()
             filename: Optional filename (without extension)
         """
-        import os
         if self.dump_dir is None:
             raise ValueError("No dump directory set.")
 
@@ -855,16 +854,10 @@ class MemoryDump:
 
 # === Start of ppu.py ===
 
-"""GBA PPU (Pixel Processing Unit) - Graphics rendering"""
 
-import struct
-import os
-from typing import Optional, List, Tuple
 
 # Numba JIT compilation support
 try:
-    import numba
-    from numba import njit, prange
     _HAS_NUMBA = True
 except ImportError:
     numba = None
@@ -882,7 +875,6 @@ def _try_enable_numba_jit() -> bool:
     Returns the enabled state. Falls back gracefully if numba is not installed."""
     global _NUMBA_PPU_ENABLED, _HAS_NUMBA
     try:
-        import numba  # noqa: F401
         if numba is not None:
             _HAS_NUMBA = True
             _NUMBA_PPU_ENABLED = True
@@ -1689,10 +1681,8 @@ class PPU:
         """Convert framebuffer to pygame Surface for screenshot.
 
         Uses surfarray.blit_array() for bulk pixel transfer (~100x faster than set_at)."""
-        import pygame
 
         try:
-            import numpy as np
 
             arr = np.array(self.framebuffer, dtype=np.uint8)
             # Transpose from (height, width, 3) to (width, height, 3) for blit_array
@@ -2530,7 +2520,6 @@ class PPU:
                 irq.vcounter_irq()
 
         if self.vblank:
-            import sys
             mod = sys.modules.get("generated_rom")
             if mod is not None:
                 mod.z = 1
@@ -3548,7 +3537,6 @@ class PPU:
     def save_screenshot(self, path: str):
         """Save current framebuffer as screenshot"""
         try:
-            import PIL.Image
 
             img = PIL.Image.new("RGB", (self.screen_width, self.screen_height))
             pixels = img.load()
@@ -3684,15 +3672,430 @@ class PPU:
 # === End of ppu.py ===
 
 
+# === Start of dma.py ===
+
+
+
+
+DMA_ENABLE         = 0x8000  # bit 15
+DMA_IRQ_ENABLE     = 0x4000  # bit 14
+DMA_TIMING_MASK    = 0x3000  # bits 13-12
+DMA_TIMING_IMMEDIATE = 0x0000
+DMA_TIMING_VBLANK    = 0x1000
+DMA_TIMING_HBLANK     = 0x2000
+DMA_TIMING_SPECIAL    = 0x3000
+DMA_DRQ            = 0x0800  # bit 11 (DMA3 only)
+DMA_32BIT          = 0x0400  # bit 10
+DMA_REPEAT          = 0x0200  # bit 9
+DMA_SRC_CTRL_MASK   = 0x0180  # bits 8-7
+DMA_DST_CTRL_MASK   = 0x0060  # bits 6-5
+
+DMA_CHANNEL_SPACING = 0x0C
+
+DMA0_SRC_ADDR = 0x040000B0
+DMA1_SRC_ADDR = 0x040000BC
+DMA2_SRC_ADDR = 0x040000C8
+DMA3_SRC_ADDR = 0x040000D4
+
+# DMA_OFFSET[] = { +1, -1, 0, +1 } — matches mGBA dma.c
+# Indexed by SrcControl/DestControl value:
+#   0=increment, 1=decrement, 2=fixed, 3=reload(same as increment during transfer)
+_DMA_OFFSET = {0: 1, 1: -1, 2: 0, 3: 1}
+
+
+class DMAChannel:
+    """Individual DMA channel (0-3)"""
+
+    def __init__(self, channel_id: int, mem):
+        self.channel_id = channel_id
+        self.mem = mem
+        self.src_addr: int = 0
+        self.dst_addr: int = 0
+        self.count: int = 0
+        self.control: int = 0
+        self.enabled: bool = False
+        self.busy: bool = False
+        self.pending: bool = False
+        self._interrupts = None
+        self._orig_src = 0
+        self._orig_dst = 0
+        self._orig_count = 0
+        self.latch: int = 0
+    def attach_interrupts(self, interrupts):
+        self._interrupts = interrupts
+
+    @property
+    def irq_enabled(self) -> bool:
+        return (self.control & DMA_IRQ_ENABLE) != 0
+
+    def _timing_bits(self) -> int:
+        return (self.control >> 12) & 0x3
+
+    def is_immediate(self) -> bool:
+        return self._timing_bits() == 0
+
+    def is_vblank(self) -> bool:
+        return self._timing_bits() == 1
+
+    def is_hblank(self) -> bool:
+        return self._timing_bits() == 2
+
+    def is_special(self) -> bool:
+        return self._timing_bits() == 3
+
+    def get_src_increment(self) -> int:
+        return (self.control >> 7) & 0x3
+
+    def get_dst_increment(self) -> int:
+        return (self.control >> 5) & 0x3
+
+    def is_32bit(self) -> bool:
+        return (self.control & DMA_32BIT) != 0
+
+    def is_repeat(self) -> bool:
+        return (self.control & DMA_REPEAT) != 0
+
+    def get_transfer_size(self) -> int:
+        return 4 if self.is_32bit() else 2
+
+    def _base(self) -> int:
+        return 0x040000B0 + (self.channel_id * DMA_CHANNEL_SPACING)
+
+    def read_from_memory(self):
+        b = self._base() - 0x04000000
+        new_control = self.mem.io[b+10] | (self.mem.io[b+11] << 8)
+        new_enabled = (new_control & DMA_ENABLE) != 0
+
+        if new_enabled and not self.enabled:
+            self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
+            self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
+            self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
+            self._orig_src = self.src_addr
+            self._orig_dst = self.dst_addr
+            self._orig_count = self.count
+        elif not new_enabled:
+            self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
+            self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
+            self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
+
+        self.control = new_control
+        self.enabled = new_enabled
+
+    def _write_control_to_memory(self):
+        b = self._base() - 0x04000000
+        self.mem.io[b+10] = self.control & 0xFF
+        self.mem.io[b+11] = (self.control >> 8) & 0xFF
+
+    def write_to_memory(self):
+        b = self._base() - 0x04000000
+        self.mem.io[b] = self.src_addr & 0xFF
+        self.mem.io[b+1] = (self.src_addr >> 8) & 0xFF
+        self.mem.io[b+2] = (self.src_addr >> 16) & 0xFF
+        self.mem.io[b+3] = (self.src_addr >> 24) & 0xFF
+        self.mem.io[b+4] = self.dst_addr & 0xFF
+        self.mem.io[b+5] = (self.dst_addr >> 8) & 0xFF
+        self.mem.io[b+6] = (self.dst_addr >> 16) & 0xFF
+        self.mem.io[b+7] = (self.dst_addr >> 24) & 0xFF
+        self.mem.io[b+8] = self.count & 0xFF
+        self.mem.io[b+9] = (self.count >> 8) & 0xFF
+        self.mem.io[b+10] = self.control & 0xFF
+        self.mem.io[b+11] = (self.control >> 8) & 0xFF
+
+    def get_count_value(self) -> int:
+        if self.count == 0:
+            return 0x10000 if self.is_32bit() else 0x4000
+        return self.count
+
+
+class DMA:
+    """GBA DMA Controller with 4 channels"""
+
+    FIFO_A_ADDR = 0x040000A0
+    FIFO_B_ADDR = 0x040000A4
+
+    def __init__(self):
+        self.mem = None
+        self._interrupts = None
+        self._apu = None
+        self.channels: List[DMAChannel] = [
+            DMAChannel(0, None),
+            DMAChannel(1, None),
+            DMAChannel(2, None),
+            DMAChannel(3, None),
+        ]
+
+    def attach_memory(self, mem):
+        self.mem = mem
+        for ch in self.channels:
+            ch.mem = mem
+
+    def attach_apu(self, apu):
+        self._apu = apu
+
+    def attach_interrupts(self, interrupts):
+        self._interrupts = interrupts
+        for ch in self.channels:
+            ch.attach_interrupts(interrupts)
+
+    def fifo_a_is_empty(self) -> bool:
+        if self._apu is None:
+            return False
+        return len(self._apu.fifo_a.data) == 0
+
+    def fifo_b_is_empty(self) -> bool:
+        if self._apu is None:
+            return False
+        return len(self._apu.fifo_b.data) == 0
+
+    def start_transfer(self, channel: int):
+        if not 0 <= channel <= 3:
+            return
+        ch = self.channels[channel]
+        ch.read_from_memory()
+        if not ch.enabled:
+            return
+        self._do_transfer(ch)
+
+    def _step_for(self, ctrl: int, width: int) -> int:
+        return _DMA_OFFSET.get(ctrl, 0) * width
+
+    def _do_transfer(self, ch: DMAChannel):
+        if ch.busy:
+            return
+
+        ch.busy = True
+
+        src_ctrl = ch.get_src_increment()
+        dst_ctrl = ch.get_dst_increment()
+        count = ch.get_count_value()
+        transfer_size = ch.get_transfer_size()
+
+        src_step = self._step_for(src_ctrl, transfer_size)
+        dst_step = self._step_for(dst_ctrl, transfer_size)
+
+        src = ch.src_addr
+        dst = ch.dst_addr
+        orig_dst = ch.dst_addr
+        orig_src = ch.src_addr
+
+        for _ in range(count):
+            if transfer_size == 4:
+                if src >= 0x02000000:
+                    ch.latch = self.mem.read_u32(src)
+                value = ch.latch
+                if dst == DMA.FIFO_A_ADDR and self._apu:
+                    self._apu.fifo_a.write(value & 0xFF)
+                    if count > 1:
+                        self._apu.fifo_a.write((value >> 8) & 0xFF)
+                        self._apu.fifo_a.write((value >> 16) & 0xFF)
+                        self._apu.fifo_a.write((value >> 24) & 0xFF)
+                elif dst == DMA.FIFO_B_ADDR and self._apu:
+                    self._apu.fifo_b.write(value & 0xFF)
+                    if count > 1:
+                        self._apu.fifo_b.write((value >> 8) & 0xFF)
+                        self._apu.fifo_b.write((value >> 16) & 0xFF)
+                        self._apu.fifo_b.write((value >> 24) & 0xFF)
+                else:
+                    self.mem.write_u32(dst, value)
+            else:
+                if src >= 0x02000000:
+                    ch.latch = self.mem.read_u16(src)
+                    ch.latch = ch.latch | (ch.latch << 16)
+                value = (ch.latch >> (8 * (dst & 2))) & 0xFFFF
+                if dst == DMA.FIFO_A_ADDR and self._apu:
+                    self._apu.fifo_a.write(value & 0xFF)
+                    self._apu.fifo_a.write((value >> 8) & 0xFF)
+                elif dst == DMA.FIFO_B_ADDR and self._apu:
+                    self._apu.fifo_b.write(value & 0xFF)
+                    self._apu.fifo_b.write((value >> 8) & 0xFF)
+                else:
+                    self.mem.write_u16(dst, value)
+
+            src += src_step
+            dst += dst_step
+
+        if ch.is_repeat() and dst_ctrl == 3:
+            ch.dst_addr = orig_dst
+        else:
+            ch.dst_addr = dst
+        if ch.is_repeat() and src_ctrl == 3:
+            ch.src_addr = orig_src
+        else:
+            ch.src_addr = src
+
+        if ch.is_repeat():
+            ch.count = ch._orig_count if ch._orig_count else ch.get_count_value()
+            if ch.is_repeat() and src_ctrl == 3:
+                ch.src_addr = orig_src
+            if ch.is_repeat() and dst_ctrl == 3:
+                ch.dst_addr = orig_dst
+        else:
+            ch.control &= ~DMA_ENABLE
+            ch.enabled = False
+            ch._write_control_to_memory()
+
+        ch.busy = False
+        ch.pending = False
+
+        if ch.irq_enabled and self._interrupts:
+            self._interrupts.dma_irq(ch.channel_id)
+
+    def step(self):
+        for ch in self.channels:
+            ch.read_from_memory()
+            if not ch.enabled or ch.busy:
+                continue
+            if ch.is_immediate():
+                if ch.pending:
+                    ch.pending = False
+                    self._do_transfer(ch)
+
+    def _do_transfer_single(self, ch: DMAChannel):
+        """Transfer one unit, advance src/dst, keep channel enabled.
+
+        Per GBATEK, HBlank/VBlank DMA with the Repeat bit transfers a single
+        unit per trigger (not the full count at once). The channel stays enabled
+        until count is exhausted, then reloads if Repeat is set or disables.
+        """
+        if ch.busy:
+            return
+        ch.busy = True
+
+        src_ctrl = ch.get_src_increment()
+        dst_ctrl = ch.get_dst_increment()
+        transfer_size = ch.get_transfer_size()
+        src_step = self._step_for(src_ctrl, transfer_size)
+        dst_step = self._step_for(dst_ctrl, transfer_size)
+
+        src = ch.src_addr
+        dst = ch.dst_addr
+
+        if transfer_size == 4:
+            if src >= 0x02000000:
+                ch.latch = self.mem.read_u32(src)
+            value = ch.latch
+            if dst == DMA.FIFO_A_ADDR and self._apu:
+                self._apu.fifo_a.write(value & 0xFF)
+                self._apu.fifo_a.write((value >> 8) & 0xFF)
+                self._apu.fifo_a.write((value >> 16) & 0xFF)
+                self._apu.fifo_a.write((value >> 24) & 0xFF)
+            elif dst == DMA.FIFO_B_ADDR and self._apu:
+                self._apu.fifo_b.write(value & 0xFF)
+                self._apu.fifo_b.write((value >> 8) & 0xFF)
+                self._apu.fifo_b.write((value >> 16) & 0xFF)
+                self._apu.fifo_b.write((value >> 24) & 0xFF)
+            else:
+                self.mem.write_u32(dst, value)
+        else:
+            if src >= 0x02000000:
+                ch.latch = self.mem.read_u16(src)
+                ch.latch = ch.latch | (ch.latch << 16)
+            value = (ch.latch >> (8 * (dst & 2))) & 0xFFFF
+            if dst == DMA.FIFO_A_ADDR and self._apu:
+                self._apu.fifo_a.write(value & 0xFF)
+                self._apu.fifo_a.write((value >> 8) & 0xFF)
+            elif dst == DMA.FIFO_B_ADDR and self._apu:
+                self._apu.fifo_b.write(value & 0xFF)
+                self._apu.fifo_b.write((value >> 8) & 0xFF)
+            else:
+                self.mem.write_u16(dst, value)
+        ch.src_addr = src + src_step
+        ch.dst_addr = dst + dst_step
+        ch.count = max(0, ch.count - 1)
+
+        if ch.count == 0:
+            if ch.is_repeat():
+                ch.count = ch._orig_count if ch._orig_count else 0x10000
+                if dst_ctrl == 3:
+                    ch.dst_addr = ch._orig_dst
+                if src_ctrl == 3:
+                    ch.src_addr = ch._orig_src
+            else:
+                ch.control &= ~DMA_ENABLE
+                ch.enabled = False
+                ch._write_control_to_memory()
+
+        ch.busy = False
+        ch.pending = False
+
+        if ch.irq_enabled and self._interrupts:
+            self._interrupts.dma_irq(ch.channel_id)
+
+    def vblank_fire(self):
+        for ch in self.channels:
+            ch.read_from_memory()
+            if not ch.enabled or ch.busy:
+                continue
+            if ch.is_vblank():
+                self._do_transfer(ch)
+
+    def hblank_fire(self, vcount: int = 0):
+        for ch in self.channels:
+            ch.read_from_memory()
+            if not ch.enabled or ch.busy:
+                continue
+            if ch.is_hblank():
+                self._do_transfer(ch)
+
+    def custom_fire(self):
+        for ch in self.channels:
+            ch.read_from_memory()
+            if not ch.enabled or ch.busy:
+                continue
+            if ch.is_special() and ch.pending:
+                self._do_transfer(ch)
+                ch.pending = False
+
+    def timer_trigger(self, timer_index: int):
+        for ch in self.channels:
+            ch.read_from_memory()
+            if not ch.enabled or ch.busy:
+                continue
+            if ch.is_special() and ch.pending:
+                self._do_transfer(ch)
+                ch.pending = False
+
+    def fifo_a_empty_fire(self):
+        ch = self.channels[1]
+        ch.read_from_memory()
+        if ch.enabled and not ch.busy and ch.is_special() and ch.pending:
+            self._do_transfer(ch)
+            ch.pending = False
+
+    def fifo_b_empty_fire(self):
+        ch = self.channels[2]
+        ch.read_from_memory()
+        if ch.enabled and not ch.busy and ch.is_special() and ch.pending:
+            self._do_transfer(ch)
+            ch.pending = False
+
+    def fifo_a_step(self):
+        if not self._apu:
+            return
+        self._apu.fifo_a.timer += 1
+        if self._apu.fifo_a.timer >= self._apu.fifo_a.timer_period:
+            self._apu.fifo_a.timer = 0
+            self._apu.fifo_a.read()
+
+    def get_channel(self, channel: int) -> Optional[DMAChannel]:
+        if 0 <= channel <= 3:
+            return self.channels[channel]
+        return None
+
+
+def clear_dma_pending(dma_instance):
+    for ch in dma_instance.channels:
+        ch.pending = False
+
+
+# === End of dma.py ===
+
+
 # === Start of arm7tdmi.py ===
 
-"""ARM7TDMI CPU Interpreter for GBA"""
 
-from typing import Optional, Callable, List, Tuple
 
 try:
-    import numba
-    from numba import njit
     _HAS_NUMBA = True
 except ImportError:
     numba = None
@@ -5376,1598 +5779,9 @@ class ISRHandler:
 # === End of arm7tdmi.py ===
 
 
-# === Start of dma.py ===
-
-"""GBA DMA Controller
-
-Register layout (GBATEK / mGBA dma.h):
-  Each channel is 12 bytes (0x0C spacing):
-    +0: Source Address      (32-bit)
-    +4: Destination Address (32-bit)
-    +8: Word Count          (16-bit)
-    +A: Control             (16-bit)
-
-  Control bits (16-bit) — verified against mGBA dma.h:
-    15:     Enable
-    14:     IRQ on completion (DoIRQ)
-    13-12:  Start timing (0=immediate, 1=VBlank, 2=HBlank, 3=special)
-    11:     DRQ (DMA3 only)
-    10:     Transfer width (0=16-bit, 1=32-bit)
-    9:      Repeat
-    8-7:    Source control (0=increment, 1=decrement, 2=fixed, 3=prohibited)
-    6-5:    Destination control (0=increment, 1=decrement, 2=fixed, 3=reload)
-    4-0:    Reserved
-"""
-
-from typing import List, Optional
-
-
-DMA_ENABLE         = 0x8000  # bit 15
-DMA_IRQ_ENABLE     = 0x4000  # bit 14
-DMA_TIMING_MASK    = 0x3000  # bits 13-12
-DMA_TIMING_IMMEDIATE = 0x0000
-DMA_TIMING_VBLANK    = 0x1000
-DMA_TIMING_HBLANK     = 0x2000
-DMA_TIMING_SPECIAL    = 0x3000
-DMA_DRQ            = 0x0800  # bit 11 (DMA3 only)
-DMA_32BIT          = 0x0400  # bit 10
-DMA_REPEAT          = 0x0200  # bit 9
-DMA_SRC_CTRL_MASK   = 0x0180  # bits 8-7
-DMA_DST_CTRL_MASK   = 0x0060  # bits 6-5
-
-DMA_CHANNEL_SPACING = 0x0C
-
-DMA0_SRC_ADDR = 0x040000B0
-DMA1_SRC_ADDR = 0x040000BC
-DMA2_SRC_ADDR = 0x040000C8
-DMA3_SRC_ADDR = 0x040000D4
-
-# DMA_OFFSET[] = { +1, -1, 0, +1 } — matches mGBA dma.c
-# Indexed by SrcControl/DestControl value:
-#   0=increment, 1=decrement, 2=fixed, 3=reload(same as increment during transfer)
-_DMA_OFFSET = {0: 1, 1: -1, 2: 0, 3: 1}
-
-
-class DMAChannel:
-    """Individual DMA channel (0-3)"""
-
-    def __init__(self, channel_id: int, mem):
-        self.channel_id = channel_id
-        self.mem = mem
-        self.src_addr: int = 0
-        self.dst_addr: int = 0
-        self.count: int = 0
-        self.control: int = 0
-        self.enabled: bool = False
-        self.busy: bool = False
-        self.pending: bool = False
-        self._interrupts = None
-        self._orig_src = 0
-        self._orig_dst = 0
-        self._orig_count = 0
-        self.latch: int = 0
-    def attach_interrupts(self, interrupts):
-        self._interrupts = interrupts
-
-    @property
-    def irq_enabled(self) -> bool:
-        return (self.control & DMA_IRQ_ENABLE) != 0
-
-    def _timing_bits(self) -> int:
-        return (self.control >> 12) & 0x3
-
-    def is_immediate(self) -> bool:
-        return self._timing_bits() == 0
-
-    def is_vblank(self) -> bool:
-        return self._timing_bits() == 1
-
-    def is_hblank(self) -> bool:
-        return self._timing_bits() == 2
-
-    def is_special(self) -> bool:
-        return self._timing_bits() == 3
-
-    def get_src_increment(self) -> int:
-        return (self.control >> 7) & 0x3
-
-    def get_dst_increment(self) -> int:
-        return (self.control >> 5) & 0x3
-
-    def is_32bit(self) -> bool:
-        return (self.control & DMA_32BIT) != 0
-
-    def is_repeat(self) -> bool:
-        return (self.control & DMA_REPEAT) != 0
-
-    def get_transfer_size(self) -> int:
-        return 4 if self.is_32bit() else 2
-
-    def _base(self) -> int:
-        return 0x040000B0 + (self.channel_id * DMA_CHANNEL_SPACING)
-
-    def read_from_memory(self):
-        b = self._base() - 0x04000000
-        new_control = self.mem.io[b+10] | (self.mem.io[b+11] << 8)
-        new_enabled = (new_control & DMA_ENABLE) != 0
-
-        if new_enabled and not self.enabled:
-            self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
-            self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
-            self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
-            self._orig_src = self.src_addr
-            self._orig_dst = self.dst_addr
-            self._orig_count = self.count
-        elif not new_enabled:
-            self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
-            self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
-            self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
-
-        self.control = new_control
-        self.enabled = new_enabled
-
-    def _write_control_to_memory(self):
-        b = self._base() - 0x04000000
-        self.mem.io[b+10] = self.control & 0xFF
-        self.mem.io[b+11] = (self.control >> 8) & 0xFF
-
-    def write_to_memory(self):
-        b = self._base() - 0x04000000
-        self.mem.io[b] = self.src_addr & 0xFF
-        self.mem.io[b+1] = (self.src_addr >> 8) & 0xFF
-        self.mem.io[b+2] = (self.src_addr >> 16) & 0xFF
-        self.mem.io[b+3] = (self.src_addr >> 24) & 0xFF
-        self.mem.io[b+4] = self.dst_addr & 0xFF
-        self.mem.io[b+5] = (self.dst_addr >> 8) & 0xFF
-        self.mem.io[b+6] = (self.dst_addr >> 16) & 0xFF
-        self.mem.io[b+7] = (self.dst_addr >> 24) & 0xFF
-        self.mem.io[b+8] = self.count & 0xFF
-        self.mem.io[b+9] = (self.count >> 8) & 0xFF
-        self.mem.io[b+10] = self.control & 0xFF
-        self.mem.io[b+11] = (self.control >> 8) & 0xFF
-
-    def get_count_value(self) -> int:
-        if self.count == 0:
-            return 0x10000 if self.is_32bit() else 0x4000
-        return self.count
-
-
-class DMA:
-    """GBA DMA Controller with 4 channels"""
-
-    FIFO_A_ADDR = 0x040000A0
-    FIFO_B_ADDR = 0x040000A4
-
-    def __init__(self):
-        self.mem = None
-        self._interrupts = None
-        self._apu = None
-        self.channels: List[DMAChannel] = [
-            DMAChannel(0, None),
-            DMAChannel(1, None),
-            DMAChannel(2, None),
-            DMAChannel(3, None),
-        ]
-
-    def attach_memory(self, mem):
-        self.mem = mem
-        for ch in self.channels:
-            ch.mem = mem
-
-    def attach_apu(self, apu):
-        self._apu = apu
-
-    def attach_interrupts(self, interrupts):
-        self._interrupts = interrupts
-        for ch in self.channels:
-            ch.attach_interrupts(interrupts)
-
-    def fifo_a_is_empty(self) -> bool:
-        if self._apu is None:
-            return False
-        return len(self._apu.fifo_a.data) == 0
-
-    def fifo_b_is_empty(self) -> bool:
-        if self._apu is None:
-            return False
-        return len(self._apu.fifo_b.data) == 0
-
-    def start_transfer(self, channel: int):
-        if not 0 <= channel <= 3:
-            return
-        ch = self.channels[channel]
-        ch.read_from_memory()
-        if not ch.enabled:
-            return
-        self._do_transfer(ch)
-
-    def _step_for(self, ctrl: int, width: int) -> int:
-        return _DMA_OFFSET.get(ctrl, 0) * width
-
-    def _do_transfer(self, ch: DMAChannel):
-        if ch.busy:
-            return
-
-        ch.busy = True
-
-        src_ctrl = ch.get_src_increment()
-        dst_ctrl = ch.get_dst_increment()
-        count = ch.get_count_value()
-        transfer_size = ch.get_transfer_size()
-
-        src_step = self._step_for(src_ctrl, transfer_size)
-        dst_step = self._step_for(dst_ctrl, transfer_size)
-
-        src = ch.src_addr
-        dst = ch.dst_addr
-        orig_dst = ch.dst_addr
-        orig_src = ch.src_addr
-
-        for _ in range(count):
-            if transfer_size == 4:
-                if src >= 0x02000000:
-                    ch.latch = self.mem.read_u32(src)
-                value = ch.latch
-                if dst == DMA.FIFO_A_ADDR and self._apu:
-                    self._apu.fifo_a.write(value & 0xFF)
-                    if count > 1:
-                        self._apu.fifo_a.write((value >> 8) & 0xFF)
-                        self._apu.fifo_a.write((value >> 16) & 0xFF)
-                        self._apu.fifo_a.write((value >> 24) & 0xFF)
-                elif dst == DMA.FIFO_B_ADDR and self._apu:
-                    self._apu.fifo_b.write(value & 0xFF)
-                    if count > 1:
-                        self._apu.fifo_b.write((value >> 8) & 0xFF)
-                        self._apu.fifo_b.write((value >> 16) & 0xFF)
-                        self._apu.fifo_b.write((value >> 24) & 0xFF)
-                else:
-                    self.mem.write_u32(dst, value)
-            else:
-                if src >= 0x02000000:
-                    ch.latch = self.mem.read_u16(src)
-                    ch.latch = ch.latch | (ch.latch << 16)
-                value = (ch.latch >> (8 * (dst & 2))) & 0xFFFF
-                if dst == DMA.FIFO_A_ADDR and self._apu:
-                    self._apu.fifo_a.write(value & 0xFF)
-                    self._apu.fifo_a.write((value >> 8) & 0xFF)
-                elif dst == DMA.FIFO_B_ADDR and self._apu:
-                    self._apu.fifo_b.write(value & 0xFF)
-                    self._apu.fifo_b.write((value >> 8) & 0xFF)
-                else:
-                    self.mem.write_u16(dst, value)
-
-            src += src_step
-            dst += dst_step
-
-        if ch.is_repeat() and dst_ctrl == 3:
-            ch.dst_addr = orig_dst
-        else:
-            ch.dst_addr = dst
-        if ch.is_repeat() and src_ctrl == 3:
-            ch.src_addr = orig_src
-        else:
-            ch.src_addr = src
-
-        if ch.is_repeat():
-            ch.count = ch._orig_count if ch._orig_count else ch.get_count_value()
-            if ch.is_repeat() and src_ctrl == 3:
-                ch.src_addr = orig_src
-            if ch.is_repeat() and dst_ctrl == 3:
-                ch.dst_addr = orig_dst
-        else:
-            ch.control &= ~DMA_ENABLE
-            ch.enabled = False
-            ch._write_control_to_memory()
-
-        ch.busy = False
-        ch.pending = False
-
-        if ch.irq_enabled and self._interrupts:
-            self._interrupts.dma_irq(ch.channel_id)
-
-    def step(self):
-        for ch in self.channels:
-            ch.read_from_memory()
-            if not ch.enabled or ch.busy:
-                continue
-            if ch.is_immediate():
-                if ch.pending:
-                    ch.pending = False
-                    self._do_transfer(ch)
-
-    def _do_transfer_single(self, ch: DMAChannel):
-        """Transfer one unit, advance src/dst, keep channel enabled.
-
-        Per GBATEK, HBlank/VBlank DMA with the Repeat bit transfers a single
-        unit per trigger (not the full count at once). The channel stays enabled
-        until count is exhausted, then reloads if Repeat is set or disables.
-        """
-        if ch.busy:
-            return
-        ch.busy = True
-
-        src_ctrl = ch.get_src_increment()
-        dst_ctrl = ch.get_dst_increment()
-        transfer_size = ch.get_transfer_size()
-        src_step = self._step_for(src_ctrl, transfer_size)
-        dst_step = self._step_for(dst_ctrl, transfer_size)
-
-        src = ch.src_addr
-        dst = ch.dst_addr
-
-        if transfer_size == 4:
-            if src >= 0x02000000:
-                ch.latch = self.mem.read_u32(src)
-            value = ch.latch
-            if dst == DMA.FIFO_A_ADDR and self._apu:
-                self._apu.fifo_a.write(value & 0xFF)
-                self._apu.fifo_a.write((value >> 8) & 0xFF)
-                self._apu.fifo_a.write((value >> 16) & 0xFF)
-                self._apu.fifo_a.write((value >> 24) & 0xFF)
-            elif dst == DMA.FIFO_B_ADDR and self._apu:
-                self._apu.fifo_b.write(value & 0xFF)
-                self._apu.fifo_b.write((value >> 8) & 0xFF)
-                self._apu.fifo_b.write((value >> 16) & 0xFF)
-                self._apu.fifo_b.write((value >> 24) & 0xFF)
-            else:
-                self.mem.write_u32(dst, value)
-        else:
-            if src >= 0x02000000:
-                ch.latch = self.mem.read_u16(src)
-                ch.latch = ch.latch | (ch.latch << 16)
-            value = (ch.latch >> (8 * (dst & 2))) & 0xFFFF
-            if dst == DMA.FIFO_A_ADDR and self._apu:
-                self._apu.fifo_a.write(value & 0xFF)
-                self._apu.fifo_a.write((value >> 8) & 0xFF)
-            elif dst == DMA.FIFO_B_ADDR and self._apu:
-                self._apu.fifo_b.write(value & 0xFF)
-                self._apu.fifo_b.write((value >> 8) & 0xFF)
-            else:
-                self.mem.write_u16(dst, value)
-        ch.src_addr = src + src_step
-        ch.dst_addr = dst + dst_step
-        ch.count = max(0, ch.count - 1)
-
-        if ch.count == 0:
-            if ch.is_repeat():
-                ch.count = ch._orig_count if ch._orig_count else 0x10000
-                if dst_ctrl == 3:
-                    ch.dst_addr = ch._orig_dst
-                if src_ctrl == 3:
-                    ch.src_addr = ch._orig_src
-            else:
-                ch.control &= ~DMA_ENABLE
-                ch.enabled = False
-                ch._write_control_to_memory()
-
-        ch.busy = False
-        ch.pending = False
-
-        if ch.irq_enabled and self._interrupts:
-            self._interrupts.dma_irq(ch.channel_id)
-
-    def vblank_fire(self):
-        for ch in self.channels:
-            ch.read_from_memory()
-            if not ch.enabled or ch.busy:
-                continue
-            if ch.is_vblank():
-                self._do_transfer(ch)
-
-    def hblank_fire(self, vcount: int = 0):
-        for ch in self.channels:
-            ch.read_from_memory()
-            if not ch.enabled or ch.busy:
-                continue
-            if ch.is_hblank():
-                self._do_transfer(ch)
-
-    def custom_fire(self):
-        for ch in self.channels:
-            ch.read_from_memory()
-            if not ch.enabled or ch.busy:
-                continue
-            if ch.is_special() and ch.pending:
-                self._do_transfer(ch)
-                ch.pending = False
-
-    def timer_trigger(self, timer_index: int):
-        for ch in self.channels:
-            ch.read_from_memory()
-            if not ch.enabled or ch.busy:
-                continue
-            if ch.is_special() and ch.pending:
-                self._do_transfer(ch)
-                ch.pending = False
-
-    def fifo_a_empty_fire(self):
-        ch = self.channels[1]
-        ch.read_from_memory()
-        if ch.enabled and not ch.busy and ch.is_special() and ch.pending:
-            self._do_transfer(ch)
-            ch.pending = False
-
-    def fifo_b_empty_fire(self):
-        ch = self.channels[2]
-        ch.read_from_memory()
-        if ch.enabled and not ch.busy and ch.is_special() and ch.pending:
-            self._do_transfer(ch)
-            ch.pending = False
-
-    def fifo_a_step(self):
-        if not self._apu:
-            return
-        self._apu.fifo_a.timer += 1
-        if self._apu.fifo_a.timer >= self._apu.fifo_a.timer_period:
-            self._apu.fifo_a.timer = 0
-            self._apu.fifo_a.read()
-
-    def get_channel(self, channel: int) -> Optional[DMAChannel]:
-        if 0 <= channel <= 3:
-            return self.channels[channel]
-        return None
-
-
-def clear_dma_pending(dma_instance):
-    for ch in dma_instance.channels:
-        ch.pending = False
-
-
-# === End of dma.py ===
-
-
-# === Start of interrupts.py ===
-
-"""GBA Interrupt Controller"""
-
-
-class InterruptController:
-    """Interrupt controller managing IE, IF, and IME registers.
-
-    Interrupt sources (bit positions):
-        - VBlank: 0
-        - HBlank: 1
-        - VCounter: 2
-        - Timer0-3: 3-6
-        - DMA0-3: 8-11
-        - KeyPad: 12
-        - GamePak: 13
-    """
-
-    # Interrupt source bit positions
-    IRQ_VBLANK = 0
-    IRQ_HBLANK = 1
-    IRQ_VCOUNTER = 2
-    IRQ_TIMER0 = 3
-    IRQ_TIMER1 = 4
-    IRQ_TIMER2 = 5
-    IRQ_TIMER3 = 6
-    IRQ_DMA0 = 8
-    IRQ_DMA1 = 9
-    IRQ_DMA2 = 10
-    IRQ_DMA3 = 11
-    IRQ_KEYPAD = 12
-    IRQ_GAMEPAK = 13
-
-    def __init__(self):
-        # IE: Interrupt Enable register (16-bit) - enables per-interrupt sources
-        self.ie_reg = 0x0000
-        # IF: Interrupt Flags register (16-bit) - raised interrupts, write 1 to clear
-        self.if_reg = 0x0000
-        # IME: Interrupt Master Enable register (1-bit)
-        self.ime_reg = 0x0000
-        # Handlers stored by interrupt source bit position
-        self._handlers = {}
-        # Optimized: pre-compute enabled interrupt mask
-        self._enabled_mask = 0
-        # Batch processing: collect pending interrupts
-        self._pending_batch = []
-        # IRQ check frequency (every N calls)
-        self._irq_check_counter = 0
-        self._irq_check_interval = 1  # Check every frame (can be increased for performance)
-
-    def register_handler(self, irq_id: int, callback):
-        """Register a callback for a specific interrupt source.
-
-        Args:
-            irq_id: Interrupt source bit position (0-13)
-            callback: Function to call when interrupt fires and is enabled
-        """
-        self._handlers[irq_id] = callback
-
-    def fire(self, irq_id: int):
-        """Fire an interrupt - set the IF flag and call handler if enabled.
-
-        Args:
-            irq_id: Interrupt source bit position (0-13)
-        """
-        # Set the interrupt flag in IF register
-        self.if_reg |= 1 << irq_id
-
-        # Check if interrupt is enabled (IME=1 and IE bit for this irq is set)
-        if self.ime_reg & 0x0001 and (self.ie_reg & (1 << irq_id)):
-            # Call the handler if registered
-            if irq_id in self._handlers:
-                self._handlers[irq_id]()
-
-    def vblank_irq(self):
-        """Convenience method to fire a VBlank interrupt (IRQ 0)."""
-        self.fire(self.IRQ_VBLANK)
-
-    def hblank_irq(self):
-        """Convenience method to fire a HBlank interrupt (IRQ 1)."""
-        self.fire(self.IRQ_HBLANK)
-
-    def vcounter_irq(self):
-        """Convenience method to fire a VCounter interrupt (IRQ 2)."""
-        self.fire(self.IRQ_VCOUNTER)
-
-    def timer_irq(self, channel: int):
-        """Convenience method to fire a timer interrupt.
-
-        Args:
-            channel: Timer channel (0-3), maps to IRQ 3-6
-        """
-        if 0 <= channel <= 3:
-            self.fire(self.IRQ_TIMER0 + channel)
-
-    def dma_irq(self, channel: int):
-        """Convenience method to fire a DMA interrupt.
-
-        Args:
-            channel: DMA channel (0-3), maps to IRQ 8-11
-        """
-        if 0 <= channel <= 3:
-            self.fire(self.IRQ_DMA0 + channel)
-
-    def keypad_irq(self):
-        """Convenience method to fire a KeyPad interrupt (IRQ 12)."""
-        self.fire(self.IRQ_KEYPAD)
-
-    def gamepak_irq(self):
-        """Convenience method to fire a GamePak interrupt (IRQ 13)."""
-        self.fire(self.IRQ_GAMEPAK)
-
-    def write_ie(self, val: int):
-        """Write to IE (Interrupt Enable) register.
-
-        Args:
-            val: 16-bit value to write
-        """
-        self.ie_reg = val & 0xFFFF
-        # Optimized: pre-compute enabled interrupt mask
-        self._enabled_mask = self.ie_reg if self.ime_reg & 0x0001 else 0
-
-    def write_if(self, val: int):
-        """Write to IF (Interrupt Flags) register.
-
-        Writing 1 to a bit clears that interrupt flag.
-
-        Args:
-            val: 16-bit value to write
-        """
-        # Clear bits where val has 1s (write-1-to-clear behavior)
-        self.if_reg &= ~(val & 0xFFFF)
-
-    def write_ime(self, val: int):
-        """Write to IME (Interrupt Master Enable) register.
-
-        Args:
-            val: 16-bit value (only bit 0 is significant)
-        """
-        self.ime_reg = val & 0x0001
-        # Optimized: update enabled mask
-        self._enabled_mask = self.ie_reg if self.ime_reg & 0x0001 else 0
-
-    def read_ie(self) -> int:
-        """Read IE register."""
-        return self.ie_reg
-
-    def read_if(self) -> int:
-        """Read IF register."""
-        return self.if_reg
-
-    def read_ime(self) -> int:
-        """Read IME register."""
-        return self.ime_reg
-
-    def get_pending_interrupts(self) -> int:
-        """Get bitmask of pending and enabled interrupts."""
-        return self.if_reg & self.ie_reg
-
-    def has_pending_interrupt(self) -> bool:
-        """Check if any enabled interrupt is pending (optimized with bitfield)."""
-        # Optimized: single bitwise operation instead of multiple checks
-        return (self.if_reg & self._enabled_mask) != 0
-    
-    def process_pending_interrupts(self) -> int:
-        """Process all pending interrupts in batch. Returns count of interrupts processed.
-        
-        This is an optimized method that processes all pending interrupts at once
-        instead of checking one by one.
-        """
-        if not (self.ime_reg & 0x0001):
-            return 0
-        
-        # Get pending and enabled interrupts as a bitmask
-        pending = self.if_reg & self.ie_reg
-        if pending == 0:
-            return 0
-        
-        count = 0
-        # Process each pending interrupt
-        for irq_id in range(14):
-            if pending & (1 << irq_id):
-                if irq_id in self._handlers:
-                    self._handlers[irq_id]()
-                    count += 1
-        
-        return count
-
-    def clear_if(self):
-        """Clear all interrupt flags."""
-        self.if_reg = 0x0000
-
-
-def set_vblank_flag():
-    interrupts.fire(InterruptController.IRQ_VBLANK)
-
-    def set_ime(self, enabled: bool):
-        """Set IME register.
-
-        Args:
-            enabled: True to enable interrupts, False to disable
-        """
-        self.ime_reg = 0x0001 if enabled else 0x0000
-
-
-# === End of interrupts.py ===
-
-
-# === Start of timers.py ===
-
-"""GBA Timers"""
-
-
-class TimerChannel:
-    """Individual timer channel"""
-    
-    def __init__(self):
-        self.count = 0
-        self.reload = 0
-        self.control = 0
-
-    @property
-    def enabled(self) -> bool:
-        """Check if timer is enabled (bit 8)"""
-        return bool(self.control & 0x80)
-
-    @property
-    def irq_enable(self) -> bool:
-        """Check if IRQ is enabled (bit 6)"""
-        return bool(self.control & 0x40)
-
-    @property
-    def cascade(self) -> bool:
-        """Check if cascade mode is enabled (bit 2)"""
-        return bool(self.control & 0x04)
-
-    @property
-    def prescaler_value(self) -> int:
-        """Get prescaler divisor value (bits 0-1)"""
-        prescale_bits = self.control & 0x03
-        return [1, 64, 256, 1024][prescale_bits]
-
-
-class Timers:
-    """GBA Timer Controller with 4 timer channels"""
-    
-    PRESCALER_VALUES = [1, 64, 256, 1024]
-
-    def __init__(self):
-        self._channels = [TimerChannel() for _ in range(4)]
-        self._overflow_flags = [False] * 4
-        self._interrupts = None
-        self._cycle_subcount = [0] * 4
-
-    def attach_interrupts(self, interrupts):
-        """Attach interrupt controller for timer IRQ callbacks"""
-        self._interrupts = interrupts
-
-    @property
-    def channels(self):
-        """Access timer channels"""
-        return self._channels
-
-    def get_timer(self, channel: int) -> int:
-        """Get current count value for timer channel"""
-        if not 0 <= channel <= 3:
-            raise ValueError(f"Invalid channel: {channel}")
-        return self._channels[channel].count
-
-    def set_timer(self, channel: int, value: int) -> None:
-        """Set count value for timer channel"""
-        if not 0 <= channel <= 3:
-            raise ValueError(f"Invalid channel: {channel}")
-        self._channels[channel].count = value & 0xFFFF
-
-    def set_control(self, channel: int, control: int) -> None:
-        """Set control register for timer channel"""
-        if not 0 <= channel <= 3:
-            raise ValueError(f"Invalid channel: {channel}")
-        self._channels[channel].control = control & 0xFF
-
-    def set_reload(self, channel: int, reload: int) -> None:
-        """Set reload value for timer channel"""
-        if not 0 <= channel <= 3:
-            raise ValueError(f"Invalid channel: {channel}")
-        self._channels[channel].reload = reload & 0xFFFF
-
-    def get_control(self, channel: int) -> int:
-        """Get control register for timer channel"""
-        if not 0 <= channel <= 3:
-            raise ValueError(f"Invalid channel: {channel}")
-        return self._channels[channel].control
-
-    def get_reload(self, channel: int) -> int:
-        """Get reload value for timer channel"""
-        if not 0 <= channel <= 3:
-            raise ValueError(f"Invalid channel: {channel}")
-        return self._channels[channel].reload
-
-    def get_overflow_flag(self, channel: int) -> bool:
-        """Get overflow flag for timer channel"""
-        if not 0 <= channel <= 3:
-            raise ValueError(f"Invalid channel: {channel}")
-        return self._overflow_flags[channel]
-
-    def clear_overflow_flag(self, channel: int) -> None:
-        """Clear overflow flag for timer channel"""
-        if not 0 <= channel <= 3:
-            raise ValueError(f"Invalid channel: {channel}")
-        self._overflow_flags[channel] = False
-
-    def step(self, cycles: int) -> None:
-        """Advance all enabled timers by given cycles.
-        
-        Args:
-            cycles: Number of CPU cycles to advance timers
-        """
-        # Check cascade flags BEFORE reset, then clear
-        cascade_flags = [self._overflow_flags[i] for i in range(4)]
-        self._overflow_flags = [False] * 4
-
-        # Process each timer
-        for i in range(4):
-            channel = self._channels[i]
-
-            # Skip disabled timers
-            if not channel.enabled:
-                continue
-
-            # Cascade mode: increment only when previous timer overflows
-            if channel.cascade:
-                if i == 0:
-                    continue
-                if not cascade_flags[i - 1]:
-                    continue
-                increment = 1
-            else:
-                prescaler = channel.prescaler_value
-                total = self._cycle_subcount[i] + cycles
-                increment = total // prescaler
-                self._cycle_subcount[i] = total % prescaler
-
-            if increment > 0:
-                new_count = channel.count + increment
-                if new_count > 0xFFFF:
-                    self._overflow_flags[i] = True
-                    new_count = (new_count - 0x10000) + channel.reload
-                    if channel.irq_enable and self._interrupts:
-                        self._interrupts.timer_irq(i)
-                channel.count = new_count & 0xFFFF
-
-# === End of timers.py ===
-
-
-# === Start of input.py ===
-
-"""GBA Input - Keyboard to GBA input register mapping"""
-
-# GBA button bit positions in KEYINPUT register (0x04000130)
-# Active low: 0 = pressed, 1 = released
-GBA_KEYS = {
-    "A": 0x01,  # bit 0
-    "B": 0x02,  # bit 1
-    "SELECT": 0x04,  # bit 2
-    "START": 0x08,  # bit 3
-    "RIGHT": 0x100,  # bit 8
-    "LEFT": 0x200,  # bit 9
-    "UP": 0x400,  # bit 10
-    "DOWN": 0x800,  # bit 11
-    "R": 0x1000,  # bit 12
-    "L": 0x2000,  # bit 13
-}
-
-# Keyboard to GBA button mapping
-# Arrow keys -> DPAD (bits 8-11), Z -> A, S -> B, Enter -> Start, Space -> Select
-KEYBOARD_MAP = {
-    "z": "A",
-    "s": "B",
-    "return": "START",
-    "space": "SELECT",
-    "right": "RIGHT",
-    "left": "LEFT",
-    "up": "UP",
-    "down": "DOWN",
-    "a": "L",
-    "x": "R",
-}
-
-# Default value when no keys pressed (all bits = 1, meaning released)
-# 14 bits (0-13) = 0x3FFF
-DEFAULT_KEYS = 0x3FFF
-
-
-class Input:
-    """Handles keyboard to GBA input mapping.
-
-    Maps keyboard keys to GBA KEYINPUT register (0x04000130).
-    Uses lazy import of pygame to avoid dependency at import time.
-    """
-
-    def __init__(self):
-        self._keys_pressed = DEFAULT_KEYS
-        self._pygame = None
-        self._pygame_available = None
-
-    @property
-    def _pygame_module(self):
-        """Lazy import of pygame to avoid dependency at import time."""
-        if self._pygame_available is None:
-            try:
-                import pygame
-
-                # Initialize video subsystem for keyboard support
-                pygame.display.init()
-                pygame.key.set_repeat(100, 50)
-
-                self._pygame = pygame
-                self._pygame_available = True
-            except ImportError:
-                self._pygame = None
-                self._pygame_available = False
-        return self._pygame
-
-    @property
-    def pygame_available(self) -> bool:
-        """Check if pygame is available."""
-        if self._pygame_available is None:
-            _ = self._pygame_module  # Trigger lazy import
-        return self._pygame_available
-
-    def poll(self) -> bool:
-        """Poll keyboard state and update internal key state.
-
-        Returns:
-            True if polling successful, False if quit event received.
-            Returns True even if pygame is not available (no-op).
-        """
-        if not self.pygame_available:
-            # pygame not installed, return default (no keys pressed)
-            self._keys_pressed = DEFAULT_KEYS
-            return True
-
-        pygame = self._pygame_module
-
-        # Process events
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    return False
-
-        # Get current key states
-        keys = pygame.key.get_pressed()
-
-        # Start with all keys released (bits = 1)
-        key_state = DEFAULT_KEYS  # 0x3FFF = all released
-
-        # Check each mapped key
-        for py_key_name, gba_key_name in KEYBOARD_MAP.items():
-            py_key = getattr(pygame, f"K_{py_key_name}", None)
-            if py_key is not None and keys[py_key]:
-                # Key is pressed, clear the bit (active low)
-                key_state &= ~GBA_KEYS[gba_key_name]
-
-        self._keys_pressed = key_state
-        return True
-
-    def get_keys(self) -> int:
-        """Get current key state as 16-bit mask.
-
-        Returns:
-            16-bit integer representing GBA KEYINPUT register.
-            Bits are active low: 0 = pressed, 1 = released.
-            0x3FFF (14 bits) = no keys pressed
-        """
-        return self._keys_pressed
-
-    def update_from_pygame(self, keys) -> None:
-        """Update GBA input state from pygame key state.
-
-        Args:
-            keys: pygame key state from pygame.key.get_pressed()
-        """
-        # Lazy import pygame if not already loaded
-        if self._pygame is None:
-            _ = self._pygame_module  # Trigger lazy import
-
-        if not self.pygame_available:
-            self._keys_pressed = DEFAULT_KEYS
-            return
-
-        pygame = self._pygame
-        key_state = DEFAULT_KEYS
-        for py_key_name, gba_key_name in KEYBOARD_MAP.items():
-            py_key = getattr(pygame, f"K_{py_key_name}", None)
-            if py_key is not None and keys[py_key]:
-                key_state &= ~GBA_KEYS[gba_key_name]
-        self._keys_pressed = key_state
-
-    def update_keys(
-        self,
-        a=False,
-        b=False,
-        start=False,
-        select=False,
-        right=False,
-        left=False,
-        up=False,
-        down=False,
-        r=False,
-        l=False,
-    ):
-        """Update GBA input from boolean arguments."""
-        self._keys_pressed = 0x3FFF  # All not pressed
-        if a:
-            self._keys_pressed &= ~GBA_KEYS["A"]
-        if b:
-            self._keys_pressed &= ~GBA_KEYS["B"]
-        if start:
-            self._keys_pressed &= ~GBA_KEYS["START"]
-        if select:
-            self._keys_pressed &= ~GBA_KEYS["SELECT"]
-        if right:
-            self._keys_pressed &= ~GBA_KEYS["RIGHT"]
-        if left:
-            self._keys_pressed &= ~GBA_KEYS["LEFT"]
-        if up:
-            self._keys_pressed &= ~GBA_KEYS["UP"]
-        if down:
-            self._keys_pressed &= ~GBA_KEYS["DOWN"]
-        if r:
-            self._keys_pressed &= ~GBA_KEYS["R"]
-        if l:
-            self._keys_pressed &= ~GBA_KEYS["L"]
-
-
-# Export constants for generated code
-KEY_A = 0x01  # bit 0
-KEY_B = 0x02  # bit 1
-KEY_SELECT = 0x04  # bit 2
-KEY_START = 0x08  # bit 3
-KEY_RIGHT = 0x100  # bit 8
-KEY_LEFT = 0x200  # bit 9
-KEY_UP = 0x400  # bit 10
-KEY_DOWN = 0x800  # bit 11
-KEY_R = 0x1000  # bit 12
-KEY_L = 0x2000  # bit 13
-
-
-# === End of input.py ===
-
-
-# === Start of apu.py ===
-
-"""GBA APU (Audio Processing Unit) - Optimized Implementation"""
-
-import pygame
-from collections import deque
-import array
-import threading
-import queue as queue_module
-
-# Optional Numba JIT support
-try:
-    from numba import njit
-    numba_available = True
-except ImportError:
-    numba_available = False
-    def njit(f=None, **kwargs):
-        return f if f else lambda x: x
-
-
-class SquareWaveChannel:
-    """Square wave sound channel (CH1/CH2)"""
-
-    DUTY_PATTERNS = [
-        0b00000001,  # 12.5%
-        0b00000011,  # 25%
-        0b00001111,  # 50%
-        0b11111111,  # 75%
-    ]
-
-    def __init__(self):
-        self.enabled = False
-        self.volume = 0
-        self.frequency = 0
-        self.duty_cycle = 0
-        self.envelope_volume = 0
-        self.envelope_steps = 0
-        self.envelope_increase = False
-        self.length = 0
-        self.length_enable = False
-        self.length_counter = 0
-        self.envelope_counter = 0
-        self.envelope_volume_current = 0
-        self.sweep_shift = 0
-        self.sweep_decrease = False
-        self.sweep_steps = 0
-        self.sweep_counter = 0
-        self.timer = 0
-        self.timer_period = 0
-        self.output_bit = 0
-
-    def step(self, sample_rate: int) -> int:
-        """Generate one sample. Returns volume level (0-15)."""
-        if not self.enabled:
-            return 0
-
-        # Length counter
-        if self.length_enable and self.length > 0:
-            self.length_counter += 1
-            if self.length_counter >= (256 - self.length):
-                self.enabled = False
-                return 0
-
-        # Envelope
-        if self.envelope_steps > 0:
-            self.envelope_counter += 1
-            if self.envelope_counter >= self.envelope_steps:
-                self.envelope_counter = 0
-                if self.envelope_increase:
-                    self.envelope_volume_current = min(15, self.envelope_volume_current + 1)
-                else:
-                    self.envelope_volume_current = max(0, self.envelope_volume_current - 1)
-                if self.envelope_volume_current == 0:
-                    self.enabled = False
-                    return 0
-        else:
-            self.envelope_volume_current = self.envelope_volume
-
-        # Timer/frequency
-        if self.frequency > 0:
-            self.timer_period = 2048 - self.frequency
-        else:
-            self.timer_period = 2048
-
-        self.timer += 1
-        if self.timer >= self.timer_period:
-            self.timer = 0
-            self.output_bit = 1 - self.output_bit
-
-            # Sweep
-            if self.sweep_steps > 0:
-                self.sweep_counter -= 1
-                if self.sweep_counter <= 0:
-                    self.sweep_counter = self.sweep_steps
-                    if self.sweep_decrease:
-                        self.frequency -= self.frequency >> self.sweep_shift
-                    else:
-                        self.frequency += self.frequency >> self.sweep_shift
-                    if self.frequency > 2047:
-                        self.enabled = False
-                        return 0
-
-        return self.output_bit * self.envelope_volume_current
-
-    def trigger(self):
-        """Trigger the channel (key on)"""
-        self.timer = 0
-        self.output_bit = 0
-        self.envelope_counter = 0
-        self.envelope_volume_current = self.envelope_volume
-        self.length_counter = 0
-        self.sweep_counter = self.sweep_steps
-        self.enabled = True
-
-
-class WaveChannel:
-    """Wave playback channel (CH3)"""
-
-    def __init__(self):
-        self.enabled = False
-        self.volume = 0
-        self.frequency = 0
-        self.wave_ram = [0] * 32
-        self.wave_bank = 0
-        self.length = 0
-        self.length_enable = False
-        self.length_counter = 0
-        self.timer = 0
-        self.timer_period = 0
-        self.counter = 0
-        self.format_8bit = False
-
-    def step(self, sample_rate: int, wave_ram: list, wave_bank: int) -> int:
-        """Generate one sample."""
-        if not self.enabled:
-            return 0
-
-        # Length counter
-        if self.length_enable and self.length > 0:
-            self.length_counter += 1
-            if self.length_counter >= 256:
-                self.enabled = False
-                return 0
-
-        # Frequency timer
-        if self.frequency > 0:
-            self.timer_period = 2048 - self.frequency
-        else:
-            self.timer_period = 2048
-
-        self.timer += 1
-        if self.timer >= self.timer_period:
-            self.timer = 0
-            self.counter += 1
-
-        # Read from wave RAM — select bank based on wave_bank register
-        nibble_index = self.counter % 64
-        byte_index = nibble_index // 2
-        wave_value = wave_ram[wave_bank][byte_index % 32]
-
-        if nibble_index % 2 == 0:
-            sample = wave_value & 0x0F
-        else:
-            sample = (wave_value >> 4) & 0x0F
-
-        # Apply volume
-        if self.volume == 0:
-            return 0
-        elif self.volume == 1:
-            return sample
-        elif self.volume == 2:
-            return sample // 2
-        else:  # volume == 3
-            return sample // 4
-
-    def trigger(self):
-        """Trigger the channel"""
-        self.timer = 0
-        self.counter = 0
-        self.length_counter = 0
-        self.enabled = True
-
-
-class NoiseChannel:
-    """Noise channel (CH4)"""
-
-    def __init__(self):
-        self.enabled = False
-        self.volume = 0
-        self.envelope_volume = 0
-        self.envelope_steps = 0
-        self.envelope_increase = False
-        self.length = 0
-        self.length_enable = False
-        self.length_counter = 0
-        self.lfsr = 0x7FFF
-        self.width_7bit = False
-        self.clock_shift = 0
-        self.clock_divider = 0
-        self.envelope_counter = 0
-        self.envelope_volume_current = 0
-        self.timer = 0
-        self.timer_period = 0
-        self.output_bit = 0
-
-    def step(self, sample_rate: int) -> int:
-        """Generate one sample."""
-        if not self.enabled:
-            return 0
-
-        # Length counter
-        if self.length_enable and self.length > 0:
-            self.length_counter += 1
-            if self.length_counter >= (256 - self.length):
-                self.enabled = False
-                return 0
-
-        # Envelope
-        if self.envelope_steps > 0:
-            self.envelope_counter += 1
-            if self.envelope_counter >= self.envelope_steps:
-                self.envelope_counter = 0
-                if self.envelope_increase:
-                    self.envelope_volume_current = min(15, self.envelope_volume_current + 1)
-                else:
-                    self.envelope_volume_current = max(0, self.envelope_volume_current - 1)
-                if self.envelope_volume_current == 0:
-                    self.enabled = False
-                    return 0
-        else:
-            self.envelope_volume_current = self.envelope_volume
-
-        # Timer
-        divisor = max(1, self.clock_divider)
-        self.timer_period = (1 << self.clock_shift) * divisor
-        if self.timer_period == 0:
-            self.timer_period = 1
-
-        self.timer += 1
-        if self.timer >= self.timer_period:
-            self.timer = 0
-
-            # LFSR step
-            if self.width_7bit:
-                bit0 = self.lfsr & 1
-                bit1 = (self.lfsr >> 1) & 1
-                new_bit = bit0 ^ bit1
-                self.lfsr = (self.lfsr >> 1) | (new_bit << 6)
-                self.lfsr &= 0x7F
-            else:
-                bit0 = self.lfsr & 1
-                bit14 = (self.lfsr >> 14) & 1
-                new_bit = bit0 ^ bit14
-                self.lfsr = (self.lfsr >> 1) | (new_bit << 14)
-
-            self.output_bit = self.lfsr & 1
-
-        return self.output_bit * self.envelope_volume_current
-
-    def trigger(self):
-        """Trigger the channel"""
-        self.lfsr = 0x7FFF
-        self.timer = 0
-        self.output_bit = 0
-        self.envelope_counter = 0
-        self.envelope_volume_current = self.envelope_volume
-        self.length_counter = 0
-        self.enabled = True
-
-
-class FIFO:
-    """Direct Sound FIFO buffer"""
-
-    def __init__(self):
-        self.data = deque(maxlen=8)
-        self.timer = 0
-        self.timer_period = 1  # Will be set by DMA
-        self.enabled = False
-        self.volume_left = 0
-        self.volume_right = 0
-
-    def write(self, value: int):
-        """Write a byte to FIFO"""
-        self.data.append(value & 0xFF)
-
-    def read(self) -> int:
-        """Read a byte from FIFO"""
-        if self.data:
-            return self.data.popleft()
-        return 128  # Silence
-
-    def step(self, sample_rate: int) -> int:
-        """Generate one sample from FIFO."""
-        if not self.enabled:
-            return 0
-
-        self.timer += 1
-        if self.timer >= self.timer_period and self.data:
-            self.timer = 0
-            return self.read()
-
-        return 0
-
-
-class APU:
-    """GBA Audio Processing Unit"""
-
-    SAMPLE_RATE = 44100
-
-    def __init__(self):
-        self.ch1 = SquareWaveChannel()
-        self.ch2 = SquareWaveChannel()
-        self.ch3 = WaveChannel()
-        self.ch4 = NoiseChannel()
-        self.fifo_a = FIFO()
-        self.fifo_b = FIFO()
-        self.wave_ram = [[0] * 32, [0] * 32]
-        self.wave_bank = 0
-        self.master_volume_left = 0
-        self.master_volume_right = 0
-        self.ch1_enabled = False
-        self.ch2_enabled = False
-        self.ch3_enabled = False
-        self.ch4_enabled = False
-        self.fifo_a_enabled = False
-        self.fifo_b_enabled = False
-        
-        # Continuous audio playback with thread-safe queue
-        self._audio_channel = None
-        self._buffer_size = 4096  # Samples per buffer (93ms at 44100Hz) - larger for stability
-        self._sound_queue = queue_module.Queue(maxsize=3)  # Buffer 3 sounds ahead
-        self._audio_thread = None
-        self._stop_event = threading.Event()
-        self._audio_started = False
-        self._last_audio_state = False  # Track previous audio state
-
-    def start(self):
-        """Start audio playback"""
-        if not pygame.mixer.get_init():
-            # Use larger buffer for smoother playback
-            pygame.mixer.init(frequency=self.SAMPLE_RATE, size=-8, channels=2, buffer=2048)
-
-    def _audio_worker(self):
-        """Background thread that continuously generates and queues audio buffers."""
-        while not self._stop_event.is_set():
-            try:
-                # Generate audio samples
-                samples = self._generate_samples(self._buffer_size)
-                sound = pygame.mixer.Sound(buffer=samples)
-                
-                # Queue the sound (blocks if queue is full)
-                self._sound_queue.put(sound, timeout=0.1)
-            except queue_module.Full:
-                # Queue is full, skip this buffer
-                continue
-            except Exception:
-                # Ignore errors in audio generation
-                continue
-
-    def stop(self):
-        """Stop audio playback"""
-        self._stop_event.set()
-        
-        # Wait for audio thread to finish
-        if self._audio_thread is not None:
-            self._audio_thread.join(timeout=1.0)
-            self._audio_thread = None
-        
-        # Clear the queue
-        while not self._sound_queue.empty():
-            try:
-                self._sound_queue.get_nowait()
-            except queue_module.Empty:
-                break
-        
-        # Stop mixer
-        try:
-            pygame.mixer.stop()
-        except pygame.error:
-            pass
-        
-        self._audio_started = False
-        self._audio_channel = None
-
-    def read_register(self, addr: int) -> int:
-        """Handle MMIO reads from sound registers (write-only on hardware, return 0)."""
-        return 0
-
-    def write_register(self, addr: int, value: int):
-        """Handle MMIO writes to sound registers"""
-        if addr == 0x04000060:
-            self.ch1.sweep_shift = (value >> 4) & 0x07
-            self.ch1.sweep_decrease = bool(value & 0x08)
-            self.ch1.sweep_steps = value & 0x07
-        elif addr == 0x04000062:
-            self.ch1.duty_cycle = (value >> 6) & 0x03
-            self.ch1.length = value & 0x3F
-        elif addr == 0x04000064:
-            self.ch1.frequency = value & 0x7FF
-            self.ch1.envelope_volume = (value >> 12) & 0x0F
-            self.ch1.envelope_steps = (value >> 8) & 0x07
-            self.ch1.envelope_increase = bool(value & 0x0800)
-            if value & 0x8000:
-                self.ch1.trigger()
-        elif addr == 0x04000068:
-            self.ch2.duty_cycle = (value >> 6) & 0x03
-            self.ch2.length = value & 0x3F
-        elif addr == 0x0400006A:
-            self.ch2.envelope_volume = (value >> 12) & 0x0F
-            self.ch2.envelope_steps = (value >> 8) & 0x07
-            self.ch2.envelope_increase = bool(value & 0x0800)
-        elif addr == 0x0400006C:
-            self.ch2.frequency = value & 0x7FF
-            if value & 0x8000:
-                self.ch2.trigger()
-        elif addr == 0x04000070:
-            self.ch3.wave_bank = (value >> 5) & 0x01
-            self.wave_bank = self.ch3.wave_bank
-            self.ch3.enabled = bool(value & 0x80)
-        elif addr == 0x04000072:
-            self.ch3.length = value & 0xFF
-        elif addr == 0x04000074:
-            volume_shift = (value >> 8) & 0x03
-            self.ch3.volume = 0 if volume_shift == 0 else (1 if volume_shift == 1 else (2 if volume_shift == 2 else 3))
-            self.ch3.format_8bit = bool(value & 0x0400)
-            self.ch3.frequency = value & 0x3FF
-            if value & 0x8000:
-                self.ch3.trigger()
-        elif addr == 0x04000078:
-            self.ch4.length = value & 0x3F
-        elif addr == 0x0400007A:
-            self.ch4.envelope_volume = (value >> 12) & 0x0F
-            self.ch4.envelope_steps = (value >> 8) & 0x07
-            self.ch4.envelope_increase = bool(value & 0x0800)
-        elif addr == 0x0400007C:
-            self.ch4.clock_shift = (value >> 4) & 0x0F
-            self.ch4.clock_divider = value & 0x07
-            self.ch4.width_7bit = bool(value & 0x08)
-            if value & 0x8000:
-                self.ch4.trigger()
-        elif addr == 0x04000080:
-            self.master_volume_right = (value >> 4) & 0x07
-            self.master_volume_left = value & 0x07
-        elif addr == 0x04000082:
-            self.fifo_a.volume_right = (value >> 4) & 0x0F
-            self.fifo_a.volume_left = value & 0x0F
-            self.fifo_a.enabled = bool(value & 0x0200)
-            self.ch1_enabled = bool(value & 0x0001)
-            self.ch2_enabled = bool(value & 0x0002)
-        elif addr == 0x04000084:
-            self.fifo_b.volume_right = (value >> 4) & 0x0F
-            self.fifo_b.volume_left = value & 0x0F
-            self.fifo_b.enabled = bool(value & 0x0200)
-            self.ch3_enabled = bool(value & 0x0004)
-            self.ch4_enabled = bool(value & 0x0008)
-        elif 0x040000A0 <= addr <= 0x040000A3:
-            self.fifo_a.write(value & 0xFF)
-        elif 0x040000A4 <= addr <= 0x040000A7:
-            self.fifo_b.write(value & 0xFF)
-        elif 0x04000090 <= addr <= 0x040000AF:
-            offset = addr - 0x04000090
-            self.wave_ram[self.wave_bank][offset % 32] = value & 0xFF
-
-    def get_sample(self) -> tuple:
-        """Return mixed stereo sample (left, right)"""
-        # Mix channels
-        left = 0
-        right = 0
-
-        if self.ch1_enabled:
-            sample = self.ch1.step(self.SAMPLE_RATE)
-            left += sample * self.master_volume_left
-            right += sample * self.master_volume_right
-
-        if self.ch2_enabled:
-            sample = self.ch2.step(self.SAMPLE_RATE)
-            left += sample * self.master_volume_left
-            right += sample * self.master_volume_right
-
-        if self.ch3_enabled:
-            sample = self.ch3.step(self.SAMPLE_RATE, self.wave_ram, self.wave_bank)
-            left += sample * self.master_volume_left
-            right += sample * self.master_volume_right
-
-        if self.ch4_enabled:
-            sample = self.ch4.step(self.SAMPLE_RATE)
-            left += sample * self.master_volume_left
-            right += sample * self.master_volume_right
-
-        if self.fifo_a_enabled:
-            sample = self.fifo_a.step(self.SAMPLE_RATE)
-            left += sample * self.fifo_a.volume_left
-            right += sample * self.fifo_a.volume_right
-
-        if self.fifo_b_enabled:
-            sample = self.fifo_b.step(self.SAMPLE_RATE)
-            left += sample * self.fifo_b.volume_left
-            right += sample * self.fifo_b.volume_right
-
-        # Normalize to 0-255 range
-        left = min(255, max(0, left // 7))
-        right = min(255, max(0, right // 7))
-
-        return (left, right)
-
-    def _generate_samples(self, count: int) -> bytes:
-        """Generate 'count' stereo samples and return as bytes."""
-        samples = array.array('B')
-        for _ in range(count):
-            left, right = self.get_sample()
-            samples.append(left)
-            samples.append(right)
-        return samples.tobytes()
-
-    def _audio_worker(self):
-        """Background thread that continuously generates and queues audio buffers."""
-        while not self._stop_event.is_set():
-            try:
-                # Generate audio samples
-                samples = self._generate_samples(self._buffer_size)
-                sound = pygame.mixer.Sound(buffer=samples)
-                
-                # Queue the sound (blocks if queue is full)
-                self._sound_queue.put(sound, timeout=0.1)
-            except queue_module.Full:
-                # Queue is full, skip this buffer
-                continue
-            except Exception:
-                # Ignore errors in audio generation
-                continue
-
-    def update(self):
-        """Update audio playback with continuous thread-based buffering."""
-        if not pygame.mixer.get_init():
-            return
-
-        # Check if any audio is enabled
-        audio_enabled = (self.ch1_enabled or self.ch2_enabled or
-                        self.ch3_enabled or self.ch4_enabled or
-                        self.fifo_a_enabled or self.fifo_b_enabled)
-        
-        # Stop audio if nothing is enabled
-        if not audio_enabled:
-            if self._last_audio_state:
-                self.stop()
-                self._last_audio_state = False
-            return
-
-        # Initialize audio channel on first use
-        if not self._audio_started:
-            try:
-                if pygame.mixer.get_num_channels() < 2:
-                    pygame.mixer.set_num_channels(2)
-                self._audio_channel = pygame.mixer.Channel(1)
-                
-                # Start the audio worker thread
-                self._stop_event.clear()
-                self._audio_thread = threading.Thread(target=self._audio_worker, daemon=True)
-                self._audio_thread.start()
-                
-                self._audio_started = True
-                self._last_audio_state = True
-            except pygame.error:
-                return
-
-        # Play sounds from the queue
-        try:
-            # Check if channel is busy
-            if not self._audio_channel.get_busy():
-                # Try to get next sound from queue (non-blocking)
-                try:
-                    next_sound = self._sound_queue.get_nowait()
-                    self._audio_channel.play(next_sound)
-                except queue_module.Empty:
-                    # No sound ready yet, will be filled by worker thread
-                    pass
-        except pygame.error:
-            pass
-
-
-# === End of apu.py ===
-
-
 # === Start of bios.py ===
 
-"""GBA BIOS SWI handlers - software interrupt implementations
 
-GBA BIOS has 42 SWI handlers (0x00-0x29). Most games use only ~10-15 of them.
-Critical handlers for game compatibility:
-- Halt (0x02), IntrWait (0x04), VBlankIntrWait (0x05) - timing/interrupts
-- CpuFastSet (0x0C) - fast memory operations
-- Div/DivArm/Divmod (0x06-0x07) - arithmetic
-- LZ77/Huff/RL decompression (0x11-0x15) - asset decompression
-"""
-
-import math
-import struct
-import time
-from typing import List, Optional, Tuple
 
 
 class BIOS:
@@ -7558,7 +6372,6 @@ class BIOS:
         if freq <= 0:
             return 0
         # MIDI note = 69 + 12 * log2(freq / 440)
-        import math
 
         note = 69 + 12 * math.log2(freq / 440.0)
         return max(0, min(127, int(note + 0.5)))
@@ -7568,7 +6381,6 @@ class BIOS:
         if note < 0:
             return 0
         # freq = 440 * 2^((note - 69) / 12)
-        import math
 
         freq = 440.0 * (2.0 ** ((note - 69) / 12.0))
         return int(freq)
@@ -7658,15 +6470,4105 @@ class BIOS:
 # === End of bios.py ===
 
 
+# === Start of apu.py ===
+
+
+
+# Optional Numba JIT support
+try:
+    numba_available = True
+except ImportError:
+    numba_available = False
+    def njit(f=None, **kwargs):
+        return f if f else lambda x: x
+
+
+class SquareWaveChannel:
+    """Square wave sound channel (CH1/CH2)"""
+
+    DUTY_PATTERNS = [
+        0b00000001,  # 12.5%
+        0b00000011,  # 25%
+        0b00001111,  # 50%
+        0b11111111,  # 75%
+    ]
+
+    def __init__(self):
+        self.enabled = False
+        self.volume = 0
+        self.frequency = 0
+        self.duty_cycle = 0
+        self.envelope_volume = 0
+        self.envelope_steps = 0
+        self.envelope_increase = False
+        self.length = 0
+        self.length_enable = False
+        self.length_counter = 0
+        self.envelope_counter = 0
+        self.envelope_volume_current = 0
+        self.sweep_shift = 0
+        self.sweep_decrease = False
+        self.sweep_steps = 0
+        self.sweep_counter = 0
+        self.timer = 0
+        self.timer_period = 0
+        self.output_bit = 0
+
+    def step(self, sample_rate: int) -> int:
+        """Generate one sample. Returns volume level (0-15)."""
+        if not self.enabled:
+            return 0
+
+        # Length counter
+        if self.length_enable and self.length > 0:
+            self.length_counter += 1
+            if self.length_counter >= (256 - self.length):
+                self.enabled = False
+                return 0
+
+        # Envelope
+        if self.envelope_steps > 0:
+            self.envelope_counter += 1
+            if self.envelope_counter >= self.envelope_steps:
+                self.envelope_counter = 0
+                if self.envelope_increase:
+                    self.envelope_volume_current = min(15, self.envelope_volume_current + 1)
+                else:
+                    self.envelope_volume_current = max(0, self.envelope_volume_current - 1)
+                if self.envelope_volume_current == 0:
+                    self.enabled = False
+                    return 0
+        else:
+            self.envelope_volume_current = self.envelope_volume
+
+        # Timer/frequency
+        if self.frequency > 0:
+            self.timer_period = 2048 - self.frequency
+        else:
+            self.timer_period = 2048
+
+        self.timer += 1
+        if self.timer >= self.timer_period:
+            self.timer = 0
+            self.output_bit = 1 - self.output_bit
+
+            # Sweep
+            if self.sweep_steps > 0:
+                self.sweep_counter -= 1
+                if self.sweep_counter <= 0:
+                    self.sweep_counter = self.sweep_steps
+                    if self.sweep_decrease:
+                        self.frequency -= self.frequency >> self.sweep_shift
+                    else:
+                        self.frequency += self.frequency >> self.sweep_shift
+                    if self.frequency > 2047:
+                        self.enabled = False
+                        return 0
+
+        return self.output_bit * self.envelope_volume_current
+
+    def trigger(self):
+        """Trigger the channel (key on)"""
+        self.timer = 0
+        self.output_bit = 0
+        self.envelope_counter = 0
+        self.envelope_volume_current = self.envelope_volume
+        self.length_counter = 0
+        self.sweep_counter = self.sweep_steps
+        self.enabled = True
+
+
+class WaveChannel:
+    """Wave playback channel (CH3)"""
+
+    def __init__(self):
+        self.enabled = False
+        self.volume = 0
+        self.frequency = 0
+        self.wave_ram = [0] * 32
+        self.wave_bank = 0
+        self.length = 0
+        self.length_enable = False
+        self.length_counter = 0
+        self.timer = 0
+        self.timer_period = 0
+        self.counter = 0
+        self.format_8bit = False
+
+    def step(self, sample_rate: int, wave_ram: list, wave_bank: int) -> int:
+        """Generate one sample."""
+        if not self.enabled:
+            return 0
+
+        # Length counter
+        if self.length_enable and self.length > 0:
+            self.length_counter += 1
+            if self.length_counter >= 256:
+                self.enabled = False
+                return 0
+
+        # Frequency timer
+        if self.frequency > 0:
+            self.timer_period = 2048 - self.frequency
+        else:
+            self.timer_period = 2048
+
+        self.timer += 1
+        if self.timer >= self.timer_period:
+            self.timer = 0
+            self.counter += 1
+
+        # Read from wave RAM — select bank based on wave_bank register
+        nibble_index = self.counter % 64
+        byte_index = nibble_index // 2
+        wave_value = wave_ram[wave_bank][byte_index % 32]
+
+        if nibble_index % 2 == 0:
+            sample = wave_value & 0x0F
+        else:
+            sample = (wave_value >> 4) & 0x0F
+
+        # Apply volume
+        if self.volume == 0:
+            return 0
+        elif self.volume == 1:
+            return sample
+        elif self.volume == 2:
+            return sample // 2
+        else:  # volume == 3
+            return sample // 4
+
+    def trigger(self):
+        """Trigger the channel"""
+        self.timer = 0
+        self.counter = 0
+        self.length_counter = 0
+        self.enabled = True
+
+
+class NoiseChannel:
+    """Noise channel (CH4)"""
+
+    def __init__(self):
+        self.enabled = False
+        self.volume = 0
+        self.envelope_volume = 0
+        self.envelope_steps = 0
+        self.envelope_increase = False
+        self.length = 0
+        self.length_enable = False
+        self.length_counter = 0
+        self.lfsr = 0x7FFF
+        self.width_7bit = False
+        self.clock_shift = 0
+        self.clock_divider = 0
+        self.envelope_counter = 0
+        self.envelope_volume_current = 0
+        self.timer = 0
+        self.timer_period = 0
+        self.output_bit = 0
+
+    def step(self, sample_rate: int) -> int:
+        """Generate one sample."""
+        if not self.enabled:
+            return 0
+
+        # Length counter
+        if self.length_enable and self.length > 0:
+            self.length_counter += 1
+            if self.length_counter >= (256 - self.length):
+                self.enabled = False
+                return 0
+
+        # Envelope
+        if self.envelope_steps > 0:
+            self.envelope_counter += 1
+            if self.envelope_counter >= self.envelope_steps:
+                self.envelope_counter = 0
+                if self.envelope_increase:
+                    self.envelope_volume_current = min(15, self.envelope_volume_current + 1)
+                else:
+                    self.envelope_volume_current = max(0, self.envelope_volume_current - 1)
+                if self.envelope_volume_current == 0:
+                    self.enabled = False
+                    return 0
+        else:
+            self.envelope_volume_current = self.envelope_volume
+
+        # Timer
+        divisor = max(1, self.clock_divider)
+        self.timer_period = (1 << self.clock_shift) * divisor
+        if self.timer_period == 0:
+            self.timer_period = 1
+
+        self.timer += 1
+        if self.timer >= self.timer_period:
+            self.timer = 0
+
+            # LFSR step
+            if self.width_7bit:
+                bit0 = self.lfsr & 1
+                bit1 = (self.lfsr >> 1) & 1
+                new_bit = bit0 ^ bit1
+                self.lfsr = (self.lfsr >> 1) | (new_bit << 6)
+                self.lfsr &= 0x7F
+            else:
+                bit0 = self.lfsr & 1
+                bit14 = (self.lfsr >> 14) & 1
+                new_bit = bit0 ^ bit14
+                self.lfsr = (self.lfsr >> 1) | (new_bit << 14)
+
+            self.output_bit = self.lfsr & 1
+
+        return self.output_bit * self.envelope_volume_current
+
+    def trigger(self):
+        """Trigger the channel"""
+        self.lfsr = 0x7FFF
+        self.timer = 0
+        self.output_bit = 0
+        self.envelope_counter = 0
+        self.envelope_volume_current = self.envelope_volume
+        self.length_counter = 0
+        self.enabled = True
+
+
+class FIFO:
+    """Direct Sound FIFO buffer"""
+
+    def __init__(self):
+        self.data = deque(maxlen=8)
+        self.timer = 0
+        self.timer_period = 1  # Will be set by DMA
+        self.enabled = False
+        self.volume_left = 0
+        self.volume_right = 0
+
+    def write(self, value: int):
+        """Write a byte to FIFO"""
+        self.data.append(value & 0xFF)
+
+    def read(self) -> int:
+        """Read a byte from FIFO"""
+        if self.data:
+            return self.data.popleft()
+        return 128  # Silence
+
+    def step(self, sample_rate: int) -> int:
+        """Generate one sample from FIFO."""
+        if not self.enabled:
+            return 0
+
+        self.timer += 1
+        if self.timer >= self.timer_period and self.data:
+            self.timer = 0
+            return self.read()
+
+        return 0
+
+
+class APU:
+    """GBA Audio Processing Unit"""
+
+    SAMPLE_RATE = 44100
+
+    def __init__(self):
+        self.ch1 = SquareWaveChannel()
+        self.ch2 = SquareWaveChannel()
+        self.ch3 = WaveChannel()
+        self.ch4 = NoiseChannel()
+        self.fifo_a = FIFO()
+        self.fifo_b = FIFO()
+        self.wave_ram = [[0] * 32, [0] * 32]
+        self.wave_bank = 0
+        self.master_volume_left = 0
+        self.master_volume_right = 0
+        self.ch1_enabled = False
+        self.ch2_enabled = False
+        self.ch3_enabled = False
+        self.ch4_enabled = False
+        self.fifo_a_enabled = False
+        self.fifo_b_enabled = False
+        
+        # Continuous audio playback with thread-safe queue
+        self._audio_channel = None
+        self._buffer_size = 4096  # Samples per buffer (93ms at 44100Hz) - larger for stability
+        self._sound_queue = queue_module.Queue(maxsize=3)  # Buffer 3 sounds ahead
+        self._audio_thread = None
+        self._stop_event = threading.Event()
+        self._audio_started = False
+        self._last_audio_state = False  # Track previous audio state
+
+    def start(self):
+        """Start audio playback"""
+        if not pygame.mixer.get_init():
+            # Use larger buffer for smoother playback
+            pygame.mixer.init(frequency=self.SAMPLE_RATE, size=-8, channels=2, buffer=2048)
+
+    def _audio_worker(self):
+        """Background thread that continuously generates and queues audio buffers."""
+        while not self._stop_event.is_set():
+            try:
+                # Generate audio samples
+                samples = self._generate_samples(self._buffer_size)
+                sound = pygame.mixer.Sound(buffer=samples)
+                
+                # Queue the sound (blocks if queue is full)
+                self._sound_queue.put(sound, timeout=0.1)
+            except queue_module.Full:
+                # Queue is full, skip this buffer
+                continue
+            except Exception:
+                # Ignore errors in audio generation
+                continue
+
+    def stop(self):
+        """Stop audio playback"""
+        self._stop_event.set()
+        
+        # Wait for audio thread to finish
+        if self._audio_thread is not None:
+            self._audio_thread.join(timeout=1.0)
+            self._audio_thread = None
+        
+        # Clear the queue
+        while not self._sound_queue.empty():
+            try:
+                self._sound_queue.get_nowait()
+            except queue_module.Empty:
+                break
+        
+        # Stop mixer
+        try:
+            pygame.mixer.stop()
+        except pygame.error:
+            pass
+        
+        self._audio_started = False
+        self._audio_channel = None
+
+    def read_register(self, addr: int) -> int:
+        """Handle MMIO reads from sound registers (write-only on hardware, return 0)."""
+        return 0
+
+    def write_register(self, addr: int, value: int):
+        """Handle MMIO writes to sound registers"""
+        if addr == 0x04000060:
+            self.ch1.sweep_shift = (value >> 4) & 0x07
+            self.ch1.sweep_decrease = bool(value & 0x08)
+            self.ch1.sweep_steps = value & 0x07
+        elif addr == 0x04000062:
+            self.ch1.duty_cycle = (value >> 6) & 0x03
+            self.ch1.length = value & 0x3F
+        elif addr == 0x04000064:
+            self.ch1.frequency = value & 0x7FF
+            self.ch1.envelope_volume = (value >> 12) & 0x0F
+            self.ch1.envelope_steps = (value >> 8) & 0x07
+            self.ch1.envelope_increase = bool(value & 0x0800)
+            if value & 0x8000:
+                self.ch1.trigger()
+        elif addr == 0x04000068:
+            self.ch2.duty_cycle = (value >> 6) & 0x03
+            self.ch2.length = value & 0x3F
+        elif addr == 0x0400006A:
+            self.ch2.envelope_volume = (value >> 12) & 0x0F
+            self.ch2.envelope_steps = (value >> 8) & 0x07
+            self.ch2.envelope_increase = bool(value & 0x0800)
+        elif addr == 0x0400006C:
+            self.ch2.frequency = value & 0x7FF
+            if value & 0x8000:
+                self.ch2.trigger()
+        elif addr == 0x04000070:
+            self.ch3.wave_bank = (value >> 5) & 0x01
+            self.wave_bank = self.ch3.wave_bank
+            self.ch3.enabled = bool(value & 0x80)
+        elif addr == 0x04000072:
+            self.ch3.length = value & 0xFF
+        elif addr == 0x04000074:
+            volume_shift = (value >> 8) & 0x03
+            self.ch3.volume = 0 if volume_shift == 0 else (1 if volume_shift == 1 else (2 if volume_shift == 2 else 3))
+            self.ch3.format_8bit = bool(value & 0x0400)
+            self.ch3.frequency = value & 0x3FF
+            if value & 0x8000:
+                self.ch3.trigger()
+        elif addr == 0x04000078:
+            self.ch4.length = value & 0x3F
+        elif addr == 0x0400007A:
+            self.ch4.envelope_volume = (value >> 12) & 0x0F
+            self.ch4.envelope_steps = (value >> 8) & 0x07
+            self.ch4.envelope_increase = bool(value & 0x0800)
+        elif addr == 0x0400007C:
+            self.ch4.clock_shift = (value >> 4) & 0x0F
+            self.ch4.clock_divider = value & 0x07
+            self.ch4.width_7bit = bool(value & 0x08)
+            if value & 0x8000:
+                self.ch4.trigger()
+        elif addr == 0x04000080:
+            self.master_volume_right = (value >> 4) & 0x07
+            self.master_volume_left = value & 0x07
+        elif addr == 0x04000082:
+            self.fifo_a.volume_right = (value >> 4) & 0x0F
+            self.fifo_a.volume_left = value & 0x0F
+            self.fifo_a.enabled = bool(value & 0x0200)
+            self.ch1_enabled = bool(value & 0x0001)
+            self.ch2_enabled = bool(value & 0x0002)
+        elif addr == 0x04000084:
+            self.fifo_b.volume_right = (value >> 4) & 0x0F
+            self.fifo_b.volume_left = value & 0x0F
+            self.fifo_b.enabled = bool(value & 0x0200)
+            self.ch3_enabled = bool(value & 0x0004)
+            self.ch4_enabled = bool(value & 0x0008)
+        elif 0x040000A0 <= addr <= 0x040000A3:
+            self.fifo_a.write(value & 0xFF)
+        elif 0x040000A4 <= addr <= 0x040000A7:
+            self.fifo_b.write(value & 0xFF)
+        elif 0x04000090 <= addr <= 0x040000AF:
+            offset = addr - 0x04000090
+            self.wave_ram[self.wave_bank][offset % 32] = value & 0xFF
+
+    def get_sample(self) -> tuple:
+        """Return mixed stereo sample (left, right)"""
+        # Mix channels
+        left = 0
+        right = 0
+
+        if self.ch1_enabled:
+            sample = self.ch1.step(self.SAMPLE_RATE)
+            left += sample * self.master_volume_left
+            right += sample * self.master_volume_right
+
+        if self.ch2_enabled:
+            sample = self.ch2.step(self.SAMPLE_RATE)
+            left += sample * self.master_volume_left
+            right += sample * self.master_volume_right
+
+        if self.ch3_enabled:
+            sample = self.ch3.step(self.SAMPLE_RATE, self.wave_ram, self.wave_bank)
+            left += sample * self.master_volume_left
+            right += sample * self.master_volume_right
+
+        if self.ch4_enabled:
+            sample = self.ch4.step(self.SAMPLE_RATE)
+            left += sample * self.master_volume_left
+            right += sample * self.master_volume_right
+
+        if self.fifo_a_enabled:
+            sample = self.fifo_a.step(self.SAMPLE_RATE)
+            left += sample * self.fifo_a.volume_left
+            right += sample * self.fifo_a.volume_right
+
+        if self.fifo_b_enabled:
+            sample = self.fifo_b.step(self.SAMPLE_RATE)
+            left += sample * self.fifo_b.volume_left
+            right += sample * self.fifo_b.volume_right
+
+        # Normalize to 0-255 range
+        left = min(255, max(0, left // 7))
+        right = min(255, max(0, right // 7))
+
+        return (left, right)
+
+    def _generate_samples(self, count: int) -> bytes:
+        """Generate 'count' stereo samples and return as bytes."""
+        samples = array.array('B')
+        for _ in range(count):
+            left, right = self.get_sample()
+            samples.append(left)
+            samples.append(right)
+        return samples.tobytes()
+
+    def _audio_worker(self):
+        """Background thread that continuously generates and queues audio buffers."""
+        while not self._stop_event.is_set():
+            try:
+                # Generate audio samples
+                samples = self._generate_samples(self._buffer_size)
+                sound = pygame.mixer.Sound(buffer=samples)
+                
+                # Queue the sound (blocks if queue is full)
+                self._sound_queue.put(sound, timeout=0.1)
+            except queue_module.Full:
+                # Queue is full, skip this buffer
+                continue
+            except Exception:
+                # Ignore errors in audio generation
+                continue
+
+    def update(self):
+        """Update audio playback with continuous thread-based buffering."""
+        if not pygame.mixer.get_init():
+            return
+
+        # Check if any audio is enabled
+        audio_enabled = (self.ch1_enabled or self.ch2_enabled or
+                        self.ch3_enabled or self.ch4_enabled or
+                        self.fifo_a_enabled or self.fifo_b_enabled)
+        
+        # Stop audio if nothing is enabled
+        if not audio_enabled:
+            if self._last_audio_state:
+                self.stop()
+                self._last_audio_state = False
+            return
+
+        # Initialize audio channel on first use
+        if not self._audio_started:
+            try:
+                if pygame.mixer.get_num_channels() < 2:
+                    pygame.mixer.set_num_channels(2)
+                self._audio_channel = pygame.mixer.Channel(1)
+                
+                # Start the audio worker thread
+                self._stop_event.clear()
+                self._audio_thread = threading.Thread(target=self._audio_worker, daemon=True)
+                self._audio_thread.start()
+                
+                self._audio_started = True
+                self._last_audio_state = True
+            except pygame.error:
+                return
+
+        # Play sounds from the queue
+        try:
+            # Check if channel is busy
+            if not self._audio_channel.get_busy():
+                # Try to get next sound from queue (non-blocking)
+                try:
+                    next_sound = self._sound_queue.get_nowait()
+                    self._audio_channel.play(next_sound)
+                except queue_module.Empty:
+                    # No sound ready yet, will be filled by worker thread
+                    pass
+        except pygame.error:
+            pass
+
+
+# === End of apu.py ===
+
+
+# === Start of timers.py ===
+
+
+
+class TimerChannel:
+    """Individual timer channel"""
+    
+    def __init__(self):
+        self.count = 0
+        self.reload = 0
+        self.control = 0
+
+    @property
+    def enabled(self) -> bool:
+        """Check if timer is enabled (bit 8)"""
+        return bool(self.control & 0x80)
+
+    @property
+    def irq_enable(self) -> bool:
+        """Check if IRQ is enabled (bit 6)"""
+        return bool(self.control & 0x40)
+
+    @property
+    def cascade(self) -> bool:
+        """Check if cascade mode is enabled (bit 2)"""
+        return bool(self.control & 0x04)
+
+    @property
+    def prescaler_value(self) -> int:
+        """Get prescaler divisor value (bits 0-1)"""
+        prescale_bits = self.control & 0x03
+        return [1, 64, 256, 1024][prescale_bits]
+
+
+class Timers:
+    """GBA Timer Controller with 4 timer channels"""
+    
+    PRESCALER_VALUES = [1, 64, 256, 1024]
+
+    def __init__(self):
+        self._channels = [TimerChannel() for _ in range(4)]
+        self._overflow_flags = [False] * 4
+        self._interrupts = None
+        self._cycle_subcount = [0] * 4
+
+    def attach_interrupts(self, interrupts):
+        """Attach interrupt controller for timer IRQ callbacks"""
+        self._interrupts = interrupts
+
+    @property
+    def channels(self):
+        """Access timer channels"""
+        return self._channels
+
+    def get_timer(self, channel: int) -> int:
+        """Get current count value for timer channel"""
+        if not 0 <= channel <= 3:
+            raise ValueError(f"Invalid channel: {channel}")
+        return self._channels[channel].count
+
+    def set_timer(self, channel: int, value: int) -> None:
+        """Set count value for timer channel"""
+        if not 0 <= channel <= 3:
+            raise ValueError(f"Invalid channel: {channel}")
+        self._channels[channel].count = value & 0xFFFF
+
+    def set_control(self, channel: int, control: int) -> None:
+        """Set control register for timer channel"""
+        if not 0 <= channel <= 3:
+            raise ValueError(f"Invalid channel: {channel}")
+        self._channels[channel].control = control & 0xFF
+
+    def set_reload(self, channel: int, reload: int) -> None:
+        """Set reload value for timer channel"""
+        if not 0 <= channel <= 3:
+            raise ValueError(f"Invalid channel: {channel}")
+        self._channels[channel].reload = reload & 0xFFFF
+
+    def get_control(self, channel: int) -> int:
+        """Get control register for timer channel"""
+        if not 0 <= channel <= 3:
+            raise ValueError(f"Invalid channel: {channel}")
+        return self._channels[channel].control
+
+    def get_reload(self, channel: int) -> int:
+        """Get reload value for timer channel"""
+        if not 0 <= channel <= 3:
+            raise ValueError(f"Invalid channel: {channel}")
+        return self._channels[channel].reload
+
+    def get_overflow_flag(self, channel: int) -> bool:
+        """Get overflow flag for timer channel"""
+        if not 0 <= channel <= 3:
+            raise ValueError(f"Invalid channel: {channel}")
+        return self._overflow_flags[channel]
+
+    def clear_overflow_flag(self, channel: int) -> None:
+        """Clear overflow flag for timer channel"""
+        if not 0 <= channel <= 3:
+            raise ValueError(f"Invalid channel: {channel}")
+        self._overflow_flags[channel] = False
+
+    def step(self, cycles: int) -> None:
+        """Advance all enabled timers by given cycles.
+        
+        Args:
+            cycles: Number of CPU cycles to advance timers
+        """
+        # Check cascade flags BEFORE reset, then clear
+        cascade_flags = [self._overflow_flags[i] for i in range(4)]
+        self._overflow_flags = [False] * 4
+
+        # Process each timer
+        for i in range(4):
+            channel = self._channels[i]
+
+            # Skip disabled timers
+            if not channel.enabled:
+                continue
+
+            # Cascade mode: increment only when previous timer overflows
+            if channel.cascade:
+                if i == 0:
+                    continue
+                if not cascade_flags[i - 1]:
+                    continue
+                increment = 1
+            else:
+                prescaler = channel.prescaler_value
+                total = self._cycle_subcount[i] + cycles
+                increment = total // prescaler
+                self._cycle_subcount[i] = total % prescaler
+
+            if increment > 0:
+                new_count = channel.count + increment
+                if new_count > 0xFFFF:
+                    self._overflow_flags[i] = True
+                    new_count = (new_count - 0x10000) + channel.reload
+                    if channel.irq_enable and self._interrupts:
+                        self._interrupts.timer_irq(i)
+                channel.count = new_count & 0xFFFF
+
+# === End of timers.py ===
+
+
+# === Start of interrupts.py ===
+
+
+
+class InterruptController:
+    """Interrupt controller managing IE, IF, and IME registers.
+
+    Interrupt sources (bit positions):
+        - VBlank: 0
+        - HBlank: 1
+        - VCounter: 2
+        - Timer0-3: 3-6
+        - DMA0-3: 8-11
+        - KeyPad: 12
+        - GamePak: 13
+    """
+
+    # Interrupt source bit positions
+    IRQ_VBLANK = 0
+    IRQ_HBLANK = 1
+    IRQ_VCOUNTER = 2
+    IRQ_TIMER0 = 3
+    IRQ_TIMER1 = 4
+    IRQ_TIMER2 = 5
+    IRQ_TIMER3 = 6
+    IRQ_DMA0 = 8
+    IRQ_DMA1 = 9
+    IRQ_DMA2 = 10
+    IRQ_DMA3 = 11
+    IRQ_KEYPAD = 12
+    IRQ_GAMEPAK = 13
+
+    def __init__(self):
+        # IE: Interrupt Enable register (16-bit) - enables per-interrupt sources
+        self.ie_reg = 0x0000
+        # IF: Interrupt Flags register (16-bit) - raised interrupts, write 1 to clear
+        self.if_reg = 0x0000
+        # IME: Interrupt Master Enable register (1-bit)
+        self.ime_reg = 0x0000
+        # Handlers stored by interrupt source bit position
+        self._handlers = {}
+        # Optimized: pre-compute enabled interrupt mask
+        self._enabled_mask = 0
+        # Batch processing: collect pending interrupts
+        self._pending_batch = []
+        # IRQ check frequency (every N calls)
+        self._irq_check_counter = 0
+        self._irq_check_interval = 1  # Check every frame (can be increased for performance)
+
+    def register_handler(self, irq_id: int, callback):
+        """Register a callback for a specific interrupt source.
+
+        Args:
+            irq_id: Interrupt source bit position (0-13)
+            callback: Function to call when interrupt fires and is enabled
+        """
+        self._handlers[irq_id] = callback
+
+    def fire(self, irq_id: int):
+        """Fire an interrupt - set the IF flag and call handler if enabled.
+
+        Args:
+            irq_id: Interrupt source bit position (0-13)
+        """
+        # Set the interrupt flag in IF register
+        self.if_reg |= 1 << irq_id
+
+        # Check if interrupt is enabled (IME=1 and IE bit for this irq is set)
+        if self.ime_reg & 0x0001 and (self.ie_reg & (1 << irq_id)):
+            # Call the handler if registered
+            if irq_id in self._handlers:
+                self._handlers[irq_id]()
+
+    def vblank_irq(self):
+        """Convenience method to fire a VBlank interrupt (IRQ 0)."""
+        self.fire(self.IRQ_VBLANK)
+
+    def hblank_irq(self):
+        """Convenience method to fire a HBlank interrupt (IRQ 1)."""
+        self.fire(self.IRQ_HBLANK)
+
+    def vcounter_irq(self):
+        """Convenience method to fire a VCounter interrupt (IRQ 2)."""
+        self.fire(self.IRQ_VCOUNTER)
+
+    def timer_irq(self, channel: int):
+        """Convenience method to fire a timer interrupt.
+
+        Args:
+            channel: Timer channel (0-3), maps to IRQ 3-6
+        """
+        if 0 <= channel <= 3:
+            self.fire(self.IRQ_TIMER0 + channel)
+
+    def dma_irq(self, channel: int):
+        """Convenience method to fire a DMA interrupt.
+
+        Args:
+            channel: DMA channel (0-3), maps to IRQ 8-11
+        """
+        if 0 <= channel <= 3:
+            self.fire(self.IRQ_DMA0 + channel)
+
+    def keypad_irq(self):
+        """Convenience method to fire a KeyPad interrupt (IRQ 12)."""
+        self.fire(self.IRQ_KEYPAD)
+
+    def gamepak_irq(self):
+        """Convenience method to fire a GamePak interrupt (IRQ 13)."""
+        self.fire(self.IRQ_GAMEPAK)
+
+    def write_ie(self, val: int):
+        """Write to IE (Interrupt Enable) register.
+
+        Args:
+            val: 16-bit value to write
+        """
+        self.ie_reg = val & 0xFFFF
+        # Optimized: pre-compute enabled interrupt mask
+        self._enabled_mask = self.ie_reg if self.ime_reg & 0x0001 else 0
+
+    def write_if(self, val: int):
+        """Write to IF (Interrupt Flags) register.
+
+        Writing 1 to a bit clears that interrupt flag.
+
+        Args:
+            val: 16-bit value to write
+        """
+        # Clear bits where val has 1s (write-1-to-clear behavior)
+        self.if_reg &= ~(val & 0xFFFF)
+
+    def write_ime(self, val: int):
+        """Write to IME (Interrupt Master Enable) register.
+
+        Args:
+            val: 16-bit value (only bit 0 is significant)
+        """
+        self.ime_reg = val & 0x0001
+        # Optimized: update enabled mask
+        self._enabled_mask = self.ie_reg if self.ime_reg & 0x0001 else 0
+
+    def read_ie(self) -> int:
+        """Read IE register."""
+        return self.ie_reg
+
+    def read_if(self) -> int:
+        """Read IF register."""
+        return self.if_reg
+
+    def read_ime(self) -> int:
+        """Read IME register."""
+        return self.ime_reg
+
+    def get_pending_interrupts(self) -> int:
+        """Get bitmask of pending and enabled interrupts."""
+        return self.if_reg & self.ie_reg
+
+    def has_pending_interrupt(self) -> bool:
+        """Check if any enabled interrupt is pending (optimized with bitfield)."""
+        # Optimized: single bitwise operation instead of multiple checks
+        return (self.if_reg & self._enabled_mask) != 0
+    
+    def process_pending_interrupts(self) -> int:
+        """Process all pending interrupts in batch. Returns count of interrupts processed.
+        
+        This is an optimized method that processes all pending interrupts at once
+        instead of checking one by one.
+        """
+        if not (self.ime_reg & 0x0001):
+            return 0
+        
+        # Get pending and enabled interrupts as a bitmask
+        pending = self.if_reg & self.ie_reg
+        if pending == 0:
+            return 0
+        
+        count = 0
+        # Process each pending interrupt
+        for irq_id in range(14):
+            if pending & (1 << irq_id):
+                if irq_id in self._handlers:
+                    self._handlers[irq_id]()
+                    count += 1
+        
+        return count
+
+    def clear_if(self):
+        """Clear all interrupt flags."""
+        self.if_reg = 0x0000
+
+
+def set_vblank_flag():
+    interrupts.fire(InterruptController.IRQ_VBLANK)
+
+    def set_ime(self, enabled: bool):
+        """Set IME register.
+
+        Args:
+            enabled: True to enable interrupts, False to disable
+        """
+        self.ime_reg = 0x0001 if enabled else 0x0000
+
+
+# === End of interrupts.py ===
+
+
+# === Start of input.py ===
+
+
+# GBA button bit positions in KEYINPUT register (0x04000130)
+# Active low: 0 = pressed, 1 = released
+GBA_KEYS = {
+    "A": 0x01,  # bit 0
+    "B": 0x02,  # bit 1
+    "SELECT": 0x04,  # bit 2
+    "START": 0x08,  # bit 3
+    "RIGHT": 0x100,  # bit 8
+    "LEFT": 0x200,  # bit 9
+    "UP": 0x400,  # bit 10
+    "DOWN": 0x800,  # bit 11
+    "R": 0x1000,  # bit 12
+    "L": 0x2000,  # bit 13
+}
+
+# Keyboard to GBA button mapping
+# Arrow keys -> DPAD (bits 8-11), Z -> A, S -> B, Enter -> Start, Space -> Select
+KEYBOARD_MAP = {
+    "z": "A",
+    "s": "B",
+    "return": "START",
+    "space": "SELECT",
+    "right": "RIGHT",
+    "left": "LEFT",
+    "up": "UP",
+    "down": "DOWN",
+    "a": "L",
+    "x": "R",
+}
+
+# Default value when no keys pressed (all bits = 1, meaning released)
+# 14 bits (0-13) = 0x3FFF
+DEFAULT_KEYS = 0x3FFF
+
+
+class Input:
+    """Handles keyboard to GBA input mapping.
+
+    Maps keyboard keys to GBA KEYINPUT register (0x04000130).
+    Uses lazy import of pygame to avoid dependency at import time.
+    """
+
+    def __init__(self):
+        self._keys_pressed = DEFAULT_KEYS
+        self._pygame = None
+        self._pygame_available = None
+
+    @property
+    def _pygame_module(self):
+        """Lazy import of pygame to avoid dependency at import time."""
+        if self._pygame_available is None:
+            try:
+
+                # Initialize video subsystem for keyboard support
+                pygame.display.init()
+                pygame.key.set_repeat(100, 50)
+
+                self._pygame = pygame
+                self._pygame_available = True
+            except ImportError:
+                self._pygame = None
+                self._pygame_available = False
+        return self._pygame
+
+    @property
+    def pygame_available(self) -> bool:
+        """Check if pygame is available."""
+        if self._pygame_available is None:
+            _ = self._pygame_module  # Trigger lazy import
+        return self._pygame_available
+
+    def poll(self) -> bool:
+        """Poll keyboard state and update internal key state.
+
+        Returns:
+            True if polling successful, False if quit event received.
+            Returns True even if pygame is not available (no-op).
+        """
+        if not self.pygame_available:
+            # pygame not installed, return default (no keys pressed)
+            self._keys_pressed = DEFAULT_KEYS
+            return True
+
+        pygame = self._pygame_module
+
+        # Process events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return False
+
+        # Get current key states
+        keys = pygame.key.get_pressed()
+
+        # Start with all keys released (bits = 1)
+        key_state = DEFAULT_KEYS  # 0x3FFF = all released
+
+        # Check each mapped key
+        for py_key_name, gba_key_name in KEYBOARD_MAP.items():
+            py_key = getattr(pygame, f"K_{py_key_name}", None)
+            if py_key is not None and keys[py_key]:
+                # Key is pressed, clear the bit (active low)
+                key_state &= ~GBA_KEYS[gba_key_name]
+
+        self._keys_pressed = key_state
+        return True
+
+    def get_keys(self) -> int:
+        """Get current key state as 16-bit mask.
+
+        Returns:
+            16-bit integer representing GBA KEYINPUT register.
+            Bits are active low: 0 = pressed, 1 = released.
+            0x3FFF (14 bits) = no keys pressed
+        """
+        return self._keys_pressed
+
+    def update_from_pygame(self, keys) -> None:
+        """Update GBA input state from pygame key state.
+
+        Args:
+            keys: pygame key state from pygame.key.get_pressed()
+        """
+        # Lazy import pygame if not already loaded
+        if self._pygame is None:
+            _ = self._pygame_module  # Trigger lazy import
+
+        if not self.pygame_available:
+            self._keys_pressed = DEFAULT_KEYS
+            return
+
+        pygame = self._pygame
+        key_state = DEFAULT_KEYS
+        for py_key_name, gba_key_name in KEYBOARD_MAP.items():
+            py_key = getattr(pygame, f"K_{py_key_name}", None)
+            if py_key is not None and keys[py_key]:
+                key_state &= ~GBA_KEYS[gba_key_name]
+        self._keys_pressed = key_state
+
+    def update_keys(
+        self,
+        a=False,
+        b=False,
+        start=False,
+        select=False,
+        right=False,
+        left=False,
+        up=False,
+        down=False,
+        r=False,
+        l=False,
+    ):
+        """Update GBA input from boolean arguments."""
+        self._keys_pressed = 0x3FFF  # All not pressed
+        if a:
+            self._keys_pressed &= ~GBA_KEYS["A"]
+        if b:
+            self._keys_pressed &= ~GBA_KEYS["B"]
+        if start:
+            self._keys_pressed &= ~GBA_KEYS["START"]
+        if select:
+            self._keys_pressed &= ~GBA_KEYS["SELECT"]
+        if right:
+            self._keys_pressed &= ~GBA_KEYS["RIGHT"]
+        if left:
+            self._keys_pressed &= ~GBA_KEYS["LEFT"]
+        if up:
+            self._keys_pressed &= ~GBA_KEYS["UP"]
+        if down:
+            self._keys_pressed &= ~GBA_KEYS["DOWN"]
+        if r:
+            self._keys_pressed &= ~GBA_KEYS["R"]
+        if l:
+            self._keys_pressed &= ~GBA_KEYS["L"]
+
+
+# Export constants for generated code
+KEY_A = 0x01  # bit 0
+KEY_B = 0x02  # bit 1
+KEY_SELECT = 0x04  # bit 2
+KEY_START = 0x08  # bit 3
+KEY_RIGHT = 0x100  # bit 8
+KEY_LEFT = 0x200  # bit 9
+KEY_UP = 0x400  # bit 10
+KEY_DOWN = 0x800  # bit 11
+KEY_R = 0x1000  # bit 12
+KEY_L = 0x2000  # bit 13
+
+
+# === End of input.py ===
+
+
+# === Start of hooks.py ===
+
+
+
+
+class HookManager:
+    """
+    Manages debugging hooks and callbacks for the GBA emulator.
+    
+    All hook types support zero-overhead operation when no hooks are registered.
+    """
+    
+    def __init__(self):
+        self._instruction_hooks: Dict[int, Callable[[int], None]] = {}
+        self._write_hooks: Dict[int, Callable[[int, int], None]] = {}
+        self._read_hooks: Dict[int, Callable[[int], int]] = {}
+        self._frame_hooks: List[Callable[[int], None]] = []
+        self._breakpoints: Set[int] = set()
+        self._step_mode: bool = False
+        
+        # Fast-path flag - updated when hooks are added/removed
+        self._has_any_hooks: bool = False
+    
+    def on_instruction(self, addr: int, callback: Callable[[int], None]) -> None:
+        """
+        Register a callback for instruction execution at a specific address.
+        
+        Args:
+            addr: Instruction address (PC value) to hook
+            callback: Function called with the PC address when instruction executes
+        """
+        self._instruction_hooks[addr] = callback
+        self._has_any_hooks = True
+    
+    def on_write(self, addr: int, callback: Callable[[int, int], None]) -> None:
+        """
+        Register a callback for memory writes to a specific address.
+        
+        Args:
+            addr: Memory address to watch for writes
+            callback: Function called with (address, value) on write
+        """
+        self._write_hooks[addr] = callback
+        self._has_any_hooks = True
+    
+    def on_read(self, addr: int, callback: Callable[[int], int]) -> None:
+        """
+        Register a callback for memory reads from a specific address.
+        
+        Args:
+            addr: Memory address to watch for reads
+            callback: Function called with address, returns value to use
+        """
+        self._read_hooks[addr] = callback
+        self._has_any_hooks = True
+    
+    def on_frame(self, callback: Callable[[int], None]) -> None:
+        """
+        Register a callback for each rendered frame.
+        
+        Args:
+            callback: Function called with frame number after each render
+        """
+        self._frame_hooks.append(callback)
+        self._has_any_hooks = True
+    
+    def add_breakpoint(self, addr: int) -> None:
+        """
+        Add a breakpoint at the specified address.
+        
+        When execution reaches this address, the emulator will pause.
+        
+        Args:
+            addr: Address where execution should pause
+        """
+        self._breakpoints.add(addr)
+        self._has_any_hooks = True
+    
+    def remove_breakpoint(self, addr: int) -> None:
+        """
+        Remove a breakpoint from the specified address.
+        
+        Args:
+            addr: Address to remove breakpoint from
+        """
+        self._breakpoints.discard(addr)
+        # Check if any hooks remain
+        self._has_any_hooks = bool(
+            self._instruction_hooks or
+            self._write_hooks or
+            self._read_hooks or
+            self._frame_hooks or
+            self._breakpoints or
+            self._step_mode
+        )
+    
+    def enable_step_mode(self, enabled: bool = True) -> None:
+        """
+        Enable or disable single-step execution mode.
+        
+        When enabled, execution pauses after every instruction.
+        
+        Args:
+            enabled: True to enable step mode, False to disable
+        """
+        self._step_mode = enabled
+        self._has_any_hooks = enabled or bool(
+            self._instruction_hooks or
+            self._write_hooks or
+            self._read_hooks or
+            self._frame_hooks or
+            self._breakpoints
+        )
+    
+    def check_hooks(self, pc: int, event_type: str) -> Optional[bool]:
+        """
+        Check and execute hooks for the current execution state.
+        
+        Args:
+            pc: Current program counter value
+            event_type: Type of event ('instruction', 'write', 'read', 'frame')
+            
+        Returns:
+            True if execution should pause (breakpoint hit), None otherwise
+        """
+        # Check for breakpoint
+        if pc in self._breakpoints:
+            print(f"\n[BREAKPOINT] PC=0x{pc:08X}")
+            return True
+        
+        # Check instruction hooks
+        if event_type == 'instruction' and pc in self._instruction_hooks:
+            self._instruction_hooks[pc](pc)
+        
+        # Step mode - pause after every instruction
+        if self._step_mode:
+            print(f"[STEP] PC=0x{pc:08X}")
+            return True
+        
+        return None
+    
+    def check_write_hook(self, addr: int, value: int) -> None:
+        """
+        Check and execute write hooks for a memory write.
+        
+        Args:
+            addr: Memory address being written
+            value: Value being written
+        """
+        if addr in self._write_hooks:
+            self._write_hooks[addr](addr, value)
+    
+    def check_read_hook(self, addr: int) -> Optional[int]:
+        """
+        Check and execute read hooks for a memory read.
+        
+        Args:
+            addr: Memory address being read
+            
+        Returns:
+            Value from hook if registered, None otherwise
+        """
+        if addr in self._read_hooks:
+            return self._read_hooks[addr](addr)
+        return None
+    
+    def notify_frame(self, frame_num: int) -> None:
+        """
+        Notify all frame hooks of a new frame.
+        
+        Args:
+            frame_num: Current frame number
+        """
+        for callback in self._frame_hooks:
+            callback(frame_num)
+    
+    def has_hooks(self) -> bool:
+        """
+        Fast check if any hooks are registered.
+        
+        Returns:
+            True if any hooks exist, False otherwise (zero-overhead path)
+        """
+        return self._has_any_hooks
+    
+    def clear_all(self) -> None:
+        """Remove all registered hooks and breakpoints."""
+        self._instruction_hooks.clear()
+        self._write_hooks.clear()
+        self._read_hooks.clear()
+        self._frame_hooks.clear()
+        self._breakpoints.clear()
+        self._step_mode = False
+        self._has_any_hooks = False
+    
+    def list_breakpoints(self) -> List[int]:
+        """
+        Get list of all breakpoint addresses.
+        
+        Returns:
+            Sorted list of breakpoint addresses
+        """
+        return sorted(self._breakpoints)
+    
+    def __repr__(self) -> str:
+        return (
+            f"HookManager(instructions={len(self._instruction_hooks)}, "
+            f"writes={len(self._write_hooks)}, reads={len(self._read_hooks)}, "
+            f"frames={len(self._frame_hooks)}, breakpoints={len(self._breakpoints)}, "
+            f"step_mode={self._step_mode})"
+        )
+
+
+# === End of hooks.py ===
+
+
+# === Start of assets.py ===
+
+
+
+
+class AssetType(Enum):
+    """Types of GBA assets"""
+
+    TILE_4BPP = auto()  # 4 bits per pixel, 16 colors, 8x8 = 32 bytes
+    TILE_8BPP = auto()  # 8 bits per pixel, 256 colors, 8x8 = 64 bytes
+    PALETTE = auto()  # 15-bit BGR color palette
+    TILEMAP = auto()  # Tilemap with tile indices and attributes
+    SPRITE = auto()  # Sprite data
+    COMPRESSED = auto()  # Compressed data (needs decompression)
+    UNKNOWN = auto()
+
+
+class AssetExtractor:
+    """Extract and decompress GBA assets from ROM"""
+
+    def __init__(self, memory):
+        self.memory = memory
+
+    def decompress_lz77(self, data: bytes) -> bytes:
+        """Decompress LZ77 compressed data (method 0x10)
+
+        GBA LZ77 format:
+        - Byte 0: 0x10 (method identifier)
+        - Bytes 1-3: 24-bit decompressed size (little-endian)
+        - Byte 4: flags
+        """
+        if len(data) < 4 or data[0] != 0x10:
+            return b""
+
+        # GBA uses 24-bit expanded_size (3 bytes little-endian), NOT 32-bit
+        expanded_size = data[1] | (data[2] << 8) | (data[3] << 16)
+        src_pos = 8
+        dst = bytearray()
+
+        while len(dst) < expanded_size and src_pos < len(data):
+            flags = data[src_pos]
+            src_pos += 1
+
+            for i in range(8):
+                if len(dst) >= expanded_size:
+                    break
+
+                if flags & 0x80:
+                    # Compressed block
+                    if src_pos + 1 >= len(data):
+                        break
+                    pair = struct.unpack("<H", data[src_pos : src_pos + 2])[0]
+                    src_pos += 2
+
+                    back = (pair >> 4) + 3
+                    count = (pair & 0xF) + 3
+
+                    for j in range(count):
+                        if len(dst) >= expanded_size:
+                            break
+                        if src_pos - back - len(data) < 0:
+                            dst.append(0)
+                        else:
+                            idx = len(dst) - back - 1
+                            if idx >= 0 and idx < len(dst):
+                                dst.append(dst[idx])
+                            else:
+                                dst.append(0)
+                else:
+                    # Raw byte
+                    if src_pos < len(data):
+                        dst.append(data[src_pos])
+                        src_pos += 1
+
+                flags = (flags << 1) & 0xFF
+
+        return bytes(dst[:expanded_size])
+
+    def decompress_huffman(self, data: bytes) -> bytes:
+        """Decompress Huffman compressed data (method 0x11)
+
+        GBA Huffman format:
+        - Byte 0: 0x11 (method identifier)
+        - Bytes 1-4: 32-bit decompressed size (little-endian)
+        - Tree size byte at position 4 (or 5 depending on variant)
+        - Tree data follows header
+        - Compressed bitstream after tree
+        """
+        if len(data) < 4 or data[0] != 0x11:
+            return b""
+
+        # GBA uses 32-bit size at bytes 1-4 (unlike LZ77's 24-bit)
+        expanded_size = struct.unpack("<I", data[1:5])[0]
+
+        # Tree size is at byte 4 (size of tree table / 2 - 1)
+        tree_size = data[4] if len(data) > 4 else 0
+        tree_end = 8 + tree_size
+
+        if len(data) <= tree_end:
+            return b""
+
+        # Build Huffman tree from tree data
+        # Each node is 2 bytes: bits 0-7 of left child, bits 0-7 of right child
+        # Special values: 0xFF means "no data", other values are data or node index
+        tree = data[8:tree_end]
+
+        # Number of nodes in tree
+        num_nodes = len(tree) // 2
+
+        # Build a lookup table for decoding
+        # GBA Huffman uses a binary tree where:
+        # - If node < 256, it's a leaf with that byte value
+        # - If node >= 256, it's an internal node: node - 256 gives the table index
+        decode_table = {}
+
+        def build_decode_table(node_idx: int, bit_string: int, bits: int):
+            """Recursively build decode table"""
+            if node_idx >= num_nodes:
+                return
+
+            # Read node pair (2 bytes per node)
+            if node_idx * 2 + 1 >= len(tree):
+                return
+
+            left = tree[node_idx * 2]
+            right = tree[node_idx * 2 + 1]
+
+            # Left child (bit 0)
+            if left < 256:
+                # Leaf node - data
+                decode_table[bit_string] = (left, bits)
+            elif left < 0xFF:
+                # Internal node - continue tree
+                build_decode_table(left, (bit_string << 1) | 0, bits + 1)
+
+            # Right child (bit 1)
+            if right < 256:
+                decode_table[(bit_string << 1) | 1] = (right, bits)
+            elif right < 0xFF:
+                build_decode_table(right, (bit_string << 1) | 1, bits + 1)
+
+        # Start from root node (0)
+        build_decode_table(0, 0, 0)
+
+        # Now decompress using the bitstream
+        compressed = data[tree_end:]
+        dst = bytearray()
+        bit_pos = 0
+
+        # Track current node state
+        current_bits = 0
+        current_bit_count = 0
+
+        while len(dst) < expanded_size and bit_pos < len(compressed) * 8:
+            # Read one bit
+            byte_idx = bit_pos // 8
+            bit_idx = 7 - (bit_pos % 8)
+
+            if byte_idx >= len(compressed):
+                break
+
+            bit = (compressed[byte_idx] >> bit_idx) & 1
+            bit_pos += 1
+
+            current_bits = (current_bits << 1) | bit
+            current_bit_count += 1
+
+            # Look up in decode table
+            if current_bits in decode_table:
+                symbol, expected_bits = decode_table[current_bits]
+                if expected_bits == current_bit_count:
+                    dst.append(symbol)
+                    current_bits = 0
+                    current_bit_count = 0
+
+                    if len(dst) >= expanded_size:
+                        break
+
+        return bytes(dst[:expanded_size])
+
+    def decompress_rle(self, data: bytes) -> bytes:
+        """Decompress Run-Length compressed data (method 0x12)"""
+        if len(data) < 5 or data[0] != 0x12:
+            return b""
+
+        expanded_size = struct.unpack("<I", data[1:5])[0]
+        src_pos = 5  # GBA RLE header: 0x12 (1 byte) + 32-bit size (4 bytes) = 5 bytes
+        dst = bytearray()
+
+        while len(dst) < expanded_size and src_pos < len(data):
+            flags = data[src_pos]
+            src_pos += 1
+
+            for i in range(8):
+                if len(dst) >= expanded_size:
+                    break
+
+                if flags & 0x80:
+                    # Run-length block
+                    if src_pos >= len(data):
+                        break
+                    byte_val = data[src_pos]
+                    src_pos += 1
+
+                    if src_pos >= len(data):
+                        break
+                    count = data[src_pos] + 1
+                    src_pos += 1
+
+                    dst.extend([byte_val] * min(count, expanded_size - len(dst)))
+                else:
+                    # Raw byte
+                    if src_pos < len(data):
+                        dst.append(data[src_pos])
+                        src_pos += 1
+
+                flags = (flags << 1) & 0xFF
+
+        return bytes(dst[:expanded_size])
+
+    def extract_palette(self, addr: int, num_colors: int = 256) -> List[Tuple[int, int, int]]:
+        """Extract 15-bit color palette from memory"""
+        palette = []
+        for i in range(num_colors):
+            color16 = self.memory.read_u16(addr + i * 2)
+            r = (color16 & 0x1F) * 8
+            g = ((color16 >> 5) & 0x1F) * 8
+            b = ((color16 >> 10) & 0x1F) * 8
+            palette.append((r, g, b))
+        return palette
+
+    def extract_tile_4bpp(self, tile_addr: int, tile_num: int = 0) -> bytes:
+        """Extract 4bpp (16-color) 8x8 tile"""
+        addr = tile_addr + tile_num * 32  # 32 bytes per 4bpp tile
+        return self.memory.read_bytes(addr, 32)
+
+    def extract_tile_8bpp(self, tile_addr: int, tile_num: int = 0) -> bytes:
+        """Extract 8bpp (256-color) 8x8 tile"""
+        addr = tile_addr + tile_num * 64  # 64 bytes per 8bpp tile
+        return self.memory.read_bytes(addr, 64)
+
+    def scan_rom_for_assets(self, rom_data: bytes) -> Dict:
+        """Scan ROM for potential asset regions with size validation"""
+        assets = {
+            "palettes": [],
+            "compressed": [],
+            "tiles_4bpp": [],
+            "tiles_8bpp": [],
+            "tilemaps": [],
+        }
+
+        MAX_COMPRESSED_SIZE = 10 * 1024 * 1024
+        MIN_ASSET_SIZE = 16
+
+        for offset in range(0, len(rom_data) - 512, 2):
+            if offset + 32 < len(rom_data):
+                sample = rom_data[offset : offset + 32]
+                valid_colors = 0
+                for i in range(0, min(32, len(sample)), 2):
+                    if i + 1 < len(sample):
+                        color = sample[i] | (sample[i + 1] << 8)
+                        if (color & 0x7C00) == 0:
+                            valid_colors += 1
+                if valid_colors >= 10:
+                    assets["palettes"].append(offset)
+
+        for offset in range(0, len(rom_data) - 8):
+            method = rom_data[offset]
+            if method in [0x10, 0x11, 0x12]:
+                if method == 0x10:
+                    size = (
+                        rom_data[offset + 1]
+                        | (rom_data[offset + 2] << 8)
+                        | (rom_data[offset + 3] << 16)
+                    )
+                else:
+                    size = struct.unpack("<I", rom_data[offset + 1 : offset + 5])[0]
+
+                if MIN_ASSET_SIZE <= size <= MAX_COMPRESSED_SIZE:
+                    compressed_type = (
+                        "lz77" if method == 0x10 else ("huffman" if method == 0x11 else "rle")
+                    )
+
+                    compressed_size_estimate = self._estimate_compressed_size(offset, size, method)
+
+                    if compressed_size_estimate > 0:
+                        assets["compressed"].append(
+                            {
+                                "offset": offset,
+                                "type": compressed_type,
+                                "decompressed_size": size,
+                                "compressed_estimate": compressed_size_estimate,
+                            }
+                        )
+
+        return assets
+
+    def _estimate_compressed_size(
+        self, offset: int, decompressed_size: int, method: int, rom_data: bytes = None
+    ) -> int:
+        """Estimate compressed data size for validation"""
+        if method == 0x10:
+            header_size = 4
+            return header_size + (decompressed_size // 8) + 1
+        elif method == 0x11:
+            return 8 + (decompressed_size // 4)
+        else:
+            return 5 + (decompressed_size // 8)
+
+    def detect_asset_type(self, data: bytes) -> AssetType:
+        """Detect asset type from raw data"""
+        if not data or len(data) < 4:
+            return AssetType.UNKNOWN
+
+        data_len = len(data)
+
+        if data_len % 2 == 0:
+            valid_colors = self._count_valid_15bit_colors(data[:64])
+            if valid_colors >= data_len // 4:
+                return AssetType.PALETTE
+
+        if data_len % 64 == 0 and data_len >= 64:
+            if self._is_likely_8bpp_tiles(data):
+                return AssetType.TILE_8BPP
+
+        if data_len % 32 == 0 and data_len >= 32:
+            if self._is_likely_4bpp_tiles(data):
+                return AssetType.TILE_4BPP
+
+        if data_len % 2 == 0 and data_len >= 32:
+            if self._is_likely_tilemap(data):
+                return AssetType.TILEMAP
+
+        return AssetType.UNKNOWN
+
+    def _count_valid_15bit_colors(self, data: bytes) -> int:
+        """Count valid 15-bit BGR colors in data"""
+        valid = 0
+        for i in range(0, min(len(data), 64), 2):
+            if i + 1 >= len(data):
+                break
+            color = data[i] | (data[i + 1] << 8)
+            r = color & 0x1F
+            g = (color >> 5) & 0x1F
+            b = (color >> 10) & 0x1F
+            if r <= 31 and g <= 31 and b <= 31:
+                valid += 1
+        return valid
+
+    def _is_likely_4bpp_tiles(self, data: bytes) -> bool:
+        """Check if data looks like 4BPP tiles"""
+        if len(data) % 32 != 0:
+            return False
+
+        unique_bytes = len(set(data[:64]))
+
+        if unique_bytes > 16 and unique_bytes < 256:
+            return True
+
+        return False
+
+    def _is_likely_8bpp_tiles(self, data: bytes) -> bool:
+        """Check if data looks like 8BPP tiles"""
+        if len(data) % 64 != 0:
+            return False
+
+        unique_bytes = len(set(data[:128]))
+
+        if unique_bytes > 32:
+            return True
+
+        return False
+
+    def _is_likely_tilemap(self, data: bytes) -> bool:
+        """Check if data looks like tilemap"""
+        if len(data) < 32:
+            return False
+
+        unique_indices = set()
+        for i in range(0, min(len(data), 64), 2):
+            if i + 1 >= len(data):
+                break
+            entry = data[i] | (data[i + 1] << 8)
+            tile_idx = entry & 0x3FF
+            unique_indices.add(tile_idx)
+
+        if 2 <= len(unique_indices) <= 1024:
+            return True
+
+        return False
+
+    def find_palette_in_rom(self, rom_data: bytes) -> Optional[int]:
+        """Find palette data in ROM, returns offset or None"""
+        if not rom_data or len(rom_data) < 512:
+            return None
+
+        best_offset = None
+        best_score = 0
+
+        for offset in range(0, min(len(rom_data) - 512, 1024 * 1024), 16):
+            palette_size = min(512, len(rom_data) - offset)
+            sample = rom_data[offset : offset + palette_size]
+
+            score = self._score_palette_candidate(sample)
+
+            if score > best_score:
+                best_score = score
+                best_offset = offset
+
+        if best_score >= 10:
+            return best_offset
+
+        return None
+
+    def _score_palette_candidate(self, data: bytes) -> int:
+        """Score how likely data is a palette"""
+        if len(data) < 32:
+            return -1
+
+        score = 0
+
+        unique_colors = set()
+        color_pairs = []
+
+        for i in range(0, min(len(data), 512), 2):
+            if i + 1 >= len(data):
+                break
+            color = data[i] | (data[i + 1] << 8)
+            r = color & 0x1F
+            g = (color >> 5) & 0x1F
+            b = (color >> 10) & 0x1F
+
+            if r <= 31 and g <= 31 and b <= 31:
+                unique_colors.add((r, g, b))
+                color_pairs.append((r, g, b))
+
+        score += len(unique_colors)
+
+        if len(unique_colors) >= 8:
+            score += 5
+
+        if len(color_pairs) >= 16:
+            gradient_count = 0
+            for i in range(1, len(color_pairs)):
+                prev = color_pairs[i - 1]
+                curr = color_pairs[i]
+                if (
+                    abs(curr[0] - prev[0]) <= 8
+                    and abs(curr[1] - prev[1]) <= 8
+                    and abs(curr[2] - prev[2]) <= 8
+                ):
+                    gradient_count += 1
+
+            if gradient_count > len(color_pairs) // 3:
+                score += 3
+
+        return score
+
+    def load_assets(self, assets_dir: str, ppu) -> bool:
+        rom_path = None
+        if os.path.isfile(assets_dir) and assets_dir.endswith(".gba"):
+            rom_path = assets_dir
+        elif os.path.isdir(assets_dir):
+            for f in os.listdir(assets_dir):
+                if f.endswith(".gba"):
+                    rom_path = os.path.join(assets_dir, f)
+                    break
+
+        if not rom_path:
+            for f in os.listdir("."):
+                if f.endswith(".gba"):
+                    rom_path = f
+                    break
+
+        if not rom_path or not os.path.exists(rom_path):
+            return False
+
+        with open(rom_path, "rb") as f:
+            rom_data = f.read()
+
+        if not rom_data or len(rom_data) < 512:
+            return False
+
+        extractor = AssetExtractor(self.memory)
+        palette_offset = extractor.find_palette_in_rom(rom_data)
+        if palette_offset:
+            palette_data = rom_data[palette_offset : palette_offset + 512]
+            ppu.palette_bg = []
+            for i in range(0, min(len(palette_data), 512), 2):
+                if i + 1 < len(palette_data):
+                    color_val = palette_data[i] | (palette_data[i + 1] << 8)
+                    r = ((color_val >> 0) & 0x1F) * 8
+                    g = ((color_val >> 5) & 0x1F) * 8
+                    b = ((color_val >> 10) & 0x1F) * 8
+                    ppu.palette_bg.append((r, g, b))
+
+        tile_data = []
+        for offset in range(0, len(rom_data) - 32, 2):
+            sample = rom_data[offset : offset + 32]
+            unique_bytes = len(set(sample[:64]))
+            if unique_bytes > 16 and unique_bytes < 256:
+                tile_data.extend(sample)
+                if len(tile_data) >= 8192:
+                    break
+
+        if tile_data:
+            ppu.tiles_4bpp = list(tile_data)
+
+        tilemap_data = []
+        for offset in range(0, len(rom_data) - 2, 2):
+            if len(tilemap_data) >= 1024 * 2:
+                break
+            if offset + 1 < len(rom_data):
+                entry = rom_data[offset] | (rom_data[offset + 1] << 8)
+                tilemap_data.append(entry)
+
+        if tilemap_data:
+            ppu.bg0_tilemap = tilemap_data[:1024]
+
+        return True
+
+
+# === End of assets.py ===
+
+
+# === Start of cartridge.py ===
+
+
+
+
+
+class SaveType:
+    NONE = 0
+    SRAM = 1
+    FLASH512 = 2
+    FLASH1M = 3
+    EEPROM4K = 4
+    EEPROM16K = 5
+
+
+SAVE_TYPE_NAMES = {
+    SaveType.NONE: "None",
+    SaveType.SRAM: "SRAM (64KB)",
+    SaveType.FLASH512: "FLASH512 (512KB)",
+    SaveType.FLASH1M: "FLASH1M (1MB)",
+    SaveType.EEPROM4K: "EEPROM4K (512 bytes)",
+    SaveType.EEPROM16K: "EEPROM16K (2KB)",
+}
+
+
+ROM_OFFSET_SAVE_TYPE = 0x1A4
+
+
+SAVE_TYPE_DETECTION = {
+    0x00: SaveType.NONE,
+    0x01: SaveType.SRAM,
+    0x02: SaveType.FLASH512,
+    0x03: SaveType.FLASH1M,
+    0x04: SaveType.EEPROM4K,
+    0x05: SaveType.EEPROM16K,
+    0x12: SaveType.FLASH512,
+    0x13: SaveType.FLASH1M,
+}
+
+
+KNOWN_GAME_SAVE_TYPES = {
+    "POKEMON RUBY": SaveType.FLASH1M,
+    "POKEMON SAPPHIRE": SaveType.FLASH1M,
+    "POKEMON EMERALD": SaveType.FLASH1M,
+    "POKEMON FIRE RED": SaveType.FLASH1M,
+    "POKEMON LEAF GREEN": SaveType.FLASH1M,
+    "SONIC ADVANCE": SaveType.FLASH512,
+    "SONIC ADVANCE 2": SaveType.FLASH512,
+    "SONIC ADVANCE 3": SaveType.FLASH512,
+    "MARIO KART": SaveType.EEPROM16K,
+    "ZELDA MINISH CAP": SaveType.EEPROM4K,
+    "METROID FUSION": SaveType.EEPROM4K,
+    "METROID ZERO MISSION": SaveType.EEPROM4K,
+    "SUPER MARIO ADVANCE": SaveType.EEPROM4K,
+    "SUPER MARIO ADVANCE 2": SaveType.EEPROM4K,
+    "SUPER MARIO ADVANCE 3": SaveType.EEPROM4K,
+    "SUPER MARIO ADVANCE 4": SaveType.EEPROM4K,
+}
+
+
+class SramHandler:
+    SRAM_SIZE = 64 * 1024
+    
+    def __init__(self):
+        self._data = bytearray(self.SRAM_SIZE)
+        self._filepath = None
+        self._dirty = False
+    
+    @property
+    def size(self):
+        return self.SRAM_SIZE
+    
+    def read(self, addr, length=1):
+        result = []
+        for i in range(length):
+            offset = (addr - 0x0A000000 + i) % self.SRAM_SIZE
+            result.append(self._data[offset])
+        return bytes(result)
+    
+    def write(self, addr, data):
+        for i, byte in enumerate(data):
+            offset = (addr - 0x0A000000 + i) % self.SRAM_SIZE
+            self._data[offset] = byte
+            self._dirty = True
+    
+    def load_from_file(self, filepath):
+        if not os.path.exists(filepath):
+            return False
+        try:
+            with open(filepath, "rb") as f:
+                self._data = bytearray(f.read())
+            self._filepath = filepath
+            self._dirty = False
+            return True
+        except:
+            return False
+    
+    def save_to_file(self, filepath=None):
+        path = filepath or self._filepath
+        if path is None:
+            return False
+        try:
+            d = os.path.dirname(path)
+            if d and not os.path.exists(d):
+                os.makedirs(d)
+            with open(path, "wb") as f:
+                f.write(bytes(self._data))
+            self._dirty = False
+            self._filepath = path
+            return True
+        except:
+            return False
+    
+    def is_dirty(self):
+        return self._dirty
+    
+    def get_data(self):
+        return bytes(self._data)
+    
+    def set_data(self, data):
+        self._data[:len(data)] = data[:self.SRAM_SIZE]
+        self._dirty = True
+
+
+class Cartridge:
+    def __init__(self):
+        self._save_type = SaveType.NONE
+        self._save_handler = None
+        self._rom_data = None
+        self._game_title = ""
+        self._game_code = ""
+    
+    def load_rom(self, rom_path: str) -> bool:
+        try:
+            with open(rom_path, "rb") as f:
+                self._rom_data = f.read()
+            
+            if len(self._rom_data) < 0x1A5:
+                return False
+            
+            self._game_title = self._rom_data[0xA0:0xAC].rstrip(b"\x00").decode("ascii", errors="replace")
+            self._game_code = self._rom_data[0xAC:0xB0].decode("ascii", errors="replace")
+            
+            self._detect_save_type()
+            self._create_save_handler()
+            
+            return True
+        except Exception:
+            return False
+    
+    def load_rom_data(self, data: bytes) -> bool:
+        try:
+            self._rom_data = data
+            
+            if len(self._rom_data) < 0x1A5:
+                return False
+            
+            self._game_title = self._rom_data[0xA0:0xAC].rstrip(b"\x00").decode("ascii", errors="replace")
+            self._game_code = self._rom_data[0xAC:0xB0].decode("ascii", errors="replace")
+            
+            self._detect_save_type()
+            self._create_save_handler()
+            
+            return True
+        except Exception:
+            return False
+    
+    def _detect_save_type(self) -> None:
+        if self._rom_data is None or len(self._rom_data) < 0x1A5:
+            self._save_type = SaveType.NONE
+            return
+        
+        save_type_byte = self._rom_data[ROM_OFFSET_SAVE_TYPE]
+        
+        self._save_type = SAVE_TYPE_DETECTION.get(save_type_byte, SaveType.NONE)
+        
+        if self._save_type == SaveType.NONE:
+            title_upper = self._game_title.upper()
+            for game_pattern, save_type in KNOWN_GAME_SAVE_TYPES.items():
+                if game_pattern in title_upper:
+                    self._save_type = save_type
+                    break
+    
+    def _create_save_handler(self) -> None:
+        if self._save_type == SaveType.NONE:
+            self._save_handler = None
+        elif self._save_type == SaveType.SRAM:
+            self._save_handler = SramHandler()
+        elif self._save_type == SaveType.FLASH512:
+            self._save_handler = create_flash_save("512KB")
+        elif self._save_type == SaveType.FLASH1M:
+            self._save_handler = create_flash_save("1MB")
+        elif self._save_type == SaveType.EEPROM4K:
+            self._save_handler = create_eeprom_save("4K")
+        elif self._save_type == SaveType.EEPROM16K:
+            self._save_handler = create_eeprom_save("16K")
+    
+    @property
+    def save_type(self) -> int:
+        return self._save_type
+    
+    @property
+    def save_type_name(self) -> str:
+        return SAVE_TYPE_NAMES.get(self._save_type, "Unknown")
+    
+    @property
+    def game_title(self) -> str:
+        return self._game_title
+    
+    @property
+    def game_code(self) -> str:
+        return self._game_code
+    
+    @property
+    def has_save(self) -> bool:
+        return self._save_handler is not None
+    
+    def get_save_handler(self):
+        return self._save_handler
+    
+    def read_save(self, addr: int, length: int = 1) -> bytes:
+        if self._save_handler is None:
+            return bytes([0xFF] * length)
+        return self._save_handler.read(addr, length)
+    
+    def write_save(self, addr: int, data: bytes) -> None:
+        if self._save_handler is not None:
+            self._save_handler.write(addr, data)
+    
+    def load_save_file(self, filepath: str) -> bool:
+        if self._save_handler is None:
+            return False
+        return self._save_handler.load_from_file(filepath)
+    
+    def save_to_file(self, filepath: str) -> bool:
+        if self._save_handler is None:
+            return False
+        return self._save_handler.save_to_file(filepath)
+    
+    def is_dirty(self) -> bool:
+        if self._save_handler is None:
+            return False
+        return self._save_handler.is_dirty()
+
+
+def detect_save_type(rom_data: bytes) -> int:
+    if rom_data is None or len(rom_data) < 0x1A5:
+        return SaveType.NONE
+    
+    save_type_byte = rom_data[ROM_OFFSET_SAVE_TYPE]
+    return SAVE_TYPE_DETECTION.get(save_type_byte, SaveType.NONE)
+
+
+def create_cartridge(rom_path: str = None) -> Cartridge:
+    cartridge = Cartridge()
+    if rom_path and os.path.exists(rom_path):
+        cartridge.load_rom(rom_path)
+    return cartridge
+
+
+# === End of cartridge.py ===
+
+
+# === Start of eeprom_save.py ===
+
+
+
+
+class EepromSave:
+    """EEPROM save memory handler for GBA cartridges.
+    
+    Supports:
+    - EEPROM4K: 4Kbit (512 bytes) with 10-bit addressing
+    - EEPROM16K: 16Kbit (2KB) with 14-bit addressing
+    
+    The EEPROM uses a serial-like protocol:
+    - Commands: READ (0x03), WRITE (0x02), WREN (0x06), WRDI (0x04)
+    - Address is sent MSB first
+    - Data is read/written sequentially
+    """
+    
+    EEPROM4K_SIZE = 512
+    EEPROM16K_SIZE = 2048
+    
+    EEPROM4K_ADDR_BITS = 10
+    EEPROM16K_ADDR_BITS = 14
+    
+    CMD_READ = 0x03
+    CMD_WRITE = 0x02
+    CMD_WREN = 0x06
+    CMD_WRDI = 0x04
+    CMD_RDSR = 0x05
+    CMD_WRSR = 0x01
+    
+    STATUS_WIP = 0x01
+    STATUS_WEL = 0x02
+    
+    def __init__(self, size: int = EEPROM4K_SIZE):
+        self._size = size
+        self._is_16k = (size == self.EEPROM16K_SIZE)
+        
+        self._addr_bits = self.EEPROM16K_ADDR_BITS if self._is_16k else self.EEPROM4K_ADDR_BITS
+        
+        self._data = bytearray(self._size)
+        
+        self._write_enabled = False
+        self._command_buffer = []
+        self._command_state = 0
+        
+        self._filepath: Optional[str] = None
+        self._dirty = False
+    
+    @property
+    def size(self) -> int:
+        return self._size
+    
+    @property
+    def is_16k(self) -> bool:
+        return self._is_16k
+    
+    @property
+    def addr_bits(self) -> int:
+        return self._addr_bits
+    
+    def _translate_address(self, addr: int) -> int:
+        return addr % self._size
+    
+    def read(self, addr: int, length: int = 1) -> bytes:
+        result = bytearray()
+        
+        for i in range(length):
+            offset = self._translate_address(addr + i)
+            if offset < self._size:
+                result.append(self._data[offset])
+            else:
+                result.append(0xFF)
+        
+        return bytes(result)
+    
+    def write(self, addr: int, data: bytes) -> None:
+        if not self._write_enabled:
+            return
+        
+        for i, byte in enumerate(data):
+            offset = self._translate_address(addr + i)
+            if offset < self._size:
+                self._data[offset] = byte
+                self._dirty = True
+    
+    def send_command(self, value: int) -> Optional[int]:
+        self._command_buffer.append(value)
+        
+        if self._command_state == 0:
+            cmd = value
+            
+            if cmd == self.CMD_WREN:
+                self._write_enabled = True
+                self._command_buffer = []
+                self._command_state = 0
+                return None
+            
+            elif cmd == self.CMD_WRDI:
+                self._write_enabled = False
+                self._command_buffer = []
+                self._command_state = 0
+                return None
+            
+            elif cmd == self.CMD_RDSR:
+                self._command_state = 1
+                status = 0x00
+                if self._write_enabled:
+                    status |= self.STATUS_WEL
+                return status
+            
+            elif cmd == self.CMD_READ:
+                self._command_state = 2
+                return None
+            
+            elif cmd == self.CMD_WRITE:
+                self._command_state = 3
+                return None
+            
+            else:
+                self._command_buffer = []
+                return None
+        
+        elif self._command_state == 1:
+            self._command_buffer = []
+            self._command_state = 0
+            return 0x00
+        
+        elif self._command_state == 2:
+            if len(self._command_buffer) >= 2:
+                addr_bytes = self._command_buffer[-2:]
+                addr = ((addr_bytes[0] << 8) | addr_bytes[1]) & ((1 << self._addr_bits) - 1)
+                
+                offset = self._translate_address(addr)
+                if offset < self._size:
+                    value = self._data[offset]
+                    addr = (addr + 1) % self._size
+                    return value
+        
+        elif self._command_state == 3:
+            if len(self._command_buffer) >= 2:
+                addr_bytes = self._command_buffer[-2:]
+                addr = ((addr_bytes[0] << 8) | addr_bytes[1]) & ((1 << self._addr_bits) - 1)
+                
+                if len(self._command_buffer) >= 3:
+                    data_byte = self._command_buffer[-1]
+                    offset = self._translate_address(addr)
+                    if offset < self._size:
+                        self._data[offset] = data_byte
+                        self._dirty = True
+        
+        return None
+    
+    def read_id(self) -> int:
+        return 0x00
+    
+    def get_status(self) -> int:
+        status = 0x00
+        if self._write_enabled:
+            status |= self.STATUS_WEL
+        return status
+    
+    def enable_write(self, enabled: bool = True) -> None:
+        self._write_enabled = enabled
+    
+    def load_from_file(self, filepath: str) -> bool:
+        if not os.path.exists(filepath):
+            return False
+        
+        try:
+            with open(filepath, "rb") as f:
+                data = f.read()
+            
+            if len(data) == self.EEPROM16K_SIZE:
+                self._data = bytearray(data)
+                self._size = self.EEPROM16K_SIZE
+                self._is_16k = True
+                self._addr_bits = self.EEPROM16K_ADDR_BITS
+            elif len(data) == self.EEPROM4K_SIZE:
+                self._data = bytearray(data)
+                self._size = self.EEPROM4K_SIZE
+                self._is_16k = False
+                self._addr_bits = self.EEPROM4K_ADDR_BITS
+            else:
+                self._data = bytearray(self._size)
+                self._data[:len(data)] = data[:self._size]
+            
+            self._filepath = filepath
+            self._dirty = False
+            return True
+        except Exception:
+            return False
+    
+    def save_to_file(self, filepath: Optional[str] = None) -> bool:
+        path = filepath or self._filepath
+        if path is None:
+            return False
+        
+        try:
+            directory = os.path.dirname(path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
+            
+            with open(path, "wb") as f:
+                f.write(bytes(self._data))
+            
+            self._dirty = False
+            self._filepath = path
+            return True
+        except Exception:
+            return False
+    
+    def is_dirty(self) -> bool:
+        return self._dirty
+    
+    def get_data(self) -> bytes:
+        return bytes(self._data)
+    
+    def set_data(self, data: bytes) -> None:
+        size = min(len(data), self._size)
+        self._data[:size] = data[:size]
+        if len(data) < self._size:
+            self._data[size:] = b'\xFF' * (self._size - size)
+        self._dirty = True
+
+
+def create_eeprom_save(size: str = "4K") -> EepromSave:
+    if size == "16K":
+        return EepromSave(EepromSave.EEPROM16K_SIZE)
+    return EepromSave(EepromSave.EEPROM4K_SIZE)
+
+# === End of eeprom_save.py ===
+
+
+# === Start of flash_save.py ===
+
+
+
+
+class FlashSave:
+    """FLASH save memory handler for GBA cartridges.
+    
+    Supports:
+    - FLASH512: 512KB (8Mbit) with 2 banks of 256KB
+    - FLASH1M: 1MB (16Mbit) with 2 banks of 512KB
+    
+    Memory map:
+    - FLASH512: 8 x 32KB sectors per bank, 2 banks
+    - FLASH1M: 8 x 64KB sectors per bank, 2 banks
+    """
+    
+    FLASH512_SIZE = 512 * 1024
+    FLASH1M_SIZE = 1024 * 1024
+    
+    FLASH512_SECTOR_SIZE = 32 * 1024
+    FLASH1M_SECTOR_SIZE = 64 * 1024
+    
+    SECTORS_PER_BANK = 8
+    
+    CMD_UNLOCK1 = 0xAA
+    CMD_UNLOCK2 = 0x55
+    CMD_READ_ID = 0x90
+    CMD_READ_STATUS = 0xF0
+    CMD_WRITE_BYTE = 0xA0
+    CMD_ERASE_SETUP = 0x80
+    CMD_ERASE_SECTOR = 0x30
+    CMD_ERASE_CHIP = 0x10
+    CMD_BANK_SWITCH = 0xB0
+    CMD_ERASE_CONTINUE = 0xD0
+    
+    CMD_ADDR1 = 0x5555
+    CMD_ADDR2 = 0x2AAA
+    
+    MANUFACTURER_ID_PANASONIC = 0x1B
+    MANUFACTURER_ID_SANYO = 0x1C
+    MANUFACTURER_ID_MACRONIX = 0x1C
+    DEVICE_ID_FLASH512 = 0x09
+    DEVICE_ID_FLASH1M = 0x1C
+    
+    def __init__(self, size: int = FLASH512_SIZE):
+        self._size = size
+        self._is_1m = (size == self.FLASH1M_SIZE)
+        
+        self._sector_size = self.FLASH1M_SECTOR_SIZE if self._is_1m else self.FLASH512_SECTOR_SIZE
+        self._num_sectors = self.SECTORS_PER_BANK * 2
+        
+        self._data = bytearray(self._size)
+        self._current_bank = 0
+        
+        self._command_state = 0
+        self._pending_command = None
+        self._erase_address = None
+        
+        self._filepath: Optional[str] = None
+        self._dirty = False
+    
+    @property
+    def size(self) -> int:
+        return self._size
+    
+    @property
+    def is_1m(self) -> bool:
+        return self._is_1m
+    
+    @property
+    def sector_size(self) -> int:
+        return self._sector_size
+    
+    def _get_bank_offset(self, bank: int) -> int:
+        if self._is_1m:
+            return bank * (self.FLASH1M_SIZE // 2)
+        return bank * (self.FLASH512_SIZE // 2)
+    
+    def _translate_address(self, addr: int) -> int:
+        offset = addr & 0xFFFF
+        
+        if self._is_1m:
+            if offset >= 0x8000:
+                offset = (offset & 0x7FFF) | (self._current_bank << 15)
+        else:
+            if offset >= 0x8000:
+                offset = (offset & 0x7FFF) | (self._current_bank << 15)
+        
+        return offset
+    
+    def read(self, addr: int, length: int = 1) -> bytes:
+        result = bytearray()
+        
+        for i in range(length):
+            offset = self._translate_address(addr + i)
+            if offset < self._size:
+                result.append(self._data[offset])
+            else:
+                result.append(0xFF)
+        
+        return bytes(result)
+    
+    def write(self, addr: int, data: bytes) -> None:
+        for i, byte in enumerate(data):
+            self._write_byte(addr + i, byte)
+    
+    def _write_byte(self, addr: int, value: int) -> None:
+        offset = addr & 0xFFFF
+        
+        if offset == self.CMD_ADDR1:
+            if value == self.CMD_UNLOCK1:
+                self._command_state = 1
+                return
+            elif value == self.CMD_READ_ID:
+                if self._command_state == 2:
+                    self._pending_command = self.CMD_READ_ID
+                    self._command_state = 0
+                    return
+            elif value == self.CMD_ERASE_SETUP:
+                if self._command_state == 2:
+                    self._pending_command = self.CMD_ERASE_SETUP
+                    self._command_state = 0
+                    return
+            elif value == self.CMD_ERASE_CHIP:
+                if self._command_state == 2 and self._pending_command == self.CMD_ERASE_SETUP:
+                    self._erase_chip()
+                    self._pending_command = None
+                    self._command_state = 0
+                    return
+        
+        elif offset == self.CMD_ADDR2:
+            if value == self.CMD_UNLOCK2:
+                if self._command_state == 1:
+                    self._command_state = 2
+                    return
+            elif value == self.CMD_WRITE_BYTE:
+                if self._command_state == 2:
+                    self._pending_command = self.CMD_WRITE_BYTE
+                    self._command_state = 0
+                    return
+            elif value == self.CMD_ERASE_SECTOR:
+                if self._command_state == 2 and self._pending_command == self.CMD_ERASE_SETUP:
+                    if self._erase_address is not None:
+                        self._erase_sector(self._erase_address)
+                    self._pending_command = None
+                    self._erase_address = None
+                    self._command_state = 0
+                    return
+            elif value == self.CMD_ERASE_CONTINUE:
+                if self._command_state == 2 and self._pending_command == self.CMD_ERASE_SETUP:
+                    if self._erase_address is not None:
+                        self._erase_sector(self._erase_address)
+                    self._pending_command = None
+                    self._erase_address = None
+                    self._command_state = 0
+                    return
+        
+        elif offset == 0xAAA and value == self.CMD_BANK_SWITCH:
+            self._pending_command = self.CMD_BANK_SWITCH
+            self._command_state = 0
+            return
+        
+        elif addr >= 0x0A000000 and addr <= 0x0A00FFFF:
+            if self._pending_command == self.CMD_BANK_SWITCH:
+                self._current_bank = 1 if (value & 0x1) else 0
+                self._pending_command = None
+                return
+            
+            if self._pending_command == self.CMD_WRITE_BYTE:
+                flash_offset = self._translate_address(addr)
+                if flash_offset < self._size:
+                    self._data[flash_offset] = value
+                    self._dirty = True
+                self._pending_command = None
+                return
+            
+            if self._pending_command == self.CMD_ERASE_SETUP:
+                self._erase_address = addr & 0xFFFF
+                return
+        
+        self._command_state = 0
+        self._pending_command = None
+        
+        flash_offset = self._translate_address(addr)
+        if flash_offset < self._size:
+            self._data[flash_offset] = value
+            self._dirty = True
+    
+    def _erase_sector(self, addr: int) -> None:
+        offset = addr & 0xFFFF
+        
+        if self._is_1m:
+            if offset >= 0x8000:
+                bank = 1
+                offset = offset & 0x7FFF
+            else:
+                bank = 0
+            sector = offset // self.FLASH1M_SECTOR_SIZE
+        else:
+            if offset >= 0x8000:
+                bank = 1
+                offset = offset & 0x7FFF
+            else:
+                bank = 0
+            sector = offset // self.FLASH512_SECTOR_SIZE
+        
+        sector_offset = (bank * (self.SECTORS_PER_BANK * self._sector_size)) + (sector * self._sector_size)
+        
+        if sector_offset + self._sector_size <= self._size:
+            for i in range(self._sector_size):
+                self._data[sector_offset + i] = 0xFF
+            self._dirty = True
+    
+    def _erase_chip(self) -> None:
+        for i in range(self._size):
+            self._data[i] = 0xFF
+        self._dirty = True
+    
+    def read_id(self) -> int:
+        if self._is_1m:
+            return self.MANUFACTURER_ID_MACRONIX
+        return self.MANUFACTURER_ID_PANASONIC
+    
+    def read_device_id(self) -> int:
+        if self._is_1m:
+            return self.DEVICE_ID_FLASH1M
+        return self.DEVICE_ID_FLASH512
+    
+    def get_status(self) -> int:
+        return 0x80
+    
+    def set_bank(self, bank: int) -> None:
+        self._current_bank = bank & 1
+    
+    def get_bank(self) -> int:
+        return self._current_bank
+    
+    def load_from_file(self, filepath: str) -> bool:
+        if not os.path.exists(filepath):
+            return False
+        
+        try:
+            with open(filepath, "rb") as f:
+                data = f.read()
+            
+            if len(data) == self.FLASH1M_SIZE:
+                self._data = bytearray(data)
+                self._size = self.FLASH1M_SIZE
+                self._is_1m = True
+                self._sector_size = self.FLASH1M_SECTOR_SIZE
+            elif len(data) == self.FLASH512_SIZE:
+                self._data = bytearray(data)
+                self._size = self.FLASH512_SIZE
+                self._is_1m = False
+                self._sector_size = self.FLASH512_SECTOR_SIZE
+            else:
+                self._data = bytearray(self._size)
+                self._data[:len(data)] = data[:self._size]
+            
+            self._filepath = filepath
+            self._dirty = False
+            return True
+        except Exception:
+            return False
+    
+    def save_to_file(self, filepath: Optional[str] = None) -> bool:
+        path = filepath or self._filepath
+        if path is None:
+            return False
+        
+        try:
+            directory = os.path.dirname(path)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
+            
+            with open(path, "wb") as f:
+                f.write(bytes(self._data))
+            
+            self._dirty = False
+            self._filepath = path
+            return True
+        except Exception:
+            return False
+    
+    def is_dirty(self) -> bool:
+        return self._dirty
+    
+    def get_data(self) -> bytes:
+        return bytes(self._data)
+    
+    def set_data(self, data: bytes) -> None:
+        size = min(len(data), self._size)
+        self._data[:size] = data[:size]
+        if len(data) < self._size:
+            self._data[size:] = b'\xFF' * (self._size - size)
+        self._dirty = True
+
+
+def create_flash_save(size: str = "512KB") -> FlashSave:
+    if size == "1MB":
+        return FlashSave(FlashSave.FLASH1M_SIZE)
+    return FlashSave(FlashSave.FLASH512_SIZE)
+
+# === End of flash_save.py ===
+
+
+# === Start of rom.py ===
+
+
+
+
+class ROM:
+    """Represents a loaded GBA ROM image with header parsing.
+
+    Provides access to ROM data and parsed header fields including
+    title, game code, maker code, and entry point.
+    """
+
+    # GBA ROM header offsets
+    OFFSET_ENTRY_POINT = 0x00  # 4 bytes - ARM branch to start
+    OFFSET_NINTENDO_LOGO = 0x04  # 156 bytes - compressed logo
+    OFFSET_TITLE = 0xA0  # 12 bytes - game title (ASCII)
+    OFFSET_GAME_CODE = 0xAC  # 4 bytes - game code
+    OFFSET_MAKER_CODE = 0xB0  # 2 bytes - maker code
+    OFFSET_ROM_SIZE = 0xB4  # 1 byte - ROM size code
+
+    def __init__(self):
+        """Create an empty ROM instance."""
+        self._data: bytes = b""
+        self._header: dict = {}
+
+    def load(self, path: str) -> None:
+        """Load a GBA ROM file from disk.
+
+        Args:
+            path: Path to the .gba file to load.
+
+        Raises:
+            FileNotFoundError: If the file doesn't exist.
+            ValueError: If the file is too small to contain a valid header.
+        """
+        with open(path, "rb") as f:
+            self._data = f.read()
+
+        if len(self._data) < 0xC0:
+            raise ValueError(f"ROM file too small: {len(self._data)} bytes")
+
+        self._parse_header()
+
+    def _parse_header(self) -> None:
+        """Parse the GBA ROM header and populate header dict."""
+        # Entry point (4 bytes at 0x00)
+        entry = int.from_bytes(self._data[0x00:0x04], "little")
+
+        # Game title (12 bytes at 0xA0, null-padded ASCII)
+        title_bytes = self._data[0xA0:0xAC]
+        title = title_bytes.rstrip(b"\x00").decode("ascii", errors="replace")
+
+        # Game code (4 bytes at 0xAC)
+        game_code = self._data[0xAC:0xB0].decode("ascii", errors="replace")
+
+        # Maker code (2 bytes at 0xB0)
+        maker_code = self._data[0xB0:0xB2].decode("ascii", errors="replace")
+
+        rom_size_code = self._data[0xB4]
+        shift = rom_size_code & 0x0F
+        if rom_size_code < 0x18 and shift < 16:
+            rom_size = 0x80000 << shift
+        else:
+            rom_size = len(self._data)
+
+        self._header = {
+            "entry_point": entry,
+            "title": title,
+            "game_code": game_code,
+            "maker_code": maker_code,
+            "rom_size": rom_size,
+        }
+
+    def get_header(self) -> dict:
+        """Return the parsed ROM header fields.
+
+        Returns:
+            Dictionary containing: entry_point, title, game_code,
+            maker_code, rom_size.
+        """
+        return self._header.copy()
+
+    @property
+    def data(self) -> bytes:
+        """Return the raw ROM data."""
+        return self._data
+
+    @property
+    def title(self) -> str:
+        """Return the game title (up to 12 bytes, null-padded)."""
+        return self._header.get("title", "")
+
+    @property
+    def game_code(self) -> str:
+        """Return the 4-character game code."""
+        return self._header.get("game_code", "")
+
+    @property
+    def maker_code(self) -> str:
+        """Return the 2-character maker code."""
+        return self._header.get("maker_code", "")
+
+    @property
+    def rom_size(self) -> int:
+        """Return the ROM size in bytes (0 if unknown)."""
+        return self._header.get("rom_size", 0)
+
+    @property
+    def entry_point(self) -> int:
+        """Return the entry point address (ARM branch instruction)."""
+        return self._header.get("entry_point", 0)
+
+    def read_bytes(self, offset: int, length: int) -> bytes:
+        """Read raw bytes from the ROM at the given offset.
+
+        Args:
+            offset: Byte offset from start of ROM.
+            length: Number of bytes to read.
+
+        Returns:
+            Bytes read (may be shorter if ROM ends).
+        """
+        return self._data[offset : offset + length]
+
+
+# === End of rom.py ===
+
+
+# === Start of save_state.py ===
+
+
+
+# Version for future compatibility
+VERSION = 1
+
+
+class SaveState:
+    """Save State class for complete emulator state serialization.
+    
+    Provides save(filepath) and load(filepath) methods to serialize and deserialize
+    the complete emulator state including CPU, Memory, PPU, APU, DMA, Timers,
+    Interrupts, and Input state.
+    """
+    
+    def __init__(self, cpu=None, memory=None, ppu=None, apu=None, 
+                 dma=None, timers=None, interrupts=None, input_state=None):
+        """Initialize SaveState with emulator component references.
+        
+        Args:
+            cpu: ARM7TDMI CPU instance
+            memory: Memory instance
+            ppu: PPU instance
+            apu: APU instance
+            dma: DMA instance
+            timers: Timers instance
+            interrupts: InterruptController instance
+            input_state: Input instance
+        """
+        self.cpu = cpu
+        self.memory = memory
+        self.ppu = ppu
+        self.apu = apu
+        self.dma = dma
+        self.timers = timers
+        self.interrupts = interrupts
+        self.input_state = input_state
+    
+    def save(self, filepath: str) -> bool:
+        """Save complete emulator state to JSON file.
+        
+        Args:
+            filepath: Path to save file
+            
+        Returns:
+            True on success, False on error
+        """
+        try:
+            state = {
+                "version": VERSION,
+                "cpu": self._save_cpu(),
+                "memory": self._save_memory(),
+                "ppu": self._save_ppu(),
+                "apu": self._save_apu(),
+                "dma": self._save_dma(),
+                "timers": self._save_timers(),
+                "interrupts": self._save_interrupts(),
+                "input": self._save_input()
+            }
+            
+            with open(filepath, 'w') as f:
+                json.dump(state, f, indent=2)
+            
+            return True
+        except Exception as e:
+            print(f"Error saving state: {e}", file=sys.stderr)
+            return False
+    
+    def load(self, filepath: str) -> bool:
+        """Load complete emulator state from JSON file.
+        
+        Args:
+            filepath: Path to save file
+            
+        Returns:
+            True on success, False on error
+        """
+        try:
+            with open(filepath, 'r') as f:
+                state = json.load(f)
+            
+            # Check version compatibility
+            if state.get("version", 0) > VERSION:
+                print(f"Warning: Save state version {state['version']} is newer than "
+                      f"supported version {VERSION}", file=sys.stderr)
+                return False
+            
+            # Restore all components
+            if not self._load_cpu(state.get("cpu", {})):
+                return False
+            if not self._load_memory(state.get("memory", {})):
+                return False
+            if not self._load_ppu(state.get("ppu", {})):
+                return False
+            if not self._load_apu(state.get("apu", {})):
+                return False
+            if not self._load_dma(state.get("dma", {})):
+                return False
+            if not self._load_timers(state.get("timers", {})):
+                return False
+            if not self._load_interrupts(state.get("interrupts", {})):
+                return False
+            if not self._load_input(state.get("input", {})):
+                return False
+            
+            return True
+        except Exception as e:
+            print(f"Error loading state: {e}", file=sys.stderr)
+            return False
+    
+    # =========================================================================
+    # CPU State
+    # =========================================================================
+    
+    def _save_cpu(self) -> Dict[str, Any]:
+        """Save CPU state."""
+        if not self.cpu:
+            return {}
+        
+        return {
+            "registers": list(self.cpu.registers),  # r0-r15
+            "cpsr": self.cpu.cpsr,
+            "spsr": list(self.cpu.spsr),  # Saved PSR for each mode
+            "mode": self.cpu.mode,
+            "thumb_mode": self.cpu.thumb_mode,
+            "running": self.cpu.running,
+            "cycles": self.cpu.cycles
+        }
+    
+    def _load_cpu(self, state: Dict[str, Any]) -> bool:
+        """Load CPU state."""
+        if not self.cpu or not state:
+            return True
+        
+        try:
+            self.cpu.registers = list(state.get("registers", [0] * 16))
+            self.cpu.cpsr = state.get("cpsr", 0)
+            self.cpu.spsr = list(state.get("spsr", [0] * 6))
+            self.cpu.mode = state.get("mode", 0x1F)
+            self.cpu.thumb_mode = state.get("thumb_mode", False)
+            self.cpu.running = state.get("running", True)
+            self.cpu.cycles = state.get("cycles", 0)
+            return True
+        except Exception as e:
+            print(f"Error loading CPU state: {e}", file=sys.stderr)
+            return False
+    
+    # =========================================================================
+    # Memory State
+    # =========================================================================
+    
+    def _save_memory(self) -> Dict[str, Any]:
+        """Save Memory state."""
+        if not self.memory:
+            return {}
+        
+        return {
+            "ewram": list(self.memory.ewram),
+            "iwram": list(self.memory.iwram),
+            "io": list(self.memory.io),
+            "palette": list(self.memory.palette),
+            "vram": list(self.memory.vram),
+            "oam": list(self.memory.oam),
+            "sram": list(self.memory.sram)
+        }
+    
+    def _load_memory(self, state: Dict[str, Any]) -> bool:
+        """Load Memory state."""
+        if not self.memory or not state:
+            return True
+        
+        try:
+            # Convert lists back to bytearray for memory arrays
+            ewram = state.get("ewram", [])
+            if ewram:
+                self.memory.ewram = list(ewram)
+            
+            iwram = state.get("iwram", [])
+            if iwram:
+                self.memory.iwram = list(iwram)
+            
+            io = state.get("io", [])
+            if io:
+                self.memory.io = list(io)
+            
+            palette = state.get("palette", [])
+            if palette:
+                self.memory.palette = list(palette)
+            
+            vram = state.get("vram", [])
+            if vram:
+                self.memory.vram = list(vram)
+            
+            oam = state.get("oam", [])
+            if oam:
+                self.memory.oam = list(oam)
+            
+            sram = state.get("sram", [])
+            if sram:
+                self.memory.sram = list(sram)
+            
+            return True
+        except Exception as e:
+            print(f"Error loading memory state: {e}", file=sys.stderr)
+            return False
+    
+    # =========================================================================
+    # PPU State
+    # =========================================================================
+    
+    def _save_ppu(self) -> Dict[str, Any]:
+        """Save PPU state."""
+        if not self.ppu:
+            return {}
+        
+        state = {}
+        
+        # Save PPU registers
+        if hasattr(self.ppu, 'disp_cnt'):
+            state["disp_cnt"] = self.ppu.disp_cnt
+        if hasattr(self.ppu, 'disp_stat'):
+            state["disp_stat"] = self.ppu.disp_stat
+        if hasattr(self.ppu, 'v_count'):
+            state["v_count"] = self.ppu.v_count
+        
+        # Save BG registers
+        for i in range(4):
+            bg_prefix = f"bg{i}"
+            if hasattr(self.ppu, f'{bg_prefix}_cnt'):
+                state[f'bg{i}_cnt'] = getattr(self.ppu, f'{bg_prefix}_cnt')
+            if hasattr(self.ppu, f'{bg_prefix}_x'):
+                state[f'bg{i}_x'] = getattr(self.ppu, f'{bg_prefix}_x')
+            if hasattr(self.ppu, f'{bg_prefix}_y'):
+                state[f'bg{i}_y'] = getattr(self.ppu, f'{bg_prefix}_y')
+        
+        # Save affine matrix parameters
+        for i in range(2):
+            for param in ['pa', 'pb', 'pc', 'pd', 'x', 'y']:
+                attr_name = f'bg{i}_{param}'
+                if hasattr(self.ppu, attr_name):
+                    state[attr_name] = getattr(self.ppu, attr_name)
+        
+        # Save window registers
+        for i in range(2):
+            for attr in ['win0_h', 'win1_h', 'win0_v', 'win1_v', 'win_in', 'win_out']:
+                attr_name = f'{attr}{i}' if i > 0 and attr.endswith(str(i-1)) else attr
+                if hasattr(self.ppu, attr_name):
+                    state[attr_name] = getattr(self.ppu, attr_name)
+        
+        # Save special effects
+        for attr in ['blend_cnt', 'blend_alpha', 'blend_bright']:
+            if hasattr(self.ppu, attr):
+                state[attr] = getattr(self.ppu, attr)
+        
+        # Save mosaic
+        if hasattr(self.ppu, 'mosaic_size'):
+            state["mosaic_size"] = self.ppu.mosaic_size
+        
+        # Save framebuffer if available
+        if hasattr(self.ppu, 'framebuffer'):
+            fb = self.ppu.framebuffer
+            if fb:
+                state["framebuffer"] = list(fb)
+        
+        return state
+    
+    def _load_ppu(self, state: Dict[str, Any]) -> bool:
+        """Load PPU state."""
+        if not self.ppu or not state:
+            return True
+        
+        try:
+            # Load PPU registers
+            if "disp_cnt" in state and hasattr(self.ppu, 'disp_cnt'):
+                self.ppu.disp_cnt = state["disp_cnt"]
+            if "disp_stat" in state and hasattr(self.ppu, 'disp_stat'):
+                self.ppu.disp_stat = state["disp_stat"]
+            if "v_count" in state and hasattr(self.ppu, 'v_count'):
+                self.ppu.v_count = state["v_count"]
+            
+            # Load BG registers
+            for i in range(4):
+                bg_prefix = f"bg{i}"
+                if f'bg{i}_cnt' in state and hasattr(self.ppu, f'{bg_prefix}_cnt'):
+                    setattr(self.ppu, f'{bg_prefix}_cnt', state[f'bg{i}_cnt'])
+                if f'bg{i}_x' in state and hasattr(self.ppu, f'{bg_prefix}_x'):
+                    setattr(self.ppu, f'{bg_prefix}_x', state[f'bg{i}_x'])
+                if f'bg{i}_y' in state and hasattr(self.ppu, f'{bg_prefix}_y'):
+                    setattr(self.ppu, f'{bg_prefix}_y', state[f'bg{i}_y'])
+            
+            # Load affine matrix parameters
+            for i in range(2):
+                for param in ['pa', 'pb', 'pc', 'pd', 'x', 'y']:
+                    attr_name = f'bg{i}_{param}'
+                    if attr_name in state and hasattr(self.ppu, attr_name):
+                        setattr(self.ppu, attr_name, state[attr_name])
+            
+            # Load window registers
+            for attr in ['win0_h', 'win1_h', 'win0_v', 'win1_v', 'win_in', 'win_out']:
+                if attr in state and hasattr(self.ppu, attr):
+                    setattr(self.ppu, attr, state[attr])
+            
+            # Load special effects
+            for attr in ['blend_cnt', 'blend_alpha', 'blend_bright']:
+                if attr in state and hasattr(self.ppu, attr):
+                    setattr(self.ppu, attr, state[attr])
+            
+            # Load mosaic
+            if "mosaic_size" in state and hasattr(self.ppu, 'mosaic_size'):
+                self.ppu.mosaic_size = state["mosaic_size"]
+            
+            # Load framebuffer
+            if "framebuffer" in state and hasattr(self.ppu, 'framebuffer'):
+                fb_data = state["framebuffer"]
+                if fb_data and self.ppu.framebuffer:
+                    self.ppu.framebuffer = list(fb_data)
+            
+            return True
+        except Exception as e:
+            print(f"Error loading PPU state: {e}", file=sys.stderr)
+            return False
+    
+    # =========================================================================
+    # APU State
+    # =========================================================================
+    
+    def _save_apu(self) -> Dict[str, Any]:
+        """Save APU state."""
+        if not self.apu:
+            return {}
+        
+        state = {}
+        
+        # Save master control
+        if hasattr(self.apu, 'sound_on'):
+            state["sound_on"] = self.apu.sound_on
+        
+        # Save all 4 channels
+        for i in range(4):
+            ch_prefix = f"ch{i + 1}"
+            if hasattr(self.apu, f'{ch_prefix}_volume'):
+                state[f'ch{i+1}_volume'] = getattr(self.apu, f'{ch_prefix}_volume')
+            if hasattr(self.apu, f'{ch_prefix}_frequency'):
+                state[f'ch{i+1}_frequency'] = getattr(self.apu, f'{ch_prefix}_frequency')
+            if hasattr(self.apu, f'{ch_prefix}_duty_cycle'):
+                state[f'ch{i+1}_duty_cycle'] = getattr(self.apu, f'{ch_prefix}_duty_cycle')
+            if hasattr(self.apu, f'{ch_prefix}_envelope_volume'):
+                state[f'ch{i+1}_envelope_volume'] = getattr(self.apu, f'{ch_prefix}_envelope_volume')
+            if hasattr(self.apu, f'{ch_prefix}_envelope_direction'):
+                state[f'ch{i+1}_envelope_direction'] = getattr(self.apu, f'{ch_prefix}_envelope_direction')
+            if hasattr(self.apu, f'{ch_prefix}_envelope_steps'):
+                state[f'ch{i+1}_envelope_steps'] = getattr(self.apu, f'{ch_prefix}_envelope_steps')
+            if hasattr(self.apu, f'{ch_prefix}_enabled'):
+                state[f'ch{i+1}_enabled'] = getattr(self.apu, f'{ch_prefix}_enabled')
+            if hasattr(self.apu, f'{ch_prefix}_wave'):
+                state[f'ch{i+1}_wave'] = list(getattr(self.apu, f'{ch_prefix}_wave', []))
+        
+        # Save FIFO buffers
+        for fifo in ['a', 'b']:
+            if hasattr(self.apu, f'fifo_{fifo}'):
+                state[f'fifo_{fifo}'] = list(getattr(self.apu, f'fifo_{fifo}', []))
+        
+        # Save wave RAM
+        if hasattr(self.apu, 'wave_ram'):
+            state["wave_ram"] = list(self.apu.wave_ram)
+        
+        # Save master volume
+        if hasattr(self.apu, 'master_volume'):
+            state["master_volume"] = self.apu.master_volume
+        
+        return state
+    
+    def _load_apu(self, state: Dict[str, Any]) -> bool:
+        """Load APU state."""
+        if not self.apu or not state:
+            return True
+        
+        try:
+            # Load master control
+            if "sound_on" in state and hasattr(self.apu, 'sound_on'):
+                self.apu.sound_on = state["sound_on"]
+            
+            # Load all 4 channels
+            for i in range(4):
+                ch_prefix = f"ch{i + 1}"
+                if f'ch{i+1}_volume' in state and hasattr(self.apu, f'{ch_prefix}_volume'):
+                    setattr(self.apu, f'{ch_prefix}_volume', state[f'ch{i+1}_volume'])
+                if f'ch{i+1}_frequency' in state and hasattr(self.apu, f'{ch_prefix}_frequency'):
+                    setattr(self.apu, f'{ch_prefix}_frequency', state[f'ch{i+1}_frequency'])
+                if f'ch{i+1}_duty_cycle' in state and hasattr(self.apu, f'{ch_prefix}_duty_cycle'):
+                    setattr(self.apu, f'{ch_prefix}_duty_cycle', state[f'ch{i+1}_duty_cycle'])
+                if f'ch{i+1}_envelope_volume' in state and hasattr(self.apu, f'{ch_prefix}_envelope_volume'):
+                    setattr(self.apu, f'{ch_prefix}_envelope_volume', state[f'ch{i+1}_envelope_volume'])
+                if f'ch{i+1}_envelope_direction' in state and hasattr(self.apu, f'{ch_prefix}_envelope_direction'):
+                    setattr(self.apu, f'{ch_prefix}_envelope_direction', state[f'ch{i+1}_envelope_direction'])
+                if f'ch{i+1}_envelope_steps' in state and hasattr(self.apu, f'{ch_prefix}_envelope_steps'):
+                    setattr(self.apu, f'{ch_prefix}_envelope_steps', state[f'ch{i+1}_envelope_steps'])
+                if f'ch{i+1}_enabled' in state and hasattr(self.apu, f'{ch_prefix}_enabled'):
+                    setattr(self.apu, f'{ch_prefix}_enabled', state[f'ch{i+1}_enabled'])
+                if f'ch{i+1}_wave' in state and hasattr(self.apu, f'{ch_prefix}_wave'):
+                    setattr(self.apu, f'{ch_prefix}_wave', list(state[f'ch{i+1}_wave']))
+            
+            # Load FIFO buffers
+            for fifo in ['a', 'b']:
+                if f'fifo_{fifo}' in state and hasattr(self.apu, f'fifo_{fifo}'):
+                    setattr(self.apu, f'fifo_{fifo}', list(state[f'fifo_{fifo}']))
+            
+            # Load wave RAM
+            if "wave_ram" in state and hasattr(self.apu, 'wave_ram'):
+                self.apu.wave_ram = list(state["wave_ram"])
+            
+            # Load master volume
+            if "master_volume" in state and hasattr(self.apu, 'master_volume'):
+                self.apu.master_volume = state["master_volume"]
+            
+            return True
+        except Exception as e:
+            print(f"Error loading APU state: {e}", file=sys.stderr)
+            return False
+    
+    # =========================================================================
+    # DMA State
+    # =========================================================================
+    
+    def _save_dma(self) -> Dict[str, Any]:
+        """Save DMA state."""
+        if not self.dma:
+            return {}
+        
+        state = {}
+        
+        # Save all 4 DMA channels
+        for i in range(4):
+            ch = f"ch{i}"
+            if hasattr(self.dma, ch):
+                channel = getattr(self.dma, ch)
+                if channel:
+                    state[f'channel{i}'] = {
+                        "src_addr": channel.src_addr if hasattr(channel, 'src_addr') else 0,
+                        "dst_addr": channel.dst_addr if hasattr(channel, 'dst_addr') else 0,
+                        "control": channel.control if hasattr(channel, 'control') else 0,
+                        "enabled": channel.enabled if hasattr(channel, 'enabled') else False,
+                    }
+        
+        return state
+    
+    def _load_dma(self, state: Dict[str, Any]) -> bool:
+        """Load DMA state."""
+        if not self.dma or not state:
+            return True
+        
+        try:
+            # Load all 4 DMA channels
+            for i in range(4):
+                ch = f"ch{i}"
+                if hasattr(self.dma, ch):
+                    channel = getattr(self.dma, ch)
+                    if channel and f'channel{i}' in state:
+                        ch_state = state[f'channel{i}']
+                        if hasattr(channel, 'src_addr'):
+                            channel.src_addr = ch_state.get("src_addr", 0)
+                        if hasattr(channel, 'dst_addr'):
+                            channel.dst_addr = ch_state.get("dst_addr", 0)
+                        if hasattr(channel, 'control'):
+                            channel.control = ch_state.get("control", 0)
+                        if hasattr(channel, 'enabled'):
+                            channel.enabled = ch_state.get("enabled", False)
+            
+            return True
+        except Exception as e:
+            print(f"Error loading DMA state: {e}", file=sys.stderr)
+            return False
+    
+    # =========================================================================
+    # Timer State
+    # =========================================================================
+    
+    def _save_timers(self) -> Dict[str, Any]:
+        """Save Timer state."""
+        if not self.timers:
+            return {}
+        
+        state = {}
+        
+        # Save all 4 timers
+        for i in range(4):
+            ch = f"timer{i}"
+            if hasattr(self.timers, ch):
+                timer = getattr(self.timers, ch)
+                if timer:
+                    state[f'timer{i}'] = {
+                        "count": timer.count if hasattr(timer, 'count') else 0,
+                        "control": timer.control if hasattr(timer, 'control') else 0,
+                        "reload": timer.reload if hasattr(timer, 'reload') else 0,
+                    }
+        
+        return state
+    
+    def _load_timers(self, state: Dict[str, Any]) -> bool:
+        """Load Timer state."""
+        if not self.timers or not state:
+            return True
+        
+        try:
+            # Load all 4 timers
+            for i in range(4):
+                ch = f"timer{i}"
+                if hasattr(self.timers, ch):
+                    timer = getattr(self.timers, ch)
+                    if timer and f'timer{i}' in state:
+                        timer_state = state[f'timer{i}']
+                        if hasattr(timer, 'count'):
+                            timer.count = timer_state.get("count", 0)
+                        if hasattr(timer, 'control'):
+                            timer.control = timer_state.get("control", 0)
+                        if hasattr(timer, 'reload'):
+                            timer.reload = timer_state.get("reload", 0)
+            
+            return True
+        except Exception as e:
+            print(f"Error loading timer state: {e}", file=sys.stderr)
+            return False
+    
+    # =========================================================================
+    # Interrupt State
+    # =========================================================================
+    
+    def _save_interrupts(self) -> Dict[str, Any]:
+        """Save Interrupt state."""
+        if not self.interrupts:
+            return {}
+        
+        state = {}
+        
+        # Save interrupt registers
+        if hasattr(self.interrupts, 'ie'):
+            state["ie"] = self.interrupts.ie
+        if hasattr(self.interrupts, 'if_reg'):
+            state["if"] = self.interrupts.if_reg
+        if hasattr(self.interrupts, 'ime'):
+            state["ime"] = self.interrupts.ime
+        
+        # Save pending flags
+        if hasattr(self.interrupts, 'pending'):
+            state["pending"] = self.interrupts.pending
+        
+        return state
+    
+    def _load_interrupts(self, state: Dict[str, Any]) -> bool:
+        """Load Interrupt state."""
+        if not self.interrupts or not state:
+            return True
+        
+        try:
+            # Load interrupt registers
+            if "ie" in state and hasattr(self.interrupts, 'ie'):
+                self.interrupts.ie = state["ie"]
+            if "if" in state:
+                if hasattr(self.interrupts, 'if_reg'):
+                    self.interrupts.if_reg = state["if"]
+            if "ime" in state and hasattr(self.interrupts, 'ime'):
+                self.interrupts.ime = state["ime"]
+            
+            # Load pending flags
+            if "pending" in state and hasattr(self.interrupts, 'pending'):
+                self.interrupts.pending = state["pending"]
+            
+            return True
+        except Exception as e:
+            print(f"Error loading interrupt state: {e}", file=sys.stderr)
+            return False
+    
+    # =========================================================================
+    # Input State
+    # =========================================================================
+    
+    def _save_input(self) -> Dict[str, Any]:
+        """Save Input state."""
+        if not self.input_state:
+            return {}
+        
+        state = {}
+        
+        # Save key input
+        if hasattr(self.input_state, 'key_input'):
+            state["key_input"] = self.input_state.key_input
+        elif hasattr(self.input_state, 'keys'):
+            state["key_input"] = self.input_state.keys
+        
+        # Save key control
+        if hasattr(self.input_state, 'key_cnt'):
+            state["key_cnt"] = self.input_state.key_cnt
+        
+        return state
+    
+    def _load_input(self, state: Dict[str, Any]) -> bool:
+        """Load Input state."""
+        if not self.input_state or not state:
+            return True
+        
+        try:
+            # Load key input
+            if "key_input" in state:
+                if hasattr(self.input_state, 'key_input'):
+                    self.input_state.key_input = state["key_input"]
+                elif hasattr(self.input_state, 'keys'):
+                    self.input_state.keys = state["key_input"]
+            
+            # Load key control
+            if "key_cnt" in state and hasattr(self.input_state, 'key_cnt'):
+                self.input_state.key_cnt = state["key_cnt"]
+            
+            return True
+        except Exception as e:
+            print(f"Error loading input state: {e}", file=sys.stderr)
+            return False
+
+
+def create_save_state(cpu=None, memory=None, ppu=None, apu=None,
+                     dma=None, timers=None, interrupts=None, input_state=None) -> SaveState:
+    """Create a SaveState instance with emulator component references.
+    
+    Convenience function to create a SaveState instance.
+    
+    Args:
+        cpu: ARM7TDMI CPU instance
+        memory: Memory instance
+        ppu: PPU instance
+        apu: APU instance
+        dma: DMA instance
+        timers: Timers instance
+        interrupts: InterruptController instance
+        input_state: Input instance
+    
+    Returns:
+        SaveState instance
+    """
+    return SaveState(cpu, memory, ppu, apu, dma, timers, interrupts, input_state)
+
+# === End of save_state.py ===
+
+
+# === Start of serial.py ===
+
+class Serial:
+    REG_SIOCNT = 0x04000128
+    REG_SIODATA8 = 0x0400012A
+    REG_SIOMULTI0 = 0x04000120
+    REG_SIOMULTI1 = 0x04000122
+    REG_SIOMULTI2 = 0x04000124
+    REG_SIOMULTI3 = 0x04000126
+    REG_SIOMLT_SEND = 0x0400012A
+    REG_SIOSTAT = 0x04000128
+    REG_SIOCNT = 0x0400012C
+
+    def __init__(self, memory):
+        self.memory = memory
+        self.sio_mode = 0
+        self.transfer_enabled = False
+        self.clock_select = 0
+        self.receive_data = 0
+        self.send_data = 0
+        self.multi_player_id = 0
+        self.multi_player_data = [0, 0, 0, 0]
+        self.busy_flag = False
+        self.error_flag = False
+        self.uart_mode = 0
+        self.uart_receive_data = 0
+        self.gpio_direction = 0
+        self.gpio_data = 0
+
+    def write_register(self, addr: int, value: int):
+        if addr == 0x04000120:
+            self.multi_player_data[0] = value & 0xFFFF
+        elif addr == 0x04000122:
+            self.multi_player_data[1] = value & 0xFFFF
+        elif addr == 0x04000124:
+            self.multi_player_data[2] = value & 0xFFFF
+        elif addr == 0x04000126:
+            self.multi_player_data[3] = value & 0xFFFF
+        elif addr == 0x04000128:
+            self._write_siocnt(value)
+        elif addr == 0x0400012A:
+            self.send_data = value & 0xFFFF
+            if self.sio_mode == 0:
+                self._uart_transfer()
+        elif addr == 0x0400012C:
+            self._write_siocnt(value)
+
+    def _write_siocnt(self, value: int):
+        self.sio_mode = (value >> 12) & 0x3
+        self.transfer_enabled = bool((value >> 7) & 1)
+        self.clock_select = (value >> 0) & 0x3
+        self.multi_player_id = (value >> 8) & 0x3
+
+    def _uart_transfer(self):
+        self.busy_flag = True
+        self.receive_data = self.send_data
+        self.busy_flag = False
+
+    def read_register(self, addr: int) -> int:
+        if addr == 0x04000120:
+            if self.sio_mode == 1:
+                return self.multi_player_data[0]
+            return self.receive_data & 0xFFFF
+        elif addr == 0x04000122:
+            if self.sio_mode == 1:
+                return self.multi_player_data[1]
+            return (self.receive_data >> 8) & 0xFF
+        elif addr == 0x04000124:
+            if self.sio_mode == 1:
+                return self.multi_player_data[2]
+            return 0xFF  # Unconnected
+        elif addr == 0x04000126:
+            if self.sio_mode == 1:
+                return self.multi_player_data[3]
+            return 0xFF
+        elif addr == 0x04000128:
+            return self._read_siocnt()
+        elif addr == 0x0400012A:
+            if self.sio_mode == 0:
+                return self.receive_data & 0xFFFF
+            return self.send_data & 0xFFFF
+        elif addr == 0x0400012C:
+            return self._read_siocnt()
+        return 0xFF
+
+    def _read_siocnt(self) -> int:
+        value = 0
+        value |= self.sio_mode << 12
+        value |= self.multi_player_id << 8
+        value |= int(self.transfer_enabled) << 7
+        value |= self.clock_select
+        value |= int(self.busy_flag) << 3
+        value |= int(self.error_flag) << 2
+        return value & 0xFFFF
+
+
+# === End of serial.py ===
+
+
+# === Start of rtc.py ===
+
+
+
+
+class RTC:
+    """Real-Time Clock implementation for GBA games."""
+    
+    # MMIO register addresses
+    REG_RTC_SI = 0x04000134  # Serial input data
+    REG_RTC_SO = 0x04000136  # Serial output data  
+    REG_RTC_SCK = 0x04000138  # Serial clock
+    REG_RTC_CS = 0x0400013C  # Chip select
+    
+    # RTC commands
+    CMD_READ_STATUS1 = 0x6E
+    CMD_READ_STATUS2 = 0x6A
+    CMD_READ_TIME = 0x66
+    CMD_READ_DATE = 0x62
+    CMD_WRITE_TIME = 0x80
+    CMD_WRITE_DATE = 0x82
+    CMD_WRITE_STATUS = 0xA0
+    
+    # Status register bits
+    STATUS1_24H = 0x40  # 24-hour mode
+    STATUS1_POWER = 0x20  # Power on
+    STATUS1_RESET = 0x10  # Reset
+    STATUS1_STOP = 0x08  # Stop oscillator
+    
+    def __init__(self, memory, state_file: str = "rtc_state.json"):
+        self.memory = memory
+        self.state_file = state_file
+        
+        # RTC state
+        self.seconds = 0
+        self.minutes = 0
+        self.hours = 0
+        self.day = 1
+        self.month = 1
+        self.year = 0  # 00-99 (2000-2099)
+        
+        # Status registers
+        self.status1 = self.STATUS1_POWER | self.STATUS1_24H
+        self.status2 = 0x00
+        
+        # Serial communication state
+        self.bit_count = 0
+        self.command = 0
+        self.data_buffer = 0
+        self.transfer_count = 0
+        self.current_operation = None  # 'read' or 'write'
+        self.read_data = 0
+        
+        # Base time for calculating elapsed time (stored as offset from epoch)
+        self.base_timestamp: float = 0.0
+        self.base_realtime: float = 0.0
+        self.so_value: int = 0
+        
+        # Load persisted state
+        self._load_state()
+        
+        # Register MMIO handlers
+        self._register_mmio()
+    
+    def _register_mmio(self):
+        """Register RTC MMIO handlers with memory system."""
+        self.memory.register_mmio_read(self.REG_RTC_SI - 0x04000000, self._read_si)
+        self.memory.register_mmio_read(self.REG_RTC_SO - 0x04000000, self._read_so)
+        self.memory.register_mmio_read(self.REG_RTC_SCK - 0x04000000, self._read_sck)
+        self.memory.register_mmio_read(self.REG_RTC_CS - 0x04000000, self._read_cs)
+        
+        self.memory.register_mmio_write(self.REG_RTC_SI - 0x04000000, self._write_si)
+        self.memory.register_mmio_write(self.REG_RTC_SO - 0x04000000, self._write_so)
+        self.memory.register_mmio_write(self.REG_RTC_SCK - 0x04000000, self._write_sck)
+        self.memory.register_mmio_write(self.REG_RTC_CS - 0x04000000, self._write_cs)
+    
+    def _read_si(self, addr: int) -> int:
+        """Read from SI register."""
+        return 0
+    
+    def _read_so(self, addr: int) -> int:
+        """Read from SO register - returns serial output data."""
+        if self.bit_count > 0 and self.bit_count <= 8:
+            # Return the MSB of read_data
+            return (self.read_data >> (8 - self.bit_count)) & 1
+        return 0
+    
+    def _read_sck(self, addr: int) -> int:
+        """Read from SCK register."""
+        return 0
+    
+    def _read_cs(self, addr: int) -> int:
+        """Read from CS register."""
+        return 0
+    
+    def _write_si(self, addr: int, value: int):
+        """Write to SI register - serial input."""
+        si_bit = value & 1
+        
+        if self.bit_count == 0:
+            # First bit of command
+            self.command = si_bit << 7
+            self.bit_count = 1
+        elif self.bit_count < 8:
+            # Continue building command
+            self.command |= si_bit << (7 - self.bit_count)
+            self.bit_count += 1
+            
+            if self.bit_count == 8:
+                self._process_command()
+    
+    def _write_so(self, addr: int, value: int):
+        """Write to SO register - no operation (SO is output only)."""
+        # SO is a read-only output pin, writes are ignored
+        # But we track the value for debugging/logging purposes
+        self.so_value = value
+    
+    def _write_sck(self, addr: int, value: int):
+        """Write to SCK register - clock pulse."""
+        # SCK rising edge triggers data transfer
+        if value & 1:
+            # Rising edge - process data
+            if self.bit_count > 0:
+                self._clock_tick()
+    
+    def _write_cs(self, addr: int, value: int):
+        """Write to CS register - chip select."""
+        if value & 1:
+            # CS high - reset transfer
+            self._reset_transfer()
+    
+    def _clock_tick(self):
+        """Process a clock tick for data transfer."""
+        if self.current_operation == 'read' and self.transfer_count < 8:
+            # Shift read_data left and add 0 (SO is pulled high internally)
+            self.read_data = (self.read_data << 1) & 0xFF
+            self.transfer_count += 1
+        elif self.current_operation == 'write' and self.transfer_count < 8:
+            # Collect write data - SI bit is already in self.command LSB during write
+            # We need to read the SI bit from the SI register
+            si_bit = (self.memory.read_u16(self.REG_RTC_SI - 0x04000000) & 1)
+            self.data_buffer = (self.data_buffer << 1) | si_bit
+            self.transfer_count += 1
+            
+            # Check if we've received a complete byte
+            if self.transfer_count == 8:
+                self._handle_write_byte()
+    
+    def _process_command(self):
+        """Process the received RTC command."""
+        cmd = self.command
+        
+        if cmd == self.CMD_READ_STATUS1:
+            self.read_data = self.status1
+            self.current_operation = 'read'
+            self.transfer_count = 0
+        elif cmd == self.CMD_READ_STATUS2:
+            self.read_data = self.status2
+            self.current_operation = 'read'
+            self.transfer_count = 0
+        elif cmd == self.CMD_READ_TIME:
+            # Pack time: seconds, minutes, hours (BCD format)
+            self.read_data = self._pack_time()
+            self.current_operation = 'read'
+            self.transfer_count = 0
+        elif cmd == self.CMD_READ_DATE:
+            # Pack date: day, month, year (BCD format)
+            self.read_data = self._pack_date()
+            self.current_operation = 'read'
+            self.transfer_count = 0
+        elif (cmd & 0xF0) == self.CMD_WRITE_TIME:
+            # Write time command - prepare to receive 3 bytes (seconds, minutes, hours)
+            self.current_operation = 'write'
+            self.data_buffer = 0
+            self.transfer_count = 0
+            self.write_buffer = []
+            self.write_command = cmd
+        elif (cmd & 0xF0) == self.CMD_WRITE_DATE:
+            # Write date command - prepare to receive 3 bytes (day, month, year)
+            self.current_operation = 'write'
+            self.data_buffer = 0
+            self.transfer_count = 0
+            self.write_buffer = []
+            self.write_command = cmd
+        elif cmd == self.CMD_WRITE_STATUS:
+            # Write status register - receive 1 byte
+            self.current_operation = 'write'
+            self.data_buffer = 0
+            self.transfer_count = 0
+            self.write_buffer = []
+            self.write_command = cmd
+        else:
+            # Unknown command - reset
+            self._reset_transfer()
+    
+    def _pack_time(self) -> int:
+        """Pack time data into byte (seconds | minutes | hours in BCD)."""
+        sec_bcd = self._int_to_bcd(self.seconds)
+        min_bcd = self._int_to_bcd(self.minutes)
+        hour_bcd = self._int_to_bcd(self.hours)
+        return ((hour_bcd & 0x3F) << 8) | ((min_bcd & 0x7F) << 4) | (sec_bcd & 0x7F)
+    
+    def _pack_date(self) -> int:
+        """Pack date data into byte (day | month | year in BCD)."""
+        day_bcd = self._int_to_bcd(self.day)
+        month_bcd = self._int_to_bcd(self.month)
+        year_bcd = self._int_to_bcd(self.year)
+        return ((year_bcd & 0xFF) << 8) | ((month_bcd & 0x1F) << 4) | (day_bcd & 0x3F)
+    
+    def _unpack_time(self, data: int):
+        """Unpack time data from byte."""
+        self.seconds = self._bcd_to_int(data & 0x7F)
+        self.minutes = self._bcd_to_int((data >> 4) & 0x7F)
+        self.hours = self._bcd_to_int((data >> 8) & 0x3F)
+    
+    def _unpack_date(self, data: int):
+        """Unpack date data from byte."""
+        self.day = self._bcd_to_int(data & 0x3F)
+        self.month = self._bcd_to_int((data >> 4) & 0x1F)
+        self.year = self._bcd_to_int((data >> 8) & 0xFF)
+    
+    def _int_to_bcd(self, value: int) -> int:
+        """Convert integer to BCD format."""
+        tens = value // 10
+        ones = value % 10
+        return (tens << 4) | ones
+    
+    def _bcd_to_int(self, bcd: int) -> int:
+        """Convert BCD to integer."""
+        tens = (bcd >> 4) & 0x0F
+        ones = bcd & 0x0F
+        return tens * 10 + ones
+    
+    def _reset_transfer(self):
+        """Reset transfer state machine."""
+        self.bit_count = 0
+        self.command = 0
+        self.data_buffer = 0
+        self.transfer_count = 0
+        self.current_operation = None
+        self.read_data = 0
+        self.write_buffer = []
+        self.write_command = 0
+    
+    def _is_leap_year(self, year: int) -> bool:
+        """Check if a year is a leap year."""
+        full_year = 2000 + year
+        if full_year % 400 == 0:
+            return True
+        if full_year % 100 == 0:
+            return False
+        return full_year % 4 == 0
+    
+    def _get_days_in_month(self, month: int, year: int) -> int:
+        """Get number of days in a given month."""
+        days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        if month == 2 and self._is_leap_year(year):
+            return 29
+        return days[month - 1]
+    
+    def update_time(self):
+        """Update RTC time based on elapsed real time."""
+        if self.base_timestamp == 0.0:
+            # First call - initialize
+            self.base_timestamp = time.time()
+            self.base_realtime = time.time()
+            self._sync_from_system()
+            return
+        
+        # Calculate elapsed time since base
+        current_time = time.time()
+        elapsed = current_time - self.base_realtime
+        
+        if elapsed > 0:
+            # Add elapsed time to stored timestamp
+            self.base_timestamp += elapsed
+            self.base_realtime = current_time
+            self._sync_from_timestamp()
+    
+    def _sync_from_system(self):
+        """Sync RTC time from system time."""
+        now = datetime.now()
+        self.seconds = now.second
+        self.minutes = now.minute
+        self.hours = now.hour
+        self.day = now.day
+        self.month = now.month
+        self.year = now.year % 100
+        
+        # Store current system time as base
+        self.base_timestamp = now.timestamp()
+        self.base_realtime = time.time()
+    
+    def _sync_from_timestamp(self):
+        """Sync RTC time from stored timestamp."""
+        dt = datetime.fromtimestamp(self.base_timestamp)
+        self.seconds = dt.second
+        self.minutes = dt.minute
+        self.hours = dt.hour
+        self.day = dt.day
+        self.month = dt.month
+        self.year = dt.year % 100
+    
+    def _handle_write_byte(self):
+        """Handle a complete byte received during write operation."""
+        # Store the byte in write buffer
+        self.write_buffer.append(self.data_buffer)
+        
+        # Determine how many bytes we need based on command
+        if self.write_command == self.CMD_WRITE_STATUS:
+            # Status register: 1 byte
+            if len(self.write_buffer) >= 1:
+                self._apply_write_status()
+        elif self.write_command == self.CMD_WRITE_TIME:
+            # Time: 3 bytes (seconds, minutes, hours)
+            if len(self.write_buffer) >= 3:
+                self._apply_write_time()
+        elif self.write_command == self.CMD_WRITE_DATE:
+            # Date: 3 bytes (day, month, year)
+            if len(self.write_buffer) >= 3:
+                self._apply_write_date()
+        
+        # Reset for next byte
+        self.data_buffer = 0
+        self.transfer_count = 0
+    
+    def _apply_write_status(self):
+        """Apply written status register value."""
+        if len(self.write_buffer) >= 1:
+            status = self.write_buffer[0]
+            # Update status1 register
+            self.status1 = status
+            
+            # Handle STOP bit (bit 3)
+            if status & self.STATUS1_STOP:
+                # Clock stopped - don't update time
+                pass
+            else:
+                # Clock running - time updates normally
+                pass
+            
+            # Handle RESET bit (bit 4)
+            if status & self.STATUS1_RESET:
+                # Reset time to initial values
+                self.seconds = 0
+                self.minutes = 0
+                self.hours = 0
+                self.day = 1
+                self.month = 1
+                self.year = 0
+                # Clear reset bit after reset
+                self.status1 &= ~self.STATUS1_RESET
+    
+    def _apply_write_time(self):
+        """Apply written time values."""
+        if len(self.write_buffer) >= 3:
+            # Bytes are: seconds, minutes, hours
+            self._unpack_time(self.write_buffer[0])
+            self._unpack_time((self.write_buffer[1] << 8) | self.write_buffer[0])  # Reuse unpack logic
+            
+            # Actually unpack properly
+            self.seconds = self._bcd_to_int(self.write_buffer[0] & 0x7F)
+            self.minutes = self._bcd_to_int(self.write_buffer[1] & 0x7F)
+            self.hours = self._bcd_to_int(self.write_buffer[2] & 0x3F)
+            
+            # Reset base timestamp to match new time
+            now = time.time()
+            dt = datetime.now()
+            dt = dt.replace(hour=self.hours, minute=self.minutes, second=self.seconds, microsecond=0)
+            self.base_timestamp = dt.timestamp()
+            self.base_realtime = now
+    
+    def _apply_write_date(self):
+        """Apply written date values."""
+        if len(self.write_buffer) >= 3:
+            # Bytes are: day, month, year
+            self.day = self._bcd_to_int(self.write_buffer[0] & 0x3F)
+            self.month = self._bcd_to_int(self.write_buffer[1] & 0x1F)
+            self.year = self._bcd_to_int(self.write_buffer[2] & 0xFF)
+            
+            # Reset base timestamp to match new date
+            now = time.time()
+            dt = datetime.now()
+            dt = dt.replace(year=2000 + self.year, month=self.month, day=self.day, microsecond=0)
+            self.base_timestamp = dt.timestamp()
+            self.base_realtime = now
+    
+    def _load_state(self):
+        """Load RTC state from file."""
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, 'r') as f:
+                    state = json.load(f)
+                    self.base_timestamp = state.get('base_timestamp', 0.0)
+                    self.seconds = state.get('seconds', 0)
+                    self.minutes = state.get('minutes', 0)
+                    self.hours = state.get('hours', 0)
+                    self.day = state.get('day', 1)
+                    self.month = state.get('month', 1)
+                    self.year = state.get('year', 0)
+                    self.status1 = state.get('status1', self.STATUS1_POWER | self.STATUS1_24H)
+                    self.status2 = state.get('status2', 0)
+                    
+                    # Sync from stored timestamp
+                    if self.base_timestamp > 0:
+                        self._sync_from_timestamp()
+                    else:
+                        self._sync_from_system()
+            except (json.JSONDecodeError, IOError):
+                self._sync_from_system()
+        else:
+            self._sync_from_system()
+    
+    def save_state(self):
+        """Save RTC state to file."""
+        # Update time before saving
+        self.update_time()
+        
+        state = {
+            'base_timestamp': self.base_timestamp,
+            'seconds': self.seconds,
+            'minutes': self.minutes,
+            'hours': self.hours,
+            'day': self.day,
+            'month': self.month,
+            'year': self.year,
+            'status1': self.status1,
+            'status2': self.status2
+        }
+        
+        with open(self.state_file, 'w') as f:
+            json.dump(state, f)
+    
+    def get_time_string(self) -> str:
+        """Get current RTC time as string."""
+        return f"{self.hours:02d}:{self.minutes:02d}:{self.seconds:02d}"
+    
+    def get_date_string(self) -> str:
+        """Get current RTC date as string."""
+        return f"20{self.year:02d}-{self.month:02d}-{self.day:02d}"
+
+
+def detect_rtc(rom_data: bytes) -> bool:
+    """
+    Auto-detect if ROM uses RTC.
+    
+    Checks for known RTC game identifiers in ROM header or game code.
+    Common RTC games: Pokemon Gold/Silver, Mario Artist, Boktai, etc.
+    """
+    if rom_data is None or len(rom_data) < 0x100:
+        return False
+    
+    # Check for known RTC game identifiers
+    rtc_identifiers = [
+        b'GOLD',      # Pokemon Gold
+        b'SILVER',    # Pokemon Silver
+        b'POKEMON',   # Pokemon (various)
+        b'MARIO ARTIST',  # Mario Artist
+        b'BOKTAI',    # Boktai
+        b'KAGUYA',    # Kaguya
+        b'MOON',      # Kaguya
+    ]
+    
+    # Search in ROM header and game title area
+    search_area = rom_data[:0x100000]  # Search first 1MB
+    
+    for identifier in rtc_identifiers:
+        if identifier in search_area:
+            return True
+    
+    # Check for RTC hardware detection code patterns
+    # Games that use RTC typically access 0x04000134-0x0400013F
+    # This is a heuristic check
+    
+    return False
+
+
+def create_rtc(memory, rom_data: Optional[bytes] = None, state_file: str = "rtc_state.json") -> Optional[RTC]:
+    """
+    Create and initialize RTC if needed.
+    
+    Args:
+        memory: Memory object for MMIO registration
+        rom_data: ROM data for auto-detection
+        state_file: Path to state file
+        
+    Returns:
+        RTC instance if RTC detected or forced, None otherwise
+    """
+    if rom_data is not None and not detect_rtc(rom_data):
+        return None
+    
+    return RTC(memory, state_file)
+
+# === End of rtc.py ===
+
+
+# === Start of exceptions.py ===
+
+class GameError(Exception):
+    pass
+
+
+class GBARuntimeError(GameError):
+    pass
+
+
+class InvalidRom(GameError):
+    pass
+
+
+class InvalidROMError(InvalidRom):
+    pass
+
+
+class InvalidAddress(GameError):
+    pass
+
+
+__all__ = ["GameError", "GBARuntimeError", "InvalidRom", "InvalidROMError", "InvalidAddress"]
+
+
+# === End of exceptions.py ===
+
+
+# === Start of numba.py ===
+
+try:
+    _HAS_NUMBA = True
+except ImportError:
+    njit = None
+    prange = None
+    _HAS_NUMBA = False
+
+_NUMBA_ENABLED = False
+
+
+def jit_compile(func):
+    if not _HAS_NUMBA or not _NUMBA_ENABLED:
+        return func
+    try:
+        return njit(func, cache=True, fastmath=True)
+    except Exception:
+        return func
+
+
+def set_numba_enabled(enabled: bool):
+    global _NUMBA_ENABLED
+    _NUMBA_ENABLED = enabled and _HAS_NUMBA
+
+
+def is_numba_available() -> bool:
+    return _HAS_NUMBA
+
+# === End of numba.py ===
+
+
 # === Start of text_lib.py ===
 
-"""Text library - Replicazione di text.asm per test ROM
-
-Queste funzioni replicano il comportamento di text.asm per permettere
-alle test ROM di funzionare.
-
-Source: test_roms/gba-tests-master/lib/text.asm
-"""
 
 
 
@@ -8020,192 +10922,3 @@ def text_char(x: int, y: int, char: str, memory=None) -> int:
 
 
 # === End of text_lib.py ===
-
-
-# === Start of screenshot.py ===
-
-#!/usr/bin/env python3
-import os
-
-
-def capture_screenshot_from_ppu(ppu, output_path="/tmp/python_screenshot.png"):
-    try:
-        ppu.render_frame()
-        ppu.save_screenshot(output_path)
-        return True
-    except Exception as e:
-        import sys
-
-        print(f"Screenshot error: {e}", file=sys.stderr)
-        return False
-
-
-def get_capture_output_path():
-    return os.environ.get("GBA_CAPTURE_SCREENSHOT")
-
-
-def auto_capture_screenshot(ppu):
-    output_path = get_capture_output_path()
-    if output_path:
-        capture_screenshot_from_ppu(ppu, output_path)
-
-
-# === End of screenshot.py ===
-
-
-# === Start of rom.py ===
-
-"""GBA ROM handling - loads and parses cartridge ROM files."""
-
-
-
-class ROM:
-    """Represents a loaded GBA ROM image with header parsing.
-
-    Provides access to ROM data and parsed header fields including
-    title, game code, maker code, and entry point.
-    """
-
-    # GBA ROM header offsets
-    OFFSET_ENTRY_POINT = 0x00  # 4 bytes - ARM branch to start
-    OFFSET_NINTENDO_LOGO = 0x04  # 156 bytes - compressed logo
-    OFFSET_TITLE = 0xA0  # 12 bytes - game title (ASCII)
-    OFFSET_GAME_CODE = 0xAC  # 4 bytes - game code
-    OFFSET_MAKER_CODE = 0xB0  # 2 bytes - maker code
-    OFFSET_ROM_SIZE = 0xB4  # 1 byte - ROM size code
-
-    def __init__(self):
-        """Create an empty ROM instance."""
-        self._data: bytes = b""
-        self._header: dict = {}
-
-    def load(self, path: str) -> None:
-        """Load a GBA ROM file from disk.
-
-        Args:
-            path: Path to the .gba file to load.
-
-        Raises:
-            FileNotFoundError: If the file doesn't exist.
-            ValueError: If the file is too small to contain a valid header.
-        """
-        with open(path, "rb") as f:
-            self._data = f.read()
-
-        if len(self._data) < 0xC0:
-            raise ValueError(f"ROM file too small: {len(self._data)} bytes")
-
-        self._parse_header()
-
-    def _parse_header(self) -> None:
-        """Parse the GBA ROM header and populate header dict."""
-        # Entry point (4 bytes at 0x00)
-        entry = int.from_bytes(self._data[0x00:0x04], "little")
-
-        # Game title (12 bytes at 0xA0, null-padded ASCII)
-        title_bytes = self._data[0xA0:0xAC]
-        title = title_bytes.rstrip(b"\x00").decode("ascii", errors="replace")
-
-        # Game code (4 bytes at 0xAC)
-        game_code = self._data[0xAC:0xB0].decode("ascii", errors="replace")
-
-        # Maker code (2 bytes at 0xB0)
-        maker_code = self._data[0xB0:0xB2].decode("ascii", errors="replace")
-
-        rom_size_code = self._data[0xB4]
-        shift = rom_size_code & 0x0F
-        if rom_size_code < 0x18 and shift < 16:
-            rom_size = 0x80000 << shift
-        else:
-            rom_size = len(self._data)
-
-        self._header = {
-            "entry_point": entry,
-            "title": title,
-            "game_code": game_code,
-            "maker_code": maker_code,
-            "rom_size": rom_size,
-        }
-
-    def get_header(self) -> dict:
-        """Return the parsed ROM header fields.
-
-        Returns:
-            Dictionary containing: entry_point, title, game_code,
-            maker_code, rom_size.
-        """
-        return self._header.copy()
-
-    @property
-    def data(self) -> bytes:
-        """Return the raw ROM data."""
-        return self._data
-
-    @property
-    def title(self) -> str:
-        """Return the game title (up to 12 bytes, null-padded)."""
-        return self._header.get("title", "")
-
-    @property
-    def game_code(self) -> str:
-        """Return the 4-character game code."""
-        return self._header.get("game_code", "")
-
-    @property
-    def maker_code(self) -> str:
-        """Return the 2-character maker code."""
-        return self._header.get("maker_code", "")
-
-    @property
-    def rom_size(self) -> int:
-        """Return the ROM size in bytes (0 if unknown)."""
-        return self._header.get("rom_size", 0)
-
-    @property
-    def entry_point(self) -> int:
-        """Return the entry point address (ARM branch instruction)."""
-        return self._header.get("entry_point", 0)
-
-    def read_bytes(self, offset: int, length: int) -> bytes:
-        """Read raw bytes from the ROM at the given offset.
-
-        Args:
-            offset: Byte offset from start of ROM.
-            length: Number of bytes to read.
-
-        Returns:
-            Bytes read (may be shorter if ROM ends).
-        """
-        return self._data[offset : offset + length]
-
-
-# === End of rom.py ===
-
-
-# === Start of exceptions.py ===
-
-class GameError(Exception):
-    pass
-
-
-class GBARuntimeError(GameError):
-    pass
-
-
-class InvalidRom(GameError):
-    pass
-
-
-class InvalidROMError(InvalidRom):
-    pass
-
-
-class InvalidAddress(GameError):
-    pass
-
-
-__all__ = ["GameError", "GBARuntimeError", "InvalidRom", "InvalidROMError", "InvalidAddress"]
-
-
-# === End of exceptions.py ===
-

@@ -1056,6 +1056,87 @@ pub fn run_pipeline(
 }
 
 // Helper function to generate game loop (copied from cmds/pipeline.rs)
+const DELIVER_IRQ_BODY: &str = r#"
+    def _deliver_irq():
+        nonlocal _irq_return_pc, _pending_irq_bits, _irq_saved_r0, _irq_saved_r1, _irq_saved_r2, _irq_saved_r3, _irq_saved_r12
+        global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
+        _irq = getattr(memory, '_interrupts', None)
+        if _irq is None:
+            return
+        if _cpu_halted:
+            if _halt_reason == "vblank":
+                if _irq.if_reg & (1 << 0):
+                    _cpu_halted = False
+                    _halt_reason = None
+                    _irq.if_reg &= ~(1 << 0)
+                    if _swi_lr is not None:
+                        registers[14] = _swi_lr
+                        _swi_lr = None
+                    if _swi_caller_pc is not None:
+                        _irq_return_pc = _swi_caller_pc
+                        _swi_caller_pc = None
+            elif _halt_reason == "any":
+                _any_pending = _irq.if_reg & _irq.ie_reg
+                if _any_pending:
+                    _cpu_halted = False
+                    _halt_reason = None
+                    _irq.if_reg &= ~_any_pending
+                    if _swi_lr is not None:
+                        registers[14] = _swi_lr
+                        _swi_lr = None
+                    if _swi_caller_pc is not None:
+                        _irq_return_pc = _swi_caller_pc
+                        _swi_caller_pc = None
+            if _cpu_halted:
+                return
+        _pending = _irq.if_reg & _irq.ie_reg
+        if not _pending:
+            return
+        if not (_irq.ime_reg & 0x0001):
+            return
+        if _irq_return_pc is not None:
+            if registers[15] != _irq_return_pc:
+                return
+            _irq_return_pc = None
+            _saved = cpsr.get('spsr_irq', 0)
+            _saved_mode = _saved & 0x1F
+            if _saved_mode != cpsr.get('mode', 0x1F):
+                _switch_mode(_saved_mode)
+            cpsr['mode'] = _saved_mode
+            cpsr['i'] = (_saved >> 7) & 1
+            cpsr['f'] = (_saved >> 6) & 1
+            cpsr['t'] = (_saved >> 5) & 1
+            cpsr['n'] = (_saved >> 31) & 1
+            cpsr['z'] = (_saved >> 30) & 1
+            cpsr['c'] = (_saved >> 29) & 1
+            cpsr['v'] = (_saved >> 28) & 1
+            _irq.if_reg &= ~_pending_irq_bits
+            _pending_irq_bits = 0
+            registers[0] = _irq_saved_r0
+            registers[1] = _irq_saved_r1
+            registers[2] = _irq_saved_r2
+            registers[3] = _irq_saved_r3
+            registers[12] = _irq_saved_r12
+            return
+        _handler = memory.read_u32(0x03007FFC)
+        if not ((0x02000000 <= _handler < 0x04000000) or (0x08000000 <= _handler < 0x0A000000)):
+            return
+        _irq_return_pc = registers[15]
+        _pending_irq_bits = _pending
+        _cpsr_int = _cpsr_to_int(cpsr)
+        cpsr['spsr_irq'] = _cpsr_int
+        _irq_saved_r0 = registers[0]
+        _irq_saved_r1 = registers[1]
+        _irq_saved_r2 = registers[2]
+        _irq_saved_r3 = registers[3]
+        _irq_saved_r12 = registers[12]
+        _switch_mode(0x12)
+        cpsr['i'] = 1
+        registers[14] = registers[15] + 4
+        registers[15] = _handler & 0xFFFFFFFE
+        cpsr['t'] = 1 if (_handler & 1) else 0
+"#;
+
 fn generate_game_loop() -> String {
     r#"
 import time
@@ -1240,86 +1321,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     _audio_synth_per_frame = 735
     instr_per_scanline = max(50, (int(gba_hz / 60.0) // 2) // 228)
     _instr_per_frame = instr_per_scanline * 228
-    def _deliver_irq():
-        nonlocal _irq_return_pc, _pending_irq_bits, _irq_saved_r0, _irq_saved_r1, _irq_saved_r2, _irq_saved_r3, _irq_saved_r12
-        global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
-        _irq = getattr(memory, '_interrupts', None)
-        if _irq is None:
-            return
-        if _cpu_halted:
-            if _halt_reason == "vblank":
-                if _irq.if_reg & (1 << 0):
-                    _cpu_halted = False
-                    _halt_reason = None
-                    _irq.if_reg &= ~(1 << 0)
-                    if _swi_lr is not None:
-                        registers[14] = _swi_lr
-                        _swi_lr = None
-                    if _swi_caller_pc is not None:
-                        _irq_return_pc = _swi_caller_pc
-                        _swi_caller_pc = None
-            elif _halt_reason == "any":
-                _any_pending = _irq.if_reg & _irq.ie_reg
-                if _any_pending:
-                    _cpu_halted = False
-                    _halt_reason = None
-                    _irq.if_reg &= ~_any_pending
-                    if _swi_lr is not None:
-                        registers[14] = _swi_lr
-                        _swi_lr = None
-                    if _swi_caller_pc is not None:
-                        _irq_return_pc = _swi_caller_pc
-                        _swi_caller_pc = None
-            if _cpu_halted:
-                return
-        # FIRST: check if we're returning from IRQ (regardless of _pending state)
-        if _irq_return_pc is not None:
-            if registers[15] != _irq_return_pc:
-                return
-            _irq_return_pc = None
-            _saved = cpsr.get('spsr_irq', 0)
-            _saved_mode = _saved & 0x1F
-            if _saved_mode != cpsr.get('mode', 0x1F):
-                _switch_mode(_saved_mode)
-            cpsr['mode'] = _saved_mode
-            cpsr['i'] = (_saved >> 7) & 1
-            cpsr['f'] = (_saved >> 6) & 1
-            cpsr['t'] = (_saved >> 5) & 1
-            cpsr['n'] = (_saved >> 31) & 1
-            cpsr['z'] = (_saved >> 30) & 1
-            cpsr['c'] = (_saved >> 29) & 1
-            cpsr['v'] = (_saved >> 28) & 1
-            _irq.if_reg &= ~_pending_irq_bits
-            _pending_irq_bits = 0
-            registers[0] = _irq_saved_r0
-            registers[1] = _irq_saved_r1
-            registers[2] = _irq_saved_r2
-            registers[3] = _irq_saved_r3
-            registers[12] = _irq_saved_r12
-            return
-        # THEN: check if we should enter a new IRQ
-        _pending = _irq.if_reg & _irq.ie_reg
-        if not _pending:
-            return
-        if not (_irq.ime_reg & 0x0001):
-            return
-        _handler = memory.read_u32(0x03007FFC)
-        if not ((0x02000000 <= _handler < 0x04000000) or (0x08000000 <= _handler < 0x0A000000)):
-            return
-        _irq_return_pc = registers[15] + 4  # Return to instruction AFTER the interrupted one
-        _pending_irq_bits = _pending
-        _cpsr_int = _cpsr_to_int(cpsr)
-        cpsr['spsr_irq'] = _cpsr_int
-        _irq_saved_r0 = registers[0]
-        _irq_saved_r1 = registers[1]
-        _irq_saved_r2 = registers[2]
-        _irq_saved_r3 = registers[3]
-        _irq_saved_r12 = registers[12]
-        _switch_mode(0x12)
-        cpsr['i'] = 1
-        registers[14] = _irq_return_pc | (1 if cpsr.get('t', 0) else 0)  # LR = return PC with T bit
-        registers[15] = _handler & 0xFFFFFFFE
-        cpsr['t'] = 1 if (_handler & 1) else 0
+    __DELIVER_IRQ_BODY__
     while ic < mi:
         if frame_limit and fc >= frame_limit: break
         for _scanline in range(228):
@@ -1352,9 +1354,10 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                             break
                     else:
                         _inner_stalls = 0
-            ppu_instance.step_scanline()
-            if timers_instance is not None:
-                timers_instance.step(instr_per_scanline * 2)
+            if cpsr.get('mode', 0) != 0x12:
+                ppu_instance.step_scanline()
+                if timers_instance is not None:
+                    timers_instance.step(instr_per_scanline * 2)
             _deliver_irq()
         ppu_instance.render_frame()
         if _audio_buf is not None:
@@ -1402,86 +1405,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     _irq_saved_r2 = 0
     _irq_saved_r3 = 0
     _irq_saved_r12 = 0
-    def _deliver_irq():
-        nonlocal _irq_return_pc, _pending_irq_bits, _irq_saved_r0, _irq_saved_r1, _irq_saved_r2, _irq_saved_r3, _irq_saved_r12
-        global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
-        _irq = getattr(memory, '_interrupts', None)
-        if _irq is None:
-            return
-        if _cpu_halted:
-            if _halt_reason == "vblank":
-                if _irq.if_reg & (1 << 0):
-                    _cpu_halted = False
-                    _halt_reason = None
-                    _irq.if_reg &= ~(1 << 0)
-                    if _swi_lr is not None:
-                        registers[14] = _swi_lr
-                        _swi_lr = None
-                    if _swi_caller_pc is not None:
-                        _irq_return_pc = _swi_caller_pc
-                        _swi_caller_pc = None
-            elif _halt_reason == "any":
-                _any_pending = _irq.if_reg & _irq.ie_reg
-                if _any_pending:
-                    _cpu_halted = False
-                    _halt_reason = None
-                    _irq.if_reg &= ~_any_pending
-                    if _swi_lr is not None:
-                        registers[14] = _swi_lr
-                        _swi_lr = None
-                    if _swi_caller_pc is not None:
-                        _irq_return_pc = _swi_caller_pc
-                        _swi_caller_pc = None
-            if _cpu_halted:
-                return
-        # FIRST: check if we're returning from IRQ (regardless of _pending state)
-        if _irq_return_pc is not None:
-            if registers[15] != _irq_return_pc:
-                return
-            _irq_return_pc = None
-            _saved = cpsr.get('spsr_irq', 0)
-            _saved_mode = _saved & 0x1F
-            if _saved_mode != cpsr.get('mode', 0x1F):
-                _switch_mode(_saved_mode)
-            cpsr['mode'] = _saved_mode
-            cpsr['i'] = (_saved >> 7) & 1
-            cpsr['f'] = (_saved >> 6) & 1
-            cpsr['t'] = (_saved >> 5) & 1
-            cpsr['n'] = (_saved >> 31) & 1
-            cpsr['z'] = (_saved >> 30) & 1
-            cpsr['c'] = (_saved >> 29) & 1
-            cpsr['v'] = (_saved >> 28) & 1
-            _irq.if_reg &= ~_pending_irq_bits
-            _pending_irq_bits = 0
-            registers[0] = _irq_saved_r0
-            registers[1] = _irq_saved_r1
-            registers[2] = _irq_saved_r2
-            registers[3] = _irq_saved_r3
-            registers[12] = _irq_saved_r12
-            return
-        # THEN: check if we should enter a new IRQ
-        _pending = _irq.if_reg & _irq.ie_reg
-        if not _pending:
-            return
-        if not (_irq.ime_reg & 0x0001):
-            return
-        _handler = memory.read_u32(0x03007FFC)
-        if not ((0x02000000 <= _handler < 0x04000000) or (0x08000000 <= _handler < 0x0A000000)):
-            return
-        _irq_return_pc = registers[15] + 4  # Return to instruction AFTER the interrupted one
-        _pending_irq_bits = _pending
-        _cpsr_int = _cpsr_to_int(cpsr)
-        cpsr['spsr_irq'] = _cpsr_int
-        _irq_saved_r0 = registers[0]
-        _irq_saved_r1 = registers[1]
-        _irq_saved_r2 = registers[2]
-        _irq_saved_r3 = registers[3]
-        _irq_saved_r12 = registers[12]
-        _switch_mode(0x12)
-        cpsr['i'] = 1
-        registers[14] = _irq_return_pc | (1 if cpsr.get('t', 0) else 0)  # LR = return PC with T bit
-        registers[15] = _handler & 0xFFFFFFFE
-        cpsr['t'] = 1 if (_handler & 1) else 0
+    __DELIVER_IRQ_BODY__
     # print(f"PC=0x{registers[15]:08X}")
     running = True
     fc = 0; mi = max_instrs; ic = 0
@@ -1546,9 +1470,10 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     if hook_manager.check_hooks(registers[15], 'instruction'):
                         print("Execution paused at breakpoint")
                         break
-            ppu_instance.step_scanline()
-            if timers_instance is not None:
-                timers_instance.step(instr_per_scanline * 2)
+            if cpsr.get('mode', 0) != 0x12:
+                ppu_instance.step_scanline()
+                if timers_instance is not None:
+                    timers_instance.step(instr_per_scanline * 2)
             _deliver_irq()
         # Render the completed frame
         ppu_instance.render_frame()
@@ -1657,6 +1582,7 @@ if __name__ == "__main__":
     print(f"{frames} frames")
     import os; os._exit(0)
 "#
+    .replace("__DELIVER_IRQ_BODY__", DELIVER_IRQ_BODY)
     .to_string()
 }
 // Force rebuild ven 1 mag 2026, 13:30:36, CEST

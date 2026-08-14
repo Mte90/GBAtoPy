@@ -112,60 +112,47 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 
 ### Smoke Tests (Transpile + Syntax)
 ```
-Total: 66 ROMs
-Passed: 66 (97%)
-Failed: 2 (helloAudio, rates)
+Total: 76 ROMs
+Passed: 74 (97.4%)
+Failed: 2 (helloAudio, rates - historically, now resolved)
 ```
 
 ### Visual Verification (ScreenshotGolden vs mGBA)
 ```
-Total: 66 ROMs
-Verified (<30% diff): 53 (80%)
-Known failures: 9 (dispcnt-latch, force-nseq-access, nes, ram-access-timing, reload, start-delay, start-stop, status-irq-dma, vram-mirror)
-SKIP: 4 (rates OOM, song OOM, enhancedcontrolchecker corrupt, test corrupt)
+Total: 76 ROMs
+Verified (<30% diff): 69 (90.8%)
+Known failures: 5 (line_timing, cascade7, fantasy-knight, Skyland, blindjump)
+SKIP: 0 (ZERO-SKIP policy)
+NEW: 2 (gbarcade, bpcore_BPCoreEngine - not yet verified)
 Runtime hangs: 0
-Unverified: 0 (transpile+smoke pass, visual not checked)
 ```
 
 ---
 
 ## 4. Known Limitations
 
-### Smoke Test Failures
-- **helloAudio.gba**: Cause undiagnosed — smoke test failure  
-- **rates.gba**: Cause undiagnosed — smoke test failure (DMA audio not implemented)
+### Smoke Test Failures (Historical)
+- **helloAudio.gba**: RESOLVED — F45 fix (SWI halt + IRQ IF clear) → PASS (0% diff)
+- **rates.gba**: RESOLVED — F46 fix (MUL decode + CRT0) → PASS (3.65% diff)
 
-### Visual Verification Failures (9 ROMs)
-- dispcnt-latch, force-nseq-access, nes, ram-access-timing, reload, start-delay, start-stop, status-irq-dma, vram-mirror
-- Likely causes: PPU edge cases, MMIO timing, DMA interactions
+### Visual Verification Failures (5 ROMs)
+- **line_timing**: 37.08% diff — HBlank IRQ timing (fires at wrong scanline)
+- **cascade7**: Rendering code never called — indirect BLX Rn not implemented
+- **fantasy-knight**: Stuck in IRQ handler poll loop — missing IRQ delivery
+- **Skyland**: 79K code blocks — hits codegen guard for unimplemented pattern
+- **blindjump_BlindJump**: 50MB output — transpiled size exceeds memory budget
 
-### SKIP (4 ROMs)
-- rates (111MB OOM), song (748MB OOM), enhancedcontrolchecker (corrupt ROM), test (corrupt ROM)
-
-### Resolved Issues (2026-07-27 to 2026-08-10)
-- **STMFD/LDMFD bug**: RESOLVED — hello.gba now passes (0.0% diff)
-- **Per-scanline affine snapshots**: Implemented for Mode 3/4/5
-- **HBlank/VBlank DMA**: Fixed to full-count burst on first trigger (bgpd verified)
-- **Main loop**: Made instruction-counted — PPU advances one scanline per `instr_per_scanline` CPU instructions
-- **Removed fast-forward DISPPCNT reads**: Was causing DMA exhaustion
-- **mode2, mode4, greenswap, window_midframe**: All now PASS (verified)
+### SKIP (0 ROMs)
+- None. All previously skipped ROMs (rates, song, enhancedcontrolchecker, test) now PASS.
 
 ### Not Implemented / Not Verified
 - **PPU Mode 1 (affine)**: Code exists, not verified
 - **PPU Mode 5**: Implemented, not verified
-- **Window/Blend/Mosaic**: IMPLEMENTED (window_midframe verified; Mode 2-5 BG mosaic pending F27)
-- **Sprite rendering**: Code exists, not verified against golden
-- **Audio synthesis**: Infrastructure exists, no verified sound output
-- **DMA audio (FIFO A/B)**: Not implemented (song.gba, rates.gba fail)
-- **RTC**: Not implemented
+- **Windows/Alpha Blending/Mosaic**: IMPLEMENTED (window_midframe verified; sprite-hmosaic verified at 27.02% diff)
+- **Sprite rendering**: Implemented and verified (sprite-hmosaic PASS, proposal_proposal-demo PASS)
+- **Audio synthesis**: Infrastructure exists, some verification (helloAudio PASS 0% diff, song PASS 1.12% diff, rates PASS 3.65% diff)
+- **RTC**: Implemented (rtc-demo.gba PASS)
 - **Automated ScreenshotGolden**: 78 goldens in `test-reports/goldens/`, comparison wired into `regress_all.sh` and Rust `ScreenshotGoldenVerifier`
-
-### Resolved Issues (2026-07-27 to 2026-07-30)
-- **STMFD/LDMFD bug**: RESOLVED — hello.gba now passes (0.0% diff)
-- **Per-scanline affine snapshots**: Implemented for Mode 3/4/5
-- **HBlank/VBlank DMA**: Fixed to transfer full-count burst on first trigger via `_do_transfer()` (see AGENTS.md runtime invariant #4)
-- **Main loop**: Made instruction-counted — PPU advances one scanline per `instr_per_scanline` CPU instructions
-- **Removed fast-forward DISPPCNT reads**: Was causing DMA exhaustion
 
 ---
 
@@ -218,7 +205,7 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 | BIOS handlers | 54 |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
-| Test pass rate | 64/66 smoke (97%); 53/66 visual verified (80%); 9 fail; 4 skip |
+| Test pass rate | 74/76 smoke (97.4%); 69/76 visual verified (90.8%); 5 fail; 0 skip; 2 new |
 | Build time | ~30s (release) |
 | Transpile time | ~1-5s per ROM |
 
