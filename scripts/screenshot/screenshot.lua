@@ -1,4 +1,4 @@
--- Generic mGBA screenshot capture script.
+-- Generic mGBA screenshot/audio capture script.
 -- Usage:
 --   GBATOPY_SCREENSHOT_PATH=/tmp/out GBATOPY_TARGET_FRAME=60 \
 --     ./mgba/build/sdl/mgba -S scripts/screenshot/screenshot.lua <rom.gba>
@@ -19,4 +19,4 @@ callbacks:add("frame", function()
     end
 end)
 
-print("Starting mGBA screenshot capture, target frame " .. target_frame)
+print("Starting mGBA capture, target frame " .. target_frame)

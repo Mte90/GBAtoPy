@@ -115,7 +115,7 @@ if [[ "$NO_GOLDEN" == true ]] && [[ -f "${GOLDEN_PNG}" ]]; then
 else
     echo "Generating golden screenshot with mGBA..."
     cd "${PROJECT_ROOT}"
-    "${MGBA_PATH}" -S "${SCREENSHOT_LUA}" "${ROM_PATH}"
+    GBATOPY_SCREENSHOT_PATH="${TEMP_GOLDEN%.*}" "${MGBA_PATH}" -S "${SCREENSHOT_LUA}" "${ROM_PATH}"
     
     if [[ ! -f "${TEMP_GOLDEN}" ]]; then
         echo "Error: mGBA did not generate golden screenshot at ${TEMP_GOLDEN}" >&2
@@ -148,11 +148,26 @@ fi
 echo "✓ Transpiled: ${TEMP_PY}"
 
 # --- Run transpiled Python ---
-echo "Running transpiled Python (frame ${FRAME_COUNT})..."
+# Wrap in a memory-capped cgroup so a runaway transpiled script (e.g. infinite
+# allocation from data-as-code) gets killed here instead of OOMing the machine.
+# systemd-run --scope keeps the process in the foreground with stdio attached.
+MEM_LIMIT="${GBATOPY_MEM_LIMIT:-2G}"
+echo "Running transpiled Python (frame ${FRAME_COUNT}, mem cap ${MEM_LIMIT})..."
 cd /tmp
-if ! python3 "${ROM_BASENAME}.py" --headless --frame="${FRAME_COUNT}" --screenshot="${TEMP_TRANSPILED_SCREENSHOT}" 2>&1; then
-    echo "Error: Transpiled Python execution failed" >&2
-    exit 1
+RUNNER=(python3 "${ROM_BASENAME}.py" --headless --frame="${FRAME_COUNT}" --screenshot="${TEMP_TRANSPILED_SCREENSHOT}")
+if command -v systemd-run >/dev/null 2>&1; then
+    if ! systemd-run --user --scope --property=MemoryMax=${MEM_LIMIT} \
+            --setenv=LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+            --setenv=SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-dummy}" \
+            "${RUNNER[@]}" 2>&1; then
+        echo "Error: Transpiled Python execution failed (memory cap ${MEM_LIMIT})" >&2
+        exit 1
+    fi
+else
+    if ! "${RUNNER[@]}" 2>&1; then
+        echo "Error: Transpiled Python execution failed" >&2
+        exit 1
+    fi
 fi
 
 if [[ ! -f "${TEMP_TRANSPILED_SCREENSHOT}" ]]; then

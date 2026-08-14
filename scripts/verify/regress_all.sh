@@ -13,7 +13,7 @@ export NUMBA_DISABLE_JIT=1
 RESULTS_FILE="/tmp/phase10_regression.csv"
 
 # ROMs to skip entirely (known to hang even with timeout)
-SKIP_ROMS="rates song"
+SKIP_ROMS=""
 
 # Read all ROM names from config
 ROMS=$(awk -F'"' '/^name = "/{print $2}' test-roms-config.toml)

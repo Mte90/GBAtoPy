@@ -13,7 +13,7 @@ For detailed implementation status, see `docs/roadmap.md` and `docs/reference/te
 ## File Locations
 
 ```
-Project root:        /home/archimede/Desktop/projects/GBAtoPy
+Project root:        /home/d.scasciafratte/gbatopy
 Rust crates:         crates/
 CLI:                 crates/gbatopy-cli/src/
 Pipeline (active):   crates/gbatopy-cli/src/pipeline_cmd.rs (called from main.rs; cmds/pipeline.rs is a smaller helper)
@@ -203,6 +203,8 @@ The generated `.py` file must be:
 24. **ZERO-SKIP policy — every ROM must PASS or FAIL, never SKIP** — SKIP is forbidden. When a ROM would be skipped (timeout, OOM, missing golden, special args), treat it as a FAIL and dispatch a subagent investigation to root-cause and fix it. Update `docs/reference/test-roms.md` to remove any SKIP row. The scripts/verify/regress_all.sh `SKIP_ROMS` list must be emptied once all entries are resolved. A SKIP means the bug was not investigated; that is unacceptable.
 25. **Timeout analysis is mandatory, not optional** — When a ROM times out, do NOT mark it SKIP or move on. Dispatch a parallel `@explorer` subagent with `--pc-trace=FILE --trace-n=N` to capture the hang point, identify the loop address, decode the surrounding instructions, and report root cause + proposed fix. The runtime supports `--max-instrs=N` (default 1M; use `--max-instrs=10000000` for tight IWRAM poll loops). Common root causes: (a) missing IRQ delivery (CPU spins on VBlank flag), (b) SIO/serial poll with no serial clock, (c) audio subsystem waiting on FIFO space, (d) infinite reset loop. File the fix as a todo before moving on.
 26. **Every FAIL/SKIP ROM gets a subagent** — Do not batch-debug ROMs serially in the orchestrator. For each failing/timing-out ROM, dispatch one `@explorer` subagent in parallel. Each subagent returns: (1) hang/spin address or failure point, (2) root cause category from `docs/how-debug.md`, (3) proposed fix with exact file + line, (4) verification command. The orchestrator reconciles results and assigns fixes to `@fixer` lanes.
+27. **Autonomous todo creation — never lose work** — When you discover work that needs doing (a new bug, a stale doc, a missing test, a fix that should be applied, a WORKPLAN item that is actually done, a feature gap surfaced during debugging), IMMEDIATELY create a `todowrite` entry for it — do NOT rely on memory or "I'll come back to it." This applies to: (a) any root cause found but not yet fixed, (b) any doc out of sync with code reality, (c) any WORKPLAN.md task that is stale/done/obsolete, (d) any regression risk introduced by a fix, (e) any follow-up investigation that a subagent flagged but the orchestrator did not pursue. Review the todo list at every natural work boundary (commit, doc-sync, ROM fix completion) and prune items that became irrelevant. A todo with no owner and no verification command is a violation of this rule.
+28. **WORKPLAN.md is the source of truth for pending work** — At session start, read `WORKPLAN.md` and reconcile it against `docs/reference/test-roms.md` and the live codebase. Any fix that has been applied (code changed, build green, ROM verified) MUST be marked DONE in WORKPLAN.md in the same session step. Any task that was killed/deferred MUST be marked KILLED/DEFERRED with a one-line reason. Stale WORKPLAN entries waste entire sessions — do not leave them.
 
 ## Runtime Invariants (DO NOT VIOLATE)
 

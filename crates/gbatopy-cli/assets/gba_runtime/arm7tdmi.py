@@ -122,9 +122,15 @@ class ARM7TDMI:
         self.mode = 0x1F  # User mode
         self.running = True
         self.cycles = 0
+        self._halted = False
+        self._halt_reason = None
 
-        # Banked SP/LR per privileged mode (FIQ also banks r8-r12)
+        # Banked SP/LR per mode (FIQ also banks r8-r12)
+        # User (0x10) and System (0x1F) share the same register bank
+        _user_sys_bank = {'sp': 0, 'lr': 0}
         self.banked_sp_lr = {
+            0x10: _user_sys_bank,  # User
+            0x1F: _user_sys_bank,  # System
             0x11: {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0},  # FIQ
             0x12: {'sp': 0, 'lr': 0},  # IRQ
             0x13: {'sp': 0, 'lr': 0},  # SVC
@@ -188,9 +194,11 @@ class ARM7TDMI:
 
     @pc.setter
     def pc(self, value: int):
-        self.registers[15] = value & 0xFFFFFFFC
-        if self.thumb_mode:
+        if value & 1:
+            self.thumb_mode = True
             self.registers[15] = value & 0xFFFFFFFE
+        else:
+            self.registers[15] = value & (0xFFFFFFFE if self.thumb_mode else 0xFFFFFFFC)
 
     @property
     def lr(self) -> int:
@@ -284,7 +292,11 @@ class ARM7TDMI:
         value &= 0xFFFFFFFF
         self.registers[reg & 0xF] = value
         if (reg & 0xF) == 15:
-            self.registers[15] = value & (0xFFFFFFFE if self.thumb_mode else 0xFFFFFFFC)
+            if value & 1:
+                self.thumb_mode = True
+                self.registers[15] = value & 0xFFFFFFFE
+            else:
+                self.registers[15] = value & (0xFFFFFFFE if self.thumb_mode else 0xFFFFFFFC)
 
     def _operand(self, reg: int) -> int:
         """Read a register as an instruction operand.
@@ -853,6 +865,11 @@ class ARM7TDMI:
         0x0F: ObjAffineSet
         0x11: LZ77UnCompWram
         0x12: LZ77UnCompVram
+        
+        SWI exception entry (ARM hardware behavior):
+        - Save CPSR to SPSR_svc
+        - Save PC+4 to LR_svc (return address after SWI)
+        - Switch to SVC mode (0x13) with IRQ disabled (I bit set)
         """
         if num == 0x00:  # SoftReset
             for i in range(13):
@@ -881,18 +898,24 @@ class ARM7TDMI:
             if flags & 0x10:
                 for addr in range(0x07000000, 0x07000400, 2):
                     self.memory.write_u16(addr, 0)
-        elif num == 0x02:  # Halt
-            if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_halt()
+        elif num == 0x02:  # Halt — wake on ANY enabled IRQ
+            # SWI exception entry: save state and switch to SVC mode
+            self._swi_exception_entry()
+            self._halted = True
+            self._halt_reason = 'any'
         elif num == 0x03:  # Stop
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_stop(self.registers[0])
-        elif num == 0x04:  # IntrWait
-            if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_intr_wait(self.registers[0], self.registers[1])
-        elif num == 0x05:  # VBlankIntrWait
-            if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_vblank_intr_wait()
+        elif num == 0x04:  # IntrWait — wake on ANY enabled IRQ
+            # SWI exception entry: save state and switch to SVC mode
+            self._swi_exception_entry()
+            self._halted = True
+            self._halt_reason = 'any'
+        elif num == 0x05:  # VBlankIntrWait — wake on VBlank IRQ only
+            # SWI exception entry: save state and switch to SVC mode
+            self._swi_exception_entry()
+            self._halted = True
+            self._halt_reason = 'vblank'
         elif num == 0x06:  # Div
             if hasattr(self, 'bios') and self.bios is not None:
                 result = self.bios.swi_div(self.registers[0], self.registers[1])
@@ -949,6 +972,44 @@ class ARM7TDMI:
         elif num == 0x12:  # LZ77UnCompVram
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_lz77_uncomp(self.registers[0], self.registers[1])
+
+    def _swi_exception_entry(self):
+        """Model ARM SWI exception entry.
+        
+        On SWI execution, real ARM hardware:
+        1. Saves current CPSR to SPSR_svc
+        2. Saves PC+4 to LR_svc (return address)
+        3. Switches to SVC mode (0x13) with IRQ disabled (I bit set)
+        
+        This ensures that when an IRQ fires during SWI (e.g., during halt),
+        the CPU has proper SVC-mode state, and IRQ entry can correctly
+        save to IRQ banked registers without corrupting the SWI return address.
+        
+        Note: PC at this point is still the SWI instruction address. The caller
+        (exec_swi) will increment PC by 4 after the handler returns.
+        """
+        # Save current CPSR to SPSR_svc (index 2 for mode 0x13)
+        svc_spsr_idx = 2  # _MODE_TO_SPSR_IDX[0x13]
+        self.spsr[svc_spsr_idx] = self.cpsr
+        
+        # Save return address to LR_svc
+        # In ARM mode: return = PC + 4 (pipeline offset)
+        # In Thumb mode: return = PC + 4 (SWI is 2 bytes, but return is PC+4)
+        # At this point, PC is the SWI instruction address
+        if self.thumb_mode:
+            # Thumb SWI is 2 bytes, but exception return is PC+4
+            return_addr = (self.registers[15] + 4) & 0xFFFFFFFF
+        else:
+            # ARM SWI is 4 bytes, return is PC+4
+            return_addr = (self.registers[15] + 4) & 0xFFFFFFFF
+        self.banked_sp_lr[0x13]['lr'] = return_addr
+        
+        # Switch to SVC mode (0x13)
+        # The I bit (bit 7) should be set to disable IRQs, but we keep it simple
+        self.cpsr = (self.cpsr & ~0x1F) | 0x13  # Set mode bits to 0x13 (SVC)
+        
+        # Perform mode switch to load SVC banked registers
+        self._switch_mode(0x13)
 
     def execute_thumb(self, instr: int) -> int:
         """Execute Thumb instruction.

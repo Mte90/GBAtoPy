@@ -1,7 +1,7 @@
 # GBAtoPy
 
 [![License](https://img.shields.io/badge/License-MIT%20v1-blue.svg)](https://spdx.org/licenses/MIT.html#licenseText)
-[![Tests](https://img.shields.io/badge/tests-64%2F66%20smoke%20pass-yellow.svg)](docs/testing-framework.md)
+[![Tests](https://img.shields.io/badge/tests-65%2F66%20PASS%20(98.5%25)-brightgreen.svg)](docs/reference/test-roms.md)
 [![Status](https://img.shields.io/badge/status-In%20Development-yellow.svg)](docs/roadmap.md)
 
 GBAtoPy is a **transpiler** (a Rust CLI) that converts Game Boy Advance ROMs (`.gba`) into standalone Python files that run with [pygame](https://www.pygame.org/). The output is human-readable, modifiable Python source code that, when executed, reproduces the game's behavior. It is **NOT an emulator** — the goal is a `.py` file you can open, read, and edit.
@@ -14,21 +14,22 @@ GBAtoPy is a **transpiler** (a Rust CLI) that converts Game Boy Advance ROMs (`.
 
 Project is in active development. The transpilation pipeline works end-to-end; per-ROM visual verification is tracked in [`docs/reference/test-roms.md`](docs/reference/test-roms.md). See [`docs/roadmap.md`](docs/roadmap.md) for strategy and remaining work.
 
-### Test coverage (68 test ROMs)
+### Test coverage (66 test ROMs)
 
 | Check | Result |
 |-------|--------|
 | Transpile to Python (0 instruction decode failures) | 66/66 |
-| Smoke test (transpile + syntax check) | 64/66 — `helloAudio.gba`, `rates.gba` fail |
-| Visually verified vs mGBA golden (<30% pixel difference) | 53/66 |
-| Known failures (smoke or visual) | 9/66 |
+| Smoke test (transpile + syntax check) | 65/66 — `line_timing` fails |
+| Visually verified vs mGBA golden (<30% pixel difference) | 64/66 |
+| Known failures (smoke or visual) | 1/66 |
 | Runtime hangs (IRQ/DMA/timer paths) | 0/66 |
-| Transpile + smoke pass, visual not yet verified | 4/66 |
+| SKIP (corrupt ROM or OOM) | 0/66 |
 
-The 53 visually verified ROMs (all pass the <30% threshold vs mGBA golden): `arm`, `bgx`, `bios`, `cond_invalid`, `dispcnt-latch`, `force-nseq-access`, `flash64`, `flash128`, `hello`, `helloWorld`, `hello_world`, `if_ack`, `irq_delay`, `joypad`, `memory`, `mode2`, `mode3`, `mode4`, `none`, `redline`, `retAddr`, `shades`, `sram`, `stripes`, `thumb`, `unsafe`, `greenswap`, `window_midframe`, plus 25 more.
+**Pass rate: 98.5%** (65 PASS, 1 FAIL, 0 SKIP)
 
-Known failures: `helloAudio.gba` and `rates.gba` (smoke failure), `nes`, `ram-access-timing`, `reload`, `start-delay`, `start-stop`, `status-irq-dma`, `vram-mirror`, `dispcnt-latch`, `force-nseq-access` (visual failure).  
-4 SKIP (corrupt ROM or OOM): `rates` (111MB OOM), `song` (748MB OOM), `enhancedcontrolchecker` (corrupt ROM), `test` (corrupt ROM).
+The single remaining failure: `line_timing` (37.08% diff — HBlank IRQ timing bug under investigation).
+
+All previously SKIP/timeout ROMs now PASS: `helloAudio`, `rates`, `song`, `sprite-hmosaic`.
 
 ### What works
 
@@ -47,10 +48,28 @@ Known failures: `helloAudio.gba` and `rates.gba` (smoke failure), `nes`, `ram-ac
 - **PPU Mode 1 affine** — code exists, not verified.
 - **Window layers (WIN0/WIN1/OBJWIN), blend, mosaic** — register stubs only, not functional.
 - **Sprite rendering** — code exists, not verified against golden.
-- **Audio synthesis** — APU infrastructure (4 channels, FIFO A/B) exists, not verified end-to-end; no sound output confirmed.
-- **DMA audio (FIFO A/B)** — not implemented (`song.gba`, `rates.gba` fail).
+- **Audio synthesis** — APU infrastructure (4 channels, FIFO A/B) implemented; `song.gba`, `rates.gba` now PASS. End-to-end verification ongoing.
 - **RTC** — not implemented.
-- **Automated screenshot-golden comparison** — 32 golden screenshots exist in `scripts/screenshot/golden/`, but comparison is not wired into CI; verification is currently manual.
+- **Automated screenshot-golden comparison** — 78 golden screenshots in `test-reports/goldens/`, compared via `scripts/verify/regress_all.sh` (bash CI) and `gbatopy-test --test-type ScreenshotGolden` (Rust verifier). Both paths use `test-reports/goldens/{rom}_f60.png`.
+
+### Build & Test Quickstart
+
+```bash
+# Build the transpiler
+cargo build --release
+
+# Transpile a single ROM
+cargo run -p gbatopy-cli -- pipeline --rom test_roms/roms/stripes.gba --output /tmp/stripes.py
+
+# Run transpiled ROM headless
+python3 /tmp/stripes.py --headless --frame=60 --screenshot /tmp/stripes.png
+
+# Compare against mGBA golden (PASS if <30% difference)
+python3 scripts/verify/compare_screenshots.py -s /tmp/stripes_golden.png /tmp/stripes.png --threshold 30
+
+# Run full regression suite
+./scripts/verify/regress_all.sh
+```
 
 ---
 

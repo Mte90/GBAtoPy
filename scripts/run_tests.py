@@ -248,7 +248,7 @@ def main():
     parser.add_argument("--rom", type=str, help="Run single ROM by name")
     parser.add_argument("--filter", type=str, help="Filter ROMs by name substring")
     parser.add_argument("--workers", type=int, default=4, help="Parallel workers")
-    parser.add_argument("--frame", type=int, default=10, help="Frame count for execution")
+    parser.add_argument("--frame", type=int, default=60, help="Frame count for execution")
     parser.add_argument("--json", type=Path, help="Save JSON report to this path")
     parser.add_argument("--no-build", action="store_true", help="Skip building transpiler")
     args = parser.parse_args()

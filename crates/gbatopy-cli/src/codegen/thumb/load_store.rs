@@ -162,6 +162,24 @@ pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
             let ops_s: Vec<String> = ops.iter().map(|op| op.to_codegen()).collect();
             Some(generate_strh_instruction(&ops_s))
         }
+        "LDRSB" => {
+            if ops.len() >= 3 {
+                let addr = addr_expr_3op(ops)?;
+                let Operand::Register(rd) = &ops[0] else { return None };
+                Some(format!("temp = memory.read_u8({}); registers[{}] = (temp << 24) >> 24", addr, rd))
+            } else {
+                None
+            }
+        }
+        "LDRSH" => {
+            if ops.len() >= 3 {
+                let addr = addr_expr_3op(ops)?;
+                let Operand::Register(rd) = &ops[0] else { return None };
+                Some(format!("temp = memory.read_u16({}); registers[{}] = (temp << 16) >> 16", addr, rd))
+            } else {
+                None
+            }
+        }
         "LDRHB" => {
             let ops_s: Vec<String> = ops.iter().map(|op| op.to_codegen()).collect();
             Some(generate_ldrhb_instruction(&ops_s))

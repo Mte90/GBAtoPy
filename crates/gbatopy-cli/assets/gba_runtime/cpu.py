@@ -67,7 +67,11 @@ class CPU:
         self.mode: int = 0x1F  # Current mode (default: System mode)
 
         # Banked SP/LR for each mode
+        # User (0x10) and System (0x1F) share the same register bank
+        _user_sys_bank = {'sp': 0, 'lr': 0}
         self.banked_sp_lr = {
+            0x10: _user_sys_bank,  # User
+            0x1F: _user_sys_bank,  # System
             0x11: {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0},  # FIQ
             0x12: {'sp': 0, 'lr': 0},  # IRQ
             0x13: {'sp': 0, 'lr': 0},  # SVC

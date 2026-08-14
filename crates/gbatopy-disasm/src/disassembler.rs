@@ -102,7 +102,7 @@ impl Disassembler {
                     stats.data_instructions_marked += 1;
                 }
 
-                i = j;
+                i = j.max(i + 1);
             } else {
                 i += 1;
             }

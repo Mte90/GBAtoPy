@@ -35,9 +35,9 @@ class MemoryMap:
     ROM_END = 0x09FFFFFF
     ROM_MAX_SIZE = 0x2000000
 
-    SRAM_START = 0x0A000000
-    SRAM_END = 0x0A00FFFF
-    SRAM_SIZE = 0x10000
+    SRAM_START = 0x0E000000
+    SRAM_END = 0x0E007FFF
+    SRAM_SIZE = 0x8000
 
 
 class Memory:
@@ -404,7 +404,7 @@ class Memory:
             result = self._dispatch_mmio_read(addr)
             if result is not None:
                 self.open_bus = result & 0xFF
-                return result
+                return result & 0xFF
             value = self.io[offset]
             self.open_bus = value
             return value
@@ -547,7 +547,6 @@ class Memory:
 
         if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
             offset = addr - MemoryMap.PALETTE_START
-
             self.palette[offset] = value
 
             self.open_bus = value
@@ -598,13 +597,24 @@ class Memory:
         value &= 0xFFFFFFFF
         mapped_addr = self._map_address(addr)
 
+        if MemoryMap.IO_START <= mapped_addr <= MemoryMap.IO_END:
+            # GBA MMIO registers are 16-bit. A 32-bit write only affects the
+            # lower 16 bits (the register at the base address). The upper 16
+            # bits target an adjacent address that is often undefined and
+            # ignored on real hardware. Writing them to io[] pollutes bytes
+            # that read_u32 reads back, corrupting 32-bit MMIO reads (e.g.,
+            # IME at 0x04000208 reads back 0x04000001 instead of 0x00000001
+            # because io[0x20B] was polluted by a prior STR of 0x04000000).
+            lo = value & 0xFFFF
+            self.write_u8(mapped_addr, lo & 0xFF, _from_multibyte=True)
+            self.write_u8(mapped_addr + 1, (lo >> 8) & 0xFF, _from_multibyte=True)
+            self._dispatch_hal_write(mapped_addr, lo)
+            return
+
         self.write_u8(mapped_addr, value & 0xFF, _from_multibyte=True)
         self.write_u8(mapped_addr + 1, (value >> 8) & 0xFF, _from_multibyte=True)
         self.write_u8(mapped_addr + 2, (value >> 16) & 0xFF, _from_multibyte=True)
         self.write_u8(mapped_addr + 3, (value >> 24) & 0xFF, _from_multibyte=True)
-
-        if MemoryMap.IO_START <= mapped_addr <= MemoryMap.IO_END:
-            self._dispatch_hal_write(mapped_addr, value)
 
     def load_rom(self, path: str):
         with open(path, "rb") as f:

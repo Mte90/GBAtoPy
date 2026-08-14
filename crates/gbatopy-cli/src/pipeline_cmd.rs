@@ -188,12 +188,13 @@ pub fn run_pipeline(
     feature_flags: Option<FeatureFlags>,
     minify: bool,
     minify_aggressive: bool,
+    max_output_lines: u64,
 ) -> Result<(), String> {
     let rom = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;
 
     let reachable: Vec<u32>;
     
-    let instructions: Vec<gbatopy_disasm::DecodedInstruction>;
+    let mut instructions: Vec<gbatopy_disasm::DecodedInstruction>;
 
     // Always use CFG-based disassembly to avoid decoding data sections as code
     eprintln!("Step 1: CFG-based Disassembly");
@@ -204,8 +205,9 @@ pub fn run_pipeline(
 
     let mut disasm = Disassembler::new();
     instructions = disasm.selective_disassemble(&rom, &reachable, &cfg.mode_map);
-    
-    eprintln!("  Disassembled {} reachable instructions", instructions.len());
+    let data_stats = disasm.mark_data_regions(&mut instructions);
+    eprintln!("  Disassembled {} instructions ({} marked as data in {} regions)",
+              instructions.len(), data_stats.data_instructions_marked, data_stats.unknown_regions_found);
 
     // Detect or use provided feature flags
     let flags = feature_flags.unwrap_or_else(|| {
@@ -391,7 +393,8 @@ pub fn run_pipeline(
 
     code.push_str("registers[15] = 0x08000000\n");
     code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
-    code.push_str("banked_sp_lr = {0x11: {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0, 'lr': 0}, 0x13: {'sp': 0, 'lr': 0}, 0x17: {'sp': 0, 'lr': 0}, 0x1B: {'sp': 0, 'lr': 0}}\n");
+    code.push_str("_user_sys_bank = {'sp': 0, 'lr': 0}\n");
+    code.push_str("banked_sp_lr = {0x10: _user_sys_bank, 0x1F: _user_sys_bank, 0x11: {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0, 'lr': 0}, 0x13: {'sp': 0, 'lr': 0}, 0x17: {'sp': 0, 'lr': 0}, 0x1B: {'sp': 0, 'lr': 0}}\n");
     code.push_str("\ndef _switch_mode(new_mode):\n");
     code.push_str("    old_mode = cpsr.get('mode', 0x1F)\n");
     code.push_str("    if new_mode == old_mode:\n");
@@ -785,6 +788,7 @@ pub fn run_pipeline(
     let mut non_nop_addrs: Vec<(u64, ArmMode)> = Vec::new();
     let mut block_function_code = String::new();
     let address_list: Vec<(u64, ArmMode)> = func_groups.keys().copied().collect();
+    let mut current_line_count = code.lines().count() as u64;
 
     for (&(func_start, func_mode_key), func_instructions) in &func_groups {
         let mode_suffix = if func_mode_key == ArmMode::Arm { "a" } else { "t" };
@@ -796,6 +800,7 @@ pub fn run_pipeline(
         // Generate function body into a temp buffer
         let mut body = String::new();
         for (idx, inst) in func_instructions.iter().enumerate() {
+            if inst.is_data { continue; }
             let py_stmt = generate_instruction_python(inst);
             // Indent ALL lines, not just the first one
             for line in py_stmt.lines() {
@@ -852,14 +857,84 @@ pub fn run_pipeline(
             // NOP block: skip generating function, will redirect func_map
             // NOP blocks are implicitly handled by chaining
         } else {
-            block_function_code.push_str(&format!("\ndef {}(registers, cpsr):\n", func_name));
-            block_function_code.push_str(&body);
+            let func_code = format!("\ndef {}(registers, cpsr):\n", func_name) + &body;
+            let lines_to_add = func_code.lines().count() as u64;
+            
+            if current_line_count + lines_to_add > max_output_lines {
+                eprintln!("ERROR: Output exceeded {} lines, aborting. ROM may be too large or data is being misclassified as code.", max_output_lines);
+                std::process::exit(1);
+            }
+            
+            block_function_code.push_str(&func_code);
+            current_line_count += lines_to_add;
             non_nop_addrs.push((func_start, func_mode_key));
         }
     }
 
     // Write all block functions
     code.push_str(&block_function_code);
+
+    // Emit data sections as readable Python hex tables for human inspection.
+    // Instructions marked is_data are skipped from codegen above; collect
+    // contiguous runs and emit them as named constant tables so the output
+    // file documents what data lives where, instead of silently dropping it.
+    {
+        let mut data_sections: Vec<(u64, Vec<&gbatopy_disasm::DecodedInstruction>)> = Vec::new();
+        let mut current_run: Vec<&gbatopy_disasm::DecodedInstruction> = Vec::new();
+        let mut run_start: Option<u64> = None;
+        let mut prev_data_end: Option<u64> = None;
+
+        for inst in &instructions {
+            if inst.is_data {
+                let addr = inst.address as u64;
+                let end = addr + inst.width as u64;
+                if prev_data_end == Some(addr) || prev_data_end.is_none() {
+                    if run_start.is_none() {
+                        run_start = Some(addr);
+                    }
+                    current_run.push(inst);
+                } else {
+                    if !current_run.is_empty() {
+                        data_sections.push((run_start.unwrap(), std::mem::take(&mut current_run)));
+                    }
+                    run_start = Some(addr);
+                    current_run.push(inst);
+                }
+                prev_data_end = Some(end);
+            } else {
+                if !current_run.is_empty() {
+                    data_sections.push((run_start.unwrap(), std::mem::take(&mut current_run)));
+                    run_start = None;
+                }
+                prev_data_end = None;
+            }
+        }
+        if !current_run.is_empty() {
+            data_sections.push((run_start.unwrap(), current_run));
+        }
+
+        if !data_sections.is_empty() {
+            code.push_str("\n# === Data sections (readable hex tables) ===\n");
+            for (start, run) in &data_sections {
+                let last = run.last().unwrap();
+                let end = last.address as u64 + last.width as u64;
+                let size = end - start;
+                code.push_str(&format!(
+                    "# Data at 0x{:08X} ({} bytes, {} entries)\n",
+                    start, size, run.len()
+                ));
+                code.push_str(&format!("data_{:08X} = [\n", start));
+                for inst in run {
+                    if inst.width == 2 {
+                        code.push_str(&format!("    0x{:04X},\n", inst.raw & 0xFFFF));
+                    } else {
+                        code.push_str(&format!("    0x{:08X},\n", inst.raw));
+                    }
+                }
+                code.push_str("]\n\n");
+            }
+        }
+    }
 
     // Generate mode-aware jump table dispatch (dict-based for sparse ROMs - reduces memory overhead)
     // Two separate tables so ARM and Thumb functions at the same address don't collide.
@@ -1004,6 +1079,8 @@ def calibrate_gba_timing(measure_cycles=100000):
 
 _interp_cpu = None
 _halt_reason = None  # None, "any" (Halt), or "vblank" (VBlankIntrWait)
+_swi_lr = None  # Save LR_svc when SWI halts CPU
+_swi_caller_pc = None  # Save PC (caller's return address) when SWI halts
 
 def swi_handler(swi_field):
     """Handle BIOS SWI calls using the global registers/memory.
@@ -1043,6 +1120,9 @@ def swi_handler(swi_field):
         _halt_reason = "any"
         return
     elif swi_num == 0x05:  # VBlankIntrWait — wakes on VBlank IRQ ONLY
+        global _swi_lr, _swi_caller_pc
+        _swi_lr = registers[14]  # Save LR_svc (SWI return address)
+        _swi_caller_pc = registers[15]  # Save PC (instruction after SWI call)
         _cpu_halted = True
         _halt_reason = "vblank"
         return
@@ -1122,32 +1202,6 @@ def _interp_fallback(registers, cpsr, max_steps=2000):
             else:
                 if _idx in dispatch_table_arm:
                     break
-        if _pc == 0x03000128:
-            irq = memory._interrupts
-            if irq is not None:
-                ie = irq.ie_reg
-                iff = irq.if_reg
-                ime = irq.ime_reg
-            else:
-                ie = iff = ime = 0
-            pending = ie & iff
-            if pending and ime:
-                handler_addr = memory.read_u32(0x03007FFC)
-                if 0x08000000 <= handler_addr < 0x0A000000:
-                    irq.if_reg &= ~pending
-                    _interp_cpu.registers[15] = handler_addr & 0xFFFFFFFE
-                    _interp_cpu.thumb_mode = bool(handler_addr & 1)
-                    _step_count += 1
-                    continue
-            _ret = _interp_cpu.registers[14]
-            if 0x08000000 <= _ret < 0x0A000000:
-                _interp_cpu.registers[15] = _ret & 0xFFFFFFFE
-                _interp_cpu.thumb_mode = bool(_ret & 1)
-            else:
-                _interp_cpu.registers[15] = 0x08000000
-                _interp_cpu.thumb_mode = False
-            _step_count += 1
-            continue
         _interp_cpu.step()
         _step_count += 1
         if getattr(_interp_cpu, '_halted', False):
@@ -1166,7 +1220,7 @@ def _interp_fallback(registers, cpsr, max_steps=2000):
     cpsr['spsr_sys'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1F, 1)] & 0xFFFFFFFF
     return _step_count
 
-def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, max_instrs=10000000, pc_trace=None, trace_n=0):
+def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, max_instrs=10000000, pc_trace=None, trace_n=0, audio_capture=None):
     global _cpu_halted
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     def ror(v, a):
@@ -1174,13 +1228,21 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         return ((v >> a) | (v << (32 - a))) & 0xFFFFFFFF
     fc = 0; mi = max_instrs; ic = 0
     _irq_return_pc = None
+    _pending_irq_bits = 0
+    _irq_saved_r0 = 0
+    _irq_saved_r1 = 0
+    _irq_saved_r2 = 0
+    _irq_saved_r3 = 0
+    _irq_saved_r12 = 0
     _trace_file = open(pc_trace, "w") if pc_trace else None
     _trace_count = 0
+    _audio_buf = bytearray() if audio_capture else None
+    _audio_synth_per_frame = 735
     instr_per_scanline = max(50, (int(gba_hz / 60.0) // 2) // 228)
     _instr_per_frame = instr_per_scanline * 228
     def _deliver_irq():
-        nonlocal _irq_return_pc
-        global _cpu_halted, _halt_reason
+        nonlocal _irq_return_pc, _pending_irq_bits, _irq_saved_r0, _irq_saved_r1, _irq_saved_r2, _irq_saved_r3, _irq_saved_r12
+        global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
         _irq = getattr(memory, '_interrupts', None)
         if _irq is None:
             return
@@ -1189,17 +1251,28 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                 if _irq.if_reg & (1 << 0):
                     _cpu_halted = False
                     _halt_reason = None
+                    _irq.if_reg &= ~(1 << 0)
+                    if _swi_lr is not None:
+                        registers[14] = _swi_lr
+                        _swi_lr = None
+                    if _swi_caller_pc is not None:
+                        _irq_return_pc = _swi_caller_pc
+                        _swi_caller_pc = None
             elif _halt_reason == "any":
-                if _irq.if_reg & _irq.ie_reg:
+                _any_pending = _irq.if_reg & _irq.ie_reg
+                if _any_pending:
                     _cpu_halted = False
                     _halt_reason = None
+                    _irq.if_reg &= ~_any_pending
+                    if _swi_lr is not None:
+                        registers[14] = _swi_lr
+                        _swi_lr = None
+                    if _swi_caller_pc is not None:
+                        _irq_return_pc = _swi_caller_pc
+                        _swi_caller_pc = None
             if _cpu_halted:
                 return
-        _pending = _irq.if_reg & _irq.ie_reg
-        if not _pending:
-            return
-        if not (_irq.ime_reg & 0x0001):
-            return
+        # FIRST: check if we're returning from IRQ (regardless of _pending state)
         if _irq_return_pc is not None:
             if registers[15] != _irq_return_pc:
                 return
@@ -1216,16 +1289,35 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             cpsr['z'] = (_saved >> 30) & 1
             cpsr['c'] = (_saved >> 29) & 1
             cpsr['v'] = (_saved >> 28) & 1
+            _irq.if_reg &= ~_pending_irq_bits
+            _pending_irq_bits = 0
+            registers[0] = _irq_saved_r0
+            registers[1] = _irq_saved_r1
+            registers[2] = _irq_saved_r2
+            registers[3] = _irq_saved_r3
+            registers[12] = _irq_saved_r12
+            return
+        # THEN: check if we should enter a new IRQ
+        _pending = _irq.if_reg & _irq.ie_reg
+        if not _pending:
+            return
+        if not (_irq.ime_reg & 0x0001):
             return
         _handler = memory.read_u32(0x03007FFC)
-        if not (0x02000000 <= _handler < 0x0A000000):
+        if not ((0x02000000 <= _handler < 0x04000000) or (0x08000000 <= _handler < 0x0A000000)):
             return
-        _irq_return_pc = registers[15]
+        _irq_return_pc = registers[15] + 4  # Return to instruction AFTER the interrupted one
+        _pending_irq_bits = _pending
         _cpsr_int = _cpsr_to_int(cpsr)
         cpsr['spsr_irq'] = _cpsr_int
+        _irq_saved_r0 = registers[0]
+        _irq_saved_r1 = registers[1]
+        _irq_saved_r2 = registers[2]
+        _irq_saved_r3 = registers[3]
+        _irq_saved_r12 = registers[12]
         _switch_mode(0x12)
         cpsr['i'] = 1
-        registers[14] = registers[15] | (1 if cpsr.get('t', 0) else 0)
+        registers[14] = _irq_return_pc | (1 if cpsr.get('t', 0) else 0)  # LR = return PC with T bit
         registers[15] = _handler & 0xFFFFFFFE
         cpsr['t'] = 1 if (_handler & 1) else 0
     while ic < mi:
@@ -1265,11 +1357,21 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                 timers_instance.step(instr_per_scanline * 2)
             _deliver_irq()
         ppu_instance.render_frame()
+        if _audio_buf is not None:
+            _audio_buf.extend(apu_instance._generate_samples(_audio_synth_per_frame))
         fc += 1
     if screenshot_path:
         import pygame
         surf = ppu_instance.get_surface()
         pygame.image.save(surf, screenshot_path)
+    if _audio_buf is not None:
+        import wave, array
+        _s16 = array.array('h', [((b - 128) << 8) for b in _audio_buf])
+        with wave.open(audio_capture, 'wb') as _wav:
+            _wav.setnchannels(2)
+            _wav.setsampwidth(2)
+            _wav.setframerate(44100)
+            _wav.writeframes(_s16.tobytes())
     return fc
 
 def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None, pc_trace=None, trace_n=0, max_instrs=10000000):
@@ -1294,9 +1396,15 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         except Exception as e:
             print(f"Warning: Failed to load hooks from {hook_file}: {e}", file=sys.stderr)
     _irq_return_pc = None
+    _pending_irq_bits = 0
+    _irq_saved_r0 = 0
+    _irq_saved_r1 = 0
+    _irq_saved_r2 = 0
+    _irq_saved_r3 = 0
+    _irq_saved_r12 = 0
     def _deliver_irq():
-        nonlocal _irq_return_pc
-        global _cpu_halted, _halt_reason
+        nonlocal _irq_return_pc, _pending_irq_bits, _irq_saved_r0, _irq_saved_r1, _irq_saved_r2, _irq_saved_r3, _irq_saved_r12
+        global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
         _irq = getattr(memory, '_interrupts', None)
         if _irq is None:
             return
@@ -1305,17 +1413,28 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 if _irq.if_reg & (1 << 0):
                     _cpu_halted = False
                     _halt_reason = None
+                    _irq.if_reg &= ~(1 << 0)
+                    if _swi_lr is not None:
+                        registers[14] = _swi_lr
+                        _swi_lr = None
+                    if _swi_caller_pc is not None:
+                        _irq_return_pc = _swi_caller_pc
+                        _swi_caller_pc = None
             elif _halt_reason == "any":
-                if _irq.if_reg & _irq.ie_reg:
+                _any_pending = _irq.if_reg & _irq.ie_reg
+                if _any_pending:
                     _cpu_halted = False
                     _halt_reason = None
+                    _irq.if_reg &= ~_any_pending
+                    if _swi_lr is not None:
+                        registers[14] = _swi_lr
+                        _swi_lr = None
+                    if _swi_caller_pc is not None:
+                        _irq_return_pc = _swi_caller_pc
+                        _swi_caller_pc = None
             if _cpu_halted:
                 return
-        _pending = _irq.if_reg & _irq.ie_reg
-        if not _pending:
-            return
-        if not (_irq.ime_reg & 0x0001):
-            return
+        # FIRST: check if we're returning from IRQ (regardless of _pending state)
         if _irq_return_pc is not None:
             if registers[15] != _irq_return_pc:
                 return
@@ -1332,16 +1451,35 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             cpsr['z'] = (_saved >> 30) & 1
             cpsr['c'] = (_saved >> 29) & 1
             cpsr['v'] = (_saved >> 28) & 1
+            _irq.if_reg &= ~_pending_irq_bits
+            _pending_irq_bits = 0
+            registers[0] = _irq_saved_r0
+            registers[1] = _irq_saved_r1
+            registers[2] = _irq_saved_r2
+            registers[3] = _irq_saved_r3
+            registers[12] = _irq_saved_r12
+            return
+        # THEN: check if we should enter a new IRQ
+        _pending = _irq.if_reg & _irq.ie_reg
+        if not _pending:
+            return
+        if not (_irq.ime_reg & 0x0001):
             return
         _handler = memory.read_u32(0x03007FFC)
-        if not (0x02000000 <= _handler < 0x0A000000):
+        if not ((0x02000000 <= _handler < 0x04000000) or (0x08000000 <= _handler < 0x0A000000)):
             return
-        _irq_return_pc = registers[15]
+        _irq_return_pc = registers[15] + 4  # Return to instruction AFTER the interrupted one
+        _pending_irq_bits = _pending
         _cpsr_int = _cpsr_to_int(cpsr)
         cpsr['spsr_irq'] = _cpsr_int
+        _irq_saved_r0 = registers[0]
+        _irq_saved_r1 = registers[1]
+        _irq_saved_r2 = registers[2]
+        _irq_saved_r3 = registers[3]
+        _irq_saved_r12 = registers[12]
         _switch_mode(0x12)
         cpsr['i'] = 1
-        registers[14] = registers[15] | (1 if cpsr.get('t', 0) else 0)
+        registers[14] = _irq_return_pc | (1 if cpsr.get('t', 0) else 0)  # LR = return PC with T bit
         registers[15] = _handler & 0xFFFFFFFE
         cpsr['t'] = 1 if (_handler & 1) else 0
     # print(f"PC=0x{registers[15]:08X}")
@@ -1479,7 +1617,13 @@ if __name__ == "__main__":
     parser.add_argument("--pc-trace", type=str, help="Log PC + registers each step to a file")
     parser.add_argument("--trace-n", type=int, default=0, help="Print first N PCs to stdout then stop tracing")
     parser.add_argument("--max-instrs", type=int, default=10000000, help="Maximum instructions before aborting (default 10M)")
+    parser.add_argument("--audio-capture", type=str, help="Capture audio to WAV file (stereo, 16-bit signed, 44100 Hz)")
+    parser.add_argument("--profile", type=str, help="Dump cProfile stats to file")
     args = parser.parse_args()
+    if args.profile:
+        import cProfile
+        pr = cProfile.Profile()
+        pr.enable()
     if args.headless:
         frames = run_transpiled(
             headless=True,
@@ -1489,6 +1633,7 @@ if __name__ == "__main__":
             max_instrs=args.max_instrs,
             pc_trace=args.pc_trace,
             trace_n=args.trace_n,
+            audio_capture=args.audio_capture,
         )
     else:
         frames = run_with_pygame(
@@ -1505,6 +1650,10 @@ if __name__ == "__main__":
             trace_n=args.trace_n,
             max_instrs=args.max_instrs
         )
+    if args.profile:
+        pr.disable()
+        pr.dump_stats(args.profile)
+        print(f"Profile stats written to: {args.profile}", flush=True)
     print(f"{frames} frames")
     import os; os._exit(0)
 "#

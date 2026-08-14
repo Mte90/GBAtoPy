@@ -1,5 +1,5 @@
 # GBAtoPy Test Configuration
-# Test runner configuration for all 66 ROMs
+# Test runner configuration for all 76 ROMs
 
 roms_dir = "test_roms/roms"
 output_dir = "test-reports/artifacts"
@@ -343,3 +343,98 @@ test_type = "Smoke"
 name = "128kb-boundary"
 rom_path = "128kb-boundary.gba"
 test_type = "Smoke"
+
+[[tests]]
+name = "gba-frame-test"
+rom_path = "gba-frame-test.gba"
+test_type = "Smoke"
+
+[[tests]]
+name = "gbarcade_gbarcade_v0.1.4"
+rom_path = "gbarcade_gbarcade_v0.1.4.gba"
+test_type = "Smoke"
+source = "https://github.com/emmabritton/gba_gbarcade/releases/tag/v0.1.4"
+category = "sprite"
+features = ["sprites", "mode0", "audio"]
+license = "MIT"
+pass_status = "new"
+
+[[tests]]
+name = "cascade7"
+rom_path = "cascade7.gba"
+test_type = "Smoke"
+source = "https://github.com/mick-schroeder/gba-cascade7/releases/tag/v1.0.0"
+category = "sprite"
+features = ["sprites", "mode0", "audio"]
+license = "MIT"
+pass_status = "new"
+
+[[tests]]
+name = "proposal_proposal-demo"
+rom_path = "proposal_proposal-demo.gba"
+test_type = "Smoke"
+source = "https://github.com/JoeMatt/Proposal/releases/tag/v1.0.0"
+category = "sprite"
+features = ["sprites", "mode0", "audio"]
+license = "MIT"
+pass_status = "new"
+
+[[tests]]
+name = "blindjump_BlindJump"
+rom_path = "blindjump_BlindJump.gba"
+test_type = "Smoke"
+source = "https://github.com/evanbowman/blind-jump-portable"
+category = "sprite"
+features = ["sprites", "mode0", "audio", "link"]
+license = "GPL-3.0"
+pass_status = "new"
+
+[[tests]]
+name = "bpcore_BPCoreEngine"
+rom_path = "bpcore_BPCoreEngine.gba"
+test_type = "Smoke"
+source = "manual"
+category = "sprite"
+features = ["sprites", "mode0", "audio"]
+license = "unknown"
+pass_status = "new"
+
+[[tests]]
+name = "fantasy-knight"
+rom_path = "fantasy-knight.gba"
+test_type = "Smoke"
+source = "manual"
+category = "sprite"
+features = ["sprites", "mode0", "audio"]
+license = "unknown"
+pass_status = "new"
+
+[[tests]]
+name = "FlashSpeedTestMB"
+rom_path = "FlashSpeedTestMB.gba"
+test_type = "Smoke"
+source = "https://github.com/CasualPokePlayer/gba-flash-speed-test"
+category = "flash"
+features = ["flash", "sram"]
+license = "unknown"
+pass_status = "new"
+
+[[tests]]
+name = "FlashSpeedTestROM"
+rom_path = "FlashSpeedTestROM.gba"
+test_type = "Smoke"
+source = "https://github.com/CasualPokePlayer/gba-flash-speed-test"
+category = "flash"
+features = ["flash", "sram"]
+license = "unknown"
+pass_status = "new"
+
+[[tests]]
+name = "Skyland"
+rom_path = "Skyland.gba"
+test_type = "Smoke"
+source = "https://github.com/evanbowman/skyland-beta"
+category = "sprite"
+features = ["sprites", "mode0", "audio"]
+license = "MPL-2.0"
+pass_status = "new"

@@ -61,6 +61,8 @@ enum Commands {
         no_dma: bool,
         #[arg(long, default_value = "false")]
         no_numba: bool,
+        #[arg(long, default_value = "500000")]
+        max_output_lines: u64,
     },
     Pipeline {
         #[arg(short, long)]
@@ -87,6 +89,8 @@ enum Commands {
         no_dma: bool,
         #[arg(long, default_value = "false")]
         no_numba: bool,
+        #[arg(long, default_value = "500000")]
+        max_output_lines: u64,
         #[arg(long)]
         save_state: Option<PathBuf>,
         #[arg(long)]
@@ -176,6 +180,7 @@ fn main() {
             no_timers,
             no_dma,
             no_numba,
+            max_output_lines,
         } => {
             let feature_flags = Some(pipeline_cmd::FeatureFlags {
                 audio: !no_audio,
@@ -192,6 +197,7 @@ fn main() {
                 feature_flags,
                 minify,
                 minify_aggressive,
+                max_output_lines,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
@@ -210,6 +216,7 @@ fn main() {
             no_timers,
             no_dma,
             no_numba,
+            max_output_lines,
             save_state,
             load_state,
         } => {
@@ -228,6 +235,7 @@ fn main() {
                 feature_flags,
                 minify,
                 minify_aggressive,
+                max_output_lines,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

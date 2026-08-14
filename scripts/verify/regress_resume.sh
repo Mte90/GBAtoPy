@@ -13,7 +13,7 @@ export NUMBA_DISABLE_JIT=1
 RESULTS_FILE="/tmp/phase9_regression.csv"
 
 # ROMs to skip entirely (known to hang even with timeout)
-SKIP_ROMS="rates song"
+SKIP_ROMS=""
 
 # Build set of already-done ROMs from CSV (skip header)
 DONE=$(tail -n +2 "$RESULTS_FILE" | cut -d, -f1)

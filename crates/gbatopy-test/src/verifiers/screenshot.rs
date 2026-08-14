@@ -31,7 +31,7 @@ impl Verifier for ScreenshotGoldenVerifier {
         let screenshot_path = artifacts_dir.join("transpiled.png");
         
         let golden_path = PathBuf::from(format!(
-            "test_roms/sources/hw-test/ppu/{}/expected.png",
+            "test-reports/goldens/{}_f60.png",
             rom_stem
         ));
 

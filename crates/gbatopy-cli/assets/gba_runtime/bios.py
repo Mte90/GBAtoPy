@@ -440,38 +440,16 @@ class BIOS:
     def swi_halt(self):
         """Halt CPU until any enabled interrupt fires.
 
-        Mirrors swi_vblank_intr_wait but waits for ANY enabled IRQ (VBlank,
-        HBlank, VCount, timer, DMA). Advances PPU scanlines until an enabled
-        interrupt becomes pending, then returns so the main loop can dispatch
-        the ISR.
+        Sets the halt flag only — the main loop owns all PPU timing.
+        The _deliver_irq routine in the main loop checks _cpu_halted and
+        wakes the CPU when an enabled interrupt becomes pending.
         """
-        memory = getattr(self, "memory", None)
-        if memory is None:
+        cpu = getattr(self, "cpu", None) or getattr(getattr(self, "memory", None), "cpu", None)
+        if cpu is not None:
+            cpu._halted = True
+            cpu._halt_reason = 'any'
+        else:
             self._sleep_mode = True
-            return
-
-        interrupts = getattr(memory, "_interrupts", None)
-        ppu = getattr(memory, "_ppu", None)
-
-        if interrupts is None or ppu is None:
-            self._sleep_mode = True
-            return
-
-        # If an enabled interrupt is already pending, consume and return.
-        if interrupts.has_pending_interrupt():
-            self._sleep_mode = False
-            return
-
-        # Advance PPU scanlines until an enabled interrupt fires.
-        # Bounded by a full frame (228 scanlines) as a safety net.
-        for _ in range(228):
-            ppu.step_scanline()
-            if interrupts.has_pending_interrupt():
-                self._sleep_mode = False
-                return
-
-        # No interrupt within one frame: release halt anyway.
-        self._sleep_mode = False
 
     def swi_vsync(self):
         """Trigger a VBlank interrupt."""

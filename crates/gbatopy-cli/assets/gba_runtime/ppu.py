@@ -306,7 +306,7 @@ class PPU:
             shape = (attr0 >> 12) & 0x3  # 0=square, 1=wide, 2=tall, 3=reserved
             
             # Extract Attribute 1 fields
-            x = (attr1 >> 8) & 0x1FF  # X position (0-511, wraps at 256 for display)
+            x = attr1 & 0x1FF  # X position (0-511, wraps at 256 for display)
             flip_h = (attr1 >> 9) & 0x1  # Horizontal flip (when not affine)
             flip_v = (attr1 >> 10) & 0x1  # Vertical flip (when not affine)
             double_size = (attr1 >> 10) & 0x1  # Double size (when affine)
@@ -355,24 +355,20 @@ class PPU:
                 "mosaic": mosaic,
             })
 
-    def _render_sprites(self):
+    def _render_sprites(self, layer_enable: int = 0x3F):
         """Render all sprites from OAM after background layers.
         
         Called from render_frame() after backgrounds are rendered.
         Handles:
-        - 4BPP color mode (index 0 = transparent)
-        - Sprite priority (higher priority sprites draw on top)
-        - Basic rotation/scaling if affine mode enabled
-        
-        Note: 8BPP sprites use 256-color palette at 0x05000200 with direct color index lookup.
+        - 4BPP/8BPP color modes (index 0 = transparent)
+        - 2D and 1D OBJ character VRAM mapping (DISPCNT bit 6)
+        - Sprite priority (lower value = draw on top)
+        - Rotation/scaling (affine sprites)
+        - Per-object mosaic
+        - Blend target capture (second_target_framebuffer/layer_origin)
         """
-        # Parse OAM to build sprite list
         self.parse_oam()
-        
-        # Sort sprites by priority (0=highest, 3=lowest)
-        # Lower priority value = draw on top of higher priority
         self.sprite_list.sort(key=lambda s: s["priority"])
-        
         for sprite in self.sprite_list:
             self._render_single_sprite(sprite)
 
@@ -400,10 +396,10 @@ class PPU:
             return
         
         # Render normal (non-rotated) sprite
-        # Calculate base tile address in VRAM
+        # Calculate base tile address in VRAM (OBJ char base = 0x06010000)
         # 4BPP tiles: 32 bytes each (8x8 pixels × 4 bits)
         # 8BPP tiles: 64 bytes each (8x8 pixels × 8 bits)
-        vram_base = 0x06000000
+        vram_base = 0x06010000
         tile_size = 32 if color_mode == 0 else 64
         
         # VRAM tile addressing - DISPCNT bit 6 controls OBJ character VRAM mapping
@@ -481,12 +477,11 @@ class PPU:
                     r = _c5to8((color_val >> 0) & 0x1F)
                     g = _c5to8((color_val >> 5) & 0x1F)
                     b = _c5to8((color_val >> 10) & 0x1F)
-                    
-                    # Draw pixel directly to framebuffer
+                    self.second_target_framebuffer[screen_y][screen_x] = self.framebuffer[screen_y][screen_x]
+                    self.second_target_layer[screen_y][screen_x] = self.layer_origin[screen_y][screen_x]
                     self.framebuffer[screen_y][screen_x] = (r, g, b)
-                except Exception as e:
-                    # Invalid palette entry - skip this pixel silently
-                    # This can happen with corrupted VRAM or uninitialized palette data
+                    self.layer_origin[screen_y][screen_x] = 4
+                except Exception:
                     continue
 
     def _render_affine_sprite(self, sprite: dict):
@@ -523,8 +518,8 @@ class PPU:
         cx = width / 2
         cy = height / 2
         
-        # VRAM tile addressing - check DISPCNT bit 6 (obj_character_vram_mapping)
-        vram_base = 0x06000000
+        # VRAM tile addressing - OBJ char base is 0x06010000
+        vram_base = 0x06010000
         tile_size = 32
         tiles_per_row = 32
         vram_offset = 0
@@ -587,9 +582,11 @@ class PPU:
                     r = _c5to8((color_val >> 0) & 0x1F)
                     g = _c5to8((color_val >> 5) & 0x1F)
                     b = _c5to8((color_val >> 10) & 0x1F)
+                    self.second_target_framebuffer[screen_y][screen_x] = self.framebuffer[screen_y][screen_x]
+                    self.second_target_layer[screen_y][screen_x] = self.layer_origin[screen_y][screen_x]
                     self.framebuffer[screen_y][screen_x] = (r, g, b)
-                except Exception as e:
-                    # Error reading palette - skip this pixel
+                    self.layer_origin[screen_y][screen_x] = 4
+                except Exception:
                     continue
 
     def _read_oam_fixed16_8(self, addr: int) -> float:
@@ -2525,7 +2522,8 @@ class PPU:
     def _render_mode5(self):
         """Render Mode 5: 160x128 16-bit bitmap via affine BG2 transformation.
 
-        Same affine pipeline as Mode 3, but dimensions are 160x128.
+        Bitmap is 160x128 but screen is 240x160. Pixels outside the 160x128
+        bitmap region are filled with the backdrop color (palette[0]).
         """
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
@@ -2535,21 +2533,37 @@ class PPU:
         except Exception:
             vram_bytes = bytes(128 * 160 * 2)
 
-        # Per-scanline affine snapshots captured by step_scanline() before HBlank-DMA.
+        try:
+            bdv = self.memory.read_u16(0x05000000)
+            backdrop_rgb = (
+                _c5to8((bdv >> 0) & 0x1F),
+                _c5to8((bdv >> 5) & 0x1F),
+                _c5to8((bdv >> 10) & 0x1F),
+            )
+        except Exception:
+            backdrop_rgb = (0, 0, 0)
+
         snaps = self._bg2_affine_snapshots
         if snaps and snaps[0] is not None:
             _, _, _, _, refx, refy, overflow0 = snaps[0]
-            _ap = snaps[0]
-        sx = refx
-        sy = refy
+        else:
+            dx_f, dmx_f, dy_f, dmy_f, refx, refy, overflow0 = self._read_affine_bg2_params()
+
         fb = self.framebuffer
         lo = self.layer_origin
+        sw = self.screen_width
+        sh = self.screen_height
         bw = 160
         bh = 128
         vlen = len(vram_bytes)
         n_snaps = len(snaps)
 
-        for y in range(bh):
+        win_active = self.win0_enable or self.win1_enable or self.obj_window_enable
+
+        sx = refx
+        sy = refy
+
+        for y in range(sh):
             if y < n_snaps and snaps[y] is not None:
                 dx, dmx, dy, dmy, _, _, overflow = snaps[y]
             else:
@@ -2558,16 +2572,24 @@ class PPU:
             row_lo = lo[y]
             x = sx - dx
             y_coord = sy - dy
-            for px in range(bw):
+            for px in range(sw):
                 x += dx
                 y_coord += dy
+
+                if win_active:
+                    layer_enable = self._get_window_layer_enable(px, y)
+                    if not (layer_enable & 0x04):
+                        row_fb[px] = backdrop_rgb
+                        row_lo[px] = 0
+                        continue
+
                 tx = x >> 8
                 ty = y_coord >> 8
                 if overflow:
                     tx %= bw
                     ty %= bh
                 elif tx < 0 or ty < 0 or tx >= bw or ty >= bh:
-                    row_fb[px] = (0, 0, 0)
+                    row_fb[px] = backdrop_rgb
                     row_lo[px] = 0
                     continue
                 offset = (tx + ty * bw) * 2
@@ -2580,7 +2602,7 @@ class PPU:
                     )
                     row_lo[px] = 2
                 else:
-                    row_fb[px] = (0, 0, 0)
+                    row_fb[px] = backdrop_rgb
                     row_lo[px] = 0
             sx += dmx
             sy += dmy
@@ -2800,169 +2822,3 @@ class PPU:
                     colors.append(None)
 
         return colors
-
-    def _render_sprites(self, layer_enable: int = 0x3F):
-        OAM_BASE = 0x07000000
-        NUM_SPRITES = 128
-
-        for sprite_idx in range(NUM_SPRITES):
-            sprite_addr = OAM_BASE + (sprite_idx * 8)
-
-            try:
-                attr0 = self.memory.read_u16(sprite_addr + 0)
-                attr1 = self.memory.read_u16(sprite_addr + 2)
-                attr2 = self.memory.read_u16(sprite_addr + 4)
-            except:
-                continue
-
-            if attr0 == 0 and attr1 == 0 and attr2 == 0:
-                continue
-
-            obj_mode = (attr0 >> 10) & 3
-            if obj_mode == 2:
-                continue
-
-            sprite_y = attr0 & 0xFF
-            sprite_x = attr1 & 0x1FF
-            height = ((attr0 >> 12) & 7) * 8 + 8
-            width = ((attr1 >> 8) & 0x3) * 8 + 8
-
-            if width > 64:
-                width = 64
-            if height > 64:
-                height = 64
-
-            tile_num = attr2 & 0x3FF
-            palette_num = (attr2 >> 12) & 0xF
-            vflip = bool(attr1 & 0x1000)
-            hflip = bool(attr1 & 0x0800)
-            affine = self._is_affine_sprite(attr1)
-
-            for dy in range(height):
-                screen_y = sprite_y + dy
-                if screen_y < 0 or screen_y >= self.screen_height:
-                    continue
-
-                pixel_y = dy
-                if vflip:
-                    pixel_y = height - 1 - dy
-
-                for dx in range(width):
-                    screen_x = sprite_x + dx
-                    if screen_x < 0 or screen_x >= self.screen_width:
-                        continue
-
-                    pixel_x = dx
-                    if hflip:
-                        pixel_x = width - 1 - dx
-
-                    tile_row = pixel_y // 8
-                    tile_col = pixel_x // 8
-                    tile_pixel_y = pixel_y % 8
-                    tile_pixel_x = pixel_x % 8
-
-                    tile_addr = tile_num + tile_row * (width // 8) + tile_col
-
-                    tile_indices = self._decode_tile_4bpp(tile_addr, 4)
-
-                    tile_pixel_idx = tile_pixel_y * 8 + tile_pixel_x
-                    if tile_pixel_idx < len(tile_indices):
-                        color_idx = tile_indices[tile_pixel_idx]
-                        if color_idx != 0:
-                            if self.win0_enable or self.win1_enable:
-                                pixel_layer_enable = self._get_window_layer_enable(screen_x, screen_y)
-                                if not (pixel_layer_enable & 0x10):
-                                    continue
-
-                            palette_idx = palette_num * 16 + color_idx
-                            color = self._get_palette_color(palette_idx)
-                            # Save old color/layer as second target before overwriting
-                            self.second_target_framebuffer[screen_y][screen_x] = self.framebuffer[screen_y][screen_x]
-                            self.second_target_layer[screen_y][screen_x] = self.layer_origin[screen_y][screen_x]
-                            self.framebuffer[screen_y][screen_x] = color
-                            self.layer_origin[screen_y][screen_x] = 4  # OBJ layer
-
-    def _render_sprites_line(self, y: int, x: int, layer_enable: int):
-        OAM_BASE = 0x07000000
-        NUM_SPRITES = 128
-
-        for sprite_idx in range(NUM_SPRITES):
-            sprite_addr = OAM_BASE + (sprite_idx * 8)
-
-            try:
-                attr0 = self.memory.read_u16(sprite_addr + 0)
-                attr1 = self.memory.read_u16(sprite_addr + 2)
-                attr2 = self.memory.read_u16(sprite_addr + 4)
-            except:
-                continue
-
-            sprite_y = attr0 & 0xFF
-            sprite_x = attr1 & 0x1FF
-
-            if sprite_y == 0 and sprite_x == 0 and attr2 == 0:
-                continue
-
-            obj_mode = (attr0 >> 10) & 3
-            if obj_mode == 2:
-                continue
-
-            height = ((attr0 >> 12) & 7) * 8 + 8
-            width = ((attr1 >> 8) & 0x3) * 8 + 8
-
-            if width > 64:
-                width = 64
-            if height > 64:
-                height = 64
-
-            if y < sprite_y or y >= sprite_y + height:
-                continue
-            if x < sprite_x or x >= sprite_x + width:
-                continue
-
-            tile_num = attr2 & 0x3FF
-            palette_num = (attr2 >> 12) & 0xF
-            vflip = bool(attr1 & 0x1000)
-            hflip = bool(attr1 & 0x0800)
-
-            pixel_y = y - sprite_y
-            if vflip:
-                pixel_y = height - 1 - pixel_y
-
-            pixel_x = x - sprite_x
-            if hflip:
-                pixel_x = width - 1 - pixel_x
-
-            tile_w = 8
-            tile_h = 8
-            tile_row = pixel_y // tile_h
-            tile_col = pixel_x // tile_w
-            tile_pixel_y = pixel_y % tile_h
-            tile_pixel_x = pixel_x % tile_w
-
-            vram_addr = (
-                0x06010000
-                + (tile_num * 64)
-                + (tile_row * 2 * tile_w // 8)
-                + tile_row * tile_w
-                + tile_pixel_y * tile_w // 8
-                + tile_pixel_x // 8 * 2
-                + tile_pixel_y % 2
-            )
-
-            try:
-                char_data = self.memory.read_u16(vram_addr & 0x0601FFFF)
-
-                bit_pos = 7 - (tile_pixel_x % 8)
-                color_idx = (char_data >> (bit_pos * 2)) & 3
-
-                if color_idx != 0 or (attr0 & 0x2000):
-                    palette_addr = 0x05000200 + (palette_num * 32) + (color_idx * 2)
-                    palette_val = self.memory.read_u16(palette_addr)
-
-                    r = _c5to8((palette_val >> 0) & 0x1F)
-                    g = _c5to8((palette_val >> 5) & 0x1F)
-                    b = _c5to8((palette_val >> 10) & 0x1F)
-
-                    self.framebuffer[y][x] = (r, g, b)
-            except Exception:
-                ...

@@ -229,6 +229,141 @@ else
     fi
 fi
 
+# 17. veikkos/gba-frame-test (Frame timing - frame drops and screen tearing)
+# Tests GBA display frame timing: detects dropped frames and screen tearing.
+# Useful for VBlank timing verification. License: Unlicense (public domain).
+echo -e "\n${GREEN}[17/17] veikkos/gba-frame-test${NC}"
+if [ -f "$ROMS_DIR/gba-frame-test.gba" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    if curl -L -o /tmp/gba-frame-test-v1.zip \
+        "https://github.com/veikkos/gba-frame-test/releases/download/v1/gba-frame-test-v1.zip" 2>&1 | tail -1; then
+        if unzip -q -o /tmp/gba-frame-test-v1.zip -d /tmp/gba-frame-test-extract 2>/dev/null; then
+            find /tmp/gba-frame-test-extract -type f -name "*.gba" -exec cp {} "$ROMS_DIR/" \; 2>/dev/null || true
+            echo -e "  ${GREEN}Extracted gba-frame-test.gba${NC}"
+        else
+            echo -e "  ${RED}Extraction failed${NC}"
+        fi
+        rm -rf /tmp/gba-frame-test-v1.zip /tmp/gba-frame-test-extract
+    else
+        echo -e "  ${RED}Download failed${NC}"
+    fi
+fi
+
+# 18. emmabritton/gba_gbarcade (Arcade game collection - sprites, audio, backgrounds)
+# Rust/AGB framework: Asteroids, Pipe Dream, Brick Break, Minesweeper, Space Invaders, Lights Out.
+# License: MIT
+echo -e "\n${GREEN}[18/26] emmabritton/gba_gbarcade${NC}"
+if [ -f "$ROMS_DIR/gbarcade_gbarcade_v0.1.4.gba" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    if curl -L -o "$ROMS_DIR/gbarcade_gbarcade_v0.1.4.gba"         "https://github.com/emmabritton/gba_gbarcade/releases/download/v0.1.4/gbarcade_v0.1.4.gba" 2>&1 | tail -1; then
+        echo -e "  ${GREEN}Downloaded gbarcade_gbarcade_v0.1.4.gba${NC}"
+    else
+        echo -e "  ${RED}Download failed${NC}"
+    fi
+fi
+
+# 19. mick-schroeder/gba-cascade7 (Puzzle game - Drop7 clone, Butano engine)
+# Tests sprites, backgrounds, audio. License: MIT
+echo -e "\n${GREEN}[19/26] mick-schroeder/gba-cascade7${NC}"
+if [ -f "$ROMS_DIR/cascade7.gba" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    if curl -L -o "$ROMS_DIR/cascade7.gba"         "https://github.com/mick-schroeder/gba-cascade7/releases/download/v1.0.0/CASCADE7.gba" 2>&1 | tail -1; then
+        echo -e "  ${GREEN}Downloaded cascade7.gba${NC}"
+    else
+        echo -e "  ${RED}Download failed${NC}"
+    fi
+fi
+
+# 20. JoeMatt/Proposal (Visual novel / dating sim demo)
+# Tests sprites, text, audio. License: MIT
+echo -e "\n${GREEN}[20/26] JoeMatt/Proposal${NC}"
+if [ -f "$ROMS_DIR/proposal_proposal-demo.gba" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    if curl -L -o "$ROMS_DIR/proposal_proposal-demo.gba"         "https://github.com/JoeMatt/Proposal/releases/download/v1.0.0/proposal-demo.gba" 2>&1 | tail -1; then
+        echo -e "  ${GREEN}Downloaded proposal_proposal-demo.gba${NC}"
+    else
+        echo -e "  ${RED}Download failed${NC}"
+    fi
+fi
+
+# 21. evanbowman/blind-jump-portable (Action/adventure roguelike with link multiplayer)
+# Tests sprites, procedural generation, audio, link cable. License: GPL-3.0 (GBA build)
+echo -e "\n${GREEN}[21/26] evanbowman/blind-jump-portable${NC}"
+if [ -f "$ROMS_DIR/blindjump_BlindJump.gba" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    echo -e "  ${YELLOW}Downloading latest BlindJump release...${NC}"
+    LATEST_URL=$(curl -sL "https://api.github.com/repos/evanbowman/blind-jump-portable/releases/latest" | python3 -c "import sys,json; r=json.load(sys.stdin); assets=[a for a in r.get('assets',[]) if a['name'].lower().endswith('.gba')]; print(assets[0]['browser_download_url'] if assets else '')" 2>/dev/null)
+    if [ -n "$LATEST_URL" ]; then
+        curl -L -o "$ROMS_DIR/blindjump_BlindJump.gba" "$LATEST_URL" 2>&1 | tail -1
+        echo -e "  ${GREEN}Downloaded blindjump_BlindJump.gba${NC}"
+    else
+        echo -e "  ${RED}Could not find .gba asset in latest release${NC}"
+    fi
+fi
+
+# 22. evanbowman/skyland-beta (RTS game inspired by FTL)
+# Tests sprites, backgrounds, audio, custom scripting. License: MPL-2.0
+echo -e "\n${GREEN}[22/26] evanbowman/skyland-beta${NC}"
+if [ -f "$ROMS_DIR/Skyland.gba" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    echo -e "  ${YELLOW}Downloading latest Skyland release...${NC}"
+    LATEST_URL=$(curl -sL "https://api.github.com/repos/evanbowman/skyland-beta/releases/latest" | python3 -c "import sys,json; r=json.load(sys.stdin); assets=[a for a in r.get('assets',[]) if a['name'].lower().endswith('.gba')]; print(assets[0]['browser_download_url'] if assets else '')" 2>/dev/null)
+    if [ -n "$LATEST_URL" ]; then
+        curl -L -o "$ROMS_DIR/Skyland.gba" "$LATEST_URL" 2>&1 | tail -1
+        echo -e "  ${GREEN}Downloaded Skyland.gba${NC}"
+    else
+        echo -e "  ${RED}Could not find .gba asset in latest release${NC}"
+    fi
+fi
+
+# 23. CasualPokePlayer/gba-flash-speed-test (Flash save chip speed tests)
+# Tests flash erase/program speed for various GBA cartridge save chips.
+# Two variants: MB (memory bus) and ROM. License: unknown
+echo -e "\n${GREEN}[23/26] CasualPokePlayer/gba-flash-speed-test${NC}"
+if [ -f "$ROMS_DIR/FlashSpeedTestMB.gba" ] && [ -f "$ROMS_DIR/FlashSpeedTestROM.gba" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    echo -e "  ${YELLOW}Downloading latest flash-speed-test release...${NC}"
+    LATEST_URLS=$(curl -sL "https://api.github.com/repos/CasualPokePlayer/gba-flash-speed-test/releases/latest" | python3 -c "import sys,json; r=json.load(sys.stdin); assets=[a for a in r.get('assets',[]) if a['name'].lower().endswith('.gba')]; [print(a['browser_download_url']) for a in assets]" 2>/dev/null)
+    if [ -n "$LATEST_URLS" ]; then
+        for url in $LATEST_URLS; do
+            fname=$(basename "$url")
+            if echo "$fname" | grep -qi "mb"; then
+                curl -L -o "$ROMS_DIR/FlashSpeedTestMB.gba" "$url" 2>&1 | tail -1
+            else
+                curl -L -o "$ROMS_DIR/FlashSpeedTestROM.gba" "$url" 2>&1 | tail -1
+            fi
+        done
+        echo -e "  ${GREEN}Downloaded flash speed test ROMs${NC}"
+    else
+        echo -e "  ${RED}Could not find .gba assets in latest release${NC}"
+    fi
+fi
+
+# 24. bpcore_BPCoreEngine (Lua game framework for GBA - manually provided)
+# Tests sprite engine, audio, Lua scripting on GBA. License: unknown
+echo -e "\n${GREEN}[24/26] bpcore_BPCoreEngine (manual)${NC}"
+if [ -f "$ROMS_DIR/bpcore_BPCoreEngine.gba" ]; then
+    echo -e "  ${GREEN}Already exists${NC}"
+else
+    echo -e "  ${YELLOW}No public download URL - must be manually provided${NC}"
+fi
+
+# 25. fantasy-knight (GBA RPG homebrew - manually provided)
+# Tests sprites, backgrounds, audio. License: unknown
+echo -e "\n${GREEN}[25/26] fantasy-knight (manual)${NC}"
+if [ -f "$ROMS_DIR/fantasy-knight.gba" ]; then
+    echo -e "  ${GREEN}Already exists${NC}"
+else
+    echo -e "  ${YELLOW}No public download URL - must be manually provided${NC}"
+fi
+
 # Custom ROMs (GBAtoPy team - must be built separately)
 echo -e "\n${YELLOW}=== Custom GBAtoPy Test ROMs ===${NC}"
 mkdir -p custom
