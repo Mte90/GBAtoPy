@@ -152,7 +152,7 @@ fn generate_mov(ops: &[Operand], sets_flags: bool) -> Option<String> {
                 if sets_flags && ops.len() >= 2 {
                     let src_expr = operand_to_expr(&ops[1]);
                     return Some(format!(
-                        "_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = ({src}) & 0xFFFFFFFE\ncpsr.clear()\ncpsr.update(_cpsr_from_int(_new_cpsr))\n_switch_mode(cpsr['mode'])\ncpsr['t'] = 1 if (({src}) & 1) else 0",
+                        "_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = ({src}) & 0xFFFFFFFE\n_cpsr_from_int(cpsr, _new_cpsr)\n_switch_mode(cpsr['mode'])",
                         src = src_expr
                     ));
                 }
@@ -255,7 +255,7 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
                 };
                 let borrow = if with_borrow { " - (0 if cpsr.get('c', 0) else 1)" } else { "" };
                 return Some(format!(
-                    "_a_val = {a}\n_b_val = {b}\n_full = (_a_val - _b_val{borrow}) & 0xFFFFFFFF\n_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = _full & 0xFFFFFFFE\ncpsr.clear()\ncpsr.update(_cpsr_from_int(_new_cpsr))\n_switch_mode(cpsr['mode'])\ncpsr['t'] = 1 if (_full & 1) else 0",
+                    "_a_val = {a}\n_b_val = {b}\n_full = (_a_val - _b_val{borrow}) & 0xFFFFFFFF\n_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = _full & 0xFFFFFFFE\n_cpsr_from_int(cpsr, _new_cpsr)\n_switch_mode(cpsr['mode'])",
                     a = a, b = b, borrow = borrow
                 ));
             }
@@ -323,7 +323,7 @@ fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                     (format!("registers[{}]", rd), operand_to_expr(&ops[1]))
                 };
                 return Some(format!(
-                    "_full = ({a} {py_op} {b}) & 0xFFFFFFFF\n_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = _full & 0xFFFFFFFE\ncpsr.clear()\ncpsr.update(_cpsr_from_int(_new_cpsr))\n_switch_mode(cpsr['mode'])\ncpsr['t'] = 1 if (_full & 1) else 0",
+                    "_full = ({a} {py_op} {b}) & 0xFFFFFFFF\n_new_cpsr = _spsr_for_mode(cpsr['mode'])\nregisters[15] = _full & 0xFFFFFFFE\n_cpsr_from_int(cpsr, _new_cpsr)\n_switch_mode(cpsr['mode'])",
                     a = a, py_op = py_op, b = b
                 ));
             }

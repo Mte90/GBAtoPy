@@ -132,15 +132,18 @@ class TestARMDispatchAudit(unittest.TestCase):
         # Track which handler was called
         handler_called = []
         
+        original_status_transfer = self.cpu._exec_status_transfer
+        original_data_processing = self.cpu.exec_data_processing
+        
         def track_status_transfer(*args, **kwargs):
             handler_called.append('_exec_status_transfer')
-            return 1
+            return original_status_transfer(*args, **kwargs)
         
         def track_data_processing(*args, **kwargs):
             handler_called.append('exec_data_processing')
-            return 1
+            return original_data_processing(*args, **kwargs)
         
-        # Patch both handlers to track calls
+        # Patch both handlers to track calls while still executing real logic
         with patch.object(self.cpu, '_exec_status_transfer', side_effect=track_status_transfer), \
              patch.object(self.cpu, 'exec_data_processing', side_effect=track_data_processing):
             
@@ -255,13 +258,13 @@ class TestThumbDispatchAudit(unittest.TestCase):
         Bug prevented: STRH with immediate offset routed to generic load/store path
         instead of extra load/store handler, causing incorrect address calculation.
         
-        Encoding: 0x8021 (STRH Rd, [Rb, #Imm5])
+        Encoding: 0x8120 (STRH R0, [R4, #4])
         - bits 15-11: 10000 (STRH)
-        - bits 10-6:  Imm5 (4)
-        - bits 5-3:   Rb (R4)
-        - bits 2-0:   Rd (R0)
+        - bits 10-6:  00100 (Imm5 = 4, offset = 4*2 = 8)
+        - bits 5-3:   100 (Rb = R4)
+        - bits 2-0:   000 (Rd = R0)
         """
-        instr = 0x8021
+        instr = 0x8120
         
         # Set up initial state
         initial_pc = 0x08000000
@@ -304,13 +307,13 @@ class TestThumbDispatchAudit(unittest.TestCase):
         Bug prevented: LDRH with immediate offset routed to wrong handler,
         causing incorrect sign-extension or value read.
         
-        Encoding: 0x8821 (LDRH Rd, [Rb, #Imm5])
+        Encoding: 0x8920 (LDRH R0, [R4, #4])
         - bits 15-11: 10001 (LDRH)
-        - bits 10-6:  Imm5 (4)
-        - bits 5-3:   Rb (R4)
-        - bits 2-0:   Rd (R0)
+        - bits 10-6:  00100 (Imm5 = 4, offset = 4*2 = 8)
+        - bits 5-3:   100 (Rb = R4)
+        - bits 2-0:   000 (Rd = R0)
         """
-        instr = 0x8821
+        instr = 0x8920
         
         # Set up initial state
         initial_pc = 0x08000000
@@ -353,18 +356,17 @@ class TestThumbDispatchAudit(unittest.TestCase):
         instr = 0xE7F0
         
         # Set up initial state
-        initial_pc = 0x08000004  # PC at instruction + 4
+        initial_pc = 0x08000000  # instruction address (runtime convention: R15 = instr addr)
         self.cpu.registers[15] = initial_pc
         
         # Execute the instruction
         self.cpu.execute_thumb(instr)
         
-        # Calculate expected offset
-        # 0x7F0 & 0x7FF = 0x7F0
-        # 0x7F0 & 0x400 is set, so it's negative: 0x7F0 - 0x800 = -16
+        # Runtime computes: target = (R15 + 4) + (sign_extend(offset11) << 1)
+        # 0x7F0 & 0x7FF = 0x7F0; 0x7F0 & 0x400 set → negative: 0x7F0 - 0x800 = -16
         # Final offset = -16 * 2 = -32
         expected_offset = -32
-        expected_pc = (initial_pc + expected_offset) & 0xFFFFFFFF
+        expected_pc = (initial_pc + 4 + expected_offset) & 0xFFFFFFFF
         
         self.assertEqual(self.cpu.registers[15], expected_pc,
             f"Branch should use 11-bit offset mask (0x7FF), expected PC={hex(expected_pc)}, got {hex(self.cpu.registers[15])}")
@@ -375,14 +377,14 @@ class TestThumbDispatchAudit(unittest.TestCase):
         Bug prevented: Conditional branch treated as unconditional, or condition code
         dropped, causing branches to execute when they shouldn't.
         
-        Encoding: 0xD1FE (BNE -2)
+        Encoding: 0xD1FA (BNE -6 halfwords)
         - bits 15-8:  0xD1 (condition NE = 0x1)
-        - bits 7-0:   offset (0xFE = -2 signed)
+        - bits 7-0:   offset (0xFA = -6 signed)
         """
-        instr = 0xD1FE
+        instr = 0xD1FA
         
         # Set up initial state
-        initial_pc = 0x08000004
+        initial_pc = 0x08000100  # instruction address (runtime convention: R15 = instr addr)
         self.cpu.registers[15] = initial_pc
         
         # Test 1: Z=0, so NE condition should PASS and branch should be taken
@@ -403,8 +405,8 @@ class TestThumbDispatchAudit(unittest.TestCase):
         self.assertIn(0x1, condition_checked,
             "BNE should check NE condition code")
         
-        # Verify branch was taken (offset = -2, so PC = PC + 4 - 2 = PC + 2)
-        expected_pc = (initial_pc - 2) & 0xFFFFFFFF
+        # Verify branch was taken: target = (R15+4) + (-6 << 1) = PC+4-12 = PC-8
+        expected_pc = (initial_pc + 4 + (-6 << 1)) & 0xFFFFFFFF
         self.assertEqual(self.cpu.registers[15], expected_pc,
             f"BNE with Z=0 should branch, expected PC={hex(expected_pc)}, got {hex(self.cpu.registers[15])}")
         
@@ -420,6 +422,98 @@ class TestThumbDispatchAudit(unittest.TestCase):
         expected_pc_no_branch = initial_pc + 2  # Thumb instructions are 2 bytes
         self.assertEqual(self.cpu.registers[15], expected_pc_no_branch,
             f"BNE with Z=1 should NOT branch, expected PC={hex(expected_pc_no_branch)}, got {hex(self.cpu.registers[15])}")
+
+    def test_blx_rm_sets_lr_and_branches(self):
+        """Thumb BLX Rm (format 5, H1=1) must set LR=PC+2|1 and branch to Rm.
+
+        Bug prevented: BLX Rm was completely unimplemented (fell through as a NOP),
+        causing indirect calls via BLX Rm (vtable dispatch) to silently do nothing:
+        no branch, no LR update. Functions expecting to be called via BLX Rm never
+        executed, causing loops to never make progress.
+
+        Encoding: 0x4780 (BLX R0)
+        - bits 15-7: 01000111 (format 5, BX/BLX)
+        - bit 7 (H1): 1 (BLX Rm, not BX Rm)
+        - bits 6-3 (H2): 0000
+        - bits 2-0 (Rs): 000 (R0)
+        """
+        instr = 0x4780  # BLX R0
+
+        initial_pc = 0x08000100
+        self.cpu.registers[15] = initial_pc
+        self.cpu.registers[0] = 0x08000200 | 1  # R0 = target, Thumb bit set
+        self.cpu.thumb_mode = True
+
+        self.cpu.execute_thumb(instr)
+
+        self.assertEqual(self.cpu.registers[14], (initial_pc + 2) | 1,
+            f"BLX Rm should set LR=PC+2|1, got LR={hex(self.cpu.registers[14])}")
+        self.assertEqual(self.cpu.registers[15], 0x08000200,
+            f"BLX Rm should branch to Rm & ~1, got PC={hex(self.cpu.registers[15])}")
+        self.assertTrue(self.cpu.thumb_mode,
+            "BLX Rm with Thumb bit set should stay in Thumb mode")
+
+        # Test ARM mode switch (Thumb bit clear)
+        self.cpu.registers[15] = initial_pc
+        self.cpu.registers[0] = 0x08000400  # R0 = target, Thumb bit clear
+        self.cpu.execute_thumb(instr)
+
+        self.assertFalse(self.cpu.thumb_mode,
+            "BLX Rm with Thumb bit clear should switch to ARM mode")
+
+    def test_ldmia_suppresses_writeback_when_base_in_list(self):
+        """Thumb LDMIA Rn!, {reg_list} must suppress writeback when Rn is in the list.
+
+        Bug prevented: LDMIA with writeback always applied writeback, overwriting the
+        loaded value with old_Rn + (count*4). On ARM7TDMI hardware, if Rn is in the
+        register list, the loaded value wins and writeback is suppressed.
+
+        This caused LDMIA R6!, {R1, R6} to produce wrong R6, then CMP/SUB produced
+        wrong flags, causing conditional branches to skip epilogues and leak stack frames.
+
+        Encoding: 0xCE42 (LDMIA R6!, {R1, R6})
+        - bits 15-11: 11001 (LDMIA format 15)
+        - bits 10-8:  Rn (R6)
+        - bits 7-0:   reg_list (R1, R6 = bits 1,6 = 0x42)
+        """
+        instr = 0xCE42  # LDMIA R6!, {R1, R6}
+
+        initial_pc = 0x08000100
+        self.cpu.registers[15] = initial_pc
+        self.cpu.registers[6] = 0x03007F00  # Base address
+        self.memory.write_u32(0x03007F00, 0x11111111)  # R1 value
+        self.memory.write_u32(0x03007F04, 0x22222222)  # R6 value
+
+        self.cpu.execute_thumb(instr)
+
+        self.assertEqual(self.cpu.registers[1], 0x11111111,
+            f"R1 should be loaded from [R6], got {hex(self.cpu.registers[1])}")
+        self.assertEqual(self.cpu.registers[6], 0x22222222,
+            f"R6 should be loaded from [R6+4] (writeback suppressed), got {hex(self.cpu.registers[6])}")
+        self.assertEqual(self.cpu.registers[15], initial_pc + 2,
+            f"PC should advance by 2, got {hex(self.cpu.registers[15])}")
+
+    def test_ldmia_writeback_when_base_not_in_list(self):
+        """Thumb LDMIA Rn!, {reg_list} must apply writeback when Rn is NOT in the list.
+
+        Normal case: when Rn is not in the register list, writeback happens normally.
+        """
+        instr = 0xCD03  # LDMIA R5!, {R0, R1}
+
+        initial_pc = 0x08000100
+        self.cpu.registers[15] = initial_pc
+        self.cpu.registers[5] = 0x03007F00  # Base address
+        self.memory.write_u32(0x03007F00, 0x11111111)  # R0 value
+        self.memory.write_u32(0x03007F04, 0x22222222)  # R1 value
+
+        self.cpu.execute_thumb(instr)
+
+        self.assertEqual(self.cpu.registers[0], 0x11111111,
+            f"R0 should be loaded from [R5], got {hex(self.cpu.registers[0])}")
+        self.assertEqual(self.cpu.registers[1], 0x22222222,
+            f"R1 should be loaded from [R5+4], got {hex(self.cpu.registers[1])}")
+        self.assertEqual(self.cpu.registers[5], 0x03007F08,
+            f"R5 should be written back (R5+8), got {hex(self.cpu.registers[5])}")
 
 
 if __name__ == '__main__':

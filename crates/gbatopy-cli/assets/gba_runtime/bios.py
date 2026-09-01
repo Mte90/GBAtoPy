@@ -100,7 +100,7 @@ class BIOS:
         """CPU Fast Set - faster block copy/fill (32-bit only)"""
         is_fill = bool(control & 0x01000000)
 
-        word_count = count
+        word_count = count & 0x001FFFFF
         if is_fill:
             value = self.memory.read_u32(src)
             for i in range(word_count):
@@ -111,282 +111,188 @@ class BIOS:
                 self.memory.write_u32(dst + i * 4, value)
 
     def swi_lz77_uncomp(self, src_addr: int, dst_addr: int) -> int:
-        """LZ77 decompression"""
+        """LZ77 decompression (SWI 0x11/0x12). Header: [0x10][size:u24].
+
+        Algorithm matches mGBA's _unLz77: 8-bit flag byte, MSB first.
+        Compressed pairs are big-endian: bits 15-12 = count-3, bits 11-0 = displacement-1.
+        """
         src = self.memory.read_bytes(src_addr, 102400)
 
-        if len(src) < 8 or src[0] != 0x10:
-            # Invalid header - return 0 bytes decompressed (graceful fallback)
+        if len(src) < 4 or src[0] != 0x10:
             return 0
 
-        expanded_size = struct.unpack("<I", src[1:5])[0]
-        src_pos = 8
+        remaining = src[1] | (src[2] << 8) | (src[3] << 16)
+        src_pos = 4
         dst = bytearray()
 
-        while len(dst) < expanded_size and src_pos < len(src):
-            flags = src[src_pos]
+        while remaining > 0 and src_pos < len(src):
+            blockheader = src[src_pos]
             src_pos += 1
 
-            for i in range(8):
-                if len(dst) >= expanded_size:
+            for _ in range(8):
+                if remaining <= 0:
                     break
 
-                if flags & 0x80:
+                if blockheader & 0x80:
                     if src_pos + 1 >= len(src):
                         break
-                    pair = struct.unpack("<H", src[src_pos : src_pos + 2])[0]
+                    block = (src[src_pos] << 8) | src[src_pos + 1]
                     src_pos += 2
 
-                    back = (pair >> 4) + 3
-                    count = (pair & 0xF) + 3
+                    displacement = (block & 0x0FFF) + 1
+                    count = (block >> 12) + 3
+                    start = len(dst) - displacement
 
-                    for j in range(count):
-                        if len(dst) >= expanded_size:
+                    for _ in range(count):
+                        if remaining <= 0:
                             break
-                        idx = len(dst) - back - 1
-                        if 0 <= idx < len(dst):
-                            dst.append(dst[idx])
-                        else:
-                            dst.append(0)
+                        dst.append(dst[start])
+                        start += 1
+                        remaining -= 1
                 else:
-                    if src_pos < len(src):
-                        dst.append(src[src_pos])
-                        src_pos += 1
+                    if src_pos >= len(src):
+                        break
+                    dst.append(src[src_pos])
+                    src_pos += 1
+                    remaining -= 1
 
-                flags = (flags << 1) & 0xFF
+                blockheader = (blockheader << 1) & 0xFF
 
         for i, byte in enumerate(dst):
             self.memory.write_u8(dst_addr + i, byte)
 
         return len(dst)
 
+
     def swi_huff_uncomp(self, src_addr: int, dst_addr: int) -> int:
-        """Huffman decompression (SWI 0x11)
-        
-        GBA BIOS Huffman decompression algorithm:
-        - Header: 5 bytes (format byte + decompressed size + tree size)
-        - Tree: tree_size bytes (must be even), stored as packed nodes
-        - Data: compressed bitstream following the tree
-        
-        Tree structure:
-        - Each node is 1 byte: bit 7 = 1 for branch, 0 for data
-        - Branch node: bits 0-6 = child offset (left child at offset, right at offset+1)
-        - Data node: bits 0-6 = output value
-        - Root node is at offset (tree_size / 2)
-        
-        Returns: number of bytes decompressed, or 0 on failure
+        """Huffman decompression (SWI 0x13). Header: [0x20][size:u24][bits:4].
+
+        Algorithm matches mGBA's _unHuffman:
+        - Source 4-byte aligned.
+        - 4-byte header: magic(0x20) + 24-bit size (bits 31-8) + bits-per-symbol (bits 3-0).
+        - Tree info byte at offset 4: treesize = (byte << 1) + 1.
+        - Tree at offset 5, data at offset 5 + treesize.
+        - Node format: [LTerm:7][RTerm:6][Offset:5-0].
+        - 32-bit bitstream reads, MSB first.
+        - 32-bit block accumulation, stored when full.
         """
-        src = self.memory.read_bytes(src_addr, 102400)
+        src_base = src_addr & 0xFFFFFFFC
+        src = self.memory.read_bytes(src_base, 102400)
 
-        if len(src) < 8 or src[0] != 0x11:
-            # Invalid header - return 0 bytes decompressed (graceful fallback)
+        # mGBA assumes the 0x20 signature is correct; only validate length.
+        # Header byte is 0x20 | (bits & 0xF), so src[0] is e.g. 0x28 for 8-bit symbols.
+        if len(src) < 5:
             return 0
 
-        expanded_size = struct.unpack("<I", src[1:5])[0]
-        if expanded_size == 0:
+        header = src[0] | (src[1] << 8) | (src[2] << 16) | (src[3] << 24)
+        remaining = header >> 8
+        bits = header & 0xF
+        if bits == 0:
+            bits = 8
+        if 32 % bits or bits == 1:
             return 0
-            
-        tree_size = src[4] if len(src) > 4 else 0
-        
-        # Tree size must be even and non-zero
-        if tree_size == 0 or tree_size % 2 != 0:
+
+        tree_size = (src[4] << 1) + 1
+        tree_nodes = src[5:5 + tree_size]
+        if len(tree_nodes) == 0:
             return 0
-        
-        # Tree occupies tree_size bytes, stored starting at src_addr + 5
-        # Tree nodes are packed: (tree_size / 2) + 1 nodes
-        tree_node_count = (tree_size >> 1) + 1
-        tree_start = src_addr + 5
-        data_start = tree_start + tree_size
-        
-        # Read tree nodes
-        tree_nodes = []
-        for i in range(tree_node_count):
-            if data_start + tree_size - tree_size + i < src_addr + len(src):
-                tree_nodes.append(self.memory.read_u8(tree_start + i))
-            else:
-                return 0
-        
-        # Root node is at offset (tree_size / 2)
-        root_offset = tree_size >> 1
-        
-        # Decompression state
+
+        data_start = 5 + tree_size
+        src_pos = data_start
+
         output = bytearray()
-        bit_buffer = 0
-        bits_in_buffer = 0
-        data_byte_offset = 0
-        
-        while len(output) < expanded_size:
-            # Start from root and walk tree
-            node_offset = root_offset
-            
-            while True:
-                # Ensure we have bits in buffer
-                if bits_in_buffer == 0:
-                    # Read next byte from compressed data
-                    if data_byte_offset >= tree_node_count:
-                        # Error: ran out of compressed data
-                        return 0
-                    bit_buffer = self.memory.read_u8(data_start + data_byte_offset)
-                    data_byte_offset += 1
-                    bits_in_buffer = 8
-                
-                # Read next bit (MSB first)
-                bit = (bit_buffer >> (bits_in_buffer - 1)) & 1
-                bits_in_buffer -= 1
-                
-                # Get current node
-                if node_offset >= len(tree_nodes):
-                    return 0
-                    
-                node = tree_nodes[node_offset]
-                
-                if node & 0x80:
-                    # Branch node: bits 0-6 = child offset
-                    child_offset = node & 0x7F
-                    
-                    if bit == 0:
-                        # Left child
-                        node_offset = child_offset
-                    else:
-                        # Right child (offset + 1)
-                        node_offset = child_offset + 1
-                else:
-                    # Data node: bits 0-6 = value
-                    value = node & 0x7F
-                    output.append(value)
+        block = 0
+        bits_seen = 0
+        n_pointer = 0
+        node = tree_nodes[0]
+
+        while remaining > 0 and src_pos + 3 < len(src):
+            bitstream = src[src_pos] | (src[src_pos + 1] << 8) | (src[src_pos + 2] << 16) | (src[src_pos + 3] << 24)
+            src_pos += 4
+
+            for _ in range(32):
+                if remaining <= 0:
                     break
-        
-        # Write output to destination
+
+                offset = node & 0x3F
+                next_ptr = (n_pointer & ~1) + offset * 2 + 2
+                is_right = bitstream & 0x80000000
+
+                if is_right:
+                    is_terminal = node & 0x40
+                    terminal_idx = next_ptr + 1
+                else:
+                    is_terminal = node & 0x80
+                    terminal_idx = next_ptr
+
+                if is_terminal:
+                    if terminal_idx >= len(tree_nodes):
+                        return 0
+                    read_bits = tree_nodes[terminal_idx]
+                    block |= (read_bits & ((1 << bits) - 1)) << bits_seen
+                    bits_seen += bits
+                    n_pointer = 0
+                    node = tree_nodes[0]
+                    if bits_seen == 32:
+                        bits_seen = 0
+                        output.append(block & 0xFF)
+                        output.append((block >> 8) & 0xFF)
+                        output.append((block >> 16) & 0xFF)
+                        output.append((block >> 24) & 0xFF)
+                        remaining -= 4
+                        block = 0
+                else:
+                    n_pointer = next_ptr + (1 if is_right else 0)
+                    if n_pointer >= len(tree_nodes):
+                        return 0
+                    node = tree_nodes[n_pointer]
+
+                bitstream = (bitstream << 1) & 0xFFFFFFFF
+
         for i, byte in enumerate(output):
-            if i >= expanded_size:
-                break
             self.memory.write_u8(dst_addr + i, byte)
 
         return len(output)
 
     def swi_rl_uncomp(self, src_addr: int, dst_addr: int) -> int:
-        """Run-Length decompression"""
+        """Run-Length decompression (SWI 0x14/0x15). Header: [0x30][size:u24]."""
         src = self.memory.read_bytes(src_addr, 102400)
 
-        if len(src) < 8 or src[0] != 0x12:
-            # Invalid header - return 0 bytes decompressed (graceful fallback)
+        if len(src) < 4 or src[0] != 0x30:
             return 0
 
-        expanded_size = struct.unpack("<I", src[1:5])[0]
-        src_pos = 8
+        expanded_size = src[1] | (src[2] << 8) | (src[3] << 16)
+        src_pos = 4
         dst = bytearray()
 
         while len(dst) < expanded_size and src_pos < len(src):
             flags = src[src_pos]
             src_pos += 1
 
-            for i in range(8):
-                if len(dst) >= expanded_size:
+            if flags & 0x80:
+                count = (flags & 0x7F) + 3
+                if src_pos >= len(src):
                     break
-
-                if flags & 0x80:
-                    if src_pos >= len(src):
+                byte_val = src[src_pos]
+                src_pos += 1
+                for _ in range(count):
+                    if len(dst) >= expanded_size:
                         break
-                    byte_val = src[src_pos]
-                    src_pos += 1
-
-                    if src_pos >= len(src):
+                    dst.append(byte_val)
+            else:
+                count = (flags & 0x7F) + 1
+                for _ in range(count):
+                    if src_pos >= len(src) or len(dst) >= expanded_size:
                         break
-                    count = src[src_pos] + 1
+                    dst.append(src[src_pos])
                     src_pos += 1
-
-                    dst.extend([byte_val] * min(count, expanded_size - len(dst)))
-                else:
-                    if src_pos < len(src):
-                        dst.append(src[src_pos])
-                        src_pos += 1
-
-                flags = (flags << 1) & 0xFF
 
         for i, byte in enumerate(dst):
             self.memory.write_u8(dst_addr + i, byte)
 
         return len(dst)
 
-    def swi_huffman(self, src_addr: int, dst_addr: int) -> int:
-        """Huffman decompression (SWI 0x13). Returns bytes decompressed or 0 on failure."""
-        header_byte0 = self.memory.read_u8(src_addr)
-        decompressed_size = struct.unpack(
-            "<I", 
-            bytes([
-                self.memory.read_u8(src_addr + 1),
-                self.memory.read_u8(src_addr + 2),
-                self.memory.read_u8(src_addr + 3),
-                self.memory.read_u8(src_addr + 4)
-            ])
-        )[0]
-        
-        if decompressed_size == 0:
-            return 0
-        
-        data_size_format = header_byte0 >> 4
-        tree_size = header_byte0 & 0x0F
-        
-        if tree_size == 0 or tree_size % 2 != 0:
-            return 0
-        
-        tree_node_count = (tree_size >> 1) + 1
-        tree_start = src_addr + 4
-        data_start = tree_start + tree_node_count
-        
-        tree_nodes = [self.memory.read_u8(tree_start + i) for i in range(tree_node_count)]
-        root_offset = tree_size >> 1
-        
-        output = []
-        bit_buffer = 0
-        bits_in_buffer = 0
-        data_byte_offset = 0
-        
-        while len(output) < decompressed_size:
-            node_offset = root_offset
-            
-            while True:
-                if bits_in_buffer == 0:
-                    if data_byte_offset >= tree_node_count:
-                        return 0
-                    bit_buffer = self.memory.read_u8(data_start + data_byte_offset)
-                    data_byte_offset += 1
-                    bits_in_buffer = 8
-                
-                bit = (bit_buffer >> (bits_in_buffer - 1)) & 1
-                bits_in_buffer -= 1
-                node = tree_nodes[node_offset]
-                
-                if node & 0x80:
-                    child_offset = node & 0x7F
-                    node_offset = child_offset if bit == 0 else child_offset + 1
-                else:
-                    output.append(node & 0x7F)
-                    break
-        
-        if data_size_format == 0x1:
-            for i, val in enumerate(output):
-                if i >= decompressed_size:
-                    break
-                self.memory.write_u8(dst_addr + i, val)
-            return len(output)
-        
-        elif data_size_format == 0x2:
-            for i in range(0, len(output), 2):
-                if i + 1 >= len(output):
-                    break
-                val = output[i] | (output[i + 1] << 8)
-                self.memory.write_u16(dst_addr + (i // 2) * 2, val)
-            return len(output)
-        
-        elif data_size_format == 0x4:
-            for i in range(0, len(output), 4):
-                if i + 3 >= len(output):
-                    break
-                val = output[i] | (output[i + 1] << 8) | (output[i + 2] << 16) | (output[i + 3] << 24)
-                self.memory.write_u32(dst_addr + (i // 4) * 4, val)
-            return len(output)
-        
-        return 0
+
 
     def swi_vblank_intr_wait(self):
         if not hasattr(self, "memory") or not hasattr(self.memory, "cpu"):
@@ -408,10 +314,21 @@ class BIOS:
         cpu._halted = True
 
     def swi_intr_wait(self, wait_flag: int, vblank_flag: int):
-        """Wait for interrupt. Halt CPU; wakes on any enabled IRQ (handled by _deliver_irq)."""
+        """Wait for interrupt. Check IF first (R0=1), then halt."""
         cpu = getattr(getattr(self, "memory", None), "cpu", None)
+        memory = getattr(self, "memory", None)
+        interrupts = getattr(memory, "_interrupts", None) if memory is not None else None
+        if wait_flag & 0x01 and interrupts is not None and cpu is not None:
+            flag_mask = vblank_flag & 0xFFFF
+            pending = interrupts.if_reg & flag_mask
+            if pending:
+                interrupts.if_reg &= ~pending
+                cpu.registers[0] = 1
+                cpu.cpsr |= (1 << 30)
+                return
         if cpu is not None:
             cpu._halted = True
+            cpu._halt_reason = 'any'
 
     def swi_soft_reset(self):
         """Soft reset - restart from reset vector"""
@@ -647,6 +564,53 @@ class BIOS:
         """Convert 2D coordinate to 1D based on height"""
         return y * height + x
 
+    def swi_bit_unpack(self, src_addr: int, dst_addr: int, params_addr: int) -> int:
+        """Bit unpack (SWI 0x10/0x16)"""
+        src = self.memory.read_bytes(src_addr, 102400)
+
+        if len(src) < 8:
+            return 0
+
+        source_length = struct.unpack("<I", src[0:4])[0]
+        dest_length = struct.unpack("<I", src[4:8])[0]
+
+        data_length_bits = self.memory.read_u16(params_addr)
+        unk = self.memory.read_u16(params_addr + 2)
+        data_length_bytes = self.memory.read_u32(params_addr + 4)
+        rev_zero = self.memory.read_u32(params_addr + 8)
+        zero_length = self.memory.read_u32(params_addr + 12)
+        repeat_width = self.memory.read_u32(params_addr + 16)
+
+        if data_length_bits == 4 and data_length_bytes == 1 and zero_length == 0 and repeat_width == 0 and unk == 0:
+            output = bytearray()
+            bit_buffer = 0
+            bits_in_buffer = 0
+            src_pos = 8
+
+            while len(output) < dest_length and src_pos < 8 + source_length:
+                if bits_in_buffer == 0:
+                    bit_buffer = self.memory.read_u8(src_addr + src_pos)
+                    src_pos += 1
+                    bits_in_buffer = 8
+
+                value = 0
+                for _ in range(data_length_bits):
+                    if bits_in_buffer == 0:
+                        break
+                    value = (value << 1) | ((bit_buffer >> (bits_in_buffer - 1)) & 1)
+                    bits_in_buffer -= 1
+
+                output.append(value)
+
+            for i, byte in enumerate(output):
+                if i >= dest_length:
+                    break
+                self.memory.write_u8(dst_addr + i, byte)
+
+            return len(output)
+        else:
+            return 0
+
     def swi_rle_uncomp_wram(self, src_addr: int, dst_addr: int) -> int:
         """RLE decompression to WRAM"""
         return self.swi_rl_uncomp(src_addr, dst_addr)
@@ -656,31 +620,47 @@ class BIOS:
         return self.swi_rl_uncomp(src_addr, dst_addr)
 
     def swi_diff_uncomp_filter(self, src_addr: int, dst_addr: int) -> int:
-        """Difference decompression with filter"""
+        """Difference decompression with filter (SWI 0x18). Header: [0x81][size:u24]."""
         src = self.memory.read_bytes(src_addr, 102400)
-        if len(src) < 8:
-            # Invalid header - return 0 bytes decompressed (graceful fallback)
+
+        if len(src) < 4 or src[0] != 0x81:
             return 0
 
-        expanded_size = struct.unpack("<I", src[1:5])[0]
-        filter_type = src[0]
+        expanded_size = src[1] | (src[2] << 8) | (src[3] << 16)
+        src_pos = 4
+        temp = bytearray()
 
-        dst = bytearray()
+        while len(temp) < expanded_size and src_pos < len(src):
+            flags = src[src_pos]
+            src_pos += 1
+
+            count = (flags & 0x7F) + 1
+
+            if flags & 0x80:
+                if src_pos >= len(src):
+                    break
+                byte_val = src[src_pos]
+                src_pos += 1
+                for _ in range(count):
+                    if len(temp) >= expanded_size:
+                        break
+                    temp.append(byte_val)
+            else:
+                for _ in range(count):
+                    if src_pos >= len(src) or len(temp) >= expanded_size:
+                        break
+                    temp.append(src[src_pos])
+                    src_pos += 1
+
         prev = 0
-
-        for i in range(8, len(src)):
-            if len(dst) >= expanded_size:
+        for i, raw_byte in enumerate(temp):
+            if i >= expanded_size:
                 break
-            diff = src[i] if filter_type == 0x00 else src[i]
-            # Apply difference
-            value = (prev + diff) & 0xFF
-            dst.append(value)
+            value = (prev + raw_byte) & 0xFF
+            self.memory.write_u8(dst_addr + i, value)
             prev = value
 
-        for i, byte in enumerate(dst):
-            self.memory.write_u8(dst_addr + i, byte)
-
-        return len(dst)
+        return len(temp)
 
     def swi_huff_uncomp_wram(self, src_addr: int, dst_addr: int) -> int:
         """Huffman decompression to WRAM"""

@@ -188,10 +188,6 @@ class InterruptController:
         """Clear all interrupt flags."""
         self.if_reg = 0x0000
 
-
-def set_vblank_flag():
-    interrupts.fire(InterruptController.IRQ_VBLANK)
-
     def set_ime(self, enabled: bool):
         """Set IME register.
 
@@ -199,3 +195,4 @@ def set_vblank_flag():
             enabled: True to enable interrupts, False to disable
         """
         self.ime_reg = 0x0001 if enabled else 0x0000
+        self._enabled_mask = self.ie_reg if self.ime_reg & 0x0001 else 0

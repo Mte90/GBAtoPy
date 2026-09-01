@@ -166,7 +166,9 @@ class Memory:
         if 0x04000100 <= addr <= 0x0400010F:
             if self._timers:
                 self._handle_timer_write(addr, value)
-        if 0x04000200 <= addr <= 0x04000208:
+        if addr in (0x04000200, 0x04000201,
+                    0x04000202, 0x04000203,
+                    0x04000208, 0x04000209):
             if self._interrupts:
                 self._handle_interrupt_write(addr, value)
 
@@ -185,11 +187,11 @@ class Memory:
             return self._handle_sound_read(addr)
         # Interrupt registers: IE (0x04000200), IF (0x04000202), IME (0x04000208)
         if self._interrupts is not None:
-            if addr == 0x04000200 or addr == 0x04000201:
+            if addr in (0x04000200, 0x04000201):
                 return (self._interrupts.ie_reg >> (8 * (addr & 1))) & 0xFF
-            if addr == 0x04000202 or addr == 0x04000203:
+            if addr in (0x04000202, 0x04000203):
                 return (self._interrupts.if_reg >> (8 * (addr & 1))) & 0xFF
-            if addr == 0x04000208 or addr == 0x04000209:
+            if addr in (0x04000208, 0x04000209):
                 return (self._interrupts.ime_reg >> (8 * (addr & 1))) & 0xFF
         if 0x04000100 <= addr <= 0x0400010F:
             if self._timers:
@@ -222,14 +224,18 @@ class Memory:
             return 0
         ch = self._dma.channels[channel]
         ch.read_from_memory()
-        if reg_offset == 0:
-            return ch.src_addr
-        elif reg_offset == 4:
-            return ch.dst_addr
-        elif reg_offset == 8:
-            return ch.count
-        elif reg_offset == 10:
-            return ch.control
+        if reg_offset <= 3:
+            return (ch.src_addr >> (8 * reg_offset)) & 0xFF
+        if reg_offset <= 7:
+            return (ch.dst_addr >> (8 * (reg_offset - 4))) & 0xFF
+        if reg_offset == 8:
+            return ch.count & 0xFF
+        if reg_offset == 9:
+            return (ch.count >> 8) & 0xFF
+        if reg_offset == 10:
+            return ch.control & 0xFF
+        if reg_offset == 11:
+            return (ch.control >> 8) & 0xFF
         return 0
 
     def _handle_dma_write(self, addr: int, value: int):
@@ -283,20 +289,24 @@ class Memory:
         reg_offset = (addr - base) % 4
         if timer_idx < 0 or timer_idx > 3:
             return None
+        count = self._timers.get_timer(timer_idx)
         if reg_offset == 0:
-            # CNT_L: current count value
-            return self._timers.get_timer(timer_idx)
+            return count & 0xFF
+        elif reg_offset == 1:
+            return (count >> 8) & 0xFF
         elif reg_offset == 2:
-            # CNT_H: control register
-            return self._timers.get_control(timer_idx)
+            return self._timers.get_control(timer_idx) & 0xFF
+        elif reg_offset == 3:
+            return (self._timers.get_control(timer_idx) >> 8) & 0xFF
         return None
 
+
     def _handle_interrupt_write(self, addr: int, value: int):
-        if addr == 0x04000200:
+        if addr in (0x04000200, 0x04000201):
             self._interrupts.write_ie(value)
-        elif addr == 0x04000202:
+        elif addr in (0x04000202, 0x04000203):
             self._interrupts.write_if(value)
-        elif addr == 0x04000208:
+        elif addr in (0x04000208, 0x04000209):
             self._interrupts.write_ime(value)
 
     def _handle_sound_read(self, addr: int) -> int:
@@ -465,6 +475,24 @@ class Memory:
             return self.sram, addr - MemoryMap.SRAM_START
         return None, 0
 
+    def read_bytes(self, addr: int, length: int) -> bytes:
+        """Read a contiguous byte range from memory.
+
+        Used by BIOS decompression SWIs (LZ77/Huffman/RLE) that need bulk access.
+        Handles cross-region reads by falling back to per-byte reads when the
+        requested range crosses a memory boundary or extends past the buffer end.
+        """
+        addr &= 0xFFFFFFFF
+        buf, start = self._buffer_for_addr(addr)
+        if buf is not None:
+            end = min(start + length, len(buf))
+            if end > start:
+                return bytes(buf[start:end])
+        out = bytearray()
+        for i in range(length):
+            out.append(self.read_u8(addr + i))
+        return bytes(out)
+
     def read_u16(self, addr: int) -> int:
         addr &= 0xFFFFFFFF
         mapped = self._map_address(addr)
@@ -538,7 +566,7 @@ class Memory:
             offset = addr - MemoryMap.IO_START
             self.io[offset] = value
             self.open_bus = value
-            if not _from_multibyte and 0x04000000 <= addr <= 0x0400005F:
+            if not _from_multibyte:
                 reg_base = addr & ~1
                 base_offset = reg_base - MemoryMap.IO_START
                 merged = self.io[base_offset] | (self.io[base_offset + 1] << 8)
@@ -598,17 +626,19 @@ class Memory:
         mapped_addr = self._map_address(addr)
 
         if MemoryMap.IO_START <= mapped_addr <= MemoryMap.IO_END:
-            # GBA MMIO registers are 16-bit. A 32-bit write only affects the
-            # lower 16 bits (the register at the base address). The upper 16
-            # bits target an adjacent address that is often undefined and
-            # ignored on real hardware. Writing them to io[] pollutes bytes
-            # that read_u32 reads back, corrupting 32-bit MMIO reads (e.g.,
-            # IME at 0x04000208 reads back 0x04000001 instead of 0x00000001
-            # because io[0x20B] was polluted by a prior STR of 0x04000000).
+            # GBA MMIO registers are 16-bit. A 32-bit write is split into two
+            # 16-bit writes: lower 16 bits to the base register, upper 16 bits
+            # to base+2. This matches hardware behavior and is required for DMA
+            # count+control writes (e.g., STR 0xB6000040 to DMA0CNT sets
+            # count=0x0040 and control=0xB600).
             lo = value & 0xFFFF
+            hi = (value >> 16) & 0xFFFF
             self.write_u8(mapped_addr, lo & 0xFF, _from_multibyte=True)
             self.write_u8(mapped_addr + 1, (lo >> 8) & 0xFF, _from_multibyte=True)
             self._dispatch_hal_write(mapped_addr, lo)
+            self.write_u8(mapped_addr + 2, hi & 0xFF, _from_multibyte=True)
+            self.write_u8(mapped_addr + 3, (hi >> 8) & 0xFF, _from_multibyte=True)
+            self._dispatch_hal_write(mapped_addr + 2, hi)
             return
 
         self.write_u8(mapped_addr, value & 0xFF, _from_multibyte=True)

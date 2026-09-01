@@ -54,9 +54,9 @@ impl FeatureFlags {
         const AUDIO_START: u32 = 0x04000060;
         const AUDIO_END: u32 = 0x0400008F;
 
-        // IRQ: 0x04000200-0x04000208 (IE, IF, IME)
+        // IRQ: IE (0x04000200), IF (0x04000202), IME (0x04000208)
         const IRQ_START: u32 = 0x04000200;
-        const IRQ_END: u32 = 0x04000208;
+        const IRQ_END: u32 = 0x04000209;
 
         // Timers: 0x04000100-0x0400010F (TM0CNT_L, TM0CNT_H, TM1CNT_L, etc.)
         const TIMERS_START: u32 = 0x04000100;
@@ -202,6 +202,19 @@ pub fn run_pipeline(
     cfg.build_from_entry(&rom, 0x08000000);
     reachable = cfg.get_reachable_addresses().to_vec();
     eprintln!("  CFG found {} reachable addresses", reachable.len());
+
+    const ESTIMATED_LINES_PER_INSTRUCTION: u64 = 15;
+    let estimated_output_lines =
+        reachable.len() as u64 * ESTIMATED_LINES_PER_INSTRUCTION;
+    if estimated_output_lines > max_output_lines {
+        return Err(format!(
+            "Output would be ~{} lines ({} reachable addresses * ~{} lines each), exceeds limit of {}. The CFG likely misclassified audio/graphic data as code. Use --max-output-lines to raise the limit.",
+            estimated_output_lines,
+            reachable.len(),
+            ESTIMATED_LINES_PER_INSTRUCTION,
+            max_output_lines
+        ));
+    }
 
     let mut disasm = Disassembler::new();
     instructions = disasm.selective_disassemble(&rom, &reachable, &cfg.mode_map);
@@ -1065,38 +1078,21 @@ const DELIVER_IRQ_BODY: &str = r#"
             return
         if _cpu_halted:
             if _halt_reason == "vblank":
-                if _irq.if_reg & (1 << 0):
+                if (_irq.if_reg & (1 << 0)) and (_irq.ie_reg & (1 << 0)) and (_irq.ime_reg & 0x0001):
                     _cpu_halted = False
                     _halt_reason = None
-                    _irq.if_reg &= ~(1 << 0)
-                    if _swi_lr is not None:
-                        registers[14] = _swi_lr
-                        _swi_lr = None
-                    if _swi_caller_pc is not None:
-                        _irq_return_pc = _swi_caller_pc
-                        _swi_caller_pc = None
             elif _halt_reason == "any":
                 _any_pending = _irq.if_reg & _irq.ie_reg
                 if _any_pending:
                     _cpu_halted = False
                     _halt_reason = None
-                    _irq.if_reg &= ~_any_pending
-                    if _swi_lr is not None:
-                        registers[14] = _swi_lr
-                        _swi_lr = None
-                    if _swi_caller_pc is not None:
-                        _irq_return_pc = _swi_caller_pc
-                        _swi_caller_pc = None
-            if _cpu_halted:
-                return
-        _pending = _irq.if_reg & _irq.ie_reg
-        if not _pending:
-            return
-        if not (_irq.ime_reg & 0x0001):
+        if _cpu_halted:
             return
         if _irq_return_pc is not None:
-            if registers[15] != _irq_return_pc:
+            _bx_lr_return = (registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC))
+            if registers[15] != _irq_return_pc and not _bx_lr_return:
                 return
+            _resume_pc = _irq_return_pc
             _irq_return_pc = None
             _saved = cpsr.get('spsr_irq', 0)
             _saved_mode = _saved & 0x1F
@@ -1117,6 +1113,19 @@ const DELIVER_IRQ_BODY: &str = r#"
             registers[2] = _irq_saved_r2
             registers[3] = _irq_saved_r3
             registers[12] = _irq_saved_r12
+            if _swi_lr is not None:
+                registers[14] = _swi_lr
+                _swi_lr = None
+            if _swi_caller_pc is not None:
+                registers[15] = _swi_caller_pc
+                _swi_caller_pc = None
+            elif _bx_lr_return:
+                registers[15] = _resume_pc
+            return
+        _pending = _irq.if_reg & _irq.ie_reg
+        if not _pending:
+            return
+        if not (_irq.ime_reg & 0x0001):
             return
         _handler = memory.read_u32(0x03007FFC)
         if not ((0x02000000 <= _handler < 0x04000000) or (0x08000000 <= _handler < 0x0A000000)):
@@ -1132,9 +1141,10 @@ const DELIVER_IRQ_BODY: &str = r#"
         _irq_saved_r12 = registers[12]
         _switch_mode(0x12)
         cpsr['i'] = 1
-        registers[14] = registers[15] + 4
+        registers[14] = (registers[15] + 4) & 0xFFFFFFFF
         registers[15] = _handler & 0xFFFFFFFE
         cpsr['t'] = 1 if (_handler & 1) else 0
+        _interp_cpu.thumb_mode = bool(cpsr['t'])
 "#;
 
 fn generate_game_loop() -> String {
@@ -1196,14 +1206,38 @@ def swi_handler(swi_field):
         _cpu_halted = True
         _halt_reason = "any"
         return
-    elif swi_num == 0x03 or swi_num == 0x04:  # IntrWait — wakes on any IRQ
+    elif swi_num == 0x03:  # Stop — low-power mode, treat as Halt
+        _cpu_halted = True
+        _halt_reason = "any"
+        return
+    elif swi_num == 0x04:  # IntrWait — check IF first, then halt
+        _wait_flag = registers[0] & 0xFF
+        _irq_obj = getattr(memory, '_interrupts', None)
+        if _wait_flag & 0x01 and _irq_obj is not None:
+            _flag_mask = registers[1] & 0xFFFF
+            _pending = _irq_obj.if_reg & _flag_mask
+            if _pending:
+                _irq_obj.if_reg &= ~_pending
+                registers[0] = 1
+                cpsr['z'] = 1
+                return
         _cpu_halted = True
         _halt_reason = "any"
         return
     elif swi_num == 0x05:  # VBlankIntrWait — wakes on VBlank IRQ ONLY
         global _swi_lr, _swi_caller_pc
         _swi_lr = registers[14]  # Save LR_svc (SWI return address)
-        _swi_caller_pc = registers[15]  # Save PC (instruction after SWI call)
+        _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
+        # Per GBATEK: set IE.0 (VBlank enable), clear IF.0 (acknowledge pending VBlank)
+        _irq_obj = getattr(memory, '_interrupts', None)
+        if _irq_obj is not None:
+            _irq_obj.ie_reg |= 0x0001
+            _irq_obj.if_reg &= ~0x0001
+        # Set DISPSTAT.3 (VBlank IRQ enable) so step_scanline fires vblank_irq()
+        _dispstat = memory.read_u16(0x04000004)
+        memory.write_u16(0x04000004, _dispstat | 0x0008)
+        # Enable IME so the VBlank IRQ can actually wake the CPU
+        memory.write_u16(0x04000208, 0x0001)
         _cpu_halted = True
         _halt_reason = "vblank"
         return
@@ -1255,9 +1289,9 @@ def swi_handler(swi_field):
     # 0x0F ObjAffineSet, 0x11/0x12 LZ77) are not commonly needed for
     # ROM startup; left as no-ops.
 
-def _interp_fallback(registers, cpsr, max_steps=2000):
+def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
     global _interp_cpu
-    global _cpu_halted, _halt_reason
+    global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
     if _interp_cpu is None:
         _interp_cpu = ARM7TDMI(memory)
         memory.cpu = _interp_cpu
@@ -1272,9 +1306,19 @@ def _interp_fallback(registers, cpsr, max_steps=2000):
     _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1B, 4)] = cpsr.get('spsr_und', 0) & 0xFFFFFFFF
     _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1F, 1)] = cpsr.get('spsr_sys', 0) & 0xFFFFFFFF
     _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
+    for _m, _b in banked_sp_lr.items():
+        if _m in _interp_cpu.banked_sp_lr:
+            _ib = _interp_cpu.banked_sp_lr[_m]
+            _ib['sp'] = _b['sp']; _ib['lr'] = _b['lr']
+            if _m == 0x11:
+                _ib['r8'] = _b.get('r8', 0); _ib['r9'] = _b.get('r9', 0)
+                _ib['r10'] = _b.get('r10', 0); _ib['r11'] = _b.get('r11', 0)
+                _ib['r12'] = _b.get('r12', 0)
     _step_count = 0
     while _step_count < max_steps:
         _pc = _interp_cpu.registers[15]
+        if irq_return_pc is not None and (_pc == irq_return_pc or _pc == ((irq_return_pc + 4) & 0xFFFFFFFF) or _pc == ((irq_return_pc + 4) & 0xFFFFFFFC)):
+            break
         if 0x08000000 <= _pc < 0x0A000000:
             _idx = (_pc - 0x08000000) >> 1
             if _interp_cpu.thumb_mode:
@@ -1289,6 +1333,8 @@ def _interp_fallback(registers, cpsr, max_steps=2000):
             _interp_cpu._halted = False
             _cpu_halted = True
             _halt_reason = getattr(_interp_cpu, '_halt_reason', 'any')
+            _swi_lr = getattr(_interp_cpu, '_swi_lr', None)
+            _swi_caller_pc = getattr(_interp_cpu, '_swi_caller_pc', None)
             break
     for i in range(16):
         registers[i] = _interp_cpu.registers[i]
@@ -1299,9 +1345,17 @@ def _interp_fallback(registers, cpsr, max_steps=2000):
     cpsr['spsr_abt'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x17, 3)] & 0xFFFFFFFF
     cpsr['spsr_und'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1B, 4)] & 0xFFFFFFFF
     cpsr['spsr_sys'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1F, 1)] & 0xFFFFFFFF
+    for _m, _ib in _interp_cpu.banked_sp_lr.items():
+        if _m in banked_sp_lr:
+            _b = banked_sp_lr[_m]
+            _b['sp'] = _ib['sp']; _b['lr'] = _ib['lr']
+            if _m == 0x11:
+                _b['r8'] = _ib.get('r8', 0); _b['r9'] = _ib.get('r9', 0)
+                _b['r10'] = _ib.get('r10', 0); _b['r11'] = _ib.get('r11', 0)
+                _b['r12'] = _ib.get('r12', 0)
     return _step_count
 
-def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, max_instrs=10000000, pc_trace=None, trace_n=0, audio_capture=None):
+def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, max_instrs=10000000, pc_trace=None, trace_n=0, audio_capture=None, watch_reg=None, dump_at=None):
     global _cpu_halted
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     def ror(v, a):
@@ -1317,6 +1371,20 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     _irq_saved_r12 = 0
     _trace_file = open(pc_trace, "w") if pc_trace else None
     _trace_count = 0
+    _watch_reg_idx = None
+    _watch_reg_prev = None
+    if watch_reg:
+        _reg_map = {'r0': 0, 'r1': 1, 'r2': 2, 'r3': 3, 'r4': 4, 'r5': 5, 'r6': 6, 'r7': 7, 'r8': 8, 'r9': 9, 'r10': 10, 'r11': 11, 'r12': 12, 'sp': 13, 'lr': 14, 'pc': 15}
+        _watch_reg_idx = _reg_map.get(watch_reg.lower())
+        if _watch_reg_idx is None:
+            print(f"Unknown register: {watch_reg}", file=sys.stderr)
+    _dump_target_pc = None
+    _dump_region_name = None
+    _dump_done = False
+    if dump_at:
+        _parts = dump_at.split(':')
+        _dump_target_pc = int(_parts[0], 0)
+        _dump_region_name = _parts[1] if len(_parts) > 1 else 'iwram'
     _audio_buf = bytearray() if audio_capture else None
     _audio_synth_per_frame = 735
     instr_per_scanline = max(50, (int(gba_hz / 60.0) // 2) // 228)
@@ -1334,9 +1402,18 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                     break
                 pc = registers[15]
                 if _trace_file:
-                    if trace_n == 0 or _trace_count < trace_n:
+                    _cur_w = registers[_watch_reg_idx] if _watch_reg_idx is not None else None
+                    if (trace_n == 0 or _trace_count < trace_n) and (_watch_reg_idx is None or _cur_w != _watch_reg_prev):
                         _trace_file.write(f"PC=0x{pc:08X} R0={registers[0]:08X} R1={registers[1]:08X} R2={registers[2]:08X} R3={registers[3]:08X} R8={registers[8]:08X} R9={registers[9]:08X} R10={registers[10]:08X} R12={registers[12]:08X} LR={registers[14]:08X} SP={registers[13]:08X} mode={cpsr.get('mode', 0):#x} i={cpsr.get('i', 0)} t={cpsr.get('t', 0)}\n")
                         _trace_count += 1
+                        _watch_reg_prev = _cur_w
+                if dump_at and not _dump_done and pc == _dump_target_pc:
+                    _regions = {'ewram': memory.ewram, 'iwram': memory.iwram, 'vram': memory.vram, 'palette': memory.palette, 'oam': memory.oam}
+                    _rd = _regions.get(_dump_region_name, memory.iwram)
+                    with open(f'/tmp/dump_{_dump_region_name}_at_{pc:08X}.bin', 'wb') as _df:
+                        _df.write(bytes(_rd))
+                    print(f"Dumped {_dump_region_name} ({len(_rd)} bytes) at PC=0x{pc:08X}", flush=True)
+                    _dump_done = True
                 idx = (pc - 0x08000000) >> 1
                 _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
                 func = _dt.get(idx)
@@ -1344,20 +1421,29 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                     _budget = instr_per_scanline - (ic - _inner_ic_start)
                     if _budget <= 0:
                         _budget = 1
-                    _steps = _interp_fallback(registers, cpsr, max_steps=_budget)
-                    ic += max(1, _steps)
+                    _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                    _steps = max(1, _steps)
+                    ic += _steps
+                    if timers_instance is not None:
+                        timers_instance.step(4 * _steps)
+                    if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
+                        break
                 else:
                     func(registers, cpsr); ic += 1
+                    if timers_instance is not None:
+                        timers_instance.step(4)
                     if registers[15] == pc:
                         _inner_stalls += 1
                         if _inner_stalls > 10000:
                             break
                     else:
                         _inner_stalls = 0
-            if cpsr.get('mode', 0) != 0x12:
-                ppu_instance.step_scanline()
-                if timers_instance is not None:
-                    timers_instance.step(instr_per_scanline * 2)
+            _deliver_irq()
+            ppu_instance.step_scanline()
+            _deliver_irq()
+            if timers_instance is not None:
+                timers_instance.step(960)
+            ppu_instance.fire_hblank_irq()
             _deliver_irq()
         ppu_instance.render_frame()
         if _audio_buf is not None:
@@ -1377,7 +1463,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             _wav.writeframes(_s16.tobytes())
     return fc
 
-def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None, pc_trace=None, trace_n=0, max_instrs=10000000):
+def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None, pc_trace=None, trace_n=0, max_instrs=10000000, watch_reg=None, dump_at=None):
     global _cpu_halted
     # Initialize HookManager if hook file provided
     hook_manager = HookManager() if hook_file else None
@@ -1385,6 +1471,20 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     if pc_trace:
         trace_file = open(pc_trace, "w")
     trace_count = 0
+    _watch_reg_idx = None
+    _watch_reg_prev = None
+    if watch_reg:
+        _reg_map = {'r0': 0, 'r1': 1, 'r2': 2, 'r3': 3, 'r4': 4, 'r5': 5, 'r6': 6, 'r7': 7, 'r8': 8, 'r9': 9, 'r10': 10, 'r11': 11, 'r12': 12, 'sp': 13, 'lr': 14, 'pc': 15}
+        _watch_reg_idx = _reg_map.get(watch_reg.lower())
+        if _watch_reg_idx is None:
+            print(f"Unknown register: {watch_reg}", file=sys.stderr)
+    _dump_target_pc = None
+    _dump_region_name = None
+    _dump_done = False
+    if dump_at:
+        _parts = dump_at.split(':')
+        _dump_target_pc = int(_parts[0], 0)
+        _dump_region_name = _parts[1] if len(_parts) > 1 else 'iwram'
     if hook_file:
         # Load and execute hook script
         try:
@@ -1451,12 +1551,28 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     _budget = instr_per_scanline - (ic - _inner_ic_start)
                     if _budget <= 0:
                         _budget = 1
-                    _steps = _interp_fallback(registers, cpsr, max_steps=_budget)
-                    ic += max(1, _steps)
+                    _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                    _steps = max(1, _steps)
+                    ic += _steps
+                    if timers_instance is not None:
+                        timers_instance.step(4 * _steps)
+                    if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
+                        break
                     continue
                 func(registers, cpsr); ic += 1
-                if pc_trace and trace_file:
+                if timers_instance is not None:
+                    timers_instance.step(4)
+                _cur_w = registers[_watch_reg_idx] if _watch_reg_idx is not None else None
+                if pc_trace and trace_file and (_watch_reg_idx is None or _cur_w != _watch_reg_prev):
                     trace_file.write(f"{ic:08d} PC=0x{registers[15]:08X} R0={registers[0]:08X} R1={registers[1]:08X} R2={registers[2]:08X} R3={registers[3]:08X} R14={registers[14]:08X}\n")
+                    _watch_reg_prev = _cur_w
+                if dump_at and not _dump_done and pc == _dump_target_pc:
+                    _regions = {'ewram': memory.ewram, 'iwram': memory.iwram, 'vram': memory.vram, 'palette': memory.palette, 'oam': memory.oam}
+                    _rd = _regions.get(_dump_region_name, memory.iwram)
+                    with open(f'/tmp/dump_{_dump_region_name}_at_{pc:08X}.bin', 'wb') as _df:
+                        _df.write(bytes(_rd))
+                    print(f"Dumped {_dump_region_name} ({len(_rd)} bytes) at PC=0x{pc:08X}", flush=True)
+                    _dump_done = True
                 if trace_n > 0 and trace_count < trace_n:
                     print(f"{ic:08d} PC=0x{registers[15]:08X} R0={registers[0]:08X} R1={registers[1]:08X} R2={registers[2]:08X} R3={registers[3]:08X}")
                     trace_count += 1
@@ -1470,10 +1586,12 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     if hook_manager.check_hooks(registers[15], 'instruction'):
                         print("Execution paused at breakpoint")
                         break
-            if cpsr.get('mode', 0) != 0x12:
-                ppu_instance.step_scanline()
-                if timers_instance is not None:
-                    timers_instance.step(instr_per_scanline * 2)
+            _deliver_irq()
+            ppu_instance.step_scanline()
+            _deliver_irq()
+            if timers_instance is not None:
+                timers_instance.step(960)
+            ppu_instance.fire_hblank_irq()
             _deliver_irq()
         # Render the completed frame
         ppu_instance.render_frame()
@@ -1508,17 +1626,17 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             if dump_region:
                 # Map region name to memory array
                 regions = {
-                    'ewram': ewram,
-                    'iwram': iwram,
-                    'vram': vram,
-                    'palette': palette,
-                    'oam': oam
+                    'ewram': memory.ewram,
+                    'iwram': memory.iwram,
+                    'vram': memory.vram,
+                    'palette': memory.palette,
+                    'oam': memory.oam
                 }
-                region_data = regions.get(dump_region, ewram)
+                region_data = regions.get(dump_region, memory.ewram)
                 f.write(bytes(region_data))
             else:
                 # Default: dump full EWRAM (256KB)
-                f.write(bytes(ewram))
+                f.write(bytes(memory.ewram))
         print(f"Memory dump written to: {dump_memory}")
     
     if trace_file:
@@ -1542,6 +1660,8 @@ if __name__ == "__main__":
     parser.add_argument("--pc-trace", type=str, help="Log PC + registers each step to a file")
     parser.add_argument("--trace-n", type=int, default=0, help="Print first N PCs to stdout then stop tracing")
     parser.add_argument("--max-instrs", type=int, default=10000000, help="Maximum instructions before aborting (default 10M)")
+    parser.add_argument("--watch-reg", type=str, help="Filter PC trace to only lines where this register changes (e.g. SP, R0, LR)")
+    parser.add_argument("--dump-at", type=str, help="Dump memory region when PC first hits target. Format: 0xPC[:region] (e.g. 0x080182CC:iwram)")
     parser.add_argument("--audio-capture", type=str, help="Capture audio to WAV file (stereo, 16-bit signed, 44100 Hz)")
     parser.add_argument("--profile", type=str, help="Dump cProfile stats to file")
     args = parser.parse_args()
@@ -1559,6 +1679,8 @@ if __name__ == "__main__":
             pc_trace=args.pc_trace,
             trace_n=args.trace_n,
             audio_capture=args.audio_capture,
+            watch_reg=args.watch_reg,
+            dump_at=args.dump_at,
         )
     else:
         frames = run_with_pygame(
@@ -1573,7 +1695,9 @@ if __name__ == "__main__":
             hook_file=args.hook_file,
             pc_trace=args.pc_trace,
             trace_n=args.trace_n,
-            max_instrs=args.max_instrs
+            max_instrs=args.max_instrs,
+            watch_reg=args.watch_reg,
+            dump_at=args.dump_at,
         )
     if args.profile:
         pr.disable()

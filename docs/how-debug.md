@@ -166,6 +166,84 @@ print(f'Palette: {[rom_module.memory.read_u8(0x05000000 + i) for i in range(8)]}
 print(f'VRAM: {[rom_module.memory.read_u8(0x06000000 + i) for i in range(8)]}')
 ```
 
+## Debug Flags Reference
+
+All flags apply to transpiled `.py` output (both `--headless` and pygame modes).
+
+### `--pc-trace=FILE`
+Log PC + registers every step. Use `--trace-n=N` to cap output at N lines.
+
+```bash
+python3 /tmp/rom.py --headless --pc-trace /tmp/trace.txt --trace-n 500000
+```
+
+### `--watch-reg=NAME`
+Filter PC trace to only lines where the named register **changed value**. Dramatically reduces trace size when diagnosing stack leaks, register corruption, or polling loops. Pairs with `--pc-trace`.
+
+Register names (case-insensitive): `r0`–`r12`, `sp`, `lr`, `pc`.
+
+```bash
+# Find when SP changes — catches stack leaks in one run
+python3 /tmp/rom.py --headless --pc-trace /tmp/sp.txt --watch-reg SP
+
+# Find when R0 changes — tracks a specific variable through the loop
+python3 /tmp/rom.py --headless --pc-trace /tmp/r0.txt --watch-reg R0
+```
+
+### `--dump-at=PC[:region]`
+Dump a memory region to `/tmp/dump_<region>_at_<pc>.bin` the first time PC hits the target address. One-shot (fires once). Use to capture memory state at a specific execution point without injecting `print()` probes.
+
+Regions: `ewram` (default), `iwram`, `vram`, `palette`, `oam`.
+
+```bash
+# Dump IWRAM when CPU enters a specific function
+python3 /tmp/rom.py --headless --dump-at 0x030005F4:iwram
+
+# Dump VRAM when PC enters the render loop
+python3 /tmp/rom.py --headless --dump-at 0x080182CC:vram
+```
+
+### `--hook-file=FILE`
+Load a Python script with debugging hooks. HookManager API:
+
+```python
+# hook_debug.py — example: breakpoint + register dump
+hooks = []
+
+def add_breakpoint(pc, callback):
+    hooks.append((pc, callback))
+
+def dump_iwram(memory):
+    iwram = memory.iwram
+    # Inspect bytes at specific offset
+    val = int.from_bytes(iwram[0x5F0:0x5F4], 'little')
+    print(f"IWRAM[0x5F0] = 0x{val:08X}", flush=True)
+
+def my_hook(pc, registers, memory):
+    if pc == 0x080182CC:
+        dump_iwram(memory)
+        print(f"Hit breakpoint: R0={registers[0]:08X}", flush=True)
+```
+
+### `--max-instrs=N`
+Abort after N instructions (default 10M). Raise when debugging long-running initialization loops.
+
+### `--frame=N`
+Run for N frames then exit. Use to capture a specific frame for screenshot comparison.
+
+### Combining flags
+
+```bash
+# Full debug session: trace SP changes, dump IWRAM at function entry, 120 frames
+python3 /tmp/rom.py \
+  --headless \
+  --frame 120 \
+  --pc-trace /tmp/trace.txt \
+  --watch-reg SP \
+  --dump-at 0x030005F4:iwram \
+  --screenshot /tmp/out.png
+```
+
 ## Systematic Spin Diagnosis Workflow
 
 Use this workflow when a generated ROM hangs or spins. It is the procedure that found and fixed every spin bug in this project's history.
@@ -312,6 +390,14 @@ Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets
 **Root cause**: `read_u16` and `read_u32` in `memory.py` had a fast-forward path that called `self._ppu.step_scanline()` during DISPSTAT/VCount reads. A tight poll loop fired HBlank DMA hundreds of times per scanline.
 **Fix**: Removed the fast-forward DISPSTAT reads from `memory.py`. The `_last_vcount_read` and `_last_dispstat_read` attributes were also removed. PPU stepping is now exclusively in the main loop.
 **Files**: `crates/gbatopy-cli/assets/gba_runtime/memory.py` (`read_u16`, `read_u32`)
+
+### Class 3: CpuFastSet missing count mask (BIOS SWI 0x0C)
+
+**Symptom**: ROM calls SWI 0x0C (CpuFastSet) and the runtime hangs or runs pathologically slow (e.g., status-irq-dma timed out at ~90s; 98% of CPU time in a single fill loop).
+**Root cause**: `swi_cpufastset` in `bios.py` read the word count directly from R2 without masking to 21 bits (`count & 0x001FFFFF`), unlike its sibling `swi_cpuset` which masks correctly. With the fill flag in bit 24 set, the raw R2 value (e.g., `0x01000200`) decoded as 16.7M iterations instead of 512 — a 32,768x overshoot that wrote 64MB into 256KB VRAM.
+**Fix**: Apply `word_count = count & 0x001FFFFF` in `swi_cpufastset`, matching `swi_cpuset`.
+**Files**: `crates/gbatopy-cli/assets/gba_runtime/bios.py` (`swi_cpufastset`, line 103)
+**Verification**: `status-irq-dma` L2 runtime drops from ~130s to ~5s.
 
 ## Common Issues
 

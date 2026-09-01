@@ -64,10 +64,20 @@ class Timers:
         self._channels[channel].count = value & 0xFFFF
 
     def set_control(self, channel: int, control: int) -> None:
-        """Set control register for timer channel"""
+        """Set control register for timer channel.
+
+        On the GBA, when bit 7 transitions 0->1 (enable), the timer count is
+        reset to the reload value. This matches hardware behavior: re-enabling
+        a timer always restarts it from the reload value.
+        """
         if not 0 <= channel <= 3:
             raise ValueError(f"Invalid channel: {channel}")
-        self._channels[channel].control = control & 0xFF
+        ch = self._channels[channel]
+        was_enabled = bool(ch.control & 0x80)
+        ch.control = control & 0xFF
+        if not was_enabled and ch.enabled:
+            ch.count = ch.reload
+            self._cycle_subcount[channel] = 0
 
     def set_reload(self, channel: int, reload: int) -> None:
         """Set reload value for timer channel"""

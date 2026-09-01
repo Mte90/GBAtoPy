@@ -18,336 +18,403 @@ parallel = 4
 name = "arm"
 rom_path = "arm.gba"
 test_type = "PassFailScreen"
+pass_status = "pass"
 
 [[tests]]
 name = "ARM_Any"
 rom_path = "ARM_Any.gba"
 test_type = "EwramDump"
+pass_status = "pass"
 
 [[tests]]
 name = "ARM_DataProcessing"
 rom_path = "ARM_DataProcessing.gba"
 test_type = "EwramDump"
+pass_status = "pass"
 
 [[tests]]
 name = "FuzzARM"
 rom_path = "FuzzARM.gba"
 test_type = "EwramDump"
+pass_status = "pass"
 
 [[tests]]
 name = "THUMB_Any"
 rom_path = "THUMB_Any.gba"
 test_type = "EwramDump"
+pass_status = "pass"
 
 [[tests]]
 name = "THUMB_DataProcessing"
 rom_path = "THUMB_DataProcessing.gba"
 test_type = "EwramDump"
+pass_status = "pass"
 
 [[tests]]
 name = "armwrestler"
 rom_path = "armwrestler.gba"
 test_type = "PassFailScreen"
+pass_status = "pass"
 
 [[tests]]
 name = "armwrestler-gba-fixed"
 rom_path = "armwrestler-gba-fixed.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "basic-timing"
 rom_path = "basic-timing.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "bgpd"
 rom_path = "bgpd.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "bgx"
 rom_path = "bgx.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "bios"
 rom_path = "bios.gba"
 test_type = "PassFailScreen"
+pass_status = "pass"
 
 [[tests]]
 name = "burst-into-tears"
 rom_path = "burst-into-tears.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "cancel-irq-ie"
 rom_path = "cancel-irq-ie.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "cancel-irq-if"
 rom_path = "cancel-irq-if.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "cancel-irq-ime"
 rom_path = "cancel-irq-ime.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "cond_invalid"
 rom_path = "cond_invalid.gba"
 test_type = "PassFailScreen"
+pass_status = "pass"
 
 [[tests]]
 name = "dispcnt-latch"
 rom_path = "dispcnt-latch.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "dma_priority"
 rom_path = "dma_priority.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "enhancedcontrolchecker"
 rom_path = "enhancedcontrolchecker.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "exact-timing"
 rom_path = "exact-timing.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "flash128"
 rom_path = "flash128.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "flash64"
 rom_path = "flash64.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "force-nseq-access"
 rom_path = "force-nseq-access.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "greenswap"
 rom_path = "greenswap.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "haltcnt"
 rom_path = "haltcnt.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "helloAudio"
 rom_path = "helloAudio.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "hello"
 rom_path = "hello.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "hello_world"
 rom_path = "hello_world.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "helloWorld"
 rom_path = "helloWorld.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "if_ack"
 rom_path = "if_ack.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "irq-delay"
 rom_path = "irq-delay.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "irq_delay"
 rom_path = "irq_delay.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "isr"
 rom_path = "isr.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "joypad"
 rom_path = "joypad.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "latch"
 rom_path = "latch.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "line_timing"
 rom_path = "line_timing.gba"
 test_type = "Smoke"
+pass_status = "fail"
 
 [[tests]]
 name = "lyc_midline"
 rom_path = "lyc_midline.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "memory"
 rom_path = "memory.gba"
 test_type = "PassFailScreen"
+pass_status = "pass"
 
 [[tests]]
 name = "mode2"
 rom_path = "mode2.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "mode3"
 rom_path = "mode3.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "mode4"
 rom_path = "mode4.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "nes"
 rom_path = "nes.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "none"
 rom_path = "none.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "pcmxx"
 rom_path = "pcmxx.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "ram-access-timing"
 rom_path = "ram-access-timing.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "rates"
 rom_path = "rates.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "redline"
 rom_path = "redline.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "reload"
 rom_path = "reload.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "retAddr"
 rom_path = "retAddr.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "rtc-demo"
 rom_path = "rtc-demo.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "shades"
 rom_path = "shades.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "song"
 rom_path = "song.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "sprite-hmosaic"
 rom_path = "sprite-hmosaic.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "sram"
 rom_path = "sram.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "start-delay"
 rom_path = "start-delay.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "start-stop"
 rom_path = "start-stop.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "status-irq-dma"
 rom_path = "status-irq-dma.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "stripes"
 rom_path = "stripes.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "test"
 rom_path = "test.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "thumb"
 rom_path = "thumb.gba"
 test_type = "PassFailScreen"
+pass_status = "pass"
 
 [[tests]]
 name = "timer_change"
 rom_path = "timer_change.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "unsafe"
 rom_path = "unsafe.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "vram-mirror"
 rom_path = "vram-mirror.gba"
 test_type = "ScreenshotMgba"
+pass_status = "pass"
 
 [[tests]]
 name = "window_midframe"
 rom_path = "window_midframe.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "128kb-boundary"
 rom_path = "128kb-boundary.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "gba-frame-test"
 rom_path = "gba-frame-test.gba"
 test_type = "Smoke"
+pass_status = "pass"
 
 [[tests]]
 name = "gbarcade_gbarcade_v0.1.4"
@@ -367,7 +434,7 @@ source = "https://github.com/mick-schroeder/gba-cascade7/releases/tag/v1.0.0"
 category = "sprite"
 features = ["sprites", "mode0", "audio"]
 license = "MIT"
-pass_status = "new"
+pass_status = "fail"
 
 [[tests]]
 name = "proposal_proposal-demo"
@@ -377,7 +444,7 @@ source = "https://github.com/JoeMatt/Proposal/releases/tag/v1.0.0"
 category = "sprite"
 features = ["sprites", "mode0", "audio"]
 license = "MIT"
-pass_status = "new"
+pass_status = "pass"
 
 [[tests]]
 name = "blindjump_BlindJump"
@@ -387,7 +454,7 @@ source = "https://github.com/evanbowman/blind-jump-portable"
 category = "sprite"
 features = ["sprites", "mode0", "audio", "link"]
 license = "GPL-3.0"
-pass_status = "new"
+pass_status = "fail"
 
 [[tests]]
 name = "bpcore_BPCoreEngine"
@@ -407,7 +474,7 @@ source = "manual"
 category = "sprite"
 features = ["sprites", "mode0", "audio"]
 license = "unknown"
-pass_status = "new"
+pass_status = "fail"
 
 [[tests]]
 name = "FlashSpeedTestMB"
@@ -417,7 +484,7 @@ source = "https://github.com/CasualPokePlayer/gba-flash-speed-test"
 category = "flash"
 features = ["flash", "sram"]
 license = "unknown"
-pass_status = "new"
+pass_status = "pass"
 
 [[tests]]
 name = "FlashSpeedTestROM"
@@ -427,7 +494,7 @@ source = "https://github.com/CasualPokePlayer/gba-flash-speed-test"
 category = "flash"
 features = ["flash", "sram"]
 license = "unknown"
-pass_status = "new"
+pass_status = "pass"
 
 [[tests]]
 name = "Skyland"
@@ -437,4 +504,4 @@ source = "https://github.com/evanbowman/skyland-beta"
 category = "sprite"
 features = ["sprites", "mode0", "audio"]
 license = "MPL-2.0"
-pass_status = "new"
+pass_status = "fail"

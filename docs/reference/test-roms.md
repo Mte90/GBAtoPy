@@ -7,9 +7,10 @@ This document catalogs all **76 test ROMs** used by GBAtoPy for verification and
 - F45 (SWI halt + IRQ IF clear): helloAudio PASS (0% diff)
 - F46 (MUL decode + CRT0): rates PASS (0% diff)
 - F47 (song BFS data stop + IME enable): song PASS (1.12% diff)
-- F48 (sprite VRAM base 0x06010000 + parse_oam X bits + correct _render_sprites): sprite-hmosaic PASS (27.02% diff)
+- F48 (sprite VRAM base 0x06010000 + parse_oam X bits + correct _render_sprites): sprite-hmosaic PASS (16.2% diff)
+- F27/C10 (BG mosaic Mode 2-5): _apply_mosaic() added to Mode 2 (BG2+BG3), Mode 3, Mode 4, Mode 5 renderers
 
-Remaining FAIL: line_timing (37.08% diff — HBlank IRQ timing). Zero SKIP ROMs (F49 complete).
+Remaining FAIL: 4 ROMs (cascade7, fantasy-knight, Skyland, blindjump). Zero SKIP ROMs (F49 complete). line_timing now PASS (F14b secondary fix: codegen SWI halt block-break).
 
 **Note (2026-08-05)**: Phase 10c regression complete after F3 fix (disassembler I=1 bug) and golden re-capture. 14 INCONCLUSIVE ROMs re-verified and now PASS. Phase 11 in progress: targeting 16 FAIL ROMs with F5 (CFG literal pool), F7 (IWRAM dispatch), F10 (Thumb routing) fixes.
 
@@ -27,8 +28,8 @@ Remaining FAIL: line_timing (37.08% diff — HBlank IRQ timing). Zero SKIP ROMs 
 
 | Status | Count | % |
 |--------|-------|---|
-| ✅ PASS | 69 | 90.8% |
-| ❌ FAIL | 5 | 6.6% |
+| ✅ PASS | 70 | 92.1% |
+| ❌ FAIL | 4 | 5.3% |
 | ⏰ SKIP | 0 | 0.0% |
 | 🆕 NEW | 2 | 2.6% |
 
@@ -36,15 +37,14 @@ Remaining FAIL: line_timing (37.08% diff — HBlank IRQ timing). Zero SKIP ROMs 
 
 **Note (2026-08-05):** Phase 10c regression complete after F3 fix and golden re-capture. 58 ROMs pass visual regression (43 from Phase 10b + 14 from INCONCLUSIVE group + vram-mirror re-verified). 15 ROMs fail due to: timing-sensitive behavior, unimplemented IRQ handling, missing features, or unknown rendering bugs. 4 ROMs skipped (rates, song, enhancedcontrolchecker, test).
 
-### FAIL ROMs (5 - >=30% diff or timeout)
+### FAIL ROMs (4 - >=30% diff or timeout)
 
 | ROM | Diff % | Root Cause | Notes |
 |-----|--------|------------|-------|
-| line_timing | 37.08% | HBlank IRQ timing | Transpiled output has more non-black pixels than golden — HBlank IRQ fires at wrong scanline, shifting timing-sensitive pattern |
 | cascade7 | N/A | Indirect BLX Rn | Rendering code never called — indirect branch via register not implemented in codegen |
-| fantasy-knight | N/A | IRQ poll loop | Stuck in IRQ handler poll loop — missing IRQ delivery or handler exit |
+| fantasy-knight | 99.7% | Butano render callback cleared by IWRAM context save | 7 instruction-decoding bugs fixed (BLX Rm Thumb NOP, LDMIA writeback, ARM BLX Rm LR, CPSR thumb_mode sync, VBlankIntrWait ISR skip). SP leak crash resolved — stack stable at 0x03007978. VBlank ISR runs in ARM mode, dispatches Butano callback. Callback registered (0x08014AC5) then cleared to 0 by IWRAM STMIA context save at 0x03001870 (R8=0 overwrites callback pointer at 0x030026D8). Callback runs once, then never again. 406/38400 pixels vs golden. |
 | Skyland | N/A | Codegen guard hit | 79K blocks — hits codegen guard for unimplemented pattern |
-| blindjump_BlindJump | N/A | Runtime OOM | 50MB output — transpiled size exceeds memory budget at runtime |
+| blindjump_BlindJump | N/A | Black-screen codegen bug | NOT OOM (15.8MB ROM, 27.8MB output, peak RSS 675MB). Real bug: codegen correctness produces black screen. Size tracked as F64. |
 
 **Previously FAIL ROMs now PASS (Phase 15, 2026-08-12):**
 - helloAudio: SWI halt + IRQ IF clear fix → PASS (0% diff)
@@ -100,7 +100,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 |-----|----------|----------|
 | **dma_priority.gba** | Runs without hang, black output | 0.0% transpiled content vs 14.1% golden. PASS (<30% threshold) but no visible graphics. Fallback interpreter mode-switch bug fixed (2026-08-01). |
 | **isr.gba** | Runs without hang, black output | 0.0% transpiled content vs 5.08% golden. PASS (<30% threshold) but no visible graphics. Fallback interpreter mode-switch bug fixed (2026-08-01). |
-| **line_timing.gba** | ❌ FAIL — 37.08% diff in Phase 14 regression (2026-08-12). Transpiled output has more non-black pixels than golden — HBlank IRQ fires at wrong scanline, shifting timing-sensitive pattern. Previously marked PASS in Phase 10c with stale golden. |
+| **line_timing.gba** | ✅ PASS — 26.89% diff (2026-09-01). F14b fix: codegen SWI halt block-break — transpiled blocks now emit `if _cpu_halted: return` after `swi_handler(N)`, preventing the rest of the block from executing after a HALT SWI before the main loop can detect the halt. Timer value reads non-zero (0x408 vs golden 0x3F4, 20-cycle offset due to per-instruction timer stepping granularity). |
 | **lyc_midline.gba** | Runs without hang, black output | 0.0% transpiled content vs 5.86% golden. PASS (<30% threshold) but no visible graphics. Fallback interpreter mode-switch bug fixed (2026-08-01). |
 | **pcmxx.gba** | Runs without hang, some content | 11.26% transpiled content vs 3.95% golden. PASS (<30% threshold). APU `read_register` stub added (2026-08-01). |
 | **sprite-hmosaic.gba** | Mode 0 (OBJ mosaic) | ✅ PASS (27.02% diff vs mGBA golden, 2026-08-12). F48 fix: three root-cause bugs — (1) sprite tile data read from `0x06000000` (BG char base) instead of `0x06010000` (OBJ char base); (2) `parse_oam` extracted X from bits 8-16 instead of bits 0-8 per GBATEK; (3) live `_render_sprites` was a broken rewrite missing SPRITE_SIZES, 2D OBJ VRAM mapping, mosaic, and affine handling — correct earlier definition reactivated. |
@@ -121,7 +121,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 || Category | Count | ROMs | Status |
 |----------|-------|------|------|--------|
 | CPU-only | 16 | arm.gba ✅, thumb.gba ✅, bios.gba ✅, memory.gba ✅, nes.gba ✅, unsafe.gba ✅, armwrestler.gba ✅, armwrestler-gba-fixed.gba ✅, ARM_Any.gba ✅, ARM_DataProcessing.gba ✅, THUMB_Any.gba ✅, THUMB_DataProcessing.gba ✅, FuzzARM.gba ✅, cond_invalid.gba ✅, retAddr.gba ✅, basic-timing.gba ✅ | 16✅ |
-| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ✅, line_timing.gba ❌, lyc_midline.gba ✅, mode2.gba ✅, greenswap.gba ✅, bgpd.gba ✅, bgx.gba ✅, sprite-hmosaic.gba ✅, vram-mirror.gba ✅ | 14✅, 1❌ |
+| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ✅, line_timing.gba ✅, lyc_midline.gba ✅, mode2.gba ✅, greenswap.gba ✅, bgpd.gba ✅, bgx.gba ✅, sprite-hmosaic.gba ✅, vram-mirror.gba ✅ | 15✅ |
 | IRQ | 9 | isr.gba ✅, if_ack.gba ✅, irq-delay.gba ✅, irq_delay.gba ✅, joypad.gba ✅, cancel-irq-ie.gba ✅, cancel-irq-if.gba ✅, cancel-irq-ime.gba ✅, status-irq-dma.gba ✅ | 9✅ |
 | DMA | 8 | dma_priority.gba ✅, burst-into-tears.gba ✅, force-nseq-access.gba ✅, latch.gba ✅, start-stop.gba ✅, reload.gba ✅, dispcnt-latch.gba ✅, window_midframe.gba ✅ | 8✅ |
 | Timer | 2 | timer_change.gba ✅, haltcnt.gba ✅ | 2✅ |
@@ -144,6 +144,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - **F42** (Mode 5 rendering): `_render_mode5` in `ppu.py` now iterates all 160 rows (was 128) and fills pixels outside the 160×128 bitmap region with backdrop color (`palette[0]`). Regression: `stripes`, `mode3`, `mode4` all PASS at 0% diff.
 - **F14** (N/S-cycle timing): PERMANENTLY DEFERRED (KILL) — oracle verdict 92% confidence; violates all 5 runtime invariants. See roadmap.md §6.9.
 - **F40** (Link cable): DEFERRED — no ROM tests real transfer. Runtime exposes stub `LinkCable` class. See roadmap.md §6.10.
+- **F43** (write_u32 MMIO truncation): `memory.py` `write_u32` was masking values with `0xFFFF` for MMIO addresses, stripping the upper 16 bits of 32-bit writes. This caused DMA control words (e.g. `0xB6000000` to DMA1CNT at `0x040000C4`) to lose the enable bit (bit 15). Fixed: 32-bit MMIO writes now split into two 16-bit writes (lower→base, upper→base+2), matching GBA hardware. Verified: DMA1/DMA2 control registers now correctly receive `0xB600` (enable + sound FIFO DMA). fantasy-knight still fails (99.7% diff) — root cause is missing HBlank/VCount IRQ delivery (memory #46), not DMA.
 
 **Note on bgpd.gba**: ✅ FIXED (re-verified 2026-08-08). 0.0% diff vs mGBA golden at frame 60. Three root causes: (1) HBlank DMA burst behavior — `hblank_fire` in `dma.py` must call `_do_transfer` (full-count burst) not `_do_transfer_single` (one per HBlank), matching mGBA's `GBADMAService` which completes all pending transfers on the first HBlank trigger. (2) Mode 3 affine rendering — `_render_mode3` in `ppu.py` must read per-scanline BG2 affine snapshots (like `_render_mode4`), not assume identity matrix; mGBA applies BG2 affine registers in Mode 3, updated via HBlank DMA to BG2PD. (3) VBlank gating — `step_scanline` in `ppu.py` must gate `hblank_fire()` to `vcount < 160` (visible scanlines only), matching mGBA `video.c:217`; firing during VBlank consumed the next frame's source values and shifted the gradient by ~50 scanlines.
 
@@ -460,7 +461,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Scanline timing
 - Halt behavior during VBlank
 **Expected Output**: Text output showing timing test results  
-**Transpiler Blockers**: PPU timing partial
+**Transpiler Blockers**: None (timing within pass threshold)
 
 ### lyc_midline.gba
 **Suite**: gba_tests  
@@ -990,7 +991,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 | PPU rendering | shades.gba, stripes.gba, helloWorld.gba, hello_world.gba, bgx.gba | ✅ Verified (5 ROMs, all pixel-match mGBA golden) |
 | PPU rendering | hello.gba | ⚠️ Partial (runs, text visible at frame=1; no golden comparison; BXEQ fix 2026-07-23) |
 | PPU rendering | other ROMs | ⚠️ Unverified (32 goldens exist, comparison not wired) |
-| PPU timing | line_timing.gba, lyc_midline.gba | ⚠️ Partial |
+| PPU timing | line_timing.gba, lyc_midline.gba | ✅ line_timing PASS (26.89% diff, F14b fix); lyc_midline PASS |
 | IRQ handling | isr.gba, if_ack.gba, irq_delay | ⚠️ Implemented, unverified against goldens |
 | DMA transfers | dma_priority.gba, window_midframe.pcmxx, bgx.gba | ⚠️ Implemented (4 channels), HBlank DMA verified via bgx (2026-07-27) |
 | Timer | timer_change.gba | ⚠️ Inaccurate |
@@ -1038,7 +1039,7 @@ All 66 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | irq_delay.gba | 0 | 2225 | ✅ (6.26% diff, PASS) |
 | isr.gba | 0 | 1557 | ⚠️ (runs without hang, black output — fallback interpreter mode-switch fix, 2026-08-01) |
 | joypad.gba | 0 | 1567 | ✅ (3.48% diff, PASS) |
-| line_timing.gba | 0 | 1374 | ⚠️ (runs without hang, black output — fallback interpreter mode-switch fix, 2026-08-01) |
+| line_timing.gba | 0 | 1374 | ✅ (26.89% diff, PASS — F14b codegen SWI halt block-break fix, 2026-09-01) |
 | lyc_midline.gba | 0 | 1433 | ⚠️ (runs without hang, black output — fallback interpreter mode-switch fix, 2026-08-01) |
 | memory.gba | 0 | 1345 | ✅ (1.06% diff, PASS) |
 | mode2.gba | 0 | 2452 | ✅ (20.0% diff, PASS — dispatch-table merge bug fixed, timing-dependent HBlank DMA pattern) |

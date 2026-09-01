@@ -23,7 +23,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ROMS_DIR = PROJECT_ROOT / "test_roms" / "roms"
 GOLDEN_DIR = PROJECT_ROOT / "scripts" / "screenshot" / "golden"
-LUA_SCRIPT = PROJECT_ROOT / "scripts" / "screenshot" / "golden_capture.lua"
+LUA_SCRIPT = PROJECT_ROOT / "scripts" / "screenshot" / "screenshot.lua"
 MGBA_BIN = PROJECT_ROOT / "mgba" / "build" / "sdl" / "mgba"
 
 

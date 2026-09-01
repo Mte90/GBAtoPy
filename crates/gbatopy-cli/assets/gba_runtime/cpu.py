@@ -634,7 +634,20 @@ class CPU:
     def _arm_swi(self, opcode: int) -> bool:
         """Execute ARM SWI instruction"""
         swi_num = (opcode >> 16) & 0xFF
-        if swi_num in (0x02, 0x03, 0x04):
+        if swi_num in (0x02, 0x03):
+            self._halted = True
+            self._halt_reason = "any"
+        elif swi_num == 0x04:
+            _wait_flag = self.registers[0] & 0xFF
+            _ic = getattr(getattr(self, 'memory', None), '_interrupts', None)
+            if _wait_flag & 0x01 and _ic is not None:
+                _flag_mask = self.registers[1] & 0xFFFF
+                _pending = _ic.if_reg & _flag_mask
+                if _pending:
+                    _ic.if_reg &= ~_pending
+                    self.registers[0] = 1
+                    self.cpsr |= (1 << 30)
+                    return True
             self._halted = True
             self._halt_reason = "any"
         elif swi_num == 0x05:

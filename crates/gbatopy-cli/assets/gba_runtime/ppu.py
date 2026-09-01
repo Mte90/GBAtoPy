@@ -1663,20 +1663,35 @@ class PPU:
             if self.vblank:
                 dma.vblank_fire()
 
+        # HBlank IRQ is fired separately via fire_hblank_irq() AFTER
+        # timer.step() in the main loop, so timer-driven code (e.g.
+        # line_timing) sees the correct elapsed count when it wakes from HALT.
         irq = self.memory._interrupts
         if irq is not None:
             if self.vcount == self.screen_height and (dispstat & 0x0008):
                 irq.vblank_irq()
-            if dispstat & 0x0010:
-                irq.hblank_irq()
             if (dispstat & 0x0004) and (dispstat & 0x0020):
                 irq.vcounter_irq()
-
         if self.vblank:
             import sys
             mod = sys.modules.get("generated_rom")
             if mod is not None:
                 mod.z = 1
+
+    def fire_hblank_irq(self):
+        """Fire the HBlank IRQ for the scanline just completed by step_scanline.
+
+        Called from the main loop AFTER timer.step() so that timer-driven
+        HBlank handlers (line_timing) read a timer value that reflects the
+        elapsed instruction budget, not zero.
+        """
+        irq = self.memory._interrupts
+        if irq is None:
+            return
+        io = self.memory.io
+        dispstat = io[4] | (io[5] << 8)
+        if dispstat & 0x0010:
+            irq.hblank_irq()
 
 
     def render_frame(self):
@@ -2166,8 +2181,9 @@ class PPU:
 
                 # Render affine BG2
                 if bg_enabled[2] and (layer_enable & 0x04):
-                    x_float = float(x)
-                    y_float = float(y)
+                    mx, my = self._apply_mosaic(x, y, is_obj=False)
+                    x_float = float(mx)
+                    y_float = float(my)
                     
                     source_x = sx_bg2 + (x_float * dx_bg2) + (y_float * dmx_bg2)
                     source_y = sy_bg2 + (x_float * dy_bg2) + (y_float * dmy_bg2)
@@ -2228,14 +2244,14 @@ class PPU:
                                         palette_num = (tilemap_entry >> 12) & 0x0F
                                         best_color = palette_colors[palette_num * 16 + color_idx]
                                     best_bg = 2
-                        except:
-                            # Error reading tilemap, skip this pixel
+                        except (IndexError, KeyError, ValueError):
                             pass
 
                 # Render affine BG3
                 if bg_enabled[3] and (layer_enable & 0x08):
-                    x_float = float(x)
-                    y_float = float(y)
+                    mx, my = self._apply_mosaic(x, y, is_obj=False)
+                    x_float = float(mx)
+                    y_float = float(my)
                     
                     source_x = sx_bg3 + (x_float * dx_bg3) + (y_float * dmx_bg3)
                     source_y = sy_bg3 + (x_float * dy_bg3) + (y_float * dmy_bg3)
@@ -2295,8 +2311,7 @@ class PPU:
                                         palette_num = (tilemap_entry >> 12) & 0x0F
                                         best_color = palette_colors[palette_num * 16 + color_idx]
                                     best_bg = 3
-                        except:
-                            # Error reading tilemap, skip this pixel
+                        except (IndexError, KeyError, ValueError):
                             pass
 
                 if best_color is not None:
@@ -2401,8 +2416,13 @@ class PPU:
                         row_lo[px] = 0
                         continue
                 
-                tx = x >> 8
-                ty = y_coord >> 8
+                if self.mosaic_enabled:
+                    mx, my = self._apply_mosaic(px, y, is_obj=False)
+                    tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
+                    ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
+                else:
+                    tx = x >> 8
+                    ty = y_coord >> 8
                 if overflow:
                     tx %= sw
                     ty %= sh
@@ -2482,8 +2502,13 @@ class PPU:
             for px in range(sw):
                 x += dx
                 y_coord += dy
-                tx = x >> 8
-                ty = y_coord >> 8
+                if self.mosaic_enabled:
+                    mx, my = self._apply_mosaic(px, y, is_obj=False)
+                    tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
+                    ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
+                else:
+                    tx = x >> 8
+                    ty = y_coord >> 8
                 if overflow:
                     tx %= sw
                     ty %= sh
@@ -2583,8 +2608,13 @@ class PPU:
                         row_lo[px] = 0
                         continue
 
-                tx = x >> 8
-                ty = y_coord >> 8
+                if self.mosaic_enabled:
+                    mx, my = self._apply_mosaic(px, y, is_obj=False)
+                    tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
+                    ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
+                else:
+                    tx = x >> 8
+                    ty = y_coord >> 8
                 if overflow:
                     tx %= bw
                     ty %= bh

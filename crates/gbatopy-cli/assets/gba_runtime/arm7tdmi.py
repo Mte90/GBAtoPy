@@ -124,6 +124,8 @@ class ARM7TDMI:
         self.cycles = 0
         self._halted = False
         self._halt_reason = None
+        self._swi_lr = None
+        self._swi_caller_pc = None
 
         # Banked SP/LR per mode (FIQ also banks r8-r12)
         # User (0x10) and System (0x1F) share the same register bank
@@ -332,11 +334,10 @@ class ARM7TDMI:
 
     @jit_compile
     def step_thumb(self) -> int:
-        pc = self.pc
+        pc = self.registers[15] & 0xFFFFFFFE
         instr = self.memory.read_u16(pc)
         return self.execute_thumb(instr)
 
-    @jit_compile
     def execute_arm(self, instr: int) -> int:
         opcode = (instr >> 21) & 0xF
         rn = (instr >> 16) & 0xF
@@ -344,16 +345,33 @@ class ARM7TDMI:
         rm = instr & 0xF
 
         if (instr & 0x0FFFFFF0) == 0x012FFF10:
-            return self.exec_bx(instr)
+            rm = instr & 0xF
+            target = self._operand(rm)
+            self.thumb_mode = (target & 1) != 0
+            self.registers[15] = target & 0xFFFFFFFE
+            return 3
+
+        if (instr & 0x0FFFFFF0) == 0x012FFF30:
+            rm = instr & 0xF
+            target = self._operand(rm)
+            self.registers[14] = (self.registers[15] + 4) & 0xFFFFFFFF
+            self.thumb_mode = (target & 1) != 0
+            self.registers[15] = target & 0xFFFFFFFE
+            return 3
 
         if (instr & 0x0C000000) == 0:
             is_immediate = (instr >> 25) & 1
             if not is_immediate:
                 op_lo = instr & 0xF0
                 if op_lo == 0x90:
+                    if (instr >> 24) & 1:
+                        return self.exec_swp(instr)
                     return self.exec_mul(instr)
                 if op_lo == 0xB0 or op_lo == 0xD0 or op_lo == 0xF0:
                     return self.exec_extra_load_store(instr)
+            op2 = (instr >> 20) & 0xFF
+            if (op2 in (0x10, 0x14) and rn == 15) or (op2 in (0x12, 0x16, 0x32, 0x36) and rd == 15):
+                return self._exec_status_transfer(instr, rd)
             return self.exec_data_processing(instr)
 
         if (instr & 0xC000000) == 0x4000000:
@@ -368,7 +386,12 @@ class ARM7TDMI:
         if (instr & 0xF000000) == 0xF000000:
             return self.exec_swi(instr)
 
-        return 1
+        raise NotImplementedError(
+            'Unhandled ARM instruction at PC={:#010x}: {:#010x}'.format(
+                self.registers[15] & 0xFFFFFFFC, instr
+            )
+        )
+
 
     def _exec_status_transfer(self, instr: int, rd: int) -> int:
         """Execute MSR (write PSR) or MRS (read PSR).
@@ -449,8 +472,7 @@ class ARM7TDMI:
             self.spsr[mode_idx] = new_psr & 0xFFFFFFFF
         else:
             self.cpsr = new_psr & 0xFFFFFFFF
-            # Apply mode and Thumb state from control field
-            self.mode = new_psr & 0x1F
+            self._switch_mode(new_psr & 0x1F)
             self.thumb_mode = bool((new_psr >> 5) & 1)
 
         self.registers[15] = (self.registers[15] + 4) & 0xFFFFFFFF
@@ -484,36 +506,90 @@ class ARM7TDMI:
             operand2 = imm_val
         else:
             shift_type = (instr >> 5) & 3
-            shift_imm = (instr >> 7) & 0x1F
             operand2 = self._operand(rm)
-            if shift_imm:
-                if shift_type == 0:  # LSL
-                    shifter_carry = (operand2 >> (32 - shift_imm)) & 1
-                    operand2 = (operand2 << shift_imm) & 0xFFFFFFFF
-                elif shift_type == 1:  # LSR
-                    shifter_carry = (operand2 >> (shift_imm - 1)) & 1
-                    operand2 = operand2 >> shift_imm
-                elif shift_type == 2:  # ASR
-                    shifter_carry = (operand2 >> (shift_imm - 1)) & 1
-                    operand2 = (operand2 >> shift_imm) | (
-                        (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm))
-                    )
-                elif shift_type == 3:  # ROR
-                    shifter_carry = (operand2 >> (shift_imm - 1)) & 1
-                    operand2 = (
-                        (operand2 >> shift_imm) | (operand2 << (32 - shift_imm))
-                    ) & 0xFFFFFFFF
+            if (instr >> 4) & 1:  # register-specified shift
+                rs = (instr >> 8) & 0xF
+                shift_amount = self._operand(rs) & 0xFF
+                if shift_amount == 0:
+                    pass
+                elif shift_amount < 32:
+                    if shift_type == 0:  # LSL
+                        shifter_carry = (operand2 >> (32 - shift_amount)) & 1
+                        operand2 = (operand2 << shift_amount) & 0xFFFFFFFF
+                    elif shift_type == 1:  # LSR
+                        shifter_carry = (operand2 >> (shift_amount - 1)) & 1
+                        operand2 = operand2 >> shift_amount
+                    elif shift_type == 2:  # ASR
+                        shifter_carry = (operand2 >> (shift_amount - 1)) & 1
+                        operand2 = (operand2 >> shift_amount) | (
+                            (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_amount))
+                        )
+                    else:  # ROR
+                        shifter_carry = (operand2 >> (shift_amount - 1)) & 1
+                        operand2 = (
+                            (operand2 >> shift_amount) | (operand2 << (32 - shift_amount))
+                        ) & 0xFFFFFFFF
+                elif shift_amount == 32:
+                    if shift_type == 0:  # LSL
+                        shifter_carry = operand2 & 1
+                        operand2 = 0
+                    elif shift_type == 1:  # LSR
+                        shifter_carry = (operand2 >> 31) & 1
+                        operand2 = 0
+                    elif shift_type == 2:  # ASR
+                        shifter_carry = (operand2 >> 31) & 1
+                        operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
+                    else:  # ROR by 32 = no change, carry = bit 31
+                        shifter_carry = (operand2 >> 31) & 1
+                else:  # shift_amount > 32
+                    if shift_type == 0:  # LSL
+                        shifter_carry = 0
+                        operand2 = 0
+                    elif shift_type == 1:  # LSR
+                        shifter_carry = 0
+                        operand2 = 0
+                    elif shift_type == 2:  # ASR
+                        shifter_carry = (operand2 >> 31) & 1
+                        operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
+                    else:  # ROR
+                        eff = shift_amount % 32
+                        if eff == 0:
+                            shifter_carry = (operand2 >> 31) & 1
+                        else:
+                            shifter_carry = (operand2 >> (eff - 1)) & 1
+                            operand2 = (
+                                (operand2 >> eff) | (operand2 << (32 - eff))
+                            ) & 0xFFFFFFFF
             else:
-                if shift_type == 1:  # LSR #0 means LSR #32
-                    shifter_carry = (operand2 >> 31) & 1
-                    operand2 = 0
-                elif shift_type == 2:  # ASR #0 means ASR #32
-                    shifter_carry = (operand2 >> 31) & 1
-                    operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
-                elif shift_type == 3:  # ROR #0 means RRX
-                    carry = (self.cpsr >> 29) & 1
-                    shifter_carry = operand2 & 1
-                    operand2 = ((carry << 31) | (operand2 >> 1)) & 0xFFFFFFFF
+                shift_imm = (instr >> 7) & 0x1F
+                if shift_imm:
+                    if shift_type == 0:  # LSL
+                        shifter_carry = (operand2 >> (32 - shift_imm)) & 1
+                        operand2 = (operand2 << shift_imm) & 0xFFFFFFFF
+                    elif shift_type == 1:  # LSR
+                        shifter_carry = (operand2 >> (shift_imm - 1)) & 1
+                        operand2 = operand2 >> shift_imm
+                    elif shift_type == 2:  # ASR
+                        shifter_carry = (operand2 >> (shift_imm - 1)) & 1
+                        operand2 = (operand2 >> shift_imm) | (
+                            (operand2 & 0x80000000) * (0xFFFFFFFF >> (32 - shift_imm))
+                        )
+                    elif shift_type == 3:  # ROR
+                        shifter_carry = (operand2 >> (shift_imm - 1)) & 1
+                        operand2 = (
+                            (operand2 >> shift_imm) | (operand2 << (32 - shift_imm))
+                        ) & 0xFFFFFFFF
+                else:
+                    if shift_type == 1:  # LSR #0 means LSR #32
+                        shifter_carry = (operand2 >> 31) & 1
+                        operand2 = 0
+                    elif shift_type == 2:  # ASR #0 means ASR #32
+                        shifter_carry = (operand2 >> 31) & 1
+                        operand2 = 0xFFFFFFFF if (operand2 & 0x80000000) else 0
+                    elif shift_type == 3:  # ROR #0 means RRX
+                        carry = (self.cpsr >> 29) & 1
+                        shifter_carry = operand2 & 1
+                        operand2 = ((carry << 31) | (operand2 >> 1)) & 0xFFFFFFFF
 
         operand1 = self._operand(rn)
 
@@ -606,6 +682,10 @@ class ARM7TDMI:
         elif update_flags:
             # SUBS/MOVS PC, Rm — exception return: restore CPSR from SPSR.
             # Only privileged modes have an SPSR; User/System mode leaves CPSR unchanged.
+            import sys as _sys
+            _fc = getattr(_sys.modules.get('__main__', None), 'fc', -1)
+            _mode_before = self.mode
+            _sp_before = self.registers[13]
             if self.mode in _MODES_WITH_SPSR:
                 _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
                 if 0 <= _idx < len(self.spsr):
@@ -614,6 +694,7 @@ class ARM7TDMI:
                     self._switch_mode(new_mode)
                     self.cpsr = new_cpsr
                     self.mode = new_mode
+                    self.thumb_mode = (new_cpsr >> 5) & 1
 
         return 1
 
@@ -816,6 +897,10 @@ class ARM7TDMI:
             self.registers[15] += 4
         elif s_bit and self.mode in _MODES_WITH_SPSR:
             # LDM ... PC^: exception return — restore CPSR from SPSR.
+            import sys as _sys
+            _fc = getattr(_sys.modules.get('__main__', None), 'fc', -1)
+            _mode_before = self.mode
+            _sp_before = self.registers[13]
             _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
             if 0 <= _idx < len(self.spsr):
                 new_cpsr = self.spsr[_idx] & 0xFFFFFFFF
@@ -823,6 +908,7 @@ class ARM7TDMI:
                 self._switch_mode(new_mode)
                 self.cpsr = new_cpsr
                 self.mode = new_mode
+                self.thumb_mode = (new_cpsr >> 5) & 1
         return 2 + (n_regs * 2)
 
     @jit_compile
@@ -830,8 +916,61 @@ class ARM7TDMI:
         rm = instr & 0xF
         rs = (instr >> 8) & 0xF
         rd = (instr >> 16) & 0xF
-        result = (self._operand(rm) * self._operand(rs)) & 0xFFFFFFFF
-        self.write_register(rd, result)
+        rn = (instr >> 12) & 0xF
+        is_long = (instr >> 23) & 1
+        accumulate = (instr >> 21) & 1
+        s_bit = (instr >> 20) & 1
+        a = self._operand(rm)
+        b = self._operand(rs)
+
+        if is_long:
+            rd_lo = (instr >> 12) & 0xF
+            rd_hi = (instr >> 16) & 0xF
+            is_signed = (instr >> 22) & 1
+            if is_signed:
+                sa = a if a < 0x80000000 else a - 0x100000000
+                sb = b if b < 0x80000000 else b - 0x100000000
+                result = sa * sb
+            else:
+                result = a * b
+            result &= 0xFFFFFFFFFFFFFFFF
+            if accumulate:
+                acc = (self._operand(rd_hi) << 32) | self._operand(rd_lo)
+                result = (result + acc) & 0xFFFFFFFFFFFFFFFF
+            self.write_register(rd_lo, result & 0xFFFFFFFF)
+            self.write_register(rd_hi, (result >> 32) & 0xFFFFFFFF)
+            if s_bit:
+                n = (result >> 63) & 1
+                z = 1 if result == 0 else 0
+                self.cpsr = (self.cpsr & 0x3FFFFFFF) | (n << 31) | (z << 30)
+        else:
+            result = (a * b) & 0xFFFFFFFF
+            if accumulate:
+                result = (result + self._operand(rn)) & 0xFFFFFFFF
+            self.write_register(rd, result)
+            if s_bit:
+                n = (result >> 31) & 1
+                z = 1 if result == 0 else 0
+                self.cpsr = (self.cpsr & 0x3FFFFFFF) | (n << 31) | (z << 30)
+
+        self.registers[15] += 4
+        return 2
+
+    @jit_compile
+    def exec_swp(self, instr: int) -> int:
+        is_byte = (instr >> 22) & 1
+        rn = (instr >> 16) & 0xF
+        rd = (instr >> 12) & 0xF
+        rm = instr & 0xF
+        base = self._operand(rn)
+        rm_val = self._operand(rm)
+        if is_byte:
+            old = self.memory.read_u8(base)
+            self.memory.write_u8(base, rm_val & 0xFF)
+        else:
+            old = self.memory.read_u32(base)
+            self.memory.write_u32(base, rm_val)
+        self.write_register(rd, old)
         self.registers[15] += 4
         return 2
 
@@ -840,6 +979,7 @@ class ARM7TDMI:
         GBA BIOS extracts the SWI number from bits 23:16 of the 24-bit
         comment field (mGBA: immediate >> 16)."""
         swi_num = (instr >> 16) & 0xFF
+        print(f"PROBE swi num=0x{swi_num:02X} instr=0x{instr:08X} pc=0x{self.registers[15]:08X}", flush=True)
         self.swi_handler(swi_num)
         self.registers[15] += 4
         return 2
@@ -899,21 +1039,41 @@ class ARM7TDMI:
                 for addr in range(0x07000000, 0x07000400, 2):
                     self.memory.write_u16(addr, 0)
         elif num == 0x02:  # Halt — wake on ANY enabled IRQ
-            # SWI exception entry: save state and switch to SVC mode
-            self._swi_exception_entry()
+            self._swi_lr = self.registers[14]
+            self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
             self._halted = True
             self._halt_reason = 'any'
         elif num == 0x03:  # Stop
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_stop(self.registers[0])
-        elif num == 0x04:  # IntrWait — wake on ANY enabled IRQ
-            # SWI exception entry: save state and switch to SVC mode
-            self._swi_exception_entry()
+        elif num == 0x04:  # IntrWait — check IF first, then halt
+            self._swi_lr = self.registers[14]
+            self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
+            _wait_flag = self.registers[0] & 0xFF
+            _ic = getattr(getattr(self, 'memory', None), '_interrupts', None)
+            if _wait_flag & 0x01 and _ic is not None:
+                _flag_mask = self.registers[1] & 0xFFFF
+                _pending = _ic.if_reg & _flag_mask
+                if _pending:
+                    _ic.if_reg &= ~_pending
+                    self.registers[0] = 1
+                    self.cpsr |= (1 << 30)
+                    return
             self._halted = True
             self._halt_reason = 'any'
         elif num == 0x05:  # VBlankIntrWait — wake on VBlank IRQ only
-            # SWI exception entry: save state and switch to SVC mode
-            self._swi_exception_entry()
+            self._swi_lr = self.registers[14]
+            self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
+            # Per GBATEK: set IME=1, IE.0=1, clear IF.0, then halt until VBlank
+            if hasattr(self, 'memory') and hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
+                ic = self.memory._interrupts
+                ic.ime_reg |= 0x0001
+                ic.ie_reg |= 0x0001
+                ic.if_reg &= ~0x0001
+                ic._enabled_mask = ic.ie_reg
+                # Set DISPSTAT.3 so step_scanline fires vblank_irq()
+                _ds = self.memory.read_u16(0x04000004)
+                self.memory.write_u16(0x04000004, _ds | 0x0008)
             self._halted = True
             self._halt_reason = 'vblank'
         elif num == 0x06:  # Div
@@ -972,6 +1132,24 @@ class ARM7TDMI:
         elif num == 0x12:  # LZ77UnCompVram
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_lz77_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x10:  # BitUnPack
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_bit_unpack(self.registers[0], self.registers[1], self.registers[2])
+        elif num == 0x13:  # HuffmanUnComp
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_huff_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x14:  # RLUnCompWram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_rl_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x15:  # RLUnCompVram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_rl_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x16:  # BitUnPackVram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_bit_unpack(self.registers[0], self.registers[1], self.registers[2])
+        elif num == 0x18:  # DiffUnCompFilterWrite
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_diff_uncomp_filter(self.registers[0], self.registers[1])
 
     def _swi_exception_entry(self):
         """Model ARM SWI exception entry.
@@ -1307,6 +1485,14 @@ class ARM7TDMI:
             self.registers[15] = target & 0xFFFFFFFE
             return 1
 
+        if op == 3 and h1 == 1:  # BLX Rm
+            rm_reg = rs + (h2 << 3)
+            target = self._operand(rm_reg)
+            self.registers[14] = (self.registers[15] + 2) | 1
+            self.thumb_mode = (target & 1) != 0
+            self.registers[15] = target & 0xFFFFFFFE
+            return 1
+
         rdn = rd + (h1 << 3)
         rm = rs + (h2 << 3)
 
@@ -1314,16 +1500,25 @@ class ARM7TDMI:
             result = (self._operand(rdn) + self._operand(rm)) & 0xFFFFFFFF
             self.write_register(rdn, result)
         elif op == 1:  # CMP
-            result = (self._operand(rdn) - self._operand(rm)) & 0xFFFFFFFF
-            self.cpsr = (
-                (self.cpsr & 0x0FFFFFFF)
-                | ((result >> 31) << 28)
-                | (0 if result == 0 else (1 << 30))
-            )
+            op1 = self._operand(rdn)
+            op2 = self._operand(rm)
+            result = (op1 - op2) & 0xFFFFFFFF
+            
+            # Set N flag (bit 31)
+            n = (result >> 31) & 1
+            # Set Z flag (bit 30)
+            z = 1 if result == 0 else 0
+            # Set C flag (bit 29): C=1 if op1 >= op2 (unsigned comparison)
+            c = 1 if op1 >= op2 else 0
+            # Set V flag (bit 28): overflow in signed subtraction
+            v = 1 if ((op1 ^ op2) & (op1 ^ result) & 0x80000000) else 0
+            
+            self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         elif op == 2:  # MOV
             self.write_register(rdn, self._operand(rm))
 
-        self.registers[15] += 2
+        if rdn != 15:
+            self.registers[15] += 2
         return 1
 
     def exec_thumb_pc_rel(self, instr: int) -> int:
@@ -1469,8 +1664,10 @@ class ARM7TDMI:
                 addr += 4
                 self.thumb_mode = (val & 1) != 0
                 self.registers[15] = val & 0xFFFFFFFE
-                # Exception return from a privileged mode: restore CPSR from SPSR.
                 if self.mode in _MODES_WITH_SPSR:
+                    # Write back SP before the mode switch so the banked SP
+                    # (e.g. IRQ SP) is saved with its post-pop value.
+                    self.registers[13] = addr
                     _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
                     if 0 <= _idx < len(self.spsr):
                         new_cpsr = self.spsr[_idx] & 0xFFFFFFFF
@@ -1479,6 +1676,7 @@ class ARM7TDMI:
                         self.cpsr = new_cpsr
                         self.mode = new_mode
                         self.thumb_mode = (new_cpsr >> 5) & 1
+                    return 2
             else:
                 self.registers[15] += 2
             self.registers[13] = addr
@@ -1507,6 +1705,7 @@ class ARM7TDMI:
             return 1
 
         addr = self.registers[rb]
+        base_in_list = (reg_list & (1 << rb)) != 0
         for i in range(8):
             if reg_list & (1 << i):
                 if is_load:
@@ -1514,7 +1713,8 @@ class ARM7TDMI:
                 else:
                     self.memory.write_u32(addr, self.registers[i])
                 addr += 4
-        self.registers[rb] = addr  # write back
+        if not (is_load and base_in_list):
+            self.registers[rb] = addr
 
         self.registers[15] += 2
         return 2
@@ -1559,15 +1759,26 @@ class ARM7TDMI:
         return False       # NV
 
     def exec_thumb_cond_branch(self, instr: int) -> int:
-        """Thumb conditional branch (format 16)."""
-        cond = (instr >> 8) & 0xF  # bits 11-8
-        offset = instr & 0xFF      # bits 7-0
+        """Thumb conditional branch (format 16).
+        
+        Thumb conditional branch: bits 15-12 = cond (4 bits), bits 11-8 = unused/reversed,
+        bits 7-0 = signed_offset8.
+        
+        Branch target = (PC + 4) + (sign_extend(offset8) << 1)
+        Where PC = current instruction address (Thumb mode means PC is even)
+        """
+        cond = (instr >> 8) & 0xF  # bits 11-8 (condition code)
+        offset = instr & 0xFF      # bits 7-0 (signed 8-bit offset)
+        
+        # Sign extend offset8 (8-bit to 32-bit signed)
         if offset & 0x80:
             offset -= 0x100
-        offset *= 2
+        
+        # Branch target = (PC + 4) + (offset << 1) - offset is already sign-extended
+        target = ((self.registers[15] + 4) + (offset << 1)) & 0xFFFFFFFE
 
         if self._check_condition(cond):
-            self.registers[15] = ((self.registers[15] + 4) + offset) & 0xFFFFFFFF
+            self.registers[15] = target
         else:
             self.registers[15] += 2
         return 2
@@ -1578,7 +1789,7 @@ class ARM7TDMI:
         if offset & 0x400:
             offset -= 0x800
         offset *= 2
-        self.registers[15] = ((self.registers[15] + 4) + offset) & 0xFFFFFFFF
+        self.registers[15] = ((self.registers[15] + 4) + offset) & 0xFFFFFFFE
         return 2
 
     def exec_thumb_bl_prefix(self, instr: int) -> int:
@@ -1588,18 +1799,18 @@ class ARM7TDMI:
             offset_high -= 0x800
         offset_high <<= 12
         # Thumb PC reads as current instruction + 4
-        pc = (self.registers[15] + 4) & 0xFFFFFFFF
-        self.registers[14] = (pc + offset_high) & 0xFFFFFFFF
+        pc = (self.registers[15] + 4) & 0xFFFFFFFE
+        self.registers[14] = (pc + offset_high) | 1
         self.registers[15] += 2
         return 1
 
     def exec_thumb_bl_suffix(self, instr: int) -> int:
         """Thumb BL suffix (format 19)."""
         offset_low = (instr & 0x7FF) << 1  # bits 10-0, *2
-        target = (self.registers[14] + offset_low) & 0xFFFFFFFF
+        target = (self.registers[14] & 0xFFFFFFFE) + offset_low
         # Return address = next instruction with Thumb bit set
         self.registers[14] = (self.registers[15] + 2) | 1
-        self.registers[15] = target
+        self.registers[15] = target & 0xFFFFFFFE
         return 2
 
     def exec_thumb_swi(self, instr: int) -> int:
@@ -1684,4 +1895,4 @@ class ISRHandler:
             self._handlers[InterruptController.IRQ_GAMEPAK]()
 
 
-from gba_runtime.interrupts import InterruptController
+

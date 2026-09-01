@@ -107,6 +107,32 @@ fn decode_is_valid_code(
     !opcode_str.starts_with("UNKNOWN") && opcode_str != "UNDEFINED"
 }
 
+/// Requires a run of `min_run` consecutive valid decodes starting at `addr`.
+/// Single-instruction validation admits audio/graphic data because Thumb
+/// decoders are permissive; a run filter rejects data that decodes as one or
+/// two valid halfwords but breaks down shortly after. Real code has long
+/// valid runs.
+fn decode_is_valid_code_run(
+    rom: &[u8],
+    addr: u32,
+    mode: ArmMode,
+    min_run: usize,
+    arm_decoder: &ArmDecoder,
+    thumb_decoder: &ThumbDecoder,
+) -> bool {
+    let stride = match mode {
+        ArmMode::Arm => 4,
+        ArmMode::Thumb => 2,
+    };
+    for i in 0..min_run {
+        let probe = addr + (i * stride) as u32;
+        if !decode_is_valid_code(rom, probe, mode, arm_decoder, thumb_decoder) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Tracks constant values in registers for indirect jump resolution.
 /// Only tracks simple cases: MOV rN, #imm and LDR rN, =imm
 #[derive(Debug, Default)]
@@ -195,163 +221,22 @@ impl CfgBuilder {
         let thumb_decoder = ThumbDecoder::new();
 
         const MAX_INSTRUCTIONS: usize = 500_000;
-        let mut instruction_count = 0;
-        let mut consecutive_non_branch: usize = 0;
-        const MAX_CONSECUTIVE_NON_BRANCH: usize = 128;
 
-        while let Some((addr, current_mode)) = to_visit.pop() {
-            if data_addresses.contains(&addr) {
-                continue;
-            }
-            if visited.contains(&(addr, current_mode)) {
-                continue;
-            }
-            visited.insert((addr, current_mode));
-
-            instruction_count += 1;
-            if instruction_count > MAX_INSTRUCTIONS {
-                eprintln!("  CFG: safety limit reached, stopping");
-                break;
-            }
-
-            if instruction_count % 100_000 == 0 {
-                eprintln!("  CFG progress: {} visited, {} branch targets",
-                          instruction_count, self.branch_targets.len());
-            }
-
-            let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
-            if decode_addr < 0x08000000 {
-                continue;
-            }
-            let rom_offset = (decode_addr - 0x08000000) as usize;
-            if rom_offset >= rom.len() {
-                continue;
-            }
-
-            let (opcode_str, operands, _is_thumb, _width) = match current_mode {
-                ArmMode::Arm => {
-                    if rom_offset + 4 > rom.len() {
-                        continue;
-                    }
-                    let opcode = u32::from_le_bytes([
-                        rom[rom_offset],
-                        rom[rom_offset + 1],
-                        rom[rom_offset + 2],
-                        rom[rom_offset + 3],
-                    ]);
-                    let (op, ops, thumb) = arm_decoder.decode(opcode, decode_addr);
-                    (op, ops, thumb, 4)
-                }
-                ArmMode::Thumb => {
-                    if rom_offset + 2 > rom.len() {
-                        continue;
-                    }
-                    let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                    let (op, ops, thumb) = thumb_decoder.decode(opcode, decode_addr);
-                    (op, ops, thumb, 2)
-                }
-            };
-
-            // Stop walking when we hit data that doesn't decode as valid instructions
-            if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" {
-                continue;
-            }
-
-            if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
-                data_addresses.insert(pool_addr);
-            }
-
-            self.instruction_addresses.push(addr);
-            self.mode_map.push((addr, current_mode));
-
-            // Extract branch targets BEFORE track_register_values, because
-            // track_register_values invalidates LR for BL_SUFFIX and replaces
-            // it with the return address. extract_branch_targets needs the old
-            // LR (set by BL_PREFIX) to compute the BL target.
-            let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
-
-            self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
-
-            let instr_width = if current_mode == ArmMode::Thumb { 2 } else { 4 };
-
-            let is_uncond_branch = opcode_str == "B"
-                || opcode_str == "BX"
-                || writes_to_pc(&opcode_str, &operands);
-            // Only reset counter on actual control flow, not conditional branches.
-            // Conditional branches are the most common pattern in data-decoded-as-code.
-            let is_control_flow = is_uncond_branch
-                || opcode_str == "BL"
-                || opcode_str == "BLX"
-                || opcode_str == "BL_PREFIX"
-                || opcode_str == "BL_SUFFIX";
-            if is_control_flow {
-                consecutive_non_branch = 0;
-            } else {
-                consecutive_non_branch += 1;
-            }
-
-            // Push fall-through for non-unconditional-branch instructions.
-            // Conditional branches (BEQ, BNE, ...) have a "not taken" path
-            if !is_uncond_branch && consecutive_non_branch < MAX_CONSECUTIVE_NON_BRANCH {
-                let next_addr = addr + instr_width;
-                if !visited.contains(&(next_addr, current_mode))
-                    && !data_addresses.contains(&next_addr)
-                    && next_addr >= 0x08000000
-                    && ((next_addr - 0x08000000) as usize) < rom.len()
-                {
-                    to_visit.push((next_addr, current_mode));
-                }
-            }
-
-            for raw_target in targets {
-                if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
-                    continue;
-                }
-                let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
-                    if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
-                } else {
-                    current_mode
-                };
-                // Normalize: clear the mode-encoding bit(s) so blocks are recorded
-                // at the actual instruction address, not the Thumb-bit-set target.
-                // Without this, both 0x...66 and 0x...67 become separate blocks and
-                // the dispatch table collides (idx = addr>>1 is identical for both).
-                let target = if target_mode == ArmMode::Thumb {
-                    raw_target & !1
-                } else {
-                    raw_target & !3
-                };
-                if !visited.contains(&(target, target_mode))
-                    && !data_addresses.contains(&target)
-                {
-                    to_visit.push((target, target_mode));
-                }
-                self.branch_targets.insert(target);
-            }
-
-            // Note: we deliberately do NOT invalidate tracked registers after
-            // BL/BLX/BL_SUFFIX. While the called function may clobber caller-
-            // saved registers (r0-r3, r12), invalidating would lose branch-
-            // target resolution for patterns like:
-            //   LDR r3, =func_ptr
-            //   BL some_function
-            //   BX r3          ← r3 lost if we invalidated
-            // Completeness (no missing dispatch entries) matters more than
-            // soundness here — a wrong tracked value adds dead code at worst,
-            // but a missing target crashes the runtime with "Unknown PC".
-
-            // After a BL/BLX/BL_SUFFIX, set LR to the return address so that
-            // BX LR at the end of the subroutine can be resolved by the CFG.
-            // Thumb BL: LR = (addr + 2) | 1 (return addr with Thumb bit).
-            // ARM BL/BLX: LR = addr + 4 (return addr, ARM mode — no Thumb bit).
-            if opcode_str == "BL_SUFFIX" {
-                self.register_tracker
-                    .track_mov_immediate(14, (addr + 2) | 1);
-            } else if opcode_str == "BL" || opcode_str == "BLX" {
-                self.register_tracker
-                    .track_mov_immediate(14, addr + 4);
-            }
-        }
+        // Main BFS pass
+        eprintln!("  CFG: main pass starting...");
+        let main_count = self.bfs_pass(
+            &mut to_visit,
+            &mut visited,
+            None,  // No shared visited set for main pass
+            &mut data_addresses,
+            rom,
+            &arm_decoder,
+            &thumb_decoder,
+            MAX_INSTRUCTIONS,
+            "main pass",
+            true,  // Report progress for main pass
+        );
+        eprintln!("  CFG: main pass complete, {} instructions visited", main_count);
 
         // Post-processing sweep: resolve indirect branches that the context-
         // insensitive tracker missed. When a BX rN thunk is called from
@@ -390,119 +275,20 @@ impl CfgBuilder {
         if !new_targets.is_empty() {
             let mut mini_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini_queue: Vec<(u32, ArmMode)> = new_targets;
-            let mut mini_count = 0;
             const MINI_MAX_INSTRUCTIONS: usize = 200_000;
-            let mut mini_consecutive_non_branch: usize = 0;
-            const MINI_MAX_CONSECUTIVE_NON_BRANCH: usize = 128;
-            while let Some((addr, current_mode)) = mini_queue.pop() {
-                if data_addresses.contains(&addr) {
-                    continue;
-                }
-                if mini_visited.contains(&(addr, current_mode)) || visited.contains(&(addr, current_mode)) {
-                    continue;
-                }
-                mini_visited.insert((addr, current_mode));
-
-                mini_count += 1;
-                if mini_count >= MINI_MAX_INSTRUCTIONS {
-                    eprintln!("  CFG mini-pass safety limit reached, stopping");
-                    break;
-                }
-
-                let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
-                if decode_addr < 0x08000000 {
-                    continue;
-                }
-                let rom_offset = (decode_addr - 0x08000000) as usize;
-                if rom_offset >= rom.len() {
-                    continue;
-                }
-
-                let (opcode_str, operands, instr_width) = match current_mode {
-                    ArmMode::Arm => {
-                        if rom_offset + 4 > rom.len() { continue; }
-                        let opcode = u32::from_le_bytes([
-                            rom[rom_offset], rom[rom_offset + 1],
-                            rom[rom_offset + 2], rom[rom_offset + 3],
-                        ]);
-                        let (op, ops, _) = arm_decoder.decode(opcode, decode_addr);
-                        (op, ops, 4)
-                    }
-                    ArmMode::Thumb => {
-                        if rom_offset + 2 > rom.len() { continue; }
-                        let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                        let (op, ops, _) = thumb_decoder.decode(opcode, decode_addr);
-                        (op, ops, 2)
-                    }
-                };
-
-                if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" {
-                    continue;
-                }
-
-                if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
-                    data_addresses.insert(pool_addr);
-                }
-
-                self.instruction_addresses.push(addr);
-                self.mode_map.push((addr, current_mode));
-
-                let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
-                self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
-
-                let is_uncond_branch = opcode_str == "B"
-                    || opcode_str == "BX"
-                    || writes_to_pc(&opcode_str, &operands);
-
-                // Reset on any control flow
-                if is_uncond_branch || !targets.is_empty() || opcode_str == "BL" || opcode_str == "BLX" {
-                    mini_consecutive_non_branch = 0;
-                } else {
-                    mini_consecutive_non_branch += 1;
-                }
-
-                // Only push fall-through if under limit
-                if !is_uncond_branch && mini_consecutive_non_branch < MINI_MAX_CONSECUTIVE_NON_BRANCH {
-                    let next_addr = addr + instr_width;
-                    if !mini_visited.contains(&(next_addr, current_mode))
-                        && !visited.contains(&(next_addr, current_mode))
-                        && !data_addresses.contains(&next_addr)
-                        && next_addr >= 0x08000000
-                        && ((next_addr - 0x08000000) as usize) < rom.len()
-                    {
-                        mini_queue.push((next_addr, current_mode));
-                    }
-                }
-
-                for raw_target in targets {
-                    if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
-                        continue;
-                    }
-                    let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
-                        if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
-                    } else {
-                        current_mode
-                    };
-                    let target = if target_mode == ArmMode::Thumb {
-                        raw_target & !1
-                    } else {
-                        raw_target & !3
-                    };
-                    if !mini_visited.contains(&(target, target_mode))
-                        && !visited.contains(&(target, target_mode))
-                        && !data_addresses.contains(&target)
-                    {
-                        mini_queue.push((target, target_mode));
-                    }
-                    self.branch_targets.insert(target);
-                }
-
-                if opcode_str == "BL_SUFFIX" {
-                    self.register_tracker.track_mov_immediate(14, (addr + 2) | 1);
-                } else if opcode_str == "BL" || opcode_str == "BLX" {
-                    self.register_tracker.track_mov_immediate(14, addr + 4);
-                }
-            }
+            let mini_count = self.bfs_pass(
+                &mut mini_queue,
+                &mut mini_visited,
+                Some(&visited),  // Shared visited set
+                &mut data_addresses,
+                rom,
+                &arm_decoder,
+                &thumb_decoder,
+                MINI_MAX_INSTRUCTIONS,
+                "mini-pass",
+                false,  // No progress reporting for mini-pass
+            );
+            eprintln!("  CFG: mini-pass complete, {} instructions visited", mini_count);
         }
 
         // ROM-wide function pointer scan: use already-resolved LDR literal values.
@@ -535,6 +321,8 @@ impl CfgBuilder {
                 continue;
             }
             
+            // LDR-literal targets are already call-confirmed: one valid decode
+            // suffices because the code explicitly loaded this address.
             if !decode_is_valid_code(rom, taddr, tmode, &arm_decoder, &thumb_decoder) {
                 continue;
             }
@@ -579,10 +367,21 @@ impl CfgBuilder {
         // and add them as branch targets if they decode as valid code.
         // This catches interrupt handlers and other entry points that are stored in
         // literal pools but not dynamically loaded by reachable code.
+        //
+        // Requires a run of consecutive valid decodes at each seed. Single-instruction
+        // validation admits audio/graphic data because Thumb decoders are permissive;
+        // a run filter rejects data that decodes as one or two valid halfwords but
+        // breaks down shortly after. Real code has long valid runs.
         eprintln!("  CFG: scanning ROM for potential handler addresses...");
         let mut rom_scan_targets: Vec<(u32, ArmMode)> = Vec::new();
+        const ROM_SCAN_SEED_MIN_RUN: usize = 32;
+        const ROM_SCAN_MAX_SEEDS: usize = 500;
         
         for i in (0x100..min(rom.len() as usize - 4, 0x100000)).step_by(4) {
+            if rom_scan_targets.len() >= ROM_SCAN_MAX_SEEDS {
+                eprintln!("  CFG: ROM scan seed cap reached ({}), stopping", ROM_SCAN_MAX_SEEDS);
+                break;
+            }
             let word = u32::from_le_bytes([rom[i], rom[i+1], rom[i+2], rom[i+3]]);
             
             // Check if this looks like a code address (ROM range, aligned)
@@ -602,8 +401,8 @@ impl CfgBuilder {
                 continue;
             }
             
-            // Check if this decodes as valid code
-            if !decode_is_valid_code(rom, taddr, tmode, &arm_decoder, &thumb_decoder) {
+            // Require a run of consecutive valid decodes to filter audio data
+            if !decode_is_valid_code_run(rom, taddr, tmode, ROM_SCAN_SEED_MIN_RUN, &arm_decoder, &thumb_decoder) {
                 continue;
             }
             
@@ -686,235 +485,40 @@ impl CfgBuilder {
         if !rom_scan_targets.is_empty() || !heuristic_targets.is_empty() {
             let mut mini3_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini3_queue: Vec<(u32, ArmMode)> = rom_scan_targets;
-            let mut mini3_count = 0;
-            const MINI3_MAX_INSTRUCTIONS: usize = 100_000;
-            let mut mini3_consecutive_non_branch: usize = 0;
-            const MINI3_MAX_CONSECUTIVE_NON_BRANCH: usize = 128;
-            
-            while let Some((addr, current_mode)) = mini3_queue.pop() {
-                if data_addresses.contains(&addr) {
-                    continue;
-                }
-                if mini3_visited.contains(&(addr, current_mode)) || visited.contains(&(addr, current_mode)) {
-                    continue;
-                }
-                mini3_visited.insert((addr, current_mode));
-
-                let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
-                if decode_addr < 0x08000000 {
-                    continue;
-                }
-                let rom_offset = (decode_addr - 0x08000000) as usize;
-                if rom_offset >= rom.len() {
-                    continue;
-                }
-
-                mini3_count += 1;
-                if mini3_count >= MINI3_MAX_INSTRUCTIONS {
-                    eprintln!("  CFG mini3-pass safety limit reached, stopping");
-                    break;
-                }
-
-                let (opcode_str, operands, instr_width) = match current_mode {
-                    ArmMode::Arm => {
-                        if rom_offset + 4 > rom.len() { continue; }
-                        let opcode = u32::from_le_bytes([
-                            rom[rom_offset], rom[rom_offset + 1],
-                            rom[rom_offset + 2], rom[rom_offset + 3],
-                        ]);
-                        let (op, ops, _) = arm_decoder.decode(opcode, decode_addr);
-                        (op, ops, 4)
-                    }
-                    ArmMode::Thumb => {
-                        if rom_offset + 2 > rom.len() { continue; }
-                        let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                        let (op, ops, _) = thumb_decoder.decode(opcode, decode_addr);
-                        (op, ops, 2)
-                    }
-                };
-
-                if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" {
-                    continue;
-                }
-
-                self.instruction_addresses.push(addr);
-                self.mode_map.push((addr, current_mode));
-
-                let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
-                self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
-
-                let is_uncond_branch = opcode_str == "B"
-                    || opcode_str == "BX"
-                    || writes_to_pc(&opcode_str, &operands);
-
-                if is_uncond_branch || !targets.is_empty() || opcode_str == "BL" || opcode_str == "BLX" {
-                    mini3_consecutive_non_branch = 0;
-                } else {
-                    mini3_consecutive_non_branch += 1;
-                }
-
-                if !is_uncond_branch && mini3_consecutive_non_branch < MINI3_MAX_CONSECUTIVE_NON_BRANCH {
-                    let next_addr = addr + instr_width;
-                    if !mini3_visited.contains(&(next_addr, current_mode))
-                        && !visited.contains(&(next_addr, current_mode))
-                        && !data_addresses.contains(&next_addr)
-                        && next_addr >= 0x08000000
-                        && ((next_addr - 0x08000000) as usize) < rom.len()
-                    {
-                        mini3_queue.push((next_addr, current_mode));
-                    }
-                }
-
-                for raw_target in targets {
-                    if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
-                        continue;
-                    }
-                    let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
-                        if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
-                    } else {
-                        current_mode
-                    };
-                    let target = if target_mode == ArmMode::Thumb {
-                        raw_target & !1
-                    } else {
-                        raw_target & !3
-                    };
-                    if !mini3_visited.contains(&(target, target_mode))
-                        && !visited.contains(&(target, target_mode))
-                        && !data_addresses.contains(&target)
-                    {
-                        mini3_queue.push((target, target_mode));
-                    }
-                    self.branch_targets.insert(target);
-                }
-
-                if opcode_str == "BL_SUFFIX" {
-                    self.register_tracker.track_mov_immediate(14, (addr + 2) | 1);
-                } else if opcode_str == "BL" || opcode_str == "BLX" {
-                    self.register_tracker.track_mov_immediate(14, addr + 4);
-                }
-            }
+            const MINI3_MAX_INSTRUCTIONS: usize = 10_000;
+            let mini3_count = self.bfs_pass(
+                &mut mini3_queue,
+                &mut mini3_visited,
+                Some(&visited),  // Shared visited set
+                &mut data_addresses,
+                rom,
+                &arm_decoder,
+                &thumb_decoder,
+                MINI3_MAX_INSTRUCTIONS,
+                "mini3-pass",
+                false,  // No progress reporting
+            );
+            eprintln!("  CFG: mini3-pass complete, {} instructions visited", mini3_count);
         }
 
         // Run mini-CFG pass on newly discovered targets, same as above
         if !rom_wide_targets.is_empty() {
             let mut mini2_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini2_queue: Vec<(u32, ArmMode)> = rom_wide_targets;
-            let mut mini2_count = 0;
-            const MINI2_MAX_INSTRUCTIONS: usize = 200_000;
-            let mut mini2_consecutive_non_branch: usize = 0;
-            const MINI2_MAX_CONSECUTIVE_NON_BRANCH: usize = 128;
-            while let Some((addr, current_mode)) = mini2_queue.pop() {
-                if data_addresses.contains(&addr) {
-                    continue;
-                }
-                if mini2_visited.contains(&(addr, current_mode))
-                    || visited.contains(&(addr, current_mode))
-                {
-                    continue;
-                }
-            mini2_visited.insert((addr, current_mode));
-
-            let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
-            if decode_addr < 0x08000000 {
-                continue;
-            }
-            let rom_offset = (decode_addr - 0x08000000) as usize;
-            if rom_offset >= rom.len() {
-                continue;
-            }
-
-            mini2_count += 1;
-            if mini2_count >= MINI2_MAX_INSTRUCTIONS {
-                eprintln!("  CFG mini2-pass safety limit reached, stopping");
-                break;
-            }
-
-            let (opcode_str, operands, instr_width) = match current_mode {
-                    ArmMode::Arm => {
-                        if rom_offset + 4 > rom.len() { continue; }
-                        let opcode = u32::from_le_bytes([
-                            rom[rom_offset], rom[rom_offset + 1],
-                            rom[rom_offset + 2], rom[rom_offset + 3],
-                        ]);
-                        let (op, ops, _) = arm_decoder.decode(opcode, decode_addr);
-                        (op, ops, 4)
-                    }
-                    ArmMode::Thumb => {
-                        if rom_offset + 2 > rom.len() { continue; }
-                        let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                        let (op, ops, _) = thumb_decoder.decode(opcode, decode_addr);
-                        (op, ops, 2)
-                    }
-                };
-
-                if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" {
-                    continue;
-                }
-
-                if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
-                    data_addresses.insert(pool_addr);
-                }
-
-                self.instruction_addresses.push(addr);
-                self.mode_map.push((addr, current_mode));
-
-                let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
-                self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
-
-                let is_uncond_branch = opcode_str == "B"
-                    || opcode_str == "BX"
-                    || writes_to_pc(&opcode_str, &operands);
-
-                // Reset on any control flow
-                if is_uncond_branch || !targets.is_empty() || opcode_str == "BL" || opcode_str == "BLX" {
-                    mini2_consecutive_non_branch = 0;
-                } else {
-                    mini2_consecutive_non_branch += 1;
-                }
-
-                // Only push fall-through if under limit
-                if !is_uncond_branch && mini2_consecutive_non_branch < MINI2_MAX_CONSECUTIVE_NON_BRANCH {
-                    let next_addr = addr + instr_width;
-                    if !mini2_visited.contains(&(next_addr, current_mode))
-                        && !visited.contains(&(next_addr, current_mode))
-                        && !data_addresses.contains(&next_addr)
-                        && next_addr >= 0x08000000
-                        && ((next_addr - 0x08000000) as usize) < rom.len()
-                    {
-                        mini2_queue.push((next_addr, current_mode));
-                    }
-                }
-
-                for raw_target in targets {
-                    if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
-                        continue;
-                    }
-                    let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
-                        if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
-                    } else {
-                        current_mode
-                    };
-                    let target = if target_mode == ArmMode::Thumb {
-                        raw_target & !1
-                    } else {
-                        raw_target & !3
-                    };
-                    if !mini2_visited.contains(&(target, target_mode))
-                        && !visited.contains(&(target, target_mode))
-                        && !data_addresses.contains(&target)
-                    {
-                        mini2_queue.push((target, target_mode));
-                    }
-                    self.branch_targets.insert(target);
-                }
-
-                if opcode_str == "BL_SUFFIX" {
-                    self.register_tracker.track_mov_immediate(14, (addr + 2) | 1);
-                } else if opcode_str == "BL" || opcode_str == "BLX" {
-                    self.register_tracker.track_mov_immediate(14, addr + 4);
-                }
-            }
+            const MINI2_MAX_INSTRUCTIONS: usize = 20_000;
+            let mini2_count = self.bfs_pass(
+                &mut mini2_queue,
+                &mut mini2_visited,
+                Some(&visited),  // Shared visited set
+                &mut data_addresses,
+                rom,
+                &arm_decoder,
+                &thumb_decoder,
+                MINI2_MAX_INSTRUCTIONS,
+                "mini2-pass",
+                false,  // No progress reporting
+            );
+            eprintln!("  CFG: mini2-pass complete, {} instructions visited", mini2_count);
         }
 
         // IWRAM .data resolution: CRT0 copies code+data from ROM to IWRAM,
@@ -941,8 +545,13 @@ impl CfgBuilder {
             // Minimum copy_size filter: only process .data copies >= 64 bytes.
             // Smaller copies are likely data tables (palette entries, small constants),
             // not code regions with function pointers.
+            //
+            // Maximum copy_size filter: copies > 8 KiB are audio/graphic blobs, not
+            // function-pointer tables. Scanning them yields thousands of false seeds
+            // that walk into data and inflate the reachable set past the OOM guard.
             let copy_size = (w2 - w1) as usize;
             if copy_size < 64 { continue; }
+            if copy_size > 8192 { continue; }
 
             let rom_src = w0 & !1;
             let rom_src_offset = (rom_src - 0x08000000) as usize;
@@ -977,8 +586,13 @@ impl CfgBuilder {
                     if mode == ArmMode::Thumb && (target & 1) != 0 { continue; }
                     if mode == ArmMode::Arm && (target & 3) != 0 { continue; }
                     
-                    // Validate that the address decodes as actual code, not data literals
-                    if !decode_is_valid_code(rom, target, mode, &arm_decoder, &thumb_decoder) {
+                    // Validate that the address decodes as actual code, not data literals.
+                    // Function-pointer tables embedded in .data blobs are the worst
+                    // contamination source: audio sample data decodes as valid Thumb
+                    // for thousands of halfwords. Require a run of consecutive valid
+                    // decodes to confirm real code.
+                    const IWRAM_SEED_MIN_RUN: usize = 32;
+                    if !decode_is_valid_code_run(rom, target, mode, IWRAM_SEED_MIN_RUN, &arm_decoder, &thumb_decoder) {
                         continue;
                     }
                     
@@ -997,114 +611,20 @@ impl CfgBuilder {
         if !iwram_entry_targets.is_empty() {
             let mut iwram_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut iwram_queue: Vec<(u32, ArmMode)> = iwram_entry_targets;
-            let mut iwram_count = 0;
-            const IWRAM_MAX_INSTRUCTIONS: usize = 200_000;
-            let mut iwram_consecutive_non_branch: usize = 0;
-            const IWRAM_MAX_CONSECUTIVE_NON_BRANCH: usize = 128;
-
-            while let Some((addr, current_mode)) = iwram_queue.pop() {
-                if data_addresses.contains(&addr) { continue; }
-                if iwram_visited.contains(&(addr, current_mode))
-                    || visited.contains(&(addr, current_mode))
-                { continue; }
-                iwram_visited.insert((addr, current_mode));
-
-                let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
-                if decode_addr < 0x08000000 { continue; }
-                let rom_offset = (decode_addr - 0x08000000) as usize;
-                if rom_offset >= rom.len() { continue; }
-
-                iwram_count += 1;
-                if iwram_count >= IWRAM_MAX_INSTRUCTIONS {
-                    eprintln!("  CFG IWRAM pass safety limit reached, stopping");
-                    break;
-                }
-
-                let (opcode_str, operands, instr_width) = match current_mode {
-                    ArmMode::Arm => {
-                        if rom_offset + 4 > rom.len() { continue; }
-                        let opcode = u32::from_le_bytes([
-                            rom[rom_offset], rom[rom_offset + 1],
-                            rom[rom_offset + 2], rom[rom_offset + 3],
-                        ]);
-                        let (op, ops, _) = arm_decoder.decode(opcode, decode_addr);
-                        (op, ops, 4)
-                    }
-                    ArmMode::Thumb => {
-                        if rom_offset + 2 > rom.len() { continue; }
-                        let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                        let (op, ops, _) = thumb_decoder.decode(opcode, decode_addr);
-                        (op, ops, 2)
-                    }
-                };
-
-                if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" { continue; }
-
-                if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
-                    data_addresses.insert(pool_addr);
-                }
-
-                self.instruction_addresses.push(addr);
-                self.mode_map.push((addr, current_mode));
-
-                let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
-                self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
-
-                let is_uncond_branch = opcode_str == "B"
-                    || opcode_str == "BX"
-                    || writes_to_pc(&opcode_str, &operands);
-
-                if is_uncond_branch || !targets.is_empty()
-                    || opcode_str == "BL" || opcode_str == "BLX"
-                {
-                    iwram_consecutive_non_branch = 0;
-                } else {
-                    iwram_consecutive_non_branch += 1;
-                }
-
-                if !is_uncond_branch
-                    && iwram_consecutive_non_branch < IWRAM_MAX_CONSECUTIVE_NON_BRANCH
-                {
-                    let next_addr = addr + instr_width;
-                    if !iwram_visited.contains(&(next_addr, current_mode))
-                        && !visited.contains(&(next_addr, current_mode))
-                        && !data_addresses.contains(&next_addr)
-                        && next_addr >= 0x08000000
-                        && ((next_addr - 0x08000000) as usize) < rom.len()
-                    {
-                        iwram_queue.push((next_addr, current_mode));
-                    }
-                }
-
-                for raw_target in targets {
-                    if raw_target < 0x08000000
-                        || (raw_target - 0x08000000) as usize >= rom.len()
-                    { continue; }
-                    let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
-                        if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
-                    } else {
-                        current_mode
-                    };
-                    let target = if target_mode == ArmMode::Thumb {
-                        raw_target & !1
-                    } else {
-                        raw_target & !3
-                    };
-                    if !iwram_visited.contains(&(target, target_mode))
-                        && !visited.contains(&(target, target_mode))
-                        && !data_addresses.contains(&target)
-                    {
-                        iwram_queue.push((target, target_mode));
-                    }
-                    self.branch_targets.insert(target);
-                }
-
-                if opcode_str == "BL_SUFFIX" {
-                    self.register_tracker.track_mov_immediate(14, (addr + 2) | 1);
-                } else if opcode_str == "BL" || opcode_str == "BLX" {
-                    self.register_tracker.track_mov_immediate(14, addr + 4);
-                }
-            }
+            const IWRAM_MAX_INSTRUCTIONS: usize = 20_000;
+            let iwram_count = self.bfs_pass(
+                &mut iwram_queue,
+                &mut iwram_visited,
+                Some(&visited),  // Shared visited set
+                &mut data_addresses,
+                rom,
+                &arm_decoder,
+                &thumb_decoder,
+                IWRAM_MAX_INSTRUCTIONS,
+                "IWRAM pass",
+                false,  // No progress reporting
+            );
+            eprintln!("  CFG: IWRAM pass complete, {} instructions visited", iwram_count);
         }
 
         self.instruction_addresses.sort();
@@ -1340,5 +860,170 @@ impl CfgBuilder {
             .ok()
             .map(|i| self.mode_map[i].1)
     }
-    
+
+    /// Runs a single BFS pass over reachable code.
+    ///
+    /// This is the shared implementation for all 5 BFS passes (main, mini, mini2, mini3, IWRAM).
+    /// The only differences between passes are:
+    /// - Queue/visited variable names (passed as mutable references)
+    /// - Max instructions limit (passed as parameter)
+    /// - Max consecutive non-branch limit (always 128, hardcoded)
+    /// - Whether to check a shared visited set (passed as parameter)
+    ///
+    /// Returns the number of instructions visited in this pass.
+    fn bfs_pass(
+        &mut self,
+        queue: &mut Vec<(u32, ArmMode)>,
+        own_visited: &mut HashSet<(u32, ArmMode)>,
+        shared_visited: Option<&HashSet<(u32, ArmMode)>>,
+        data_addresses: &mut HashSet<u32>,
+        rom: &[u8],
+        arm_decoder: &ArmDecoder,
+        thumb_decoder: &ThumbDecoder,
+        max_instructions: usize,
+        label: &str,
+        report_progress: bool,
+    ) -> usize {
+        // Cut fall-through after this many consecutive non-branch instructions.
+        // Real Thumb code branches every ~10-20 instructions; audio/graphic data
+        // decoded as Thumb produces thousands of consecutive valid-looking
+        // halfwords with no branches. 32 catches data walks early. Legitimate
+        // long straight-line runs (memcpy loops, LDR/STR sequences) are kept
+        // reachable via explicit branch targets and BL fall-through, not by
+        // inflating this limit.
+        const MAX_CONSECUTIVE_NON_BRANCH: usize = 32;
+        let mut count = 0;
+        let mut consecutive_non_branch: usize = 0;
+
+        while let Some((addr, current_mode)) = queue.pop() {
+            // Skip if in data_addresses
+            if data_addresses.contains(&addr) {
+                continue;
+            }
+
+            // Skip if already visited in own set or shared set
+            if own_visited.contains(&(addr, current_mode)) {
+                continue;
+            }
+            if let Some(shared) = shared_visited {
+                if shared.contains(&(addr, current_mode)) {
+                    continue;
+                }
+            }
+
+            own_visited.insert((addr, current_mode));
+
+            count += 1;
+            if report_progress && count % 100_000 == 0 {
+                eprintln!("  CFG progress: {} visited, {} branch targets",
+                          count, self.branch_targets.len());
+            }
+            if count >= max_instructions {
+                eprintln!("  CFG {} safety limit reached, stopping", label);
+                break;
+            }
+
+            let decode_addr = if current_mode == ArmMode::Thumb { addr & !1 } else { addr };
+            if decode_addr < 0x08000000 {
+                continue;
+            }
+            let rom_offset = (decode_addr - 0x08000000) as usize;
+            if rom_offset >= rom.len() {
+                continue;
+            }
+
+            let (opcode_str, operands, instr_width) = match current_mode {
+                ArmMode::Arm => {
+                    if rom_offset + 4 > rom.len() { continue; }
+                    let opcode = u32::from_le_bytes([
+                        rom[rom_offset], rom[rom_offset + 1],
+                        rom[rom_offset + 2], rom[rom_offset + 3],
+                    ]);
+                    let (op, ops, _) = arm_decoder.decode(opcode, decode_addr);
+                    (op, ops, 4)
+                }
+                ArmMode::Thumb => {
+                    if rom_offset + 2 > rom.len() { continue; }
+                    let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
+                    let (op, ops, _) = thumb_decoder.decode(opcode, decode_addr);
+                    (op, ops, 2)
+                }
+            };
+
+            if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" {
+                continue;
+            }
+
+            if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
+                data_addresses.insert(pool_addr);
+            }
+
+            self.instruction_addresses.push(addr);
+            self.mode_map.push((addr, current_mode));
+
+            let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
+            self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
+
+            let is_uncond_branch = opcode_str == "B"
+                || opcode_str == "BX"
+                || writes_to_pc(&opcode_str, &operands);
+
+            // Reset on any control flow. BL_PREFIX is part of a BL call pair
+            // (BL_PREFIX + BL_SUFFIX); reset here so the pair isn't penalized.
+            if is_uncond_branch
+                || !targets.is_empty()
+                || opcode_str == "BL"
+                || opcode_str == "BLX"
+                || opcode_str == "BL_PREFIX"
+            {
+                consecutive_non_branch = 0;
+            } else {
+                consecutive_non_branch += 1;
+            }
+
+            // Only push fall-through if under limit
+            if !is_uncond_branch && consecutive_non_branch < MAX_CONSECUTIVE_NON_BRANCH {
+                let next_addr = addr + instr_width;
+                if !own_visited.contains(&(next_addr, current_mode))
+                    && shared_visited.map_or(true, |s| !s.contains(&(next_addr, current_mode)))
+                    && !data_addresses.contains(&next_addr)
+                    && next_addr >= 0x08000000
+                    && ((next_addr - 0x08000000) as usize) < rom.len()
+                {
+                    queue.push((next_addr, current_mode));
+                }
+            }
+
+            for raw_target in targets {
+                if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
+                    continue;
+                }
+                let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
+                    if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
+                } else {
+                    current_mode
+                };
+                let target = if target_mode == ArmMode::Thumb {
+                    raw_target & !1
+                } else {
+                    raw_target & !3
+                };
+                if !own_visited.contains(&(target, target_mode))
+                    && shared_visited.map_or(true, |s| !s.contains(&(target, target_mode)))
+                    && !data_addresses.contains(&target)
+                {
+                    queue.push((target, target_mode));
+                }
+                self.branch_targets.insert(target);
+            }
+
+            if opcode_str == "BL_SUFFIX" {
+                self.register_tracker.track_mov_immediate(14, (addr + 2) | 1);
+            } else if opcode_str == "BL" || opcode_str == "BLX" {
+                self.register_tracker.track_mov_immediate(14, addr + 4);
+            }
+        }
+
+        count
     }
+}

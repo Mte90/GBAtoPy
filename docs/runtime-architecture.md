@@ -24,7 +24,7 @@ The GBA memory map is implemented in `memory.py` with the following regions:
 | VRAM | 0x06000000 | 0x06017FFF | 96KB | Video RAM |
 | OAM | 0x07000000 | 0x070003FF | 1KB | Object attribute memory |
 | ROM | 0x08000000 | 0x09FFFFFF | 32MB | Game ROM |
-| SRAM | 0x0A000000 | 0x0A00FFFF | 64KB | Save RAM |
+| SRAM | 0x0E000000 | 0x0E00FFFF | 64KB | Save RAM |
 
 ### 1.2 Address Mapping: `_map_address()`
 
@@ -639,7 +639,7 @@ PC = 0x08000008 → idx = 2
 0x06000000-0x06017FFF  VRAM (96KB)
 0x07000000-0x070003FF  OAM (1KB)
 0x08000000-0x09FFFFFF  ROM (32MB)
-0x0A000000-0x0A00FFFF  SRAM (64KB)
+0x0E000000-0x0E00FFFF  SRAM (64KB)
 ```
 
 ### 8.2 Relative Address Mapping

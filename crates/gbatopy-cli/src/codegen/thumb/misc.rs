@@ -30,7 +30,7 @@ pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
                 Some(gbatopy_disasm::Operand::Immediate(n)) => *n & 0xFF,
                 _ => 0,
             };
-            Some(format!("swi_handler({:#X})", swi_num))
+            Some(format!("swi_handler({:#X})\nif _cpu_halted:\n    return", swi_num))
         }
         _ => None,
     }

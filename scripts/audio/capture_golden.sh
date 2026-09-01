@@ -1,5 +1,9 @@
 #!/bin/bash
 # Capture golden audio from a GBA ROM using mGBA's SDL disk audio driver.
+
+# --- Determine project root from script location ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Converts raw PCM output to WAV format using Python's wave module.
 
 set -e
@@ -49,7 +53,7 @@ RAW_FILE=$(mktemp)
 trap 'rm -f "$RAW_FILE"' EXIT
 
 # --- Set environment variables ---
-export LD_LIBRARY_PATH="/home/d.scasciafratte/gbatopy/mgba/build:/home/d.scasciafratte/gbatopy/mgba/build/sdl:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH"
 export SDL_AUDIODRIVER=disk
 export SDL_DISKAUDIOFILE="$RAW_FILE"
 export SDL_VIDEODRIVER=dummy
@@ -65,7 +69,7 @@ fi
 
 # --- Run mGBA without Lua script (causes segfault) ---
 # Use timeout + kill approach to capture exact frames
-MGBA_PATH="/home/d.scasciafratte/gbatopy/mgba/build/sdl/mgba"
+MGBA_PATH="$PROJECT_ROOT/mgba/build/sdl/mgba"
 
 # Start mGBA in background
 "$MGBA_PATH" "$ROM_PATH" &

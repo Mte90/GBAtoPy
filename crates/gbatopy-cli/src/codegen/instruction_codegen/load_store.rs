@@ -425,8 +425,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                             code.push_str("registers[15] = memory.read_u32(addr)\n");
                             code.push_str("_new_cpsr = _spsr_for_mode(cpsr['mode'])\n");
                             code.push_str("_old_mode = cpsr['mode']\n");
-                            code.push_str("cpsr.clear()\n");
-                            code.push_str("cpsr.update(_cpsr_from_int(_new_cpsr))\n");
+                            code.push_str("_cpsr_from_int(cpsr, _new_cpsr)\n");
                             code.push_str("_switch_mode(cpsr['mode'])\n");
                         } else {
                             code.push_str(&format!("registers[{}] = memory.read_u32(addr)\n", reg));

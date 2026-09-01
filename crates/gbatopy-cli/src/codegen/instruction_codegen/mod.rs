@@ -31,8 +31,8 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
     if let Some(code) = coprocessor::generate(inst) {
         return code;
     }
-    
-    format!("# {} unimplemented", opcode)
+
+    format!("raise NotImplementedError('ARM opcode unimplemented at {:#010x}: {}')", inst.address, opcode)
 }
 
 fn generate_thumb_instruction(inst: &DecodedInstruction) -> String {
@@ -67,6 +67,5 @@ fn generate_thumb_instruction(inst: &DecodedInstruction) -> String {
     if let Some(code) = thumb::misc::generate(inst) {
         return code;
     }
-    
-    format!("# {} {} unimplemented", opcode, inst.condition.map(|c| format!("{:?}", c)).unwrap_or_default())
+    format!("raise NotImplementedError('THUMB opcode unimplemented at {:#010x}: {}')", inst.address, opcode)
 }
