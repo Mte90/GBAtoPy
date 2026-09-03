@@ -31,6 +31,23 @@ pub fn writes_to_pc(opcode: &str, operands: &[Operand]) -> bool {
     false
 }
 
+/// Heuristic: returns true when at least 12 of a 16-byte window starting at
+/// `offset` are printable ASCII (0x20-0x7E). Catches literal pools that
+/// coincidentally decode as valid Thumb instructions (e.g. 0x6423 = "#d").
+fn looks_like_data(rom: &[u8], offset: usize) -> bool {
+    const WINDOW: usize = 16;
+    if offset + WINDOW > rom.len() {
+        return false;
+    }
+    let mut printable = 0;
+    for i in 0..WINDOW {
+        if (0x20..=0x7E).contains(&rom[offset + i]) {
+            printable += 1;
+        }
+    }
+    printable >= 12
+}
+
 /// Detects LDR-Literal (PC-relative load) instructions and computes the
 /// literal pool address they reference. The pool address must be marked as
 /// data so the CFG builder does not decode it as an instruction.
@@ -984,11 +1001,13 @@ impl CfgBuilder {
             // Only push fall-through if under limit
             if !is_uncond_branch && consecutive_non_branch < MAX_CONSECUTIVE_NON_BRANCH {
                 let next_addr = addr + instr_width;
+                let next_rom_offset = (next_addr - 0x08000000) as usize;
                 if !own_visited.contains(&(next_addr, current_mode))
                     && shared_visited.map_or(true, |s| !s.contains(&(next_addr, current_mode)))
                     && !data_addresses.contains(&next_addr)
                     && next_addr >= 0x08000000
-                    && ((next_addr - 0x08000000) as usize) < rom.len()
+                    && next_rom_offset < rom.len()
+                    && !looks_like_data(rom, next_rom_offset)
                 {
                     queue.push((next_addr, current_mode));
                 }

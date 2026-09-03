@@ -14,13 +14,11 @@ import re
 import os
 
 # Hardcoded status map - ground truth from docs/reference/test-roms.md
-# 5 FAIL ROMs
+# 3 FAIL ROMs (line_timing + blindjump_BlindJump fixed)
 FAIL_ROMS = {
-    "line_timing",
     "cascade7",
     "fantasy-knight",
     "Skyland",
-    "blindjump_BlindJump",
 }
 
 # 2 NEW ROMs (only these two, per task spec)

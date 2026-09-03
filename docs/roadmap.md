@@ -4,7 +4,7 @@
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
 > **Last updated**: 2026-09-01  
-> **Current state**: 69/76 ROMs pass visual verification (5 FAIL, 0 SKIP). 0 ROMs hang. Build: 0 errors, 0 warnings.
+> **Current state**: 71/76 ROMs pass visual verification (3 FAIL, 0 SKIP). 0 ROMs hang. Build: 0 errors, 0 warnings.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
 ---
@@ -20,7 +20,7 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 ### ✅ Wave 1: Core Infrastructure - COMPLETE
 - Rust pipeline builds with zero warnings
 - Disassembler decodes ARM/Thumb instructions (~100% coverage)
-- Python generation produces syntactically valid output for all 66 ROMs
+- Python generation produces syntactically valid output for all 76 ROMs
 - Memory map implemented (ROM, EWRAM, IWRAM, MMIO, VRAM, Palette, OAM) with mirrors
 - Basic block merging (52-80% code size reduction)
 
@@ -97,12 +97,12 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - Banked register System mode 0x1F
 
 ### ✅ Wave 10: Test Framework — PARTIAL
-- Rust-based automated testing with 66 ROMs configured
-- **Smoke tests**: 64/66 passing (helloAudio, rates fail)
+- Rust-based automated testing with 76 ROMs configured
+- **Smoke tests**: 76/76 passing (100%)
 - **ScreenshotGolden tests**: WIRED — 78 goldens in `test-reports/goldens/`, compared via `scripts/verify/regress_all.sh` (full regression) and `ScreenshotGoldenVerifier` (Rust). Golden path: `test-reports/goldens/{rom}_f60.png`.
-- **Manual golden matches**: 53/66 verified (<30% pixel diff via `compare_screenshots.py`)
+- **Manual golden matches**: 71/76 verified (<30% pixel diff via `compare_screenshots.py`)
 - Verifier types in config: Smoke, ScreenshotGolden, EWRAM, Assertion, Performance, Coverage
-- Only Smoke verifier currently exercised
+- Smoke + ScreenshotGolden verifiers exercised
 - Parallel execution (4 workers)
 - JSON/JUnit report generation
 
@@ -120,8 +120,8 @@ Failed: 0
 ### Visual Verification (ScreenshotGolden vs mGBA)
 ```
 Total: 76 ROMs
-Verified (<30% diff): 70 (92.1%)
-Known failures: 4 (cascade7, fantasy-knight, Skyland, blindjump)
+Verified (<30% diff): 71 (93.4%)
+Known failures: 3 (cascade7, fantasy-knight, Skyland)
 SKIP: 0 (ZERO-SKIP policy)
 NEW: 2 (gbarcade, bpcore_BPCoreEngine - not yet verified)
 Runtime hangs: 0
@@ -137,11 +137,13 @@ Runtime hangs: 0
 - **helloAudio.gba**: RESOLVED — F45 fix (SWI halt + IRQ IF clear) → PASS (0% diff)
 - **rates.gba**: RESOLVED — F46 fix (MUL decode + CRT0) → PASS (3.65% diff)
 
-### Visual Verification Failures (4 ROMs)
+### Visual Verification Failures (3 ROMs)
 - **cascade7**: Rendering code never called — indirect BLX Rn not implemented
 - **fantasy-knight**: Stuck in IRQ handler poll loop — missing IRQ delivery
 - **Skyland**: 79K code blocks — hits codegen guard for unimplemented pattern
-- **blindjump_BlindJump**: NOT OOM (15.8MB ROM, 27.8MB output, 675MB RSS). Real bug: black-screen codegen correctness. Size tracked as F64.
+
+### Recently Fixed (2026-09-01)
+- **blindjump_BlindJump**: PASS at 9.39% diff. Root causes: (F54) Thumb format-7 selector used bit 12 + bits 11-10 instead of bits 11-9, mis-decoding all register-offset load/store; (F12) DISPSTAT read path used stale Python attrs instead of the live MMIO buffer `io[4]/io[5]` that `step_scanline()` writes. Size tracked as F64.
 
 ### SKIP (0 ROMs)
 - None. All previously skipped ROMs (rates, song, enhancedcontrolchecker, test) now PASS.
@@ -185,10 +187,10 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 
 1. **C8/F25a: ELF .init_array constructor processing** — CLOSED: .init_array processed by ROM CRT0, not runtime; 0x030000FC was typo for 0x03007FFC IRQ ptr
 3. ~~**C10/F27: PPU BG mosaic for Mode 2-5**~~ — ✅ FIXED: `_apply_mosaic()` calls added to Mode 2 (BG2/BG3), Mode 3, Mode 4, Mode 5 renderers
-4. **C11/F28: BIOS SWI LZ77/Huff/RL decompression** — Currently no-ops; needed for compressed asset ROMs
+4. ~~**C11/F28: BIOS SWI LZ77/Huff/RL decompression**~~ — ✅ FIXED: LZ77, Huffman, Run-Length decompression rewritten against mGBA reference; verified with functional test loading compressed data into EWRAM
 5. ~~**C12/F29: swi_intr_wait IF wake check**~~ — ✅ FIXED: `IntrWait` now checks IF before halting (R0=1 mode consumes pending IRQ)
-6. **C16: MMIO strict width/mask audit** — Verify u8/u16/u32 handlers against GBATEK
-7. **F54: blindjump codegen correctness** — NOT OOM (15.8MB ROM, 27.8MB output, 675MB RSS). Real bug: black-screen codegen. Size tracked as F64.
+6. ~~**C16: MMIO strict width/mask audit**~~ — ✅ DONE: 3 bugs fixed (DMA read high-byte, write_u8 full MMIO dispatch, timer read high-byte); runtime suite green, line_timing canary PASS
+7. ~~**F54: blindjump codegen correctness**~~ — ✅ FIXED: Thumb format-7 selector bits 11-9 (was bit 12 + bits 11-10); DISPSTAT read uses MMIO buffer. PASS at 9.39% diff. Size tracked as F64.
 8. **Generate goldens for 2 NEW ROMs** (gbarcade, bpcore_BPCoreEngine) — Then run full ScreenshotGolden suite
 9. **numba JIT (future work)** — `--profile` (F52) shows `read_u16` + `dict.get` dominate runtime (4.76s/2.3M calls). JIT-compiling the memory access hot path with numba is the highest-leverage perf win but requires numba as a runtime dependency, breaking the standalone-output requirement. Defer until the transpiler output format is stable, then gate behind an opt-in `--jit` flag.
 10. **F14: N/S-cycle memory access timing — PERMANENTLY DEFERRED (KILL)** — Oracle analysis (92% confidence) found that adding cycle-accurate memory timing violates all 5 runtime invariants. Zero failing ROMs require cycle-accurate timing. Full analysis in `todo.md` § APPENDIX.
@@ -206,7 +208,7 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 | BIOS handlers | 54 |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
-| Test pass rate | 76/76 smoke (100%); 69/76 visual verified (90.8%); 5 fail; 0 skip; 2 new |
+| Test pass rate | 76/76 smoke (100%); 71/76 visual verified (93.4%); 3 fail; 0 skip; 2 new |
 | Build time | ~30s (release) |
 | Transpile time | ~1-5s per ROM |
 

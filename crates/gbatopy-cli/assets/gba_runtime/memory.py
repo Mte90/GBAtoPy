@@ -558,6 +558,18 @@ class Memory:
 
         if MemoryMap.IWRAM_START <= addr <= MemoryMap.IWRAM_END:
             offset = addr - MemoryMap.IWRAM_START
+            if 0x2938 <= offset <= 0x293F:
+                import traceback as _tb
+                try:
+                    _pc = _interp_cpu.registers[15]
+                except Exception:
+                    _pc = -1
+                try:
+                    _fc = _wp_fc
+                except Exception:
+                    _fc = -1
+                print(f"[WP2938] off=0x{offset:04X} val=0x{value:02X} pc=0x{_pc:08X} fc={_fc} mb={_from_multibyte}", flush=True)
+                _tb.print_stack()
             self.iwram[offset] = value
             self.open_bus = value
             return

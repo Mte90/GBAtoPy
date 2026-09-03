@@ -883,7 +883,12 @@ class ARM7TDMI:
         else:
             for i in range(16):
                 if reg_list & (1 << i):
-                    val = self._operand(i)
+                    if s_bit and i == 13:
+                        val = self.banked_sp_lr[0x10]['sp']
+                    elif s_bit and i == 14:
+                        val = self.banked_sp_lr[0x10]['lr']
+                    else:
+                        val = self._operand(i)
                     self.memory.write_u32(addr, val & 0xFFFFFFFF)
                     addr += 4
 
@@ -979,7 +984,6 @@ class ARM7TDMI:
         GBA BIOS extracts the SWI number from bits 23:16 of the 24-bit
         comment field (mGBA: immediate >> 16)."""
         swi_num = (instr >> 16) & 0xFF
-        print(f"PROBE swi num=0x{swi_num:02X} instr=0x{instr:08X} pc=0x{self.registers[15]:08X}", flush=True)
         self.swi_handler(swi_num)
         self.registers[15] += 4
         return 2

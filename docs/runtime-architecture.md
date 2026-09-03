@@ -174,6 +174,8 @@ The main loop synchronizes CPU execution with PPU timing using instruction count
    - Reset instruction counter
 3. Continue until VBlank IRQ or frame complete
 
+**instr_per_scanline calculation**: `(gba_hz / 60) // 228` — approximately 613 instructions per scanline. A previous `// 2` halving caused VBlank IRQ wake failures and 7-frame timing divergence in cascade7 (hash routine ran at F2 instead of F9). The halving has been removed.
+
 **Key properties**:
 
 - `step_scanline()` is called ONLY from the main loop, never from memory reads or the fallback interpreter.

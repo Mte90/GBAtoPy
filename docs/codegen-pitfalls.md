@@ -85,6 +85,20 @@ Catalogue of codegen bugs fixed across sessions.
 **Fix:** Removed the fast-forward DISPSTAT reads from memory.py. Removed _last_vcount_read and _last_dispstat_read attributes. PPU stepping is exclusively in the main loop.
 **File:** crates/gbatopy-cli/assets/gba_runtime/memory.py
 
+## 14. Thumb BL Prefix/Suffix Split (Codegen + CFG)
+
+**Symptom:** Spurious dispatch entries at BL_ADDR+2 caused garbage jumps and unwanted EWRAM writes in cascade7. BL instructions were split into BL_PREFIX and BL_SUFFIX dispatch entries, and the code generator wrote the full target address to LR instead of the upper bits.
+**Root cause:** The decoder stored the full target in the BL_PREFIX operand; the code generator emitted separate prefix/suffix steps that computed wrong branch targets. The CFG BFS advanced by 2 bytes for BL_PREFIX, creating a mid-instruction fall-through.
+**Fix:** (1) Decoder now stores only the upper bits of the target in BL_PREFIX operand. (2) Code generator merges prefix/suffix into a single 4-byte emission: `LR = (PC + 3) | 1`, `PC = target & ~1`. (3) CFG BFS advances by 4 bytes for BL_PREFIX, eliminating mid-instruction fall-throughs.
+**Files:** crates/gbatopy-disasm/src/thumb/mod.rs, crates/gbatopy-cli/src/codegen/instruction_codegen/branch.rs, crates/gbatopy-disasm/src/cfg.rs
+
+## 15. looks_like_data Heuristic Misclassified Thumb Code (CFG)
+
+**Symptom:** Legitimate Thumb instruction blocks were classified as data, preventing BFS from discovering reachable code. This caused missing dispatch entries and fallback-interpreter execution of functions that should have been code-generated.
+**Root cause:** The `looks_like_data` heuristic in cfg.rs used printable-ASCII byte ratios to detect literal pools, but many valid Thumb instruction sequences contain byte patterns that trigger false positives.
+**Fix:** Removed the `looks_like_data` check from the CFG BFS fall-through guard. Literal-pool detection now relies on `literal_pool_addr` and `mark_data_regions` with the no-incoming-branches rule.
+**File:** crates/gbatopy-disasm/src/cfg.rs
+
 ## 13. Per-Scanline Affine Parameter Snapshots (PPU)
 
 **Symptom:** Affine background rendering in Mode 3/4/5 used stale affine parameters — HBlank DMA updates to BG2PD were not reflected per-scanline.

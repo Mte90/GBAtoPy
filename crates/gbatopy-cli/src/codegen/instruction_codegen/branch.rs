@@ -58,29 +58,24 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     // Conditional branches: BEQ, BNE, BCS, BCC, BMI, BPL, BVS, BVC, BHI, BLS, BGE, BLT, BGT, BLE
     if opcode.len() == 3 && opcode.starts_with('B') && opcode != "BX" && opcode != "BLX" {
         if let Some(Operand::Immediate(target)) = ops.first() {
-            let target = if *target > 0x08000000 && *target < 0x0A000000 {
-                *target
-            } else {
-                return None;
-            };
             let cond = &opcode[1..];
-            // When condition is false, PC must still advance by 4 bytes (ARM instruction size)
-            return Some(format!("if cpsr_check('{}'):\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF", cond, target));
+            if *target > 0x08000000 && *target < 0x0A000000 {
+                return Some(format!("if cpsr_check('{}'):\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF", cond, target));
+            }
+            return Some("registers[15] = (registers[15] + 4) & 0xFFFFFFFF".to_string());
         }
     }
     // Conditional BL: BLEQ, BLNE, etc. (4 chars, starts with "BL", not "BLX")
     if opcode.len() >= 4 && opcode.starts_with("BL") && !opcode.starts_with("BLX") {
         if let Some(Operand::Immediate(target)) = ops.first() {
-            let target = if *target > 0x08000000 && *target < 0x0A000000 {
-                *target
-            } else {
-                return None;
-            };
             let cond = &opcode[2..];
-            return Some(format!(
-                "if cpsr_check('{}'):\n    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
-                cond, target
-            ));
+            if *target > 0x08000000 && *target < 0x0A000000 {
+                return Some(format!(
+                    "if cpsr_check('{}'):\n    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
+                    cond, target
+                ));
+            }
+            return Some("registers[15] = (registers[15] + 4) & 0xFFFFFFFF".to_string());
         }
     }
     None

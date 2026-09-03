@@ -292,25 +292,8 @@ class BIOS:
 
         return len(dst)
 
-
-
     def swi_vblank_intr_wait(self):
-        if not hasattr(self, "memory") or not hasattr(self.memory, "cpu"):
-            return
-
         cpu = self.memory.cpu
-        memory = self.memory
-        interrupts = getattr(memory, "_interrupts", None)
-
-        # If a fresh VBlank is already pending, consume it without advancing.
-        if interrupts is not None and (interrupts.if_reg & (1 << 0)):
-            interrupts.if_reg &= ~(1 << 0)
-            cpu.cpsr |= (1 << 30)
-            cpu.registers[0] = 1
-            return
-
-        # Halt the CPU. The main loop's scanline stepping will advance the PPU
-        # and deliver the VBlank IRQ, which clears the halt.
         cpu._halted = True
 
     def swi_intr_wait(self, wait_flag: int, vblank_flag: int):

@@ -10,7 +10,7 @@ This document catalogs all **76 test ROMs** used by GBAtoPy for verification and
 - F48 (sprite VRAM base 0x06010000 + parse_oam X bits + correct _render_sprites): sprite-hmosaic PASS (16.2% diff)
 - F27/C10 (BG mosaic Mode 2-5): _apply_mosaic() added to Mode 2 (BG2+BG3), Mode 3, Mode 4, Mode 5 renderers
 
-Remaining FAIL: 4 ROMs (cascade7, fantasy-knight, Skyland, blindjump). Zero SKIP ROMs (F49 complete). line_timing now PASS (F14b secondary fix: codegen SWI halt block-break).
+Remaining FAIL: 3 ROMs (cascade7, fantasy-knight, Skyland). Zero SKIP ROMs (F49 complete). line_timing PASS (F14b: codegen SWI halt block-break). blindjump_BlindJump PASS (F54: Thumb format-7 selector bits 11-9; F12: DISPSTAT read uses MMIO buffer instead of stale attributes).
 
 **Note (2026-08-05)**: Phase 10c regression complete after F3 fix (disassembler I=1 bug) and golden re-capture. 14 INCONCLUSIVE ROMs re-verified and now PASS. Phase 11 in progress: targeting 16 FAIL ROMs with F5 (CFG literal pool), F7 (IWRAM dispatch), F10 (Thumb routing) fixes.
 
@@ -24,12 +24,12 @@ Remaining FAIL: 4 ROMs (cascade7, fantasy-knight, Skyland, blindjump). Zero SKIP
 - ❌ **FAIL** — Transpiles and runs, but >=30% diff or timeout (documented root cause)
 - ⏰ **SKIP** — Not tested (known hang or missing file)
 
-### Summary (2026-08-14, Phase 16)
+### Summary (2026-09-01, Phase 17)
 
 | Status | Count | % |
 |--------|-------|---|
-| ✅ PASS | 70 | 92.1% |
-| ❌ FAIL | 4 | 5.3% |
+| ✅ PASS | 71 | 93.4% |
+| ❌ FAIL | 3 | 3.9% |
 | ⏰ SKIP | 0 | 0.0% |
 | 🆕 NEW | 2 | 2.6% |
 
@@ -44,7 +44,7 @@ Remaining FAIL: 4 ROMs (cascade7, fantasy-knight, Skyland, blindjump). Zero SKIP
 | cascade7 | N/A | Indirect BLX Rn | Rendering code never called — indirect branch via register not implemented in codegen |
 | fantasy-knight | 99.7% | Butano render callback cleared by IWRAM context save | 7 instruction-decoding bugs fixed (BLX Rm Thumb NOP, LDMIA writeback, ARM BLX Rm LR, CPSR thumb_mode sync, VBlankIntrWait ISR skip). SP leak crash resolved — stack stable at 0x03007978. VBlank ISR runs in ARM mode, dispatches Butano callback. Callback registered (0x08014AC5) then cleared to 0 by IWRAM STMIA context save at 0x03001870 (R8=0 overwrites callback pointer at 0x030026D8). Callback runs once, then never again. 406/38400 pixels vs golden. |
 | Skyland | N/A | Codegen guard hit | 79K blocks — hits codegen guard for unimplemented pattern |
-| blindjump_BlindJump | N/A | Black-screen codegen bug | NOT OOM (15.8MB ROM, 27.8MB output, peak RSS 675MB). Real bug: codegen correctness produces black screen. Size tracked as F64. |
+| blindjump_BlindJump | ✅ PASS (9.39%) | Fixed (F54+F12) | F54: Thumb format-7 selector used bit 12 + bits 11-10 instead of bits 11-9, mis-decoding all register-offset load/store. F12: DISPSTAT read rebuilt from stale `self.hblank`/`self.vcount_trigger` attributes instead of reading the live MMIO buffer `io[4]/io[5]` that `step_scanline()` writes. Combined fix: 9.39% diff. |
 
 **Previously FAIL ROMs now PASS (Phase 15, 2026-08-12):**
 - helloAudio: SWI halt + IRQ IF clear fix → PASS (0% diff)
@@ -750,7 +750,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Mode 0 background
 - Audio playback
 **Expected Output**: Cascade sprite animation  
-**Verification Status**: ❌ FAIL — Rendering code never called. Root cause: indirect BLX Rn instruction not implemented in codegen. Requires indirect branch support.
+**Verification Status**: ❌ FAIL — CRT0 control-flow divergence. Runtime writes PRNG values to IWRAM 0x030078C4 at fc=-1 (CRT0 init), while mGBA writes at F9. The `.init_array` table at IWRAM 0x03002938–0x03002940 contains two constructor pointers in our runtime but is zero in mGBA. Root cause: CRT0 `.data` copy or `.init_array` processing diverges from mGBA, causing early constructor execution. The `instr_per_scanline` halving fix (now ~613/scanline) moved the hash routine to F9, but the CRT0 divergence persists.
 
 ### fantasy-knight.gba ❌ FAIL
 **Suite**: fantasy_knight  

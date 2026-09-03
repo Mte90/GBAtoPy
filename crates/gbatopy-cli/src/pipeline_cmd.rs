@@ -1387,7 +1387,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         _dump_region_name = _parts[1] if len(_parts) > 1 else 'iwram'
     _audio_buf = bytearray() if audio_capture else None
     _audio_synth_per_frame = 735
-    instr_per_scanline = max(50, (int(gba_hz / 60.0) // 2) // 228)
+    instr_per_scanline = max(50, int(gba_hz / 60.0) // 228)
     _instr_per_frame = instr_per_scanline * 228
     __DELIVER_IRQ_BODY__
     while ic < mi:
@@ -1533,7 +1533,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         # Execute instructions for this frame, stepping PPU scanlines
         # Each scanline: run a batch of instructions, then advance VCount + fire HBlank DMA
         target_cycles_per_frame = int(gba_hz / 60.0)
-        instr_per_scanline = max(50, (target_cycles_per_frame // 2) // 228)
+        instr_per_scanline = max(50, target_cycles_per_frame // 228)
         max_inner_stalls = 10000
         for _scanline in range(228):
             if ic >= mi:

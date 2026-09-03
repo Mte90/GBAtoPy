@@ -205,20 +205,19 @@ impl ThumbDecoder {
     }
 
     fn format_7_reg_offset(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
-        let l_bit = (hw >> 12) & 1;
-        let op = (hw >> 10) & 0x3;
+        let op = (hw >> 9) & 0x7;
         let ro = ((hw >> 6) & 0x7) as u8;
         let rb = ((hw >> 3) & 0x7) as u8;
         let rd = (hw & 0x7) as u8;
-        let name = match (l_bit, op) {
-            (0, 0) => "STR",
-            (1, 0) => "LDR",
-            (0, 1) => "STRB",
-            (1, 1) => "LDRB",
-            (0, 2) => "STRH",
-            (1, 2) => "LDRH",
-            (1, 3) => "LDRSB",
-            (0, 3) => "LDRSH",
+        let name = match op {
+            0b000 => "STR",
+            0b001 => "STRH",
+            0b010 => "STRB",
+            0b011 => "LDRSB",
+            0b100 => "LDR",
+            0b101 => "LDRH",
+            0b110 => "LDRB",
+            0b111 => "LDRSH",
             _ => "UNKNOWN",
         };
         (

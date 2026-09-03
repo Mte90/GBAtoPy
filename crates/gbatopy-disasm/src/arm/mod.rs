@@ -106,21 +106,10 @@ impl ArmDecoder {
             return self.decode_branch(word, address);
         }
         
-        // Halfword load/store (LDRH/STRH/LDRSB/LDRSH) and SWP have bits 27-25 = 000
-        // with bit 7 = 1 and bit 4 = 1. Regular load/store has bits 27-26 = 01.
-        // Data processing with register operand has bits 27-26 = 00, bit 25 = 0,
-        // and bit 4 may be 0 (immediate shift) or 1 (register shift).
-        // In ARMv4T, bit 7 = 0 for data-processing register shifts, so bit_7=1 && bit_4=1
-        // unambiguously identifies halfword/signed transfers. The STRH/LDRH decode logic
-        // lives in decode_data_processing (lines 176-224), NOT in decode_load_store.
-        if bits_27_26 == 0b00 && bit_25 == 0 {
-            let bit_7 = (word >> 7) & 0x1;
-            let bit_4 = (word >> 4) & 0x1;
-            if bit_7 == 1 && bit_4 == 1 {
-                return self.decode_data_processing(word, address);
-            }
-        }
-
+        // Halfword load/store (LDRH/STRH/LDRSB/LDRSH), SWP, MUL, MLA all have
+        // bits 27-26 = 00 and are handled by decode_data_processing via the
+        // (0b00, _) match arm below. No early return here — routing through the
+        // match arm ensures the condition suffix is applied uniformly.
         let (base_name, operands, is_thumb) = match (bits_27_26, bit_25) {
             (0b00, _) => self.decode_data_processing(word, address), // Bits 27-26 = 00
             (0b01, _) => self.decode_load_store(word, address),      // Bits 27-26 = 01
@@ -143,11 +132,18 @@ impl ArmDecoder {
             ),
         };
 
-        let full_name = match cond {
-            Some(Condition::Al) | Some(Condition::Nv) => base_name,
-            _ => {
-                let suffix = cond.map(|c| c.name()).unwrap_or("??");
-                format!("{}{}", base_name, suffix)
+        // UNDEFINED/UNKNOWN opcodes must not carry a condition suffix:
+        // the codegen fallback raises NotImplementedError unconditionally and
+        // the cfg filter matches the bare "UNDEFINED"/"UNKNOWN*" strings.
+        let full_name = if base_name == "UNDEFINED" || base_name.starts_with("UNKNOWN") {
+            base_name
+        } else {
+            match cond {
+                Some(Condition::Al) | Some(Condition::Nv) => base_name,
+                _ => {
+                    let suffix = cond.map(|c| c.name()).unwrap_or("??");
+                    format!("{}{}", base_name, suffix)
+                }
             }
         };
 

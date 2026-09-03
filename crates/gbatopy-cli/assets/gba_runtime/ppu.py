@@ -1184,17 +1184,12 @@ class PPU:
         elif addr == self.REG_VCOUNT:
             return self.vcount
 
-        # DISPSTAT read
+        # DISPSTAT read — return the authoritative latched value from io[]
+        # maintained by step_scanline(). The Python attributes (self.vblank,
+        # self.hblank, self.vcount_trigger) are stale; only io[4]/io[5] reflect
+        # the real per-scanline state.
         elif addr == self.REG_DISPSTAT:
-            dispstat = 0
-            dispstat |= (self.vblank & 1) << 0
-            dispstat |= (self.hblank & 1) << 1
-            dispstat |= (self.vcount_trigger & 1) << 2
-            dispstat |= (self.vblank_irq_enable & 1) << 3
-            dispstat |= (self.hblank_irq_enable & 1) << 4
-            dispstat |= (self.vcount_irq_enable & 1) << 5
-            dispstat |= (self.lyc & 0xFF) << 8
-            return dispstat
+            return self.memory.io[4] | (self.memory.io[5] << 8)
 
         # BG Control registers read
         elif addr == self.REG_BG0CNT:
