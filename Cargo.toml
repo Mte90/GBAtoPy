@@ -2,6 +2,7 @@
 members = [
     "crates/gbatopy-mgba",
     "crates/gbatopy-cli",
+    "crates/gbatopy-test",
 ]
 
 resolver = "2"

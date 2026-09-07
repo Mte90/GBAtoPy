@@ -197,9 +197,33 @@ impl Disassembler {
                     }
                     let halfword = u16::from_le_bytes([rom_data[offset], rom_data[offset + 1]]);
 
-                    let (opcode, operands, sets_flags) =
-                        self.thumb_decoder.decode(halfword, address);
-                    (opcode, operands, sets_flags, 2)
+                    // Check if this is the first half of a 32-bit BL instruction
+                    let (opcode, operands, sets_flags, width) =
+                        if (halfword & 0xF800) == 0xF000 {
+                            // Potential BL_PREFIX: opcode range 0xF000-0xF7FF with bit 11 = 0
+                            let hw1 = halfword;
+                            // Try to read the next halfword for BL_SUFFIX
+                            if offset + 4 <= rom_data.len() {
+                                let hw2 = u16::from_le_bytes([rom_data[offset + 2], rom_data[offset + 3]]);
+                                // Check if hw2 is a valid BL_SUFFIX (bit 11 = 1)
+                                if let Some((op, ops, flags, w)) = self.thumb_decoder.decode_bl_pair(hw1, hw2, address) {
+                                    (op, ops, flags, w)
+                                } else {
+                                    // hw2 is not a valid BL_SUFFIX, fall back to BL_PREFIX
+                                    let (op, ops, flags) = self.thumb_decoder.decode(hw1, address);
+                                    (op, ops, flags, 2)
+                                }
+                            } else {
+                                // Can't read next halfword, fall back to BL_PREFIX
+                                let (op, ops, flags) = self.thumb_decoder.decode(hw1, address);
+                                (op, ops, flags, 2)
+                            }
+                        } else {
+                            // Not a BL_PREFIX, decode normally
+                            let (op, ops, flags) = self.thumb_decoder.decode(halfword, address);
+                            (op, ops, flags, 2)
+                        };
+                    (opcode, operands, sets_flags, width)
                 }
             };
 
@@ -769,7 +793,33 @@ impl Disassembler {
                         continue;
                     }
                     let halfword = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                    let (opcode, operands, sets_flags) = thumb_decoder.decode(halfword, decode_addr);
+                    
+                    // Check if this is the first half of a 32-bit BL instruction
+                    let (opcode, operands, sets_flags, width) =
+                        if (halfword & 0xF800) == 0xF000 {
+                            // Potential BL_PREFIX: opcode range 0xF000-0xF7FF with bit 11 = 0
+                            let hw1 = halfword;
+                            // Try to read the next halfword for BL_SUFFIX
+                            if rom_offset + 4 <= rom.len() {
+                                let hw2 = u16::from_le_bytes([rom[rom_offset + 2], rom[rom_offset + 3]]);
+                                // Check if hw2 is a valid BL_SUFFIX (bit 11 = 1)
+                                if let Some((op, ops, flags, w)) = thumb_decoder.decode_bl_pair(hw1, hw2, decode_addr) {
+                                    (op, ops, flags, w)
+                                } else {
+                                    // hw2 is not a valid BL_SUFFIX, fall back to BL_PREFIX
+                                    let (op, ops, flags) = thumb_decoder.decode(hw1, decode_addr);
+                                    (op, ops, flags, 2)
+                                }
+                            } else {
+                                // Can't read next halfword, fall back to BL_PREFIX
+                                let (op, ops, flags) = thumb_decoder.decode(hw1, decode_addr);
+                                (op, ops, flags, 2)
+                            }
+                        } else {
+                            // Not a BL_PREFIX, decode normally
+                            let (op, ops, flags) = thumb_decoder.decode(halfword, decode_addr);
+                            (op, ops, flags, 2)
+                        };
                     
                     instructions.push(DecodedInstruction {
                         address: addr,
@@ -778,7 +828,7 @@ impl Disassembler {
                         condition: None,
                         raw: halfword as u32,
                         sets_flags,
-                        width: 2,
+                        width,
                         mode: ArmMode::Thumb,
                         is_data: false,
                     });

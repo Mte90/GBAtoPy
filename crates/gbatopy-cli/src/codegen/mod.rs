@@ -2,7 +2,7 @@ pub mod helpers;
 pub mod instruction_codegen;
 pub mod memory;
 pub mod thumb;
-pub mod ppu;
+
 pub mod sram;
 
 #[allow(unused_imports)]

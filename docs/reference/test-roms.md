@@ -131,13 +131,13 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 | Memory | 2 | 128kb-boundary.gba ✅, ram-access-timing.gba ✅ | 2✅ |
 | RTC | 1 | rtc-demo.gba ✅ | 1✅ |
 | Timing | 3 | exact-timing.gba ✅, start-delay.gba ✅, gba-frame-test.gba ✅ | 3✅ |
-| Sprite/Game | 6 | gbarcade_gbarcade_v0.1.4.gba 🆕, cascade7.gba ❌, blindjump_BlindJump.gba ❌, fantasy-knight.gba ❌, Skyland.gba ❌, proposal_proposal-demo.gba ✅ | 1✅, 4❌, 1🆕 |
+| Sprite/Game | 6 | gbarcade_gbarcade_v0.1.4.gba 🆕, cascade7.gba ❌, blindjump_BlindJump.gba ✅, fantasy-knight.gba ❌, Skyland.gba ❌, proposal_proposal-demo.gba ✅ | 2✅, 3❌, 1🆕 |
 | Engine | 1 | bpcore_BPCoreEngine.gba 🆕 | 1🆕 |
 | Flash | 2 | FlashSpeedTestMB.gba ✅, FlashSpeedTestROM.gba ✅ | 2✅ |
 
 **Legend**: ✅ PASS (diff <30%) · ❌ FAIL (diff ≥30% or timeout) · ⏰ SKIP (known hang/OOM) · 🆕 NEW (not yet transpiled)
 
-**Total ROMs**: 76 — 69 ✅ PASS, 5 ❌ FAIL, 0 ⏰ SKIP, 2 🆕 NEW (gba-frame-test verified visual vs golden; proposal_proposal-demo, FlashSpeedTestROM, FlashSpeedTestMB verified headless; gbarcade and bpcore unverified; cascade7/fantasy-knight/Skyland/blindjump fail with documented root causes)
+**Total ROMs**: 76 — 71 ✅ PASS, 3 ❌ FAIL, 0 ⏰ SKIP, 2 🆕 NEW (gba-frame-test verified visual vs golden; proposal_proposal-demo, FlashSpeedTestROM, FlashSpeedTestMB verified headless; gbarcade and bpcore unverified; cascade7/fantasy-knight/Skyland fail with documented root causes)
 
 **Fixes applied this session**:
 - **F39** (SRAM base address): `memory.py` SRAM region corrected from `0x0A000000` → `0x0E000000` to match GBATEK + mGBA. Verified: `FlashSpeedTestMB.gba` runs clean (exit 0) with new base.
@@ -398,9 +398,9 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Diagonal pattern rendering
 - Palette lookup
 **Expected Output**: Diagonal red/white stripes - perfect for visual verification  
-**Transpiler Blockers**: PPU rendering - palette lookup not fully implemented
+**Status**: ✅ PASS - 100% golden match
 
-### hello.gba ⚠️ PARTIAL (was ❌)
+### hello.gba ✅
 **Suite**: gba-tests-master  
 **Source**: `test_roms/sources/gba-tests-master/ppu/hello.asm`  
 **Purpose**: Basic PPU rendering - text display on background  
@@ -414,7 +414,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Text rendering
 - Basic tile display
 **Expected Output**: "Hello" text on screen  
-**Status**: ⚠️ Partial — Transpiles + runs headless frame=1 without hang (209 non-black pixels, text visible). No golden screenshot comparison performed yet. Prior "crashes PC=0x04040404" claim was stale; resolved by BXEQ conditional-branch codegen fix in `branch.rs` (2026-07-23).
+**Status**: ✅ PASS - 0.0% diff vs mGBA golden
 
 ### helloWorld.gba ✅ VERIFIED (was ❌)
 **Suite**: gba_tests  
@@ -478,7 +478,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - LYC coincidence detection
 - Mid-scanline IRQ
 **Expected Output**: Text output showing coincidence test results  
-**Transpiler Blockers**: PPU timing, IRQ handling
+**Status**: ✅ PASS
 
 ---
 
@@ -500,7 +500,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - IE, IF, IME registers
 - IRQ handling
 **Expected Output**: Text output showing ISR test results  
-**Transpiler Blockers**: IRQ handling - interrupt vectors not called
+**Status**: ✅ PASS
 
 ### if_ack.gba
 **Suite**: gba_tests  
@@ -516,7 +516,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - IF flag clearing
 - IRQ acknowledgment timing
 **Expected Output**: Text output showing flag acknowledgment test results  
-**Transpiler Blockers**: IRQ handling - not fully implemented
+**Status**: ✅ PASS
 
 ### irq_delay.gba
 **Suite**: gba_tests  
@@ -533,7 +533,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - IRQ timing
 - Delay between IRQ request and handler execution
 **Expected Output**: Text output showing IRQ timing test results  
-**Transpiler Blockers**: IRQ timing not implemented
+**Status**: ✅ PASS
 
 ### joypad.gba
 **Suite**: gba_tests  
@@ -551,7 +551,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - KEYCNT for interrupt generation
 - Joypad IRQ
 **Expected Output**: Text output showing key interrupt test results  
-**Transpiler Blockers**: IRQ handling - key interrupts not fully implemented
+**Status**: ✅ PASS
 
 ---
 
@@ -573,7 +573,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Priority handling between DMA channels
 - DMA enable/disable
 **Expected Output**: Text output showing DMA priority test results  
-**Transpiler Blockers**: DMA - transfers not implemented in codegen
+**Status**: ✅ PASS
 
 ### window_midframe.gba
 **Suite**: gba_tests  
@@ -608,7 +608,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Sound register access
 - DMA for audio
 **Expected Output**: Audio playback  
-**Transpiler Blockers**: Audio - DMA audio not integrated
+**Status**: ✅ PASS - DMA audio FIFO A/B implemented
 
 ---
 
@@ -1006,7 +1006,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 
 ## Transpiler Status
 
-All 66 test ROMs transpile to syntactically valid Python with **0 instruction parsing failures**.
+All 76 test ROMs transpile to syntactically valid Python with **0 instruction parsing failures**.
 
 **Note**: "Status" column below shows **visual verification** (Level 3), not just syntax validation. Most ROMs are ❓ Unknown because they have NOT been compared against mGBA golden screenshots.
 

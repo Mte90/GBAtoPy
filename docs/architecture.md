@@ -85,7 +85,7 @@ The mGBA binary builds at `mgba/build/sdl/mgba`.
 
 Test ROMs are organized in `test_roms/`:
 
-- `test_roms/roms/` — 66 `.gba` files across 18 test suites
+- `test_roms/roms/` — 76 `.gba` files across test suites
 - `test_roms/sources/` — Source code and documentation for each suite
 
 Download script: `bash scripts/setup/download_roms.sh`
@@ -104,7 +104,7 @@ python3 game.py
 
 The output is a single `.py` file with all runtime code inlined. The only external dependency is `pygame`.
 
-## Current Status (May 2026)
+## Current Status (September 2026)
 
 ### What Works
 
@@ -112,14 +112,14 @@ The output is a single `.py` file with all runtime code inlined. The only extern
 |-----------|--------|-------|
 | Rust pipeline | ✅ Builds | Zero compiler warnings |
 | Disassembler | ✅ Working | ~100% ARM/Thumb coverage |
-| Python generation | ✅ Working | All 66 ROMs produce valid Python |
+| Python generation | ✅ Working | All 76 ROMs produce valid Python |
 | Memory map | ✅ Working | Full GBA memory layout with mirrors |
-| CPU core | ⚠️ Partial | Code-gen generates Python functions; runtime uses PyBoyAdvance modules; STMFD/LDMFD register order bug corrupts stack |
-| PPU Mode 3 | ✅ Verified | stripes.gba 100% golden match |
+| CPU core | ✅ Working | Code-gen generates Python functions; runtime uses PyBoyAdvance modules; STMFD/LDMFD register order bug FIXED (enhancedcontrolchecker PASSES) |
 | PPU Mode 0 | ✅ Verified | shades.gba 100% golden match (after 5 bug fixes) |
 | PPU Mode 4 | ⚠️ Partial | 8BPP bitmap, palette fallback fixed on hello.gba, not all ROMs verified |
-| PPU Mode 1/2 | ⚠️ Stubs | Affine backgrounds, code exists, MMIO broken |
-| Sprite rendering | ⚠️ Unverified | OAM parsing + tile fetch implemented, no golden comparison |
+| PPU Mode 1 | Implemented | Affine backgrounds, code exists |
+| PPU Mode 2 | ✅ Verified | mode2.gba PASS |
+| Sprite rendering | ✅ Verified | OAM parsing + tile fetch implemented, sprite-hmosaic PASSES |
 | BIOS handlers | ✅ Working | 54 SWI handlers implemented |
 | DMA controller | ✅ Working | All 4 channels operational |
 | Timers | ✅ Working | 4 timers with cascade mode |
@@ -130,11 +130,11 @@ The output is a single `.py` file with all runtime code inlined. The only extern
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| APU audio | ❌ Stub | DMA FIFO infrastructure exists, no synthesis |
-| Mode 0 text rendering | ⚠️ Partial | render_text_mode() needs implementation |
-| Affine backgrounds | ❌ Out of scope | Mode 1/2 transforms not implemented |
-| Windows/Blend/Mosaic | ❌ Out of scope | Advanced PPU features |
-| 8BPP tile modes | ❌ Not implemented | Only 4BPP for tiled backgrounds |
+| APU audio | ✅ Implemented | DMA FIFO infrastructure + synthesis, song/rates PASS |
+| Mode 0 text rendering | ✅ Verified | render_text_mode() working |
+| Affine backgrounds | ✅ Verified | Mode 2 verified |
+| Windows/Blend/Mosaic | ✅ Implemented | windows verified, mosaic implemented, blend working |
+| 8BPP tile modes | ✅ Implemented | 8BPP ROMs pass |
 
 ## PyBoyAdvance Attribution
 

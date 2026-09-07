@@ -1,6 +1,14 @@
 ---
 # Appendix E: mGBA Lua Scripting API Reference
 
+> **GBAtoPy Project Documentation**
+
+## Core Objects
+
+### `emu` - Core Adapter
+
+Available after a game is loaded.
+
 ## Core Objects
 
 ### `emu` - Core Adapter
@@ -144,7 +152,7 @@ local keys = emu.keypad:ReadKeys()  -- returns bitmask
 ## Complete Tracer Script Example
 
 ```lua
--- tracer.lua - Execution tracer for PyGBA-Native
+-- tracer.lua - Execution tracer for GBAtoPy
 -- Runs inside mGBA scripting console (Tools > Scripting...)
 
 -- Configuration
@@ -431,60 +439,60 @@ This is essential for automated oracle data collection during the pipeline.
 
 # Appendix E2: mGBA Fork - Extended Lua API
 
-> Extended Lua API implementation for PyGBA-Native oracle  
-> Status: FORK REQUIRED - API vanilla insufficiente per tracing completo
+> Extended Lua API implementation for GBAtoPy oracle  
+> Status: FORK REQUIRED - Vanilla API insufficient for complete tracing
 
 ## Fork Decision
 
-**Decision: FORK DI mGBA NECESSARIO**
+**Decision: mGBA FORK REQUIRED**
 
-La Lua API vanilla di mGBA non è sufficiente per il progetto PyGBA-Native perché:
+The vanilla mGBA Lua API is insufficient for the GBAtoPy project because:
 
-1. **Nessun memory access tracing** - Non è possibile sapere quali indirizzi vengono letti/scritti durante l'esecuzione
-2. **Nessun instruction-level hook** - Non è possibile intercettare ogni istruzione eseguita
-3. **Performance downgrade** - Workaround con `emu.step()` in loop è troppo lento (1 istruzione per chiamata)
+1. **No memory access tracing** - Cannot determine which addresses are read/written during execution
+2. **No instruction-level hook** - Cannot intercept every instruction executed
+3. **Performance downgrade** - Workaround with `emu.step()` in loops is too slow (1 instruction per call)
 
-## Nuove API da Implementare
+## New APIs to Implement
 
 ### 1. Memory Access Tracing
 
 ```lua
--- NUOVA API: emu.traceMemory(enabled, callback)
+-- NEW API: emu.traceMemory(enabled, callback)
 emu.traceMemory(true, function(access)
     -- access = { type="read"|"write", address=0x02001234, size=4, value=0xDEADBEEF }
     console:log(string.format("MEM: %s %08X = %08X", access.type, access.address, access.value))
 end)
 ```
 
-**Implementazione C richiesta:**
-- Hook nel memory bus di mGBA
-- Cattura indirizzo, tipo, dimensione, valore
-- Chiamata callback Lua con tabella
+**C implementation required:**
+- Hook in mGBA memory bus
+- Capture address, type, size, value
+- Lua callback call with table
 
 ### 2. Instruction Tracing
 
 ```lua
--- NUOVA API: emu.traceInstructions(enabled, callback)
+-- NEW API: emu.traceInstructions(enabled, callback)
 emu.traceInstructions(true, function(instr)
     -- instr = { pc=0x08001234, opcode=0xE3A00001, thumb=false, regs={r0=0,...} }
     console:log(string.format("PC=%08X OP=%08X", instr.pc, instr.opcode))
 end)
 ```
 
-**Implementazione C richiesta:**
-- Hook nella CPU execution loop
-- Cattura PC, opcode, flags
-- Opzionale: dump registri
+**C implementation required:**
+- Hook in CPU execution loop
+- Capture PC, opcode, flags
+- Optional: register dump
 
 ### 3. Register Watch
 
 ```lua
--- NUOVA API: emu.watchRegister(reg, callback)
+-- NEW API: emu.watchRegister(reg, callback)
 emu.watchRegister("r0", function(old_val, new_val)
     console:log(string.format("r0: %08X -> %08X", old_val, new_val))
 end)
 
--- Watch per interrupt
+-- Watch for interrupts
 emu.watchInterrupt(true, function(irq)
     -- irq = { type="irq", source="timer0", pending=0x0010 }
 end)
@@ -493,33 +501,33 @@ end)
 ### 4. Breakpoint/Watchpoint
 
 ```lua
--- NUOVA API: emu.setBreakpoint(address, callback)
+-- NEW API: emu.setBreakpoint(address, callback)
 emu.setBreakpoint(0x08001234, function(ctx)
-    -- Ferma a indirizzo specifico
+    -- Stop at specific address
     console:log("BREAK at " .. emu.cpu:readRegister(15))
 end)
 
--- NUOVA API: emu.setWatchpoint(address, type, callback)  
+-- NEW API: emu.setWatchpoint(address, type, callback)  
 emu.setWatchpoint(0x02001234, "write", function(ctx)
-    -- Ferma quando scrive a indirizzo
+    -- Stop when writing to address
 end)
 ```
 
 ### 5. Bus Transaction Log
 
 ```lua
--- NUOVA API: emu.getBusTransactionlog()
+-- NEW API: emu.getBusTransactionLog()
 local log = emu.getBusTransactionLog()
 -- log = [{cycle=1000, type="read", addr=0x04000200, size=2, value=0x1234}, ...]
 
--- Pulisci log
+-- Clear log
 emu.clearBusTransactionLog()
 ```
 
 ### 6. DMA Trace
 
 ```lua
--- NUOVA API: emu.traceDMA(channel, callback)
+-- NEW API: emu.traceDMA(channel, callback)
 emu.traceDMA(0, function(dma)
     -- dma = { channel=0, src=0x02001234, dst=0x06001234, count=64, ctrl=0x8800 }
     console:log(string.format("DMA0: %08X -> %08X (x%d)", dma.src, dma.dst, dma.count))
@@ -529,7 +537,7 @@ end)
 ### 7. Interrupt Trace
 
 ```lua
--- NUOVA API: emu.traceInterrupts(enabled, callback)
+-- NEW API: emu.traceInterrupts(enabled, callback)
 emu.traceInterrupts(true, function(irq)
     -- irq = { type="irq"|"fiq", source="vblank"|"timer0"|"dma0"|..., pending=0xFFFF }
     console:log("IRQ: " .. irq.source)
@@ -538,41 +546,41 @@ end)
 
 ## Implementation Status
 
-### ✅ COMPLETATO:
-- [x] Struttura `mScriptCoreAdapter` estesa (`src/core/scripting.c`)
-- [x] Funzioni Lua: `traceMemory`, `traceInstructions`, `watchRegister`, `traceInterrupts`, `getBusTransactionLog`, `clearBusTransactionLog`
-- [x] Callback struttura `mCoreCallbacks` estesa con `instructionExecuted` e `memoryAccessed` (`include/mgba/core/interface.h`)
-- [x] Macro callback: `mCALLBACKS_INVOKE_IE` e `mCALLBACKS_INVOKE_MEM`
+### ✅ COMPLETED:
+- [x] Extended `mScriptCoreAdapter` structure (`src/core/scripting.c`)
+- [x] Lua functions: `traceMemory`, `traceInstructions`, `watchRegister`, `traceInterrupts`, `getBusTransactionLog`, `clearBusTransactionLog`
+- [x] Extended `mCoreCallbacks` callback structure with `instructionExecuted` and `memoryAccessed` (`include/mgba/core/interface.h`)
+- [x] Callback macros: `mCALLBACKS_INVOKE_IE` and `mCALLBACKS_INVOKE_MEM`
 - [x] Memory read callback in `src/gba/memory.c` (GBALoad8)
 - [x] Memory write callback in `src/gba/memory.c` (GBAStore8)
-- [x] Instruction callback nel CPU loop (`src/arm/arm.c`)
-- [x] Refactoring nomi variabili per stile mGBA
+- [x] Instruction callback in CPU loop (`src/arm/arm.c`)
+- [x] Variable name refactoring for mGBA style
 
-### ✅ TUTTO COMPLETATO - PRONTO PER IL MERGE
+### ✅ ALL COMPLETED - READY FOR MERGE
 
-## File Modificati
+## Modified Files
 
 ```
-src/core/scripting.c           # Extended mScriptCoreAdapter + 6 nuove API
-include/mgba/core/interface.h  # mCoreCallbacks estesa
+src/core/scripting.c           # Extended mScriptCoreAdapter + 6 new APIs
+include/mgba/core/interface.h  # Extended mCoreCallbacks
 src/gba/memory.c               # Memory access callbacks
 src/arm/arm.c                  # Instruction execution callback
 ```
 
-## Build e Test
+## Build and Test
 
 ```bash
-# Build mGBA con Lua modificato
+# Build mGBA with modified Lua
 cd mgba
 mkdir build && cd build
 cmake -DENABLE_SCRIPTING=ON -DUSE_LUA=ON ..
 make -j4
 
-# Test delle nuove API
+# Test new APIs
 mgba -l test.gba --script test_extended_api.lua
 ```
 
-## Riferimenti
+## References
 
 - mGBA source: https://github.com/mgba-emu/mgba
 - Lua API vanilla: https://mgba.io/docs/scripting.html

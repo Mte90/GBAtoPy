@@ -1,5 +1,5 @@
 #!/bin/bash
-# GBAtoPy Test Runner - Run all 68 ROM smoke tests
+# GBAtoPy Test Runner - Run all 76 ROM smoke tests
 # Usage: ./scripts/run-all-tests.sh [--junit] [--quick] [--filter <substring>] [--rom <name>]
 
 set -e

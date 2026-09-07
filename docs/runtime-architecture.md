@@ -347,7 +347,7 @@ grep -n "0x000003E" rom.py  # Should find func_080000F8
 |-------|---------|---------------|
 | 0x04000000-0x0400005F | PPU | DISPCNT, BG0CNT, BG1CNT, BG2CNT, BG3CNT |
 | 0x04000060-0x0400008F | APU | SOUNDCNT_L, SOUNDCNT_H, SOUNDCNT_X |
-| 0x04000090-0x0400009F | DMA | DMA0SAD, DMA0DAD, DMA0CNT_L, etc. |
+| 0x040000B0-0x040000BF | DMA | DMA0SAD, DMA0DAD, DMA0CNT_L, etc. |
 | 0x040000B0-0x040000CF | DMA | DMA1-3 registers |
 | 0x04000100-0x0400010F | Timers | TM0CNT_L, TM0CNT_H, TM1CNT_L, etc. |
 | 0x04000130-0x04000133 | Input | KEYINPUT, KEYCNT |
@@ -565,7 +565,7 @@ PC = 0x08000008 → idx = 2
 | `memory.py` | 791 | Memory map, read/write, MMIO dispatch |
 | `arm7tdmi.py` | 849 | CPU core, instruction execution |
 | `cpu.py` | 706 | ARM/Thumb instruction handlers |
-| `ppu.py` | 1000+ | Graphics rendering (Modes 0-5) |
+| `ppu.py` | 2800+ | Graphics rendering (Modes 0-5) |
 | `bios.py` | 500+ | SWI handlers (54 functions) |
 
 ### 6.2 Optional Modules

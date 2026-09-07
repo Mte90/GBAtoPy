@@ -413,7 +413,7 @@ class PPU:
         
         for py in range(height):
             for px in range(width):
-                if sprite.get("mosaic", 0) and self.mosaic_enabled:
+                if sprite.get("mosaic", 0):
                     src_px, src_py = self._apply_mosaic(px, py, is_obj=True)
                 else:
                     src_px, src_py = px, py
@@ -529,7 +529,7 @@ class PPU:
         # Render sprite with affine transformation
         for py in range(height):
             for px in range(width):
-                if sprite.get("mosaic", 0) and self.mosaic_enabled:
+                if sprite.get("mosaic", 0):
                     mpx, mpy = self._apply_mosaic(px, py, is_obj=True)
                 else:
                     mpx, mpy = px, py
@@ -648,10 +648,9 @@ class PPU:
     REG_WIN1V = 0x04000046
     REG_WININ = 0x04000048
     REG_WINOUT = 0x0400004A
-    REG_WINOBJ = 0x0400004C
 
     # Mosaic register
-    REG_MOSAIC = 0x0400004E  # Actually at 0x0400004E or 0x040000F4
+    REG_MOSAIC = 0x0400004C
 
     # Blending registers
     REG_BLDCNT = 0x04000050
@@ -1021,10 +1020,6 @@ class PPU:
             self.win1_out_enable = (value >> 8) & 0x1F
             self.winout_obj_enable = bool((value >> 4) & 1)
 
-        elif addr == self.REG_WINOBJ:
-            # WINOBJ: bits 0-5 = OBJ window enable
-            self.win_obj_enable = value & 0x3F
-
         # Mosaic register
         elif addr == self.REG_MOSAIC or addr == self.REG_MOSAIC_EXT:
             self.bg_mosaic_h = ((value >> 0) & 0xF) + 1
@@ -1143,9 +1138,6 @@ class PPU:
             return self.win0_in_enable | (self.win1_in_enable << 8)
         elif addr == self.REG_WINOUT:
             return self.win0_out_enable | ((1 if self.winout_obj_enable else 0) << 4) | (self.win1_out_enable << 8)
-        elif addr == self.REG_WINOBJ:
-            return self.win_obj_enable
-
         # Mosaic register
         elif addr == self.REG_MOSAIC or addr == self.REG_MOSAIC_EXT:
             mosaic = 0
@@ -1463,21 +1455,20 @@ class PPU:
         return 0x3F  # All enabled by default (BG0-3 + OBJ + Blend)
 
     def _apply_mosaic(self, x: int, y: int,
-                      is_obj: bool = False) -> Tuple[int, int]:
+                      is_obj: bool = False, bg: int = 0) -> Tuple[int, int]:
         """Apply mosaic effect to pixel coordinates"""
-        if not self.mosaic_enabled:
-            return x, y
-
         if is_obj:
             h_size = self.obj_mosaic_h
             v_size = self.obj_mosaic_v
         else:
+            if not self.bg_mosaic[bg]:
+                return x, y
             h_size = self.bg_mosaic_h
             v_size = self.bg_mosaic_v
 
         # Snap coordinates to block boundaries
-        mosaic_x = (x // h_size) * h_size
-        mosaic_y = (y // v_size) * v_size
+        mosaic_x = (x // h_size) * h_size if h_size > 0 else x
+        mosaic_y = (y // v_size) * v_size if v_size > 0 else y
 
         return mosaic_x, mosaic_y
 
@@ -1780,7 +1771,7 @@ class PPU:
                     if not (layer_enable & (1 << bg)):
                         continue
 
-                    mx, my = self._apply_mosaic(x, y, is_obj=False)
+                    mx, my = self._apply_mosaic(x, y, is_obj=False, bg=bg)
                     tile_x = (mx + self.bg_hofs[bg]) % 256
                     tile_y = (my + self.bg_vofs[bg]) % 256
 
@@ -1920,7 +1911,7 @@ class PPU:
                     if not (layer_enable & (1 << bg)):
                         continue
 
-                    mx, my = self._apply_mosaic(x, y, is_obj=False)
+                    mx, my = self._apply_mosaic(x, y, is_obj=False, bg=bg)
                     tile_x = (mx + bg_hofs[bg]) % 256
                     tile_y = (my + bg_vofs[bg]) % 256
 
@@ -2176,7 +2167,7 @@ class PPU:
 
                 # Render affine BG2
                 if bg_enabled[2] and (layer_enable & 0x04):
-                    mx, my = self._apply_mosaic(x, y, is_obj=False)
+                    mx, my = self._apply_mosaic(x, y, is_obj=False, bg=2)
                     x_float = float(mx)
                     y_float = float(my)
                     
@@ -2244,7 +2235,7 @@ class PPU:
 
                 # Render affine BG3
                 if bg_enabled[3] and (layer_enable & 0x08):
-                    mx, my = self._apply_mosaic(x, y, is_obj=False)
+                    mx, my = self._apply_mosaic(x, y, is_obj=False, bg=3)
                     x_float = float(mx)
                     y_float = float(my)
                     
@@ -2411,8 +2402,8 @@ class PPU:
                         row_lo[px] = 0
                         continue
                 
-                if self.mosaic_enabled:
-                    mx, my = self._apply_mosaic(px, y, is_obj=False)
+                if self.bg_mosaic[2]:
+                    mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
                     tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
                     ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
                 else:
@@ -2497,8 +2488,8 @@ class PPU:
             for px in range(sw):
                 x += dx
                 y_coord += dy
-                if self.mosaic_enabled:
-                    mx, my = self._apply_mosaic(px, y, is_obj=False)
+                if self.bg_mosaic[2]:
+                    mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
                     tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
                     ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
                 else:
@@ -2603,8 +2594,8 @@ class PPU:
                         row_lo[px] = 0
                         continue
 
-                if self.mosaic_enabled:
-                    mx, my = self._apply_mosaic(px, y, is_obj=False)
+                if self.bg_mosaic[2]:
+                    mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
                     tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
                     ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
                 else:

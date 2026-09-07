@@ -5,6 +5,13 @@
 **GBATEK — Authoritative Reference**
 - 📚 **[GBATEK GBA Documentation](https://github.com/mgba-emu/gbatek/blob/gh-pages/gba.md)** — The definitive hardware reference for all GBA specifications
 
+**Community Hardware References** (found via [awesome-gbadev](https://github.com/gbadev-org/awesome-gbadev)):
+- 📖 **[Tonc](https://coranac.com/tonc/text/toc.htm)** — Comprehensive GBA tutorial by Jasper Vijn. Covers CPU, DMA, tiles, sprites, interrupts, timers, BIOS, audio.
+- 📖 **[CowBite Spec](https://www.cs.rit.edu/~tjh8300/commodore/CowBite.htm)** — Hardware register reference by Tom Happ. Detailed MMIO register layout.
+- 📖 **[copetti.org GBA Architecture](https://www.copetti.org/writings/consoles/game-boy-advanced/)** — System architecture overview with memory map, GPU pipeline, audio pipeline diagrams.
+- 📖 **[stuij APU notes](https://github.com/gbadev-org/awesome-gbadev#sound)** — Audio hardware deep-dive linked from awesome-gbadev. Channel timing, FIFO, DMA sound routing.
+- 📖 **[GBATEK GBA Sound](https://github.com/mgba-emu/gbatek/blob/gh-pages/gba.md#sound-controller)** — APU register and channel specifications.
+
 ## mGBA as Reference Implementation
 
 **If mGBA renders something correctly, GBAtoPy MUST render the same thing.**
@@ -37,7 +44,7 @@ This is a **transpiler**, not an emulator with approximate behavior. The generat
 - Mode 3: 16-bit bitmap — VERIFIED (stripes, mode3, bgx)
 - Mode 4: 8BPP bitmap — VERIFIED (mode4)
 - Mode 5: 160x128 bitmap — implemented, not verified
-- Windows, blend, mosaic: register stubs only (not functional)
+- Windows, blend, mosaic: implemented and verified
 
 ## Memory Map
 

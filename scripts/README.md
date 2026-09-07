@@ -397,7 +397,7 @@ python3 scripts/verify/compare_screenshots.py -s /tmp/stripes_golden.png /tmp/st
 **What it does:**
 - Reads `test-roms-config.toml` preserving all formatting, comments, and blank lines
 - Adds `pass_status = "pass"` | `"fail"` | `"new"` after the `test_type` line in each `[[tests]]` block
-- Uses hardcoded status map: 5 FAIL ROMs, 2 NEW ROMs, 69 PASS ROMs
+- Uses hardcoded status map: 3 FAIL ROMs, 2 NEW ROMs, 71 PASS ROMs
 - Is idempotent (running twice produces same result)
 
 **Usage:**

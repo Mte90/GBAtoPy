@@ -412,6 +412,45 @@ impl ThumbDecoder {
             ("BL_SUFFIX".to_string(), vec![self.imm((offset << 1) as u32)], false)
         }
     }
+
+    /// Decode a 32-bit BL instruction from its two halfwords.
+    /// Returns Some(("BL", [target], false, 4)) if hw1 and hw2 form a valid BL pair.
+    /// Returns None if hw2 is not a valid BL_SUFFIX (caller should fall back to BL_PREFIX).
+    pub fn decode_bl_pair(&self, hw1: u16, hw2: u16, address: u32) -> Option<(String, Vec<crate::Operand>, bool, u8)> {
+        // hw1 must be BL_PREFIX (bit 11 = 0, opcode range 0xF000-0xF3FF or 0xF400-0xF7FF with S=0)
+        let h_flag1 = (hw1 >> 11) & 1;
+        if h_flag1 != 0 {
+            return None; // hw1 is not a BL_PREFIX
+        }
+        
+        // hw2 must be BL_SUFFIX (bit 11 = 1, opcode range 0xF800-0xFBFF or 0xFC00-0xFFFF)
+        let h_flag2 = (hw2 >> 11) & 1;
+        if h_flag2 != 1 {
+            return None; // hw2 is not a BL_SUFFIX
+        }
+        
+        // Extract the 23-bit offset (22 bits for BL, bit 22 is sign bit)
+        let offset_high = hw1 & 0x7FF;
+        let offset_low = hw2 & 0x7FF;
+        
+        // Combine: offset = (offset_high << 12) | (offset_low << 1)
+        let offset = ((offset_high as u32) << 12) | ((offset_low as u32) << 1);
+        
+        // Sign-extend from bit 22 (the S bit of the combined 23-bit value)
+        let signed_offset = if (offset & (1 << 22)) != 0 {
+            // Negative: sign-extend
+            (offset | (!0u32 << 23)) as i32
+        } else {
+            offset as i32
+        };
+        
+        // Target = address + 4 + (sign-extended offset)
+        // PC-relative: PC = address + 4 (pipeline)
+        let target = (address as i32 + 4 + signed_offset) as u32;
+        
+        // Return address = address + 4 (next instruction after the 4-byte BL)
+        Some(("BL".to_string(), vec![self.imm(target)], false, 4))
+    }
 }
 
 impl Default for ThumbDecoder {

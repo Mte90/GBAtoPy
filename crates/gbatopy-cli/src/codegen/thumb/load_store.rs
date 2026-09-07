@@ -159,8 +159,14 @@ pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
             }
         }
         "STRH" => {
-            let ops_s: Vec<String> = ops.iter().map(|op| op.to_codegen()).collect();
-            Some(generate_strh_instruction(&ops_s))
+            if ops.len() >= 3 {
+                let addr = addr_expr_3op(ops)?;
+                let Operand::Register(rd) = &ops[0] else { return None };
+                Some(format!("memory.write_u16({}, registers[{}] & 0xFFFF)", addr, rd))
+            } else {
+                let ops_s: Vec<String> = ops.iter().map(|op| op.to_codegen()).collect();
+                Some(generate_strh_instruction(&ops_s))
+            }
         }
         "LDRSB" => {
             if ops.len() >= 3 {

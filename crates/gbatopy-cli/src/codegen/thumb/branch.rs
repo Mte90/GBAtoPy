@@ -7,9 +7,9 @@ pub fn generate_thumb_blx_instruction(ops: &[String]) -> String {
     // BLX Rm - Branch and link exchange. Bit 0 of Rm selects Thumb/ARM mode.
     // When Rm is R15 (PC), the Thumb pipeline makes PC read as current + 4.
     if ops[0] == "15" {
-        format!("_bx_pc = (registers[15] + 4) & 0xFFFFFFFF; registers[14] = (registers[15] + 4) & 0xFFFFFFFF; cpsr['t'] = _bx_pc & 1; registers[15] = _bx_pc & 0xFFFFFFFE")
+        format!("_bx_pc = (registers[15] + 4) & 0xFFFFFFFF; registers[14] = ((registers[15] + 4) & 0xFFFFFFFF) | 1; cpsr['t'] = _bx_pc & 1; registers[15] = _bx_pc & 0xFFFFFFFE")
     } else {
-        format!("registers[14] = (registers[15] + 4) & 0xFFFFFFFF; cpsr['t'] = registers[{}] & 1; registers[15] = registers[{}] & 0xFFFFFFFE", ops[0], ops[0])
+        format!("registers[14] = ((registers[15] + 4) & 0xFFFFFFFF) | 1; cpsr['t'] = registers[{}] & 1; registers[15] = registers[{}] & 0xFFFFFFFE", ops[0], ops[0])
     }
 }
 
@@ -36,6 +36,14 @@ pub fn generate_thumb_bl_suffix_instruction(ops: &[String]) -> String {
     format!("_bl_target = (registers[14] + {}) & 0xFFFFFFFF; registers[14] = (registers[15] + 2) | 1; registers[15] = _bl_target;", ops[0])
 }
 
+pub fn generate_thumb_bl_instruction(ops: &[String]) -> String {
+    // BL - Branch and Link. 32-bit Thumb instruction.
+    // Target is already computed as absolute address during decode.
+    // LR = return address (PC + 4, with Thumb bit set)
+    // PC = target address
+    format!("registers[14] = (registers[15] + 4) | 1; registers[15] = {}", ops[0])
+}
+
 pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
     let opcode = &inst.opcode.to_uppercase();
     let ops: Vec<String> = inst.operands.iter().map(|op| op.to_codegen()).collect();
@@ -44,6 +52,7 @@ pub fn generate(inst: &gbatopy_disasm::DecodedInstruction) -> Option<String> {
         "B" => Some(generate_thumb_branch_instruction(&ops)),
         "BLX" => Some(generate_thumb_blx_instruction(&ops)),
         "BX" => Some(generate_thumb_bx_instruction(&ops)),
+        "BL" => Some(generate_thumb_bl_instruction(&ops)),
         "BL_PREFIX" => Some(generate_thumb_bl_prefix_instruction(&ops)),
         "BL_SUFFIX" => Some(generate_thumb_bl_suffix_instruction(&ops)),
         _ => None,

@@ -463,7 +463,7 @@ Hex:    0x104
 
 ```
 Bit 15-12: 0001 = Screen Size = 1 (512x256 pixels)
-Bit 11-8:  0000 = Screen Base Block = 1 (0x06000800)
+Bit 11-8:  0001 = Screen Base Block = 1 (0x06000800)
 Bit 7:      0 = Colors/Palettes = 4BPP mode
 Bit 6:      0 = Mosaic = Disabled
 Bit 5-4:    00 = Not used = Must be zero
@@ -503,7 +503,7 @@ With BG0CNT=0x104:
 2. **Map data** is read from VRAM 0x06000800
 3. **Mode = 4BPP** (Bit 7 = 0)
 4. **Priority = 0** (highest)
-5. **Screen = 512x256** (wraps around at edges)
+5. **Screen = 256x256**
 6. **No mosaic** (Bit 6 = 0)
 
 ### Why This Should Work for stripes.gba

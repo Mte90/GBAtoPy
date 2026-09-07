@@ -1,7 +1,7 @@
 # GBAtoPy
 
 [![License](https://img.shields.io/badge/License-MIT%20v1-blue.svg)](https://spdx.org/licenses/MIT.html#licenseText)
-[![Tests](https://img.shields.io/badge/tests-65%2F66%20PASS%20(98.5%25)-brightgreen.svg)](docs/reference/test-roms.md)
+[![Tests](https://img.shields.io/badge/tests-71%2F76%20PASS%20(93.4%25)-brightgreen.svg)](docs/reference/test-roms.md)
 [![Status](https://img.shields.io/badge/status-In%20Development-yellow.svg)](docs/roadmap.md)
 
 GBAtoPy is a **transpiler** (a Rust CLI) that converts Game Boy Advance ROMs (`.gba`) into standalone Python files that run with [pygame](https://www.pygame.org/). The output is human-readable, modifiable Python source code that, when executed, reproduces the game's behavior. It is **NOT an emulator** — the goal is a `.py` file you can open, read, and edit.
@@ -14,20 +14,20 @@ GBAtoPy is a **transpiler** (a Rust CLI) that converts Game Boy Advance ROMs (`.
 
 Project is in active development. The transpilation pipeline works end-to-end; per-ROM visual verification is tracked in [`docs/reference/test-roms.md`](docs/reference/test-roms.md). See [`docs/roadmap.md`](docs/roadmap.md) for strategy and remaining work.
 
-### Test coverage (66 test ROMs)
+### Test coverage (76 test ROMs)
 
 | Check | Result |
 |-------|--------|
-| Transpile to Python (0 instruction decode failures) | 66/66 |
-| Smoke test (transpile + syntax check) | 65/66 — `line_timing` fails |
-| Visually verified vs mGBA golden (<30% pixel difference) | 64/66 |
-| Known failures (smoke or visual) | 1/66 |
-| Runtime hangs (IRQ/DMA/timer paths) | 0/66 |
-| SKIP (corrupt ROM or OOM) | 0/66 |
+| Transpile to Python (0 instruction decode failures) | 76/76 |
+| Smoke test (transpile + syntax check) | 76/76 |
+| Visually verified vs mGBA golden (<30% pixel difference) | 71/76 |
+| Known failures (smoke or visual) | 3/76 |
+| Runtime hangs (IRQ/DMA/timer paths) | 0/76 |
+| SKIP (corrupt ROM or OOM) | 0/76 |
 
-**Pass rate: 98.5%** (65 PASS, 1 FAIL, 0 SKIP)
+**Pass rate: 93.4%** (71 PASS, 3 FAIL, 0 SKIP, 2 NEW)
 
-The single remaining failure: `line_timing` (37.08% diff — HBlank IRQ timing bug under investigation).
+Failed ROMs: `cascade7` (indirect BLX Rn), `fantasy-knight` (IWRAM callback clear), `Skyland` (codegen guard hit).
 
 All previously SKIP/timeout ROMs now PASS: `helloAudio`, `rates`, `song`, `sprite-hmosaic`.
 
@@ -46,10 +46,10 @@ All previously SKIP/timeout ROMs now PASS: `helloAudio`, `rates`, `song`, `sprit
 ### What does NOT work (or is not verified)
 
 - **PPU Mode 1 affine** — code exists, not verified.
-- **Window layers (WIN0/WIN1/OBJWIN), blend, mosaic** — register stubs only, not functional.
-- **Sprite rendering** — code exists, not verified against golden.
+- **Window layers, blend, mosaic** — implemented and verified (window_midframe, sprite-hmosaic PASS).
+- **Sprite rendering** — Implemented and verified.
 - **Audio synthesis** — APU infrastructure (4 channels, FIFO A/B) implemented; `song.gba`, `rates.gba` now PASS. End-to-end verification ongoing.
-- **RTC** — not implemented.
+- **RTC** — Implemented (rtc-demo.gba PASS).
 - **Automated screenshot-golden comparison** — 78 golden screenshots in `test-reports/goldens/`, compared via `scripts/verify/regress_all.sh` (bash CI) and `gbatopy-test --test-type ScreenshotGolden` (Rust verifier). Both paths use `test-reports/goldens/{rom}_f60.png`.
 
 ### Build & Test Quickstart
@@ -126,7 +126,7 @@ python3 /tmp/<name>.py --scale=2
 
 ## Test ROMs
 
-Test ROMs are **not included** in the repository (see `.gitignore`). Download and organize the 68 test ROMs with:
+Test ROMs are **not included** in the repository (see `.gitignore`). Download and organize the 76 test ROMs with:
 
 ```bash
 bash scripts/setup/download_roms.sh

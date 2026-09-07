@@ -234,7 +234,7 @@ pass_status = "pass"
 name = "line_timing"
 rom_path = "line_timing.gba"
 test_type = "Smoke"
-pass_status = "fail"
+pass_status = "pass"
 
 [[tests]]
 name = "lyc_midline"
@@ -454,7 +454,7 @@ source = "https://github.com/evanbowman/blind-jump-portable"
 category = "sprite"
 features = ["sprites", "mode0", "audio", "link"]
 license = "GPL-3.0"
-pass_status = "fail"
+pass_status = "pass"
 
 [[tests]]
 name = "bpcore_BPCoreEngine"

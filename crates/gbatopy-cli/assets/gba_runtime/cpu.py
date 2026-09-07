@@ -551,7 +551,11 @@ class CPU:
                 val = self.memory.read_u8(addr)
             else:
                 val = self.memory.read_u32(addr)
-            self.registers[rd] = val
+            if rd == self.PC:
+                self.thumb_mode = bool(val & 1)
+                self.registers[rd] = val & 0xFFFFFFFE
+            else:
+                self.registers[rd] = val
         else:
             val = self.registers[rd]
             if byte:
@@ -610,7 +614,12 @@ class CPU:
         if load:
             for i in range(16):
                 if register_list & (1 << i):
-                    self.registers[i] = self.memory.read_u32(addr & 0xFFFFFFFF)
+                    val = self.memory.read_u32(addr & 0xFFFFFFFF)
+                    if i == self.PC:
+                        self.thumb_mode = bool(val & 1)
+                        self.registers[i] = val & 0xFFFFFFFE
+                    else:
+                        self.registers[i] = val
                     addr += 4
             if write_back and not (register_list & (1 << rn)):
                 if add:

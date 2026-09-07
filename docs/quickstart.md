@@ -107,7 +107,7 @@ bash scripts/setup/download_roms.sh
 ```
 
 This downloads 18 test suites and organizes them:
-- `test_roms/roms/` — 66 `.gba` files
+- `test_roms/roms/` — 76 `.gba` files
 - `test_roms/sources/` — source code and documentation
 
 Test ROMs are not included in the repository. Use the download script to obtain them.
@@ -137,7 +137,7 @@ GBAtoPy/
 │   ├── setup/                    # Download scripts
 │   └── verify/                   # Coverage tracker + visual test
 ├── test_roms/
-│   ├── roms/                     # Test .gba files (66 ROMs, downloaded)
+│   ├── roms/                     # Test .gba files (76 ROMs, downloaded)
 │   └── sources/                  # Source code per suite
 ├── mgba/                         # mGBA fork (extend-lua branch)
 └── docs/                         # Documentation

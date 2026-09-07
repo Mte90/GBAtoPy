@@ -772,6 +772,18 @@ pub fn run_pipeline(
             }
         }
 
+        // Thumb POP: register list is flat Operand::Register(N), not MemoryAddress::Multi.
+        // POP {PC} writes R15 and must terminate the basic block.
+        if op == "POP" {
+            for operand in &inst.operands {
+                if let Operand::Register(r) = operand {
+                    if *r == 15 {
+                        return true;
+                    }
+                }
+            }
+        }
+
         false
     }
 
@@ -1317,6 +1329,18 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
     _step_count = 0
     while _step_count < max_steps:
         _pc = _interp_cpu.registers[15]
+        if not (0x00000000 <= _pc < 0x00004000
+                or 0x02000000 <= _pc < 0x02040000
+                or 0x03000000 <= _pc < 0x03008000
+                or 0x04000000 <= _pc < 0x04000400
+                or 0x05000000 <= _pc < 0x05000400
+                or 0x06000000 <= _pc < 0x06020000
+                or 0x07000000 <= _pc < 0x07000400
+                or 0x08000000 <= _pc < 0x0A000000):
+            print(f"HALT: PC=0x{_pc:08X} unmapped; R0={_interp_cpu.registers[0]:08X} R1={_interp_cpu.registers[1]:08X} R2={_interp_cpu.registers[2]:08X} R3={_interp_cpu.registers[3]:08X} R12={_interp_cpu.registers[12]:08X} SP={_interp_cpu.registers[13]:08X} LR={_interp_cpu.registers[14]:08X} mode={_interp_cpu.mode:#x} t={int(_interp_cpu.thumb_mode)} steps={_step_count}", file=sys.stderr, flush=True)
+            _cpu_halted = True
+            _halt_reason = 'unmapped_pc'
+            break
         if irq_return_pc is not None and (_pc == irq_return_pc or _pc == ((irq_return_pc + 4) & 0xFFFFFFFF) or _pc == ((irq_return_pc + 4) & 0xFFFFFFFC)):
             break
         if 0x08000000 <= _pc < 0x0A000000:

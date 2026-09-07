@@ -20,7 +20,7 @@ Pipeline (active):   crates/gbatopy-cli/src/pipeline_cmd.rs
 Codegen tree:        crates/gbatopy-cli/src/codegen/
 Runtime source:      crates/gbatopy-cli/assets/gba_runtime/   (ppu.py, dma.py, memory.py, arm7tdmi.py)
 Templates:           crates/gbatopy-cli/assets/templates/
-Current work log:    todo.md
+Current work log:    WORKPLAN.md (todo.md superseded)
 mGBA:                mgba/ (with custom patches, branch: extend-lua)
 mGBA binary:         mgba/build/sdl/mgba
 Scripts:             scripts/ — see scripts/README.md
@@ -38,11 +38,10 @@ Transpiler output:   /tmp/<romname>.py  (NEVER in project dir)
 | [docs/hardware-reference.md](docs/hardware-reference.md) | CPU, display, memory map, PPU modes — single source of truth |
 | [docs/runtime-architecture.md](docs/runtime-architecture.md) | PPU scanline & DMA architecture, `_map_address()` |
 | [docs/how-debug.md](docs/how-debug.md) | Systematic debug workflow + known bug classes |
-| [docs/codegen-pitfalls.md](docs/codegen-pitfalls.md) | 13 documented codegen bug classes |
+| [docs/codegen-pitfalls.md](docs/codegen-pitfalls.md) | 15 documented codegen bug classes |
 | [docs/roadmap.md](docs/roadmap.md) | Full implementation status and strategy |
 | [docs/reference/test-roms.md](docs/reference/test-roms.md) | Per-ROM pass/fail matrix |
 | [WORKPLAN.md](WORKPLAN.md) | Source of truth for pending work — read at session start |
-| [todo.md](todo.md) | Migration knowledge transfer — read before resuming debug |
 
 ## Transpiler Output Requirements
 
@@ -58,7 +57,7 @@ The generated `.py` file must be:
 - Static ROMs with 4BPP and 8BPP backgrounds and objects
 - Linear memory mapping with mirrors
 - Mode 0, 2, 3, 4 rendering verified; Mode 1, 5 implemented but not verified
-- Windows, blends, mosaic = register stubs only (not functional)
+- Windows verified (window_midframe), mosaic implemented, blend working
 - CPSR flag tracking, conditional execution, IRQ, DMA, Timers, Keypad, Sprites, BIOS SWI
 - APU audio channels with pygame.mixer output
 
@@ -84,7 +83,7 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 1. **Read `WORKPLAN.md` first** at session start — it is the source of truth for pending work. Reconcile against `docs/reference/test-roms.md` and the live codebase.
 2. **Read `docs/roadmap.md`** for full status and strategy.
 3. **Read `docs/how-debug.md`** for systematic debug workflow + known bug classes.
-4. **One ROM at a time** — never run the full 66-ROM suite during active debugging. Use `python3 scripts/run_tests.py --level 3 --rom <name>`.
+4. **One ROM at a time** — never run the full 76-ROM suite during active debugging. Use `python3 scripts/run_tests.py --level 3 --rom <name>`.
 5. **Always respond in English** — even if the user writes in other languages.
 
 ### Verification
@@ -125,13 +124,30 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
   5. Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/` to find failing runtime tests.
   6. Audit `docs/how-debug.md` "Known Bug Classes" — each unresolved class is a task.
   7. Grep for `TODO`, `FIXME`, `unimplemented`, `stub`, `pass  #` in `crates/` and `crates/gbatopy-cli/assets/gba_runtime/` — each hit is a task.
-  8. If still no work found, run the full 66-ROM regression suite (`python3 scripts/run_tests.py --level 3`) and investigate every FAIL/SKIP.
+  8. If still no work found, run the full 76-ROM regression suite (`python3 scripts/run_tests.py --level 3`) and investigate every FAIL/SKIP.
   Create a `todowrite` entry for each discovered gap, then resume execution. The session only ends when steps 1-8 yield zero new work.
 
 0c. **Keep at least 3 pending todos** — at any work boundary, if fewer than 3 pending todos remain, run the work discovery loop (0b) before continuing. Always have a visible backlog of upcoming work.
 
 ### Parallelization
-25. **Parallelize with subagents** — when work has 2+ independent parts, dispatch parallel subagents in one message. Use `@explorer` for codebase recon, `@librarian` for external docs, `@oracle` for architecture/risk, `@fixer` for bounded implementation, `@designer` for UI/UX. Track task IDs, keep working on non-overlapping lanes, reconcile results. Exception: single trivial one-file edit (<20 lines) is faster done directly.
+25. **Always use subagents when possible** — subagents are the DEFAULT, not the exception. Any non-trivial work (multiple steps, multiple files, research, investigation, implementation >20 lines) MUST be delegated to a subagent. The orchestrator coordinates, plans, dispatches, reconciles, and verifies — it does not implement serially when a specialist can do the work in parallel.
+
+  **Mandatory delegation triggers:**
+  - 2+ independent parts → dispatch parallel subagents in ONE message
+  - Codebase recon / file discovery → `@explorer`
+  - External docs / library research → `@librarian`
+  - Architecture decisions / risk analysis / code review → `@oracle`
+  - Bounded implementation (well-defined spec, clear scope) → `@fixer`
+  - UI/UX / visual polish / responsive layout → `@designer`
+  - Image / screenshot / PDF analysis → `@observer`
+  - Routine git commands / lint / typecheck / test runs → `@fast-generic`
+
+  **Rules:**
+  - Track task IDs, keep working on non-overlapping lanes, reconcile results when they return
+  - Dispatch independent lanes in the background; do NOT wait serially
+  - One trivial one-file edit (<20 lines, no design) is the ONLY exception for direct execution
+  - If you find yourself doing multi-step implementation work directly, STOP and delegate
+  - Never block on a subagent — dispatch it, do other work, reconcile when it returns
 
 ### ROM Failure Policy
 26. **ZERO-SKIP policy** — every ROM must PASS or FAIL, never SKIP. SKIP is forbidden. When a ROM would be skipped (timeout, OOM, missing golden), treat as FAIL and dispatch a subagent to root-cause and fix it.
@@ -143,7 +159,7 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 
 ## Zero Tolerance for Stubs
 
-**Scope:** This rule applies to **generated Python output** (the transpiler's product) and the **runtime templates** in `crates/gbatopy-cli/assets/gba_runtime/` and `crates/gbatopy-cli/assets/templates/`. Rust codegen stubs (e.g. `ppu/mode1.rs`) are tracked separately as codegen-incomplete markers, not runtime stubs — they do not leak into the generated Python.
+**Scope:** This rule applies to **generated Python output** (the transpiler's product) and the **runtime templates** in `crates/gbatopy-cli/assets/gba_runtime/` and `crates/gbatopy-cli/assets/templates/`. Rust codegen stubs are tracked separately as codegen-incomplete markers, not runtime stubs — they do not leak into the generated Python.
 
 These ALL count as unimplemented in generated Python:
 - `pass`

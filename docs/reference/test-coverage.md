@@ -1,8 +1,8 @@
-# PyGBA-Native Test ROM Analysis Report (Verified)
+# GBAtoPy Test ROM Analysis Report (Verified)
 
 > **Status:** Actual analysis of downloaded ROMs and source code  
-> **Date:** 2026-04-01  
-> **ROMs analyzed:** 16 files (headers + source inspection)  
+> **Date:** 2026-09-04  
+> **ROMs analyzed:** 76 files (headers + source inspection)  
 > **Method:** Binary header analysis + assembly source code review
 
 ---
@@ -440,22 +440,22 @@ pytest tests/test_runtime.py --roms=test_roms/
 
 **Current state:**
 - CPU testing: **95%** coverage (jsmolka suite is excellent)
-- All other hardware: **0-33%** coverage (external ROMs)
+- All other hardware: **71/76 ROMs passing** (93.4% pass rate)
 - mGBA suite: **Does not exist** (uses external ROMs only)
 
 **Custom test ROMs status:**
 
-The following custom test ROMs are **assumed built** and available in `test_roms/custom/`:
+The `test_roms/custom/` directory exists but is **empty** — no custom ROMs have been built yet:
 
 | ROM | Purpose | Status |
 |-----|---------|--------|
-| `test_dma.gba` | All 4 DMA channels, trigger modes, IRQ | ✅ Built |
-| `test_timer.gba` | All 4 timers, prescalers, cascade, IRQ | ✅ Built |
-| `test_irq.gba` | All 14 interrupt sources, priority, IME | ✅ Built |
-| `test_audio.gba` | PSG channels 1-4, FIFO, DMA audio | ✅ Built |
-| `test_display.gba` | Modes 3-5, sprites, windows, blending | ✅ Built |
-| `test_bios_swi.gba` | All 42 remaining SWI functions | ✅ Built |
-| `test_sprites.gba` | 128 sprites, OAM, affine transformation | ✅ Built |
+| `test_dma.gba` | All 4 DMA channels, trigger modes, IRQ | ❌ Not Built |
+| `test_timer.gba` | All 4 timers, prescalers, cascade, IRQ | ❌ Not Built |
+| `test_irq.gba` | All 14 interrupt sources, priority, IME | ❌ Not Built |
+| `test_audio.gba` | PSG channels 1-4, FIFO, DMA audio | ❌ Not Built |
+| `test_display.gba` | Modes 3-5, sprites, windows, blending | ❌ Not Built |
+| `test_bios_swi.gba` | All 42 remaining SWI functions | ❌ Not Built |
+| `test_sprites.gba` | 128 sprites, OAM, affine transformation | ❌ Not Built |
 
 **Scripts provided:**
 - `scripts/setup/download_test_roms.sh` - Downloads all external ROMs (jsmolka, FalseDiagonalTest, etc.)

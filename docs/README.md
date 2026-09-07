@@ -36,7 +36,7 @@ Runtime and transpiler design documents.
 | File | Description |
 |------|-------------|
 | [runtime-architecture.md](runtime-architecture.md) | PPU scanline & DMA architecture, _map_address() |
-| [codegen-pitfalls.md](codegen-pitfalls.md) | 13 documented codegen bug classes |
+| [codegen-pitfalls.md](codegen-pitfalls.md) | 15 documented codegen bug classes |
 | [transpiler-reference.md](transpiler-reference.md) | Generated Python file structure and API reference |
 | [vram-initialization.md](vram-initialization.md) | VRAM initialization patterns |
 | [vram_rendering_verification.md](vram_rendering_verification.md) | PPU rendering verification results across ROMs |
@@ -57,7 +57,6 @@ Test results, coverage matrices, and feature tracking.
 |------|-------------|
 | [reference/test-roms.md](reference/test-roms.md) | Per-ROM pass/fail matrix |
 | [reference/test-coverage.md](reference/test-coverage.md) | Test ROM coverage matrix |
-| [reference/feature-coverage.md](reference/feature-coverage.md) | Feature coverage matrix |
 
 ## Testing
 

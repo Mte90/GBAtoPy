@@ -66,7 +66,7 @@ See `docs/how-debug.md` § "Systematic Spin Diagnosis Workflow" for usage patter
 ```bash
 python3 scripts/run_tests.py --level 3 --rom stripes
 ```
-Never run the full 66-ROM suite during active debugging — always test one ROM at a time with `--rom <name>`.
+Never run the full 76-ROM suite during active debugging — always test one ROM at a time with `--rom <name>`.
 
 ## mGBA on Headless Server
 
@@ -79,7 +79,7 @@ All three env settings required. `SDL_VIDEODRIVER=dummy` alone produces empty 33
 
 ## Setup on New Machine
 
-1. **Read `todo.md` first** — current debug state, architecture changes, knowledge not in code comments
+1. **Read `WORKPLAN.md` first** — pending work tracker and session reconciliation
 2. **Read `docs/runtime-architecture.md` § "PPU Scanline & DMA Architecture"** — the 5 runtime invariants
 3. **Read `docs/how-debug.md` "Known Runtime Bug Classes"** — DMA double-stepping and fast-forward DISPSTAT bugs
 4. **Build:** `cargo build --release` (0 errors, 0 warnings)

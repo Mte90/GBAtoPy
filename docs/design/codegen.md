@@ -439,7 +439,7 @@ impl CodeGenerator {
 ## 5.14 Acceptance Criteria (Updated 2026-04-17)
 
 ### Implemented ✅
-- [x] Generated Python is syntactically valid for all test ROMs (41 ROMs tested)
+- [x] Generated Python is syntactically valid for all test ROMs (76 ROMs tested)
 - [x] Generated Python runs without runtime errors (exit code 0)
 - [x] No Rust dependency at runtime (pure Python only)
 - [x] `cargo build` passes with 6 crates, 0 errors
@@ -448,7 +448,7 @@ impl CodeGenerator {
 - [x] ARM7TDMI code-gen (instruction-by-instruction Python generation, NOT interpreter)
 - [x] Asset extraction script works (LZ77/Huffman/RLE decompression)
 - [x] 54 BIOS handlers implemented
-- [x] PPU Mode 3 verified (stripes.gba 100% golden match); Mode 0 verified (shades.gba 100% golden match, after 5 bug fixes); Mode 4 partial; Mode 1/2 affine, windows, blend, mosaic = stubs
+- [x] PPU Mode 3 verified (stripes.gba 100% golden match); Mode 0 verified (shades.gba 100% golden match); Mode 2 verified (mode2.gba PASS); Mode 4 verified; Mode 1 implemented; windows verified; blend working; mosaic implemented
 - [x] Conditional execution FIXED (branch instructions check CPSR flags)
 
 ### Verification Scripts
@@ -456,12 +456,11 @@ impl CodeGenerator {
 - [x] `coverage_tracker.py` - instruction codegen coverage tracking
 - [x] `screenshot.lua` - mGBA golden screenshot capture
 
-### Known Limitations (Updated 2026-07-06)
-- [ ] **STMFD/LDMFD register order** (BLOCKING) — corrupts stack on real-game ROMs → PC=0x04040404 (hello.gba). See `docs/codegen-pitfalls.md`.
-- [ ] **helloAudio, rates** smoke failures — cause undiagnosed
-- [ ] **Automated ScreenshotGolden** — 32 goldens exist, comparison not wired into CI
+### Known Limitations (Updated 2026-09-04)
+- [x] **STMFD/LDMFD register order** — RESOLVED (enhancedcontrolchecker PASSES)
+- [x] **rates** — PASSES
+- [ ] **helloAudio** smoke failure — cause undiagnosed
+- [ ] **Automated ScreenshotGolden** — 78 goldens exist, comparison not wired into CI
 - [ ] Test ROMs are minimal - no compressed graphics/audio (need commercial ROMs with LZ77/Huffman/RLE data)
 - [x] Visual rendering verified against mGBA (stripes.gba, shades.gba — 100% golden match, manual comparison)
 - [ ] APU audio synthesis not yet producing sound output
-- [ ] Affine backgrounds (Mode 1/2) not rendered
-- [ ] Window/blend/mosaic effects not rendered

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Phase 10 full regression: re-test all 66 ROMs after exec_thumb_alu fix.
+# Phase 10 full regression: re-test all 76 ROMs after exec_thumb_alu fix.
 # Skips: rates, song (known to hang/timeout)
 set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

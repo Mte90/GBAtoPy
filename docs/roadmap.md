@@ -3,8 +3,8 @@
 > **Role:** Strategy, sequencing, and remaining work.
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
-> **Last updated**: 2026-09-01  
-> **Current state**: 71/76 ROMs pass visual verification (3 FAIL, 0 SKIP). 0 ROMs hang. Build: 0 errors, 0 warnings.
+> **Last updated**: 2026-09-07  
+> **Current state**: 71 PASS, 3 FAIL (cascade7, fantasy-knight, skyland), 0 SKIP, 2 NEW out of 76 ROMs. 0 ROMs hang. Build: 0 errors, 0 warnings.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
 ---
@@ -57,15 +57,14 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - **Window layers (WIN0/WIN1/OBJWIN)**: IMPLEMENTED and verified (window_midframe passes)
 - **Blend effects**: IMPLEMENTED — alpha blend with 2nd target, brightness 1st-target only
 - **Mosaic effect**: IMPLEMENTED for Mode 0-5 (BG) and OBJ (F27 ✅ — Mode 2-5 BG mosaic added)
-- **Sprite rendering**: Code exists, not verified against golden
+- **Sprite rendering**: Implemented and verified (sprite-hmosaic PASS)
 - **8BPP tile decoding**: Code exists, not verified
 
 ### ⚠️ Wave 5: Audio System — INFRASTRUCTURE ONLY
 - APU infrastructure with 4 audio channels (CH1-CH4)
 - SquareWaveChannel (CH1/2), WaveChannel (CH3), NoiseChannel (CH4) implemented
 - FIFO A/B buffers exist with DMA integration
-- ⚠️ DMA audio (FIFO A/B): IMPLEMENTED — DMA writes to FIFO registers, but audio output not verified end-to-end
-- ⚠️ NOT verified end-to-end — no sound output confirmed against golden
+- ⚠️ DMA audio (FIFO A/B): IMPLEMENTED — DMA writes to FIFO registers. Verified: helloAudio PASS (0% diff), song PASS (1.12% diff), rates PASS (3.65% diff). Full end-to-end audio synthesis comparison not yet automated (F70).
 
 ### ✅ Wave 6: Interrupt System - COMPLETE
 - VBlank/HBlank/VCount interrupt dispatch
@@ -133,12 +132,15 @@ Runtime hangs: 0
 
 ## 4. Known Limitations
 
+### Known Codegen Bug Classes
+- **F106: BL-split bug** — 32-bit Thumb BL instructions incorrectly split into two 2-byte dispatch entries, creating mid-instruction block boundaries. Affects all ROMs with Thumb BL calls. Fixed in cfg.rs to merge BL prefix/suffix pairs.
+
 ### Smoke Test Failures (Historical)
 - **helloAudio.gba**: RESOLVED — F45 fix (SWI halt + IRQ IF clear) → PASS (0% diff)
 - **rates.gba**: RESOLVED — F46 fix (MUL decode + CRT0) → PASS (3.65% diff)
 
 ### Visual Verification Failures (3 ROMs)
-- **cascade7**: Rendering code never called — indirect BLX Rn not implemented
+- **cascade7**: F83 crash fix applied (dispatch table entry for CRT0 zero-fill). Remaining: blank screen at frame 60 (F106) — likely `.init_array` constructor gap or PPU display state issue
 - **fantasy-knight**: Stuck in IRQ handler poll loop — missing IRQ delivery
 - **Skyland**: 79K code blocks — hits codegen guard for unimplemented pattern
 
@@ -193,7 +195,7 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 7. ~~**F54: blindjump codegen correctness**~~ — ✅ FIXED: Thumb format-7 selector bits 11-9 (was bit 12 + bits 11-10); DISPSTAT read uses MMIO buffer. PASS at 9.39% diff. Size tracked as F64.
 8. **Generate goldens for 2 NEW ROMs** (gbarcade, bpcore_BPCoreEngine) — Then run full ScreenshotGolden suite
 9. **numba JIT (future work)** — `--profile` (F52) shows `read_u16` + `dict.get` dominate runtime (4.76s/2.3M calls). JIT-compiling the memory access hot path with numba is the highest-leverage perf win but requires numba as a runtime dependency, breaking the standalone-output requirement. Defer until the transpiler output format is stable, then gate behind an opt-in `--jit` flag.
-10. **F14: N/S-cycle memory access timing — PERMANENTLY DEFERRED (KILL)** — Oracle analysis (92% confidence) found that adding cycle-accurate memory timing violates all 5 runtime invariants. Zero failing ROMs require cycle-accurate timing. Full analysis in `todo.md` § APPENDIX.
+10. **F14: N/S-cycle memory access timing — PERMANENTLY DEFERRED (KILL)** — Oracle analysis (92% confidence) found that adding cycle-accurate memory timing violates all 5 runtime invariants. Zero failing ROMs require cycle-accurate timing. Full analysis in `WORKPLAN.md`.
 11. **F40: Link cable transfer — DEFERRED (stub only)** — No ROM in the test suite exercises real link-cable data transfer. The runtime exposes a stub `LinkCable` class that no-ops on read/write.
 
 ---

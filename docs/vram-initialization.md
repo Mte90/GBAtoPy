@@ -19,10 +19,11 @@ Initial attempts used a `0x55/0xAA` checkerboard pattern to make instruction-onl
 
 ## Test ROM Limitations
 
-Small test ROMs (< 1KB) like `stripes.gba`, `shades.gba`, and `redline.gba`:
+Small test ROMs (< 1KB) like `redline.gba`:
 - Write **tilemap entries** but **no tile data**
-- Produce **black screenshots** (99.7% black pixels)
 - This is **correct behavior** - they're incomplete ROMs
+
+**Note**: `shades.gba` and `stripes.gba` now achieve 100% golden match despite their small size, as they properly utilize the rendering pipeline.
 
 For these ROMs to render graphics, they must either:
 1. Write tile data to VRAM (0x06000000-0x06003FFF for 4BPP tiles)
@@ -33,8 +34,8 @@ For these ROMs to render graphics, they must either:
 
 | ROM | VRAM State | Screenshot |
 |-----|-----------|------------|
-| `stripes.gba` (324B) | Zero | 99.7% black (120 white pixels) |
-| `shades.gba` (352B) | Zero | 99.7% black |
+| `shades.gba` (352B) | Zero | ✅ PASS (100% golden match) |
+| `stripes.gba` | Overwritten by ROM | ✅ PASS (100% golden match) |
 | Full ROMs (>10KB) | Overwritten by ROM | Correct graphics |
 
 ## Implementation Location

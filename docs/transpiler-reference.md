@@ -372,25 +372,11 @@ These functions handle:
 
 ### Window Layers
 
-**Status**: Register support only
-
-**Issue**: Window layers (WIN0/WIN1/OBJWIN) are mapped but not fully implemented in the PPU.
-
-**Workaround**:
-- Window registers are readable/writable
-- Window effects are ignored in rendering
-- Use simple backgrounds without windows for now
+**Status**: Implemented and verified (window_midframe PASS)
 
 ### Blend Modes
 
-**Status**: Partial implementation
-
-**Issue**: Alpha blending and brightness effects require complex per-pixel calculations.
-
-**Workaround**:
-- Basic blend mode formulas are implemented
-- Advanced effects (bright/dark enhancement) not implemented
-- Test ROMs using blend modes may not render correctly
+**Status**: Implemented and verified (brightness first-target PASS)
 
 ### 8BPP Tile Modes
 
@@ -405,24 +391,11 @@ These functions handle:
 
 ### Address Mapping Issues
 
-**Status**: Known bug in stripes.gba and shades.gba
+**Status**: Historical — stripes.gba and shades.gba now achieve 100% golden match
 
-**Issue 1: STRH/LDRH Immediate Offset Parsing**
-The disassembler incorrectly parses half-word immediate offsets by using bits 7-3 instead of bits 3-0.
+**Issue 1: STRH/LDRH Immediate Offset Parsing** — FIXED
 
-**Symptom**: `strh r0, [r1]` generates `memory.write_u16(registers[1] + 22, ...)` instead of `memory.write_u16(registers[1] + 0, ...)`
-
-**Root Cause**: 
-```rust
-// WRONG (current code)
-let imm5 = (word >> 3) & 0x1F;  // bits 7-3
-
-// CORRECT (fix)
-let imm4l = word & 0xF;  // bits 3-0
-let imm = (imm4h << 4) | imm4l;
-```
-
-**Fix Location**: `crates/gbatopy-disasm/src/arm/mod.rs`
+This bug was fixed in `crates/gbatopy-disasm/src/arm/mod.rs`. The disassembler now correctly parses half-word immediate offsets using bits 3-0.
 
 **Issue 2: Some ROMs use relative addresses that aren't correctly converted to absolute addresses.**
 
@@ -471,10 +444,10 @@ let imm = (imm4h << 4) | imm4l;
 | Mode | Type | Layers | Color Depth | Status |
 |------|------|--------|-------------|--------|
 | 0 | Text/Map | BG0-BG3 | 4BPP/8BPP | ✅ Verified (shades.gba golden match) |
-| 1 | Text + Affine | BG0-BG1 | 4BPP/8BPP | ⚠️ Stubs (code exists, MMIO broken) |
-| 2 | Affine | BG2-BG3 | 8BPP | ⚠️ Stubs (code exists, not verified) |
+| 1 | Text + Affine | BG0-BG1 | 4BPP/8BPP | Implemented, unverified |
+| 2 | Affine | BG2-BG3 | 8BPP | ✅ Verified (mode2.gba PASS) |
 | 3 | Bitmap | BG2 | 15-bit | ✅ Verified (stripes.gba golden match) |
-| 4 | Bitmap | BG2 | 8BPP | ⚠️ Partial (palette fallback fixed, not all ROMs verified) |
+| 4 | Bitmap | BG2 | 8BPP | ✅ Verified |
 | 5 | Bitmap | BG2 | 15-bit | ⚠️ Unverified |
 
 ### Audio Specifications
@@ -505,8 +478,9 @@ let imm = (imm4h << 4) | imm4l;
 ### When Adding New Instructions
 
 1. **Disassembler**: Add opcode decoding in `crates/gbatopy-disasm/src/arm/`
-2. **IR**: Add IR variant in `crates/gbatopy-ir/src/ir.rs`
-3. **Codegen**: Add Python codegen in `crates/gbatopy-cli/src/codegen/`
+2. **Codegen**: Add Python codegen in `crates/gbatopy-cli/src/codegen/`
+
+> Note: The `gbatopy-ir` crate step is historical — the current pipeline generates Python directly from disassembly.
 
 ### When Fixing Memory Access
 
@@ -531,6 +505,6 @@ let imm = (imm4h << 4) | imm4l;
 
 ---
 
-**Document Version**: 1.0 (2026-06-26)  
+**Document Version**: 1.0 (2026-09-04)  
 **Maintained by**: GBAtoPy Documentation Team  
 **For questions**: See `docs/architecture.md` for project structure

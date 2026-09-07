@@ -1,4 +1,4 @@
-#![allow(dead_code, unused_variables, unused_mut)]
+#![allow(unused_variables, unused_mut)]
 //! Control Flow Graph (CFG) builder for GBA ROM disassembly.
 //!
 //! This module implements reachable code analysis by performing a BFS traversal
@@ -150,6 +150,46 @@ fn decode_is_valid_code_run(
     true
 }
 
+/// Returns true if `addr` should be treated as data (not code).
+/// An address marked as data by `literal_pool_addr` is re-validated:
+/// if the bytes at `addr` decode as a valid code run of length
+/// `SOFT_HINT_MIN_RUN`, the address is treated as code. This prevents
+/// literal-pool false positives (e.g. CRT0 startup code at 0x08000150)
+/// from blocking BFS fall-through and branch-target discovery.
+fn is_data_address(
+    addr: u32,
+    mode: ArmMode,
+    data_addresses: &HashSet<u32>,
+    rom: &[u8],
+    arm_decoder: &ArmDecoder,
+    thumb_decoder: &ThumbDecoder,
+) -> bool {
+    if !data_addresses.contains(&addr) {
+        return false;
+    }
+    const SOFT_HINT_MIN_RUN: usize = 32;
+    !decode_is_valid_code_run(rom, addr, mode, SOFT_HINT_MIN_RUN, arm_decoder, thumb_decoder)
+}
+
+/// Soft-hint data filter: decodes a run of instructions at `addr` and returns
+/// true if the bytes do NOT look like valid code. This catches binary data
+/// regions (audio samples, graphics tiles) that the ASCII heuristic misses.
+/// Real code must decode as valid instructions for a minimum run length.
+fn looks_like_data_soft(
+    rom: &[u8],
+    addr: u32,
+    mode: ArmMode,
+    arm_decoder: &ArmDecoder,
+    thumb_decoder: &ThumbDecoder,
+) -> bool {
+    let rom_offset = (addr - 0x08000000) as usize;
+    if rom_offset + 64 > rom.len() {
+        return false;  // Out of bounds — treat as code to avoid blocking BFS
+    }
+    const SOFT_HINT_MIN_RUN: usize = 32;
+    !decode_is_valid_code_run(rom, addr, mode, SOFT_HINT_MIN_RUN, arm_decoder, thumb_decoder)
+}
+
 /// Tracks constant values in registers for indirect jump resolution.
 /// Only tracks simple cases: MOV rN, #imm and LDR rN, =imm
 #[derive(Debug, Default)]
@@ -262,7 +302,9 @@ impl CfgBuilder {
         // adds all literal-pool values loaded into BX-target registers as
         // branch targets, ensuring no indirect-branch destination is missing.
         let mut new_targets: Vec<(u32, ArmMode)> = Vec::new();
+        eprintln!("  CFG DEBUG: ldr_literals count = {}, bx_registers = {:?}", self.ldr_literals.len(), &self.bx_registers);
         for (rn, value) in &self.ldr_literals {
+            eprintln!("  CFG DEBUG: ldr_literal rn={} value=0x{:08X} in_bx_regs={}", rn, value, self.bx_registers.contains(rn));
             if !self.bx_registers.contains(rn) {
                 continue;
             }
@@ -645,7 +687,8 @@ impl CfgBuilder {
         }
 
         self.instruction_addresses.sort();
-        self.mode_map.sort_by_key(|(a, _)| *a);
+        self.instruction_addresses.dedup();
+        self.mode_map.sort();
         self.mode_map.dedup();
     }
 
@@ -824,6 +867,14 @@ impl CfgBuilder {
         let mut targets = Vec::new();
         let upper_op = opcode.to_uppercase();
 
+        // BL stores the full target directly - extract it from the operand
+        if opcode == "BL" {
+            if let Some(Operand::Immediate(target)) = operands.first() {
+                targets.push(*target);
+            }
+            return targets;
+        }
+
         // BL_PREFIX just stores the upper target in LR — not a branch itself.
         // BL_SUFFIX combines LR (from BL_PREFIX) with the lower offset to form
         // the final BL target. Both must be excluded from the generic branch
@@ -913,8 +964,13 @@ impl CfgBuilder {
         let mut consecutive_non_branch: usize = 0;
 
         while let Some((addr, current_mode)) = queue.pop() {
-            // Skip if in data_addresses
-            if data_addresses.contains(&addr) {
+            // Each queue item is the start of a new basic block; reset the
+            // non-branch counter so saturation from a prior block doesn't
+            // block fall-through pushes for this one.
+            consecutive_non_branch = 0;
+            // Skip if in data_addresses (soft hint: re-validate as code)
+            if is_data_address(addr, current_mode, data_addresses, rom, arm_decoder, thumb_decoder)
+                || looks_like_data_soft(rom, addr, current_mode, arm_decoder, thumb_decoder) {
                 continue;
             }
 
@@ -961,16 +1017,40 @@ impl CfgBuilder {
                 }
                 ArmMode::Thumb => {
                     if rom_offset + 2 > rom.len() { continue; }
-                    let opcode = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                    let (op, ops, _) = thumb_decoder.decode(opcode, decode_addr);
-                    (op, ops, 2)
+                    let hw1 = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
+                    
+                    // Check if this is the first half of a 32-bit BL instruction
+                    let (op, ops, width) =
+                        if (hw1 & 0xF800) == 0xF000 {
+                            // Potential BL_PREFIX: opcode range 0xF000-0xF7FF with bit 11 = 0
+                            // Try to read the next halfword for BL_SUFFIX
+                            if rom_offset + 4 <= rom.len() {
+                                let hw2 = u16::from_le_bytes([rom[rom_offset + 2], rom[rom_offset + 3]]);
+                                // Check if hw2 is a valid BL_SUFFIX (bit 11 = 1)
+                                if let Some((op, ops, _, w)) = thumb_decoder.decode_bl_pair(hw1, hw2, decode_addr) {
+                                    (op, ops, w)
+                                } else {
+                                    // hw2 is not a valid BL_SUFFIX, fall back to BL_PREFIX
+                                    let (op, ops, _) = thumb_decoder.decode(hw1, decode_addr);
+                                    (op, ops, 2)
+                                }
+                            } else {
+                                // Can't read next halfword, fall back to BL_PREFIX
+                                let (op, ops, _) = thumb_decoder.decode(hw1, decode_addr);
+                                (op, ops, 2)
+                            }
+                        } else {
+                            // Not a BL_PREFIX, decode normally
+                            let (op, ops, _) = thumb_decoder.decode(hw1, decode_addr);
+                            (op, ops, 2)
+                        };
+                    (op, ops, width)
                 }
             };
 
             if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" {
                 continue;
             }
-
             if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
                 data_addresses.insert(pool_addr);
             }
@@ -997,17 +1077,16 @@ impl CfgBuilder {
             } else {
                 consecutive_non_branch += 1;
             }
-
-            // Only push fall-through if under limit
             if !is_uncond_branch && consecutive_non_branch < MAX_CONSECUTIVE_NON_BRANCH {
-                let next_addr = addr + instr_width;
+                let next_addr = addr + instr_width as u32;
                 let next_rom_offset = (next_addr - 0x08000000) as usize;
+                let next_is_data = is_data_address(next_addr, current_mode, data_addresses, rom, arm_decoder, thumb_decoder)
+                    || looks_like_data_soft(rom, next_addr, current_mode, arm_decoder, thumb_decoder);
                 if !own_visited.contains(&(next_addr, current_mode))
                     && shared_visited.map_or(true, |s| !s.contains(&(next_addr, current_mode)))
-                    && !data_addresses.contains(&next_addr)
                     && next_addr >= 0x08000000
                     && next_rom_offset < rom.len()
-                    && !looks_like_data(rom, next_rom_offset)
+                    && !next_is_data
                 {
                     queue.push((next_addr, current_mode));
                 }
@@ -1027,9 +1106,10 @@ impl CfgBuilder {
                 } else {
                     raw_target & !3
                 };
+                let is_data = looks_like_data_soft(rom, target, target_mode, arm_decoder, thumb_decoder);
                 if !own_visited.contains(&(target, target_mode))
                     && shared_visited.map_or(true, |s| !s.contains(&(target, target_mode)))
-                    && !data_addresses.contains(&target)
+                    && !is_data
                 {
                     queue.push((target, target_mode));
                 }
