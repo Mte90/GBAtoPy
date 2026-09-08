@@ -1185,6 +1185,10 @@ _halt_reason = None  # None, "any" (Halt), or "vblank" (VBlankIntrWait)
 _swi_lr = None  # Save LR_svc when SWI halts CPU
 _swi_caller_pc = None  # Save PC (caller's return address) when SWI halts
 
+# Fallback interpreter diagnostic probe
+_fallback_total_calls = 0  # Total fallback invocations since start
+_fallback_last_frame_calls = 0  # Fallback calls in the last completed frame
+
 def swi_handler(swi_field):
     """Handle BIOS SWI calls using the global registers/memory.
     ARM codegen extracts bits 23:16 of the 24-bit comment field (GBA BIOS
@@ -1303,6 +1307,9 @@ def swi_handler(swi_field):
 
 def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
     global _interp_cpu
+    global _fallback_total_calls, _fallback_last_frame_calls
+    _fallback_total_calls += 1
+    _fallback_last_frame_calls += 1
     global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
     if _interp_cpu is None:
         _interp_cpu = ARM7TDMI(memory)
@@ -1327,6 +1334,7 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
                 _ib['r10'] = _b.get('r10', 0); _ib['r11'] = _b.get('r11', 0)
                 _ib['r12'] = _b.get('r12', 0)
     _step_count = 0
+    _handler_context = 0x02000000 <= registers[15] < 0x03008000
     while _step_count < max_steps:
         _pc = _interp_cpu.registers[15]
         if not (0x00000000 <= _pc < 0x00004000
@@ -1343,7 +1351,7 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
             break
         if irq_return_pc is not None and (_pc == irq_return_pc or _pc == ((irq_return_pc + 4) & 0xFFFFFFFF) or _pc == ((irq_return_pc + 4) & 0xFFFFFFFC)):
             break
-        if 0x08000000 <= _pc < 0x0A000000:
+        if not _handler_context and 0x08000000 <= _pc < 0x0A000000:
             _idx = (_pc - 0x08000000) >> 1
             if _interp_cpu.thumb_mode:
                 if _idx in dispatch_table_thumb:
@@ -1381,6 +1389,7 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
 
 def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, max_instrs=10000000, pc_trace=None, trace_n=0, audio_capture=None, watch_reg=None, dump_at=None):
     global _cpu_halted
+    global _fallback_total_calls, _fallback_last_frame_calls
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     def ror(v, a):
         a = a & 31
@@ -1445,6 +1454,8 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                     _budget = instr_per_scanline - (ic - _inner_ic_start)
                     if _budget <= 0:
                         _budget = 1
+                    if 0x02000000 <= pc < 0x03008000:
+                        _budget = max(_budget, 100000)
                     _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                     _steps = max(1, _steps)
                     ic += _steps
@@ -1472,6 +1483,9 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         ppu_instance.render_frame()
         if _audio_buf is not None:
             _audio_buf.extend(apu_instance._generate_samples(_audio_synth_per_frame))
+        # Per-frame fallback diagnostic probe
+        print(f"FRAME {fc}: fallback_calls={_fallback_last_frame_calls} total_fallback={_fallback_total_calls}", file=sys.stderr, flush=True)
+        _fallback_last_frame_calls = 0  # Reset for next frame
         fc += 1
     if screenshot_path:
         import pygame
@@ -1530,7 +1544,6 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     _irq_saved_r3 = 0
     _irq_saved_r12 = 0
     __DELIVER_IRQ_BODY__
-    # print(f"PC=0x{registers[15]:08X}")
     running = True
     fc = 0; mi = max_instrs; ic = 0
     while running and ic < mi and fc < (frame_limit or 10000):
@@ -1575,6 +1588,8 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     _budget = instr_per_scanline - (ic - _inner_ic_start)
                     if _budget <= 0:
                         _budget = 1
+                    if 0x02000000 <= pc < 0x03008000:
+                        _budget = max(_budget, 100000)
                     _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                     _steps = max(1, _steps)
                     ic += _steps

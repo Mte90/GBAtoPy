@@ -19,14 +19,18 @@ scripts/
 ├── setup/
 │   ├── download_roms.sh       ← Downloads test ROMs from GitHub
 │   └── download_test_roms.sh  ← Wrapper for downloading GBA test ROMs
-└── verify/
-    ├── verify_rom.sh          ← One-shot ROM verification: transpile + run + compare
-    ├── compare_screenshots.py ← Golden screenshot comparison (mGBA vs transpiled)
-    ├── compare_audio.py       ← Golden audio comparison (WAV diff)
-    ├── coverage_tracker.py    ← Track test coverage across ROMs
-    ├── ewram_dump_verify.py   ← Verify EWRAM dump binary format
-    ├── regress_all.sh         ← Full regression: transpile + run + compare all ROMs
-    └── regress_resume.sh      ← Resume regression after interruption (skip done ROMs)
+├── verify/
+│   ├── verify_rom.sh          ← One-shot ROM verification: transpile + run + compare
+│   ├── compare_screenshots.py ← Golden screenshot comparison (mGBA vs transpiled)
+│   ├── compare_audio.py       ← Golden audio comparison (WAV diff)
+│   ├── coverage_tracker.py    ← Track test coverage across ROMs
+│   ├── ewram_dump_verify.py   ← Verify EWRAM dump binary format
+│   ├── regress_all.sh         ← Full regression: transpile + run + compare all ROMs
+│   └── regress_resume.sh      ← Resume regression after interruption (skip done ROMs)
+└── check/
+    ├── no-skip.sh             ← Enforce AGENTS.md rule #26: zero SKIP ROMs
+    ├── no-debug-probes.sh     ← Enforce AGENTS.md rule #14: no stray print() probes in source
+    └── status-snapshot.sh     ← Print current PASS/FAIL/SKIP/NEW counts from test-roms.md
 ```
 
 ## Test Scripts
@@ -410,6 +414,57 @@ python3 scripts/backfill_pass_status.py
 **Verification:**
 ```bash
 grep -c 'pass_status' test-roms-config.toml  # Should return 76
+```
+
+---
+
+## Enforcement Checks
+
+Deterministic shell scripts that enforce AGENTS.md rules without relying on AI compliance. Run before declaring a task done, or wire into a pre-commit/push hook.
+
+### `check/no-skip.sh` — Zero-SKIP Policy (rule #26)
+
+**Purpose:** Fail non-zero if `docs/reference/test-roms.md` summary line reports any SKIP ROMs.
+
+```bash
+bash scripts/check/no-skip.sh
+```
+
+Exit 0 = clean; exit 1 = SKIP count > 0. Parses the `Total ROMs: ...` summary line for the `⏰ SKIP` field.
+
+### `check/no-debug-probes.sh` — No Stray Print Probes (rule #14)
+
+**Purpose:** Fail if `crates/gbatopy-cli/src/pipeline_cmd.rs` or any file under `crates/gbatopy-cli/assets/gba_runtime/` contains a live `print(f"PC=` / `--pc-trace=` probe outside a comment. Commented-out probes are ignored.
+
+```bash
+bash scripts/check/no-debug-probes.sh
+```
+
+Exit 0 = clean; exit 1 = stray live probe found. Lists the offending file:line.
+
+### `check/status-snapshot.sh` — Status Snapshot
+
+**Purpose:** Print the current PASS/FAIL/SKIP/NEW counts from `docs/reference/test-roms.md`. Non-failing — informational.
+
+```bash
+bash scripts/check/status-snapshot.sh
+```
+
+Output format:
+```
+=== GBAtoPy Status Snapshot ===
+PASS: 71
+FAIL: 3
+SKIP: 0
+NEW:  2
+Total: 76
+==============================
+```
+
+### Running All Checks
+
+```bash
+for c in scripts/check/*.sh; do bash "$c" || exit 1; done
 ```
 
 ---
