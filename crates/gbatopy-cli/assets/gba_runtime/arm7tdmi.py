@@ -691,10 +691,22 @@ class ARM7TDMI:
                 if 0 <= _idx < len(self.spsr):
                     new_cpsr = self.spsr[_idx] & 0xFFFFFFFF
                     new_mode = new_cpsr & 0x1F
+                    _thumb_before = self.thumb_mode
                     self._switch_mode(new_mode)
                     self.cpsr = new_cpsr
                     self.mode = new_mode
-                    self.thumb_mode = (new_cpsr >> 5) & 1
+                    self.thumb_mode = bool((new_cpsr >> 5) & 1)
+                    # Debug: log IRQ return
+                    if _fc >= 0 and _fc % 50 == 0:
+                        print(f"[IRQ RETURN] mode {_mode_before:#x}→{new_mode:#x}, T {_thumb_before}→{self.thumb_mode}, PC={self.registers[15]:#x}, SPSR={new_cpsr:#x}", flush=True)
+                else:
+                    # Debug: SPSR index out of range
+                    if _fc >= 0 and _fc % 50 == 0:
+                        print(f"[IRQ RETURN WARN] SPSR index {_idx} out of range for mode {_mode_before:#x}", flush=True)
+            else:
+                # Debug: mode has no SPSR
+                if _fc >= 0 and _fc % 50 == 0:
+                    print(f"[IRQ RETURN WARN] Mode {_mode_before:#x} has no SPSR", flush=True)
 
         return 1
 
@@ -825,9 +837,44 @@ class ARM7TDMI:
         return 3
 
     def exec_bx(self, instr: int) -> int:
-        """Execute BX instruction."""
+        """Execute BX instruction with BIOS intercept.
+        
+        When BX targets BIOS addresses (0x0000-0x7FFF), intercept and handle
+        BIOS callback functions instead of executing from empty BIOS region.
+        """
         rm = instr & 0xF
         target = self._operand(rm)
+        
+        # Intercept BX to BIOS region (0x00000000-0x00007FFF)
+        # BIOS addresses are relative (0x00-0x7FFF), so check low 16 bits
+        bios_addr = target & 0x7FFF
+        
+        if bios_addr < 0x8000:  # BIOS region
+            # Handle BIOS callback functions
+            if bios_addr == 0x0A0:  # VBlank IRQ handler (standard GBA BIOS callback)
+                # Acknowledge VBlank interrupt (clear IF bit 0)
+                if hasattr(self, 'memory') and hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
+                    self.memory._interrupts.if_reg &= ~0x0001
+                # Return to IRQ return address (in LR_irq)
+                # LR_irq holds the return address after the IRQ entry
+                return_lr = self.registers[14]  # LR from IRQ mode
+                self.registers[15] = return_lr & 0xFFFFFFFE
+                self.thumb_mode = False
+                return 3
+            elif bios_addr == 0x0C0:  # VBlankIntrWait (SWI 5 callback)
+                # Clear VBlank flag and return
+                if hasattr(self, 'memory') and hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
+                    self.memory._interrupts.if_reg &= ~0x0001
+                return_lr = self.registers[14]
+                self.registers[15] = return_lr & 0xFFFFFFFE
+                self.thumb_mode = False
+                return 3
+            else:
+                # Other BIOS addresses: log warning and return to LR
+                # This handles unknown BIOS callbacks gracefully
+                pass
+        
+        # Normal BX execution for non-BIOS targets
         self.thumb_mode = (target & 1) != 0
         self.registers[15] = target & 0xFFFFFFFE
         return 3

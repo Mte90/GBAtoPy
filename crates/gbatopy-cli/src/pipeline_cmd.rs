@@ -1187,7 +1187,9 @@ _swi_caller_pc = None  # Save PC (caller's return address) when SWI halts
 
 # Fallback interpreter diagnostic probe
 _fallback_total_calls = 0  # Total fallback invocations since start
+_fallback_total_calls = 0  # Total fallback invocations since start
 _fallback_last_frame_calls = 0  # Fallback calls in the last completed frame
+_fallback_pcs = set()  # Unique PC addresses that triggered fallback
 
 def swi_handler(swi_field):
     """Handle BIOS SWI calls using the global registers/memory.
@@ -1303,11 +1305,13 @@ def swi_handler(swi_field):
                 memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
     # Other SWIs (0x09 ArcTan, 0x0A ArcTan2, 0x0E BgAffineSet,
     # 0x0F ObjAffineSet, 0x11/0x12 LZ77) are not commonly needed for
-    # ROM startup; left as no-ops.
-
 def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
     global _interp_cpu
     global _fallback_total_calls, _fallback_last_frame_calls
+    _fallback_total_calls += 1
+    _fallback_last_frame_calls += 1
+    _fallback_pcs.add(registers[15])
+    global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
     _fallback_total_calls += 1
     _fallback_last_frame_calls += 1
     global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
@@ -1479,12 +1483,16 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             if timers_instance is not None:
                 timers_instance.step(960)
             ppu_instance.fire_hblank_irq()
-            _deliver_irq()
         ppu_instance.render_frame()
         if _audio_buf is not None:
             _audio_buf.extend(apu_instance._generate_samples(_audio_synth_per_frame))
         # Per-frame fallback diagnostic probe
         print(f"FRAME {fc}: fallback_calls={_fallback_last_frame_calls} total_fallback={_fallback_total_calls}", file=sys.stderr, flush=True)
+        if _fallback_pcs:
+            pcs_sorted = sorted(_fallback_pcs)
+            pcs_hex = ', '.join(f'0x{pc:08X}' for pc in pcs_sorted)
+            print(f"  fallback PCs: {pcs_hex}", file=sys.stderr, flush=True)
+        _fallback_pcs.clear()
         _fallback_last_frame_calls = 0  # Reset for next frame
         fc += 1
     if screenshot_path:

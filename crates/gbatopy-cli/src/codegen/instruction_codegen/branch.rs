@@ -26,6 +26,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         return Some(format!("# {} branch (target unknown)", base_opcode));
     }
     if base_opcode == "BX" || base_opcode == "BLX" {
+        // BLX/BX with register operand
         if let Some(Operand::Register(rn)) = ops.first() {
             let cond_str = match inst.condition {
                 Some(c) if c != Condition::Al => c.name().to_uppercase(),
@@ -52,6 +53,18 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 "{}cpsr['t'] = registers[{}] & 1\nregisters[15] = registers[{}] & 0xFFFFFFFE",
                 lr_set, rn, rn
             ));
+        }
+        // BLX with immediate operand (ARM mode BLX imm)
+        if base_opcode == "BLX" {
+            if let Some(Operand::Immediate(target)) = ops.first() {
+                if *target > 0x08000000 && *target < 0x0A000000 {
+                    return Some(format!(
+                        "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\ncpsr['t'] = 1\nregisters[15] = 0x{:08X}",
+                        target
+                    ));
+                }
+                return Some(format!("# Invalid BLX target: 0x{:08X}", target));
+            }
         }
         return Some(format!("# {} branch exchange", base_opcode));
     }

@@ -730,6 +730,28 @@ impl ArmDecoder {
     }
 
     fn decode_branch(&self, word: u32, address: u32) -> (String, Vec<Operand>, bool) {
+        // Check for BLX (immediate) first: bits[27:21] = 0b1111111 (0x7F)
+        // BLX (immediate) encoding: cond 1111 111x xxxx xxxx xxxx xxxx xxxx
+        // where x = 20-bit offset, bit[20] = 1 (L bit)
+        let bits_27_21 = (word >> 21) & 0x7F;
+        let bit_20 = (word >> 20) & 1;
+        
+        if bits_27_21 == 0x7F && bit_20 == 1 {
+            // BLX (immediate): 20-bit signed offset, multiply by 4
+            let offset = (word & 0xFFFFF) as i32;
+            let sign_extended = if offset & 0x80000 != 0 {
+                offset | -0x100000
+            } else {
+                offset
+            };
+            let target = address
+                .wrapping_add(8)
+                .wrapping_add((sign_extended << 2) as u32);
+            
+            // BLX is always unconditional in ARM mode
+            return ("BLX".to_string(), vec![Operand::Immediate(target)], false);
+        }
+        
         let l_bit = (word >> 24) & 1 != 0;
         let offset = word & 0xFFFFFF;
         let signed_offset = ((offset as i32) << 8) >> 8;

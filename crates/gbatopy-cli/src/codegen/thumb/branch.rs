@@ -8,7 +8,17 @@ pub fn generate_thumb_blx_instruction(ops: &[String]) -> String {
     // When Rm is R15 (PC), the Thumb pipeline makes PC read as current + 4.
     if ops[0] == "15" {
         format!("_bx_pc = (registers[15] + 4) & 0xFFFFFFFF; registers[14] = ((registers[15] + 4) & 0xFFFFFFFF) | 1; cpsr['t'] = _bx_pc & 1; registers[15] = _bx_pc & 0xFFFFFFFE")
+    } else if ops[0].starts_with("0x") || ops[0].parse::<u32>().map(|v| v > 0x08000000).unwrap_or(false) {
+        // BLX immediate - target is an absolute address (either hex like 0x0800xxxx or decimal > 0x08000000)
+        // Set LR to return address (PC + 4), set mode to Thumb (bit 0 = 1), branch to target
+        let target = if ops[0].starts_with("0x") {
+            ops[0].clone()
+        } else {
+            format!("0x{:08X}", ops[0].parse::<u32>().unwrap_or(0))
+        };
+        format!("registers[14] = ((registers[15] + 4) & 0xFFFFFFFF) | 1; cpsr['t'] = 1; registers[15] = {}", target)
     } else {
+        // BLX Rm - register form
         format!("registers[14] = ((registers[15] + 4) & 0xFFFFFFFF) | 1; cpsr['t'] = registers[{}] & 1; registers[15] = registers[{}] & 0xFFFFFFFE", ops[0], ops[0])
     }
 }

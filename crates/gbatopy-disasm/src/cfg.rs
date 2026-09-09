@@ -7,7 +7,6 @@
 use crate::arm::ArmDecoder;
 use crate::thumb::ThumbDecoder;
 use crate::{AddressingMode, ArmMode, Operand};
-use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 
 /// Detects instructions that write to R15 (PC), making them indirect branches.
@@ -29,23 +28,6 @@ pub fn writes_to_pc(opcode: &str, operands: &[Operand]) -> bool {
         }
     }
     false
-}
-
-/// Heuristic: returns true when at least 12 of a 16-byte window starting at
-/// `offset` are printable ASCII (0x20-0x7E). Catches literal pools that
-/// coincidentally decode as valid Thumb instructions (e.g. 0x6423 = "#d").
-fn looks_like_data(rom: &[u8], offset: usize) -> bool {
-    const WINDOW: usize = 16;
-    if offset + WINDOW > rom.len() {
-        return false;
-    }
-    let mut printable = 0;
-    for i in 0..WINDOW {
-        if (0x20..=0x7E).contains(&rom[offset + i]) {
-            printable += 1;
-        }
-    }
-    printable >= 12
 }
 
 /// Detects LDR-Literal (PC-relative load) instructions and computes the
@@ -431,49 +413,16 @@ impl CfgBuilder {
         // validation admits audio/graphic data because Thumb decoders are permissive;
         // a run filter rejects data that decodes as one or two valid halfwords but
         // breaks down shortly after. Real code has long valid runs.
-        eprintln!("  CFG: scanning ROM for potential handler addresses...");
+        
+        // Saturation check: skip ROM scan if BFS already found enough code
         let mut rom_scan_targets: Vec<(u32, ArmMode)> = Vec::new();
-        const ROM_SCAN_SEED_MIN_RUN: usize = 32;
-        const ROM_SCAN_MAX_SEEDS: usize = 500;
-        
-        for i in (0x100..min(rom.len() as usize - 4, 0x100000)).step_by(4) {
-            if rom_scan_targets.len() >= ROM_SCAN_MAX_SEEDS {
-                eprintln!("  CFG: ROM scan seed cap reached ({}), stopping", ROM_SCAN_MAX_SEEDS);
-                break;
-            }
-            let word = u32::from_le_bytes([rom[i], rom[i+1], rom[i+2], rom[i+3]]);
-            
-            // Check if this looks like a code address (ROM range, aligned)
-            if word < 0x08000000 || word >= 0x0A000000 {
-                continue;
-            }
-            
-            // Must be at least 2-byte aligned for Thumb
-            if word & 0x1 != 0 {
-                continue;
-            }
-            
-            let taddr = word & !1;
-            let tmode = ArmMode::Thumb;  // Most GBA code is Thumb
-            
-            if (taddr - 0x08000000) as usize >= rom.len() {
-                continue;
-            }
-            
-            // Require a run of consecutive valid decodes to filter audio data
-            if !decode_is_valid_code_run(rom, taddr, tmode, ROM_SCAN_SEED_MIN_RUN, &arm_decoder, &thumb_decoder) {
-                continue;
-            }
-            
-            // Add as a potential branch target if not already discovered
-            if self.branch_targets.insert(taddr) {
-                rom_scan_targets.push((taddr, tmode));
-            }
-        }
-        
-        eprintln!("  CFG: ROM scan found {} potential handler addresses", rom_scan_targets.len());
-        
-        // Heuristic scan: look for common interrupt handler patterns
+        // ROM-wide brute-force scan DISABLED - it misclassifies audio/graphics data
+        // as code, causing CFG explosion (42K+ addresses, 610K lines output).
+        // The main BFS pass, ldr_literals resolution, heuristic scan, and IWRAM
+        // pass are sufficient to discover all reachable code.
+        eprintln!("  CFG: ROM-wide brute-force scan disabled (prevents CFG explosion)");
+        if self.instruction_addresses.len() <= 15_000 {
+            // Heuristic scan: look for common interrupt handler patterns
         // GBA interrupt handlers often start with:
         // 1. LDR R1, [PC, #imm] - loading a hardware register address
         // 2. LDR R0, [PC, #imm] - loading a value to compare
@@ -535,13 +484,21 @@ impl CfgBuilder {
             }
         }
         
-        eprintln!("  CFG: heuristic scan found {} potential interrupt handlers", heuristic_targets.len());
-        for &addr in &heuristic_targets {
-            eprintln!("    -> 0x{:08X}", addr);
-        }
-        
-        // Run mini-CFG pass on newly discovered targets
-        if !rom_scan_targets.is_empty() || !heuristic_targets.is_empty() {
+            eprintln!("  CFG: heuristic scan found {} potential interrupt handlers", heuristic_targets.len());
+            for &addr in &heuristic_targets {
+                eprintln!("    -> 0x{:08X}", addr);
+            }
+            
+            // Filter speculative targets through data heuristic before mini-passes
+            rom_scan_targets.retain(|(addr, mode)| {
+                !looks_like_data_soft(rom, *addr, *mode, &arm_decoder, &thumb_decoder)
+            });
+            heuristic_targets.retain(|addr| {
+                !looks_like_data_soft(rom, *addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder)
+            });
+            
+            // Run mini-CFG pass on newly discovered targets
+            if !rom_scan_targets.is_empty() || !heuristic_targets.is_empty() {
             let mut mini3_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini3_queue: Vec<(u32, ArmMode)> = rom_scan_targets;
             const MINI3_MAX_INSTRUCTIONS: usize = 10_000;
@@ -558,9 +515,17 @@ impl CfgBuilder {
                 false,  // No progress reporting
             );
             eprintln!("  CFG: mini3-pass complete, {} instructions visited", mini3_count);
+            }
+        } else {
+            eprintln!("  CFG: skipping ROM scan/heuristic ({} addresses found)", self.instruction_addresses.len());
         }
 
         // Run mini-CFG pass on newly discovered targets, same as above
+        // Filter rom_wide_targets through data heuristic
+        rom_wide_targets.retain(|(addr, mode)| {
+            !looks_like_data_soft(rom, *addr, *mode, &arm_decoder, &thumb_decoder)
+        });
+        
         if !rom_wide_targets.is_empty() {
             let mut mini2_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini2_queue: Vec<(u32, ArmMode)> = rom_wide_targets;
@@ -605,12 +570,12 @@ impl CfgBuilder {
             // Smaller copies are likely data tables (palette entries, small constants),
             // not code regions with function pointers.
             //
-            // Maximum copy_size filter: copies > 8 KiB are audio/graphic blobs, not
+            // Maximum copy_size filter: copies > 4 KiB are audio/graphic blobs, not
             // function-pointer tables. Scanning them yields thousands of false seeds
             // that walk into data and inflate the reachable set past the OOM guard.
             let copy_size = (w2 - w1) as usize;
             if copy_size < 64 { continue; }
-            if copy_size > 8192 { continue; }
+            if copy_size > 4096 { continue; }
 
             let rom_src = w0 & !1;
             let rom_src_offset = (rom_src - 0x08000000) as usize;
@@ -624,7 +589,7 @@ impl CfgBuilder {
             // look like ROM addresses and add them as BFS entry targets.
             //
             // Size guard: limit total IWRAM entry targets to prevent CFG explosion.
-            const IWRAM_MAX_ENTRY_TARGETS: usize = 500;
+            const IWRAM_MAX_ENTRY_TARGETS: usize = 200;
             if iwram_entry_targets.len() >= IWRAM_MAX_ENTRY_TARGETS {
                 eprintln!("    [CFG] IWRAM entry target limit reached, skipping remaining .data copies");
                 break;
@@ -667,10 +632,15 @@ impl CfgBuilder {
             }
         }
 
+        // Filter IWRAM entry targets through data heuristic
+        iwram_entry_targets.retain(|(addr, mode)| {
+            !looks_like_data_soft(rom, *addr, *mode, &arm_decoder, &thumb_decoder)
+        });
+        
         if !iwram_entry_targets.is_empty() {
             let mut iwram_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut iwram_queue: Vec<(u32, ArmMode)> = iwram_entry_targets;
-            const IWRAM_MAX_INSTRUCTIONS: usize = 20_000;
+            const IWRAM_MAX_INSTRUCTIONS: usize = 10_000;
             let iwram_count = self.bfs_pass(
                 &mut iwram_queue,
                 &mut iwram_visited,
@@ -869,6 +839,15 @@ impl CfgBuilder {
 
         // BL stores the full target directly - extract it from the operand
         if opcode == "BL" {
+            if let Some(Operand::Immediate(target)) = operands.first() {
+                targets.push(*target);
+            }
+            return targets;
+        }
+
+        // BLX (immediate) also stores the full target directly - extract it from the operand
+        // This is distinct from BLX Rm (register variant) which is handled below
+        if opcode == "BLX" {
             if let Some(Operand::Immediate(target)) = operands.first() {
                 targets.push(*target);
             }
@@ -1096,7 +1075,7 @@ impl CfgBuilder {
                 if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
                     continue;
                 }
-                let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
+                let target_mode = if opcode_str == "BX" || opcode_str == "BLX" || opcode_str == "BL" {
                     if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
                 } else {
                     current_mode
@@ -1106,10 +1085,11 @@ impl CfgBuilder {
                 } else {
                     raw_target & !3
                 };
-                let is_data = looks_like_data_soft(rom, target, target_mode, arm_decoder, thumb_decoder);
+                // Explicit branch targets are always added - do NOT filter by data heuristics.
+                // If code explicitly jumps to an address, it must be in the dispatch table.
+                // Data heuristics only apply to fall-through, not to explicit branches.
                 if !own_visited.contains(&(target, target_mode))
                     && shared_visited.map_or(true, |s| !s.contains(&(target, target_mode)))
-                    && !is_data
                 {
                     queue.push((target, target_mode));
                 }
