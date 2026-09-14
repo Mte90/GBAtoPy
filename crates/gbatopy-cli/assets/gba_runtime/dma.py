@@ -275,9 +275,15 @@ class DMA:
             if ch.is_repeat() and dst_ctrl == 3:
                 ch.dst_addr = orig_dst
         else:
-            ch.control &= ~DMA_ENABLE
+            ch.control &= ~DMA_ENABLE  # Clear only enable bit, preserve other control bits
             ch.enabled = False
-            ch._write_control_to_memory()
+            ch.count = 0
+            # Write back to memory.io
+            b = ch._base() - 0x04000000
+            self.mem.io[b+8] = ch.count & 0xFF
+            self.mem.io[b+9] = (ch.count >> 8) & 0xFF
+            self.mem.io[b+10] = ch.control & 0xFF
+            self.mem.io[b+11] = (ch.control >> 8) & 0xFF
 
         ch.busy = False
         ch.pending = False

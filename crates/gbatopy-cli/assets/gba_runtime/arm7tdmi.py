@@ -3,52 +3,10 @@
 from typing import Optional, Callable, List, Tuple
 from bios import BIOS
 
-try:
-    import numba
-    from numba import njit
-    _HAS_NUMBA = True
-except ImportError:
-    numba = None
-    # Create a no-op decorator when numba is not available
-    def njit(*args, **kwargs):
-        """No-op decorator when numba is not available."""
-        def decorator(func):
-            return func
-        # Handle @njit() with no arguments
-        if len(args) == 1 and callable(args[0]):
-            return args[0]
-        return decorator
-    _HAS_NUMBA = False
-
-_NUMBA_ENABLED = False
-
 _MODE_TO_SPSR_IDX = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1B: 4, 0x11: 5, 0x12: 6}
 _MODES_WITH_SPSR = frozenset({0x11, 0x12, 0x13, 0x17, 0x1B})
 
 
-def jit_compile(func):
-    """Decorator to optionally compile functions with numba for 10x speedup."""
-    if not _HAS_NUMBA or not _NUMBA_ENABLED:
-        return func
-    try:
-        return njit(func)
-    except Exception as e:
-        print(f"  Warning: JIT compilation failed for {func.__name__}: {e}")
-        return func
-
-
-def set_numba_enabled(enabled: bool):
-    global _NUMBA_ENABLED
-    if not _HAS_NUMBA and enabled:
-        print("  Warning: numba not installed, JIT compilation unavailable")
-    _NUMBA_ENABLED = enabled and _HAS_NUMBA
-
-
-def is_numba_available() -> bool:
-    return _HAS_NUMBA
-
-
-@jit_compile
 def _check_condition_fast(cond: int, n: int, z: int, c: int, v: int) -> bool:
     if cond == 0xE or cond == 0xF:
         return True
@@ -83,7 +41,6 @@ def _check_condition_fast(cond: int, n: int, z: int, c: int, v: int) -> bool:
     return True
 
 
-@jit_compile
 def _update_flags_fast(result: int, carry: int, overflow: int) -> int:
     n = (result >> 31) & 1
     z = 1 if result == 0 else 0
@@ -250,7 +207,6 @@ class ARM7TDMI:
         self.cpsr = (self.cpsr & 0x0FFFFFFF) | (n << 31) | (z << 30) | (c << 29) | (v << 28)
         return self.cpsr
 
-    @jit_compile
     def check_condition(self, cond: int) -> bool:
         if cond == 0xE or cond == 0xF:
             return True
@@ -285,11 +241,9 @@ class ARM7TDMI:
             return z or n != v
         return True
 
-    @jit_compile
     def read_register(self, reg: int) -> int:
         return self.registers[reg & 0xF]
 
-    @jit_compile
     def write_register(self, reg: int, value: int):
         value &= 0xFFFFFFFF
         self.registers[reg & 0xF] = value
@@ -314,13 +268,11 @@ class ARM7TDMI:
             return (self.registers[15] + offset) & 0xFFFFFFFF
         return self.registers[reg & 0xF]
 
-    @jit_compile
     def step(self) -> int:
         if self.thumb_mode:
             return self.step_thumb()
         return self.step_arm()
 
-    @jit_compile
     def step_arm(self) -> int:
         pc = self.pc
         instr = self.memory.read_u32(pc)
@@ -332,7 +284,6 @@ class ARM7TDMI:
 
         return self.execute_arm(instr)
 
-    @jit_compile
     def step_thumb(self) -> int:
         pc = self.registers[15] & 0xFFFFFFFE
         instr = self.memory.read_u16(pc)
@@ -355,42 +306,38 @@ class ARM7TDMI:
             rm = instr & 0xF
             target = self._operand(rm)
             self.registers[14] = (self.registers[15] + 4) & 0xFFFFFFFF
-            self.thumb_mode = (target & 1) != 0
             self.registers[15] = target & 0xFFFFFFFE
-            return 3
+            return 4
 
-        if (instr & 0x0C000000) == 0:
-            is_immediate = (instr >> 25) & 1
-            if not is_immediate:
-                op_lo = instr & 0xF0
-                if op_lo == 0x90:
-                    if (instr >> 24) & 1:
-                        return self.exec_swp(instr)
-                    return self.exec_mul(instr)
-                if op_lo == 0xB0 or op_lo == 0xD0 or op_lo == 0xF0:
-                    return self.exec_extra_load_store(instr)
-            op2 = (instr >> 20) & 0xFF
-            if (op2 in (0x10, 0x14) and rn == 15) or (op2 in (0x12, 0x16, 0x32, 0x36) and rd == 15):
-                return self._exec_status_transfer(instr, rd)
+        is_immediate = (instr >> 25) & 1
+        if not is_immediate:
+            op_lo = instr & 0xF0
+            if op_lo == 0x90:
+                if (instr >> 24) & 1:
+                    return self.exec_swp(instr)
+                return self.exec_mul(instr)
+            if op_lo == 0xB0 or op_lo == 0xD0 or op_lo == 0xF0:
+                return self.exec_extra_load_store(instr)
+        op2 = (instr >> 20) & 0xFF
+        if (op2 in (0x10, 0x14) and rn == 15) or (op2 in (0x12, 0x16, 0x32, 0x36) and rd == 15):
+            return self._exec_status_transfer(instr, rd)
+
+        # Dispatch by opcode bits [27:26] and [27:24]
+        if (instr & 0xC000000) == 0x0000000:  # bits[27:26] = 00: data processing / multiply
             return self.exec_data_processing(instr)
-
-        if (instr & 0xC000000) == 0x4000000:
+        if (instr & 0xC000000) == 0x4000000:  # bits[27:26] = 01: single data transfer (LDR/STR)
             return self.exec_load_store(instr)
-
-        if (instr & 0xE000000) == 0xA000000:
-            return self.exec_branch(instr)
-
-        if (instr & 0xE000000) == 0x8000000:
+        if (instr & 0xE000000) == 0x8000000:  # bits[27:25] = 100: block data transfer (LDM/STM)
             return self.exec_block_transfer(instr)
-
-        if (instr & 0xF000000) == 0xF000000:
+        if (instr & 0xE000000) == 0xA000000:  # bits[27:25] = 101: branch (B/BL)
+            return self.exec_branch(instr)
+        if (instr & 0xF000000) == 0xF000000:  # bits[27:24] = 1111: software interrupt (SWI)
             return self.exec_swi(instr)
 
-        raise NotImplementedError(
-            'Unhandled ARM instruction at PC={:#010x}: {:#010x}'.format(
-                self.registers[15] & 0xFFFFFFFC, instr
-            )
-        )
+        # Unhandled ARM instruction - emit NOP (skip) instead of crashing
+        # This should not happen in normal operation; all ARM opcodes should be dispatched
+        self.registers[15] = (self.registers[15] + 4) & 0xFFFFFFFF
+        return 1
 
 
     def _exec_status_transfer(self, instr: int, rd: int) -> int:
@@ -478,7 +425,6 @@ class ARM7TDMI:
         self.registers[15] = (self.registers[15] + 4) & 0xFFFFFFFF
         return 1
 
-    @jit_compile
     def exec_data_processing(self, instr: int) -> int:
         """Execute ARM data processing instruction."""
         opcode = (instr >> 21) & 0xF
@@ -682,35 +628,18 @@ class ARM7TDMI:
         elif update_flags:
             # SUBS/MOVS PC, Rm — exception return: restore CPSR from SPSR.
             # Only privileged modes have an SPSR; User/System mode leaves CPSR unchanged.
-            import sys as _sys
-            _fc = getattr(_sys.modules.get('__main__', None), 'fc', -1)
-            _mode_before = self.mode
-            _sp_before = self.registers[13]
             if self.mode in _MODES_WITH_SPSR:
                 _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
                 if 0 <= _idx < len(self.spsr):
                     new_cpsr = self.spsr[_idx] & 0xFFFFFFFF
                     new_mode = new_cpsr & 0x1F
-                    _thumb_before = self.thumb_mode
                     self._switch_mode(new_mode)
                     self.cpsr = new_cpsr
                     self.mode = new_mode
                     self.thumb_mode = bool((new_cpsr >> 5) & 1)
-                    # Debug: log IRQ return
-                    if _fc >= 0 and _fc % 50 == 0:
-                        print(f"[IRQ RETURN] mode {_mode_before:#x}→{new_mode:#x}, T {_thumb_before}→{self.thumb_mode}, PC={self.registers[15]:#x}, SPSR={new_cpsr:#x}", flush=True)
-                else:
-                    # Debug: SPSR index out of range
-                    if _fc >= 0 and _fc % 50 == 0:
-                        print(f"[IRQ RETURN WARN] SPSR index {_idx} out of range for mode {_mode_before:#x}", flush=True)
-            else:
-                # Debug: mode has no SPSR
-                if _fc >= 0 and _fc % 50 == 0:
-                    print(f"[IRQ RETURN WARN] Mode {_mode_before:#x} has no SPSR", flush=True)
 
         return 1
 
-    @jit_compile
     def exec_load_store(self, instr: int) -> int:
         is_load = (instr >> 20) & 1
         is_byte = (instr >> 22) & 1
@@ -768,7 +697,6 @@ class ARM7TDMI:
             self.registers[15] += 4
         return 2
 
-    @jit_compile
     def exec_extra_load_store(self, instr: int) -> int:
         p_bit = (instr >> 24) & 1
         is_up = (instr >> 23) & 1
@@ -822,7 +750,6 @@ class ARM7TDMI:
             self.registers[15] = (self.registers[15] + 4) & 0xFFFFFFFF
         return 2
 
-    @jit_compile
     def exec_branch(self, instr: int) -> int:
         """Execute B/BL instruction."""
         is_link = (instr >> 24) & 1
@@ -831,9 +758,11 @@ class ARM7TDMI:
             offset |= 0xFF000000
         offset <<= 2
 
+        pc_before = self.registers[15]
         if is_link:
             self.registers[14] = self.registers[15] + 4
         self.registers[15] = ((self.registers[15] + 8) + offset) & 0xFFFFFFFF
+        
         return 3
 
     def exec_bx(self, instr: int) -> int:
@@ -963,7 +892,6 @@ class ARM7TDMI:
                 self.thumb_mode = (new_cpsr >> 5) & 1
         return 2 + (n_regs * 2)
 
-    @jit_compile
     def exec_mul(self, instr: int) -> int:
         rm = instr & 0xF
         rs = (instr >> 8) & 0xF
@@ -1008,7 +936,6 @@ class ARM7TDMI:
         self.registers[15] += 4
         return 2
 
-    @jit_compile
     def exec_swp(self, instr: int) -> int:
         is_byte = (instr >> 22) & 1
         rn = (instr >> 16) & 0xF

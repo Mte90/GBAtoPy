@@ -6,6 +6,10 @@ impl ThumbDecoder {
     }
 
     pub fn decode(&self, halfword: u16, address: u32) -> (String, Vec<crate::Operand>, bool) {
+        // DEBUG: Log decoding at 0x0800010A
+        if address == 0x0800010A {
+            eprintln!("DISASM DEBUG: addr=0x{:08X} halfword=0x{:04X} high_byte=0x{:02X}", address, halfword, halfword >> 8);
+        }
         match halfword >> 8 {
             0x00..=0x07 => self.format_1_shift(halfword),
             0x08..=0x0F => self.format_1_shift(halfword),
@@ -65,6 +69,7 @@ impl ThumbDecoder {
     }
 
     fn format_1_shift(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
+        // DEBUG: Log decoding at 0x0800010A
         let op = (hw >> 11) & 0x3;
         let offset5 = (hw >> 6) & 0x1F;
         let rs = (hw >> 3) & 0x7;
@@ -101,7 +106,7 @@ impl ThumbDecoder {
         (
             name.to_string(),
             vec![self.reg(rd as u8), self.reg(rs as u8), src],
-            false,
+            true,
         )
     }
 

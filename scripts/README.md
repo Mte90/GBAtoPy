@@ -9,8 +9,9 @@ scripts/
 ├── run-all-tests.sh           ← Smoke test: transpile + syntax check for all ROMs
 ├── verify_batch.sh            ← Batch verify: generate golden + transpile + run + compare
 ├── run_tests.py               ← Unified 3-level test runner (syntax → execution → visual)
-├── generate_goldens.py        ← Batch golden screenshot generator via mGBA (all ROMs, multi-frame)
+├── generate_goldens.py        ← Batch golden screenshot generator via mGBA (all ROMs, multi-frame, Python)
 ├── generate-goldens.sh        ← Canary-set golden generator (12 specific ROMs, bash)
+├── generate_mgba_goldens.sh   ← mGBA golden suite with xvfb-run (all ROMs, headless, bash)
 ├── audio/
 │   └── capture_golden.sh      ← Capture golden audio via mGBA SDL disk driver
 ├── screenshot/
@@ -167,6 +168,53 @@ python3 scripts/generate_goldens.py --mgba /path/to/mgba
 # Custom parallelism
 ./scripts/generate-goldens.sh --workers 8
 ```
+
+---
+
+### `generate_mgba_goldens.sh` — mGBA Golden Suite with xvfb-run
+
+**Purpose:** Bash script for capturing golden screenshots using mGBA with proper headless display support via `xvfb-run`. Automatically sets up environment variables (`LD_LIBRARY_PATH`, `SDL_AUDIODRIVER=dummy`, `SDL_VIDEODRIVER=dummy`).
+
+**Key Features:**
+- ✅ Uses `xvfb-run -a` for headless display (no X server required)
+- ✅ Sets `LD_LIBRARY_PATH` for mGBA shared libraries
+- ✅ Sets `SDL_AUDIODRIVER=dummy` and `SDL_VIDEODRIVER=dummy` for headless operation
+- ✅ Supports batch processing of all 82 test ROMs
+- ✅ Parallel workers for faster generation
+- ✅ Comma-separated frame numbers for multi-frame capture
+
+**Usage:**
+```bash
+# All ROMs, frame 60 (default)
+./scripts/generate_mgba_goldens.sh
+
+# Single ROM
+./scripts/generate_mgba_goldens.sh --rom hello
+
+# Multiple frames in one run
+./scripts/generate_mgba_goldens.sh --frames 1,10,30,60
+
+# Parallel mGBA instances
+./scripts/generate_mgba_goldens.sh --workers 4
+
+# Filter by name
+./scripts/generate_mgba_goldens.sh --filter mode
+
+# Custom timeout
+./scripts/generate_mgba_goldens.sh --timeout 180
+```
+
+**Environment Setup:**
+The script automatically exports:
+- `LD_LIBRARY_PATH=$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH`
+- `SDL_AUDIODRIVER=dummy`
+- `SDL_VIDEODRIVER=dummy`
+
+**Requirements:**
+- `xvfb-run` must be installed: `sudo apt-get install xvfb`
+- mGBA binary must exist at `mgba/build/sdl/mgba`
+
+**Output:** `scripts/screenshot/golden/golden_<rom_name>_frame_<N>.png`
 
 ---
 

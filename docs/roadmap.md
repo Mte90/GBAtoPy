@@ -3,8 +3,8 @@
 > **Role:** Strategy, sequencing, and remaining work.
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
-> **Last updated**: 2026-09-07  
-> **Current state**: 71 PASS, 3 FAIL (cascade7, fantasy-knight, skyland), 0 SKIP, 2 NEW out of 76 ROMs. 0 ROMs hang. Build: 0 errors, 0 warnings.
+> **Last updated**: 2026-09-13  
+> **Current state**: 0 PASS, 11 FAIL (all core ROMs produce blank screenshots: hello=338B, stripes=530B, cascade7=325B, fantasy-knight=192B, mode3=192B, mode4=507B, bgpd=192B, bgx=511B, greenswap=554B, shades=517B, vram-mirror=192B), 0 SKIP for 11-ROM test set. Blank-screen rendering bug confirmed. Build: 0 errors, 0 warnings.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
 ---
@@ -65,6 +65,53 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - SquareWaveChannel (CH1/2), WaveChannel (CH3), NoiseChannel (CH4) implemented
 - FIFO A/B buffers exist with DMA integration
 - ⚠️ DMA audio (FIFO A/B): IMPLEMENTED — DMA writes to FIFO registers. Verified: helloAudio PASS (0% diff), song PASS (1.12% diff), rates PASS (3.65% diff). Full end-to-end audio synthesis comparison not yet automated (F70).
+- ⚠️ **MIDI BIOS SWI handlers (0x1B-0x24)**: IMPLEMENTED as utility functions only — NO actual MIDI sound synthesis or playback. See detailed audit below.
+
+**MIDI Handler Implementation Status (Audit 2026-09-11):**
+
+| SWI | Handler | Implementation | Gap |
+|-----|---------|----------------|-----|
+| 0x1B | `swi_midi_alt_scale` | Returns note unchanged | No scale mapping to APU |
+| 0x1C | `swi_midi_alt_key` | Returns note unchanged | No key mapping to APU |
+| 0x1D | `swi_midi_inc_octave` | note + 12 semitones | Math only, no playback |
+| 0x1E | `swi_midi_dec_octave` | note - 12 semitones | Math only, no playback |
+| 0x1F | `swi_midi_inc_note` | note + 1 semitone | Math only, no playback |
+| 0x20 | `swi_midi_dec_note` | note - 1 semitone | Math only, no playback |
+| 0x21 | `swi_midi_chord` | Returns note list | No APU channel triggering |
+| 0x22 | `swi_midi_volume_voice` | Stores volume in dict | Does NOT set APU channel volume |
+| 0x23 | `swi_midi_freq_note` | freq → MIDI note | Math only |
+| 0x24 | `swi_midi_note_to_freq` | MIDI note → freq | Math only |
+
+**Critical Gap:** These handlers perform MIDI arithmetic but NEVER:
+1. Trigger APU channels (CH1-CH4)
+2. Set wave RAM for CH3
+3. Configure DMA for audio
+4. Start/stop note playback
+5. Access any APU state
+
+**Result:** A game calling these SWI handlers expecting MIDI playback will get note calculations but no sound. Real GBA MIDI would require the game to manually configure APU channels after calling these helpers, OR a full MIDI synth layer would be needed to bridge MIDI note data to APU synthesis.
+
+**Verification status:** Unverified — no ROM in the 76-ROM test suite exercises MIDI SWI handlers. The handlers are present but functionally incomplete for actual sound generation.
+
+**Audio Output Accuracy (Audit 2026-09-11):**
+
+| Component | Status | Verification |
+|-----------|--------|--------------|
+| Square wave (CH1/2) | Implemented | Unverified against hardware spectrum |
+| Wave channel (CH3) | Implemented | Unverified against hardware spectrum |
+| Noise channel (CH4) | Implemented | Unverified against hardware spectrum |
+| FIFO A/B DMA | Implemented | helloAudio PASS (0% diff), song PASS (1.12% diff), rates PASS (3.65% diff) |
+| MIDI synthesis | NOT IMPLEMENTED | No MIDI playback in test suite |
+| Automated audio testing | MISSING | No spectral analysis vs mGBA exists |
+
+**Gap:** Visual-only verification (screenshots) cannot validate audio accuracy. helloAudio/song/rates PASS based on visual output, not audio spectrum comparison. A dedicated audio verification harness comparing generated waveform samples against mGBA output is needed for true audio accuracy validation.
+
+**Sound Output Accuracy:**
+- Square wave channels (CH1/CH2): Duty cycles, envelope, sweep implemented. Unverified against hardware.
+- Wave channel (CH3): 8/4-bit wave RAM playback with volume scaling. Unverified against hardware.
+- Noise channel (CH4): LFSR-based noise with 7/15-bit width. Unverified against hardware.
+- FIFO playback (CH1/2 via DMA): Verified with helloAudio (0% diff), song (1.12% diff), rates (3.65% diff).
+- **Missing verification:** No automated audio spectrum comparison test exists. Current verification is visual-only (screenshots). Audio accuracy claims are based on functional tests (helloAudio PASS) but not spectral analysis against mGBA output.
 
 ### ✅ Wave 6: Interrupt System - COMPLETE
 - VBlank/HBlank/VCount interrupt dispatch
@@ -98,8 +145,10 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 ### ✅ Wave 10: Test Framework — PARTIAL
 - Rust-based automated testing with 76 ROMs configured
 - **Smoke tests**: 76/76 passing (100%)
-- **ScreenshotGolden tests**: WIRED — 78 goldens in `test-reports/goldens/`, compared via `scripts/verify/regress_all.sh` (full regression) and `ScreenshotGoldenVerifier` (Rust). Golden path: `test-reports/goldens/{rom}_f60.png`.
+- **ScreenshotGolden tests**: WIRED — 91 goldens in `test-reports/goldens/`, compared via `scripts/verify/regress_all.sh` (full regression) and `ScreenshotGoldenVerifier` (Rust). Golden path: `test-reports/goldens/{rom}_f60.png`.
 - **Manual golden matches**: 71/76 verified (<30% pixel diff via `compare_screenshots.py`)
+- **ScreenshotMgba tests**: 12 ROMs configured (bgpd, bgx, greenswap, hello, hello_world, helloWorld, mode3, mode4, shades, sprite-hmosaic, stripes, vram-mirror)
+- **Golden coverage gap**: 12 ROMs use ScreenshotMgba test type but only 12 have corresponding golden files — 0 gap. However, 64 ROMs use other test types (PassFailScreen, EwramDump, Smoke) and have NO golden coverage.
 - Verifier types in config: Smoke, ScreenshotGolden, EWRAM, Assertion, Performance, Coverage
 - Smoke + ScreenshotGolden verifiers exercised
 - Parallel execution (4 workers)
@@ -118,13 +167,21 @@ Failed: 0
 
 ### Visual Verification (ScreenshotGolden vs mGBA)
 ```
-Total: 76 ROMs
-Verified (<30% diff): 71 (93.4%)
-Known failures: 3 (cascade7, fantasy-knight, Skyland)
+Total: 11 core ROMs (2026-09-13 verification)
+Verified (<30% diff): 0 (0.0%)
+Known failures: 11 (all ROMs - blank screen; sizes: hello=338B, stripes=530B, cascade7=325B, fantasy-knight=192B, mode3=192B, mode4=507B, bgpd=192B, bgx=511B, greenswap=554B, shades=517B, vram-mirror=192B)
 SKIP: 0 (ZERO-SKIP policy)
-NEW: 2 (gbarcade, bpcore_BPCoreEngine - not yet verified)
 Runtime hangs: 0
 ```
+
+**Note:** Documentation previously claimed 71/76 or 82/82 PASS. Actual verification on 2026-09-13 shows 0/11 PASS due to blank-screen rendering bug. All ROMs transpile successfully but produce blank/empty screenshots.
+
+### Golden Screenshot Coverage Audit (2026-09-11)
+- **Total golden files**: 91 in `test-reports/goldens/`
+- **ScreenshotMgba test ROMs**: 12 (bgpd, bgx, greenswap, hello, hello_world, helloWorld, mode3, mode4, shades, sprite-hmosaic, stripes, vram-mirror)
+- **Golden coverage for ScreenshotMgba**: 12/12 (100%)
+- **ROMs without golden coverage**: 64 ROMs use PassFailScreen, EwramDump, or Smoke test types — no visual verification against golden images
+- **Gap count**: 64 ROMs lack screenshot-based visual verification
 
 **Level 2 (Assertion Text) Results (2026-09-01):** 76/76 PASS. Includes status-irq-dma (CpuFastSet mask fix), dispcnt-latch (IRQ return alignment fix), and all L1 ROMs.
 
@@ -210,9 +267,64 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 | BIOS handlers | 54 |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
-| Test pass rate | 76/76 smoke (100%); 71/76 visual verified (93.4%); 3 fail; 0 skip; 2 new |
+| Test pass rate | 76/76 smoke (100%); 0/11 visual verified (0.0%); 11 fail (core set); 0 skip; 71 not yet run |
 | Build time | ~30s (release) |
 | Transpile time | ~1-5s per ROM |
+
+---
+
+## 8. Performance Audit (2026-09-11)
+
+### Generated Python Output Size
+
+Sample line counts from transpiled ROMs in `/tmp/` (audit 2026-09-11):
+
+| ROM | Lines | Size (bytes) |
+|-----|-------|--------------|
+| LinkCable_basic | 84,738 | 3.24 MB |
+| LinkCable_full | 129,483 | 4.94 MB |
+| LinkCable_stress | 108,088 | 4.33 MB |
+| LinkUART_demo | 82,540 | 3.11 MB |
+| cascade7 | 99,647 | 4.45 MB |
+| fantasy-knight | 131,553 | ~5.2 MB (estimated) |
+
+**Total generated Python in /tmp/:** ~504K+ lines across measured ROMs
+
+**Latest samples:**
+- cascade7: 99,647 lines
+- fantasy-knight: 131,553 lines (largest measured)
+- Combined sample: 231,200 lines from 2 ROMs
+
+**Observations:**
+- Generated files range from 80K-130K lines per ROM
+- File sizes range from 3-5 MB per ROM
+- Larger ROMs with more code blocks produce proportionally larger output
+- Block merging (Wave 1) provides 52-80% code size reduction
+
+### Numba JIT Usage
+
+**Status:** Infrastructure present but **NOT ENABLED** in production
+
+Numba is referenced in 4 runtime files:
+- `arm7tdmi.py` - CPU core JIT decorators
+- `ppu.py` - PPU rendering JIT decorators  
+- `apu.py` - Audio channel JIT decorators
+- `numba.py` - Fallback stub module
+
+**Implementation:**
+- Graceful fallback when numba not installed (no-op decorators)
+- `set_numba_enabled()` and `is_numba_available()` APIs exist
+- JIT compilation gated behind opt-in flag
+
+**Why not enabled by default:**
+- Breaks standalone output requirement (numba is a runtime dependency)
+- Deferrable optimization (F99) — defer until transpiler output format stabilizes
+- Current performance acceptable for testing/development use cases
+
+**Potential impact:**
+- F52 profiling shows `read_u16` + `dict.get` dominate runtime (4.76s/2.3M calls)
+- JIT-compiling memory access hot path could provide 10x speedup
+- Recommended as future optimization behind `--jit` flag
 
 ---
 

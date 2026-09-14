@@ -4,191 +4,6 @@ import struct
 import os
 from typing import Optional, List, Tuple
 
-# Numba JIT compilation support
-try:
-    import numba
-    from numba import njit, prange
-    _HAS_NUMBA = True
-except ImportError:
-    numba = None
-    njit = None
-    prange = None
-    _HAS_NUMBA = False
-
-_NUMBA_ENABLED = False
-_NUMBA_PPU_ENABLED = True  # Separate flag for PPU JIT
-
-
-def _try_enable_numba_jit() -> bool:
-    """Attempt to enable Numba JIT for PPU functions.
-
-    Returns the enabled state. Falls back gracefully if numba is not installed."""
-    global _NUMBA_PPU_ENABLED, _HAS_NUMBA
-    try:
-        import numba  # noqa: F401
-        if numba is not None:
-            _HAS_NUMBA = True
-            _NUMBA_PPU_ENABLED = True
-            return True
-    except ImportError:
-        pass
-
-    _HAS_NUMBA = False
-    _NUMBA_PPU_ENABLED = False
-    print("  Warning: numba not installed, PPU JIT disabled")
-    return False
-
-
-def jit_compile(func):
-    """Decorator to JIT-compile a function with numba when available."""
-    if not _HAS_NUMBA or not _NUMBA_ENABLED:
-        return func
-    try:
-        return njit(func)
-    except Exception as e:
-        print(f"  Warning: JIT compilation failed for {func.__name__}: {e}")
-        return func
-
-
-def jit_compile_ppu(func):
-    """Decorator to JIT-compile PPU functions with numba when enabled."""
-    if not _HAS_NUMBA or not _NUMBA_PPU_ENABLED:
-        return func
-    try:
-        return njit(func, parallel=True)
-    except Exception as e:
-        print(f"  Warning: PPU JIT compilation failed for {func.__name__}: {e}")
-        return func
-
-
-def set_numba_enabled(enabled: bool):
-    """Enable or disable all numba JIT compilation."""
-    global _NUMBA_ENABLED
-    if not _HAS_NUMBA and enabled:
-        print("  Warning: numba not installed, JIT compilation unavailable")
-    _NUMBA_ENABLED = enabled and _HAS_NUMBA
-
-
-def set_numba_ppu_enabled(enabled: bool):
-    """Enable or disable PPU-specific numba JIT compilation."""
-    global _NUMBA_PPU_ENABLED
-    if not _HAS_NUMBA and enabled:
-        print("  Warning: numba not installed, PPU JIT compilation unavailable")
-    _NUMBA_PPU_ENABLED = enabled and _HAS_NUMBA
-
-
-def is_numba_available() -> bool:
-    """Check if numba is available."""
-    return _HAS_NUMBA
-
-
-def is_numba_ppu_enabled() -> bool:
-    """Check if PPU JIT is enabled."""
-    return _NUMBA_PPU_ENABLED and _HAS_NUMBA
-
-
-@jit_compile
-def _c5to8_jit(c):
-    if not isinstance(c, int):
-        c = int(c)
-    val = c & 0x1F
-    return ((val << 3) | (val >> 2)) & 0xFF
-
-
-@jit_compile
-def _read_color_jit(vram_data, addr):
-    if addr >= 0 and addr + 1 < len(vram_data):
-        return int(vram_data[addr] | (vram_data[addr + 1] << 8))
-    return 0
-
-
-@jit_compile
-def _read_palette_jit(palette_data, addr):
-    if addr >= 0 and addr + 1 < len(palette_data):
-        return int(palette_data[addr] | (palette_data[addr + 1] << 8))
-    return 0
-
-
-@jit_compile
-def _convert_color_jit(color_val):
-    r = int((color_val >> 0) & 0x1F)
-    g = int((color_val >> 5) & 0x1F)
-    b = int((color_val >> 10) & 0x1F)
-    r8 = int((r << 3) | (r >> 2))
-    g8 = int((g << 3) | (g >> 2))
-    b8 = int((b << 3) | (b >> 2))
-    return int(0xFF000000 | (b8 << 16) | (g8 << 8) | r8)
-
-
-@jit_compile
-def _decode_tile_4bpp_jit(vram_data, tile_offset):
-    result = [0] * 64
-    for row in range(8):
-        for col in range(8):
-            byte_offset = row * 4 + (col // 2)
-            addr = tile_offset + byte_offset
-            if addr >= 0 and addr < len(vram_data):
-                byte_val = vram_data[addr]
-                if col % 2 == 0:
-                    color_idx = int(byte_val & 0x0F)
-                else:
-                    color_idx = int((byte_val >> 4) & 0x0F)
-                result[row * 8 + col] = color_idx
-            else:
-                result[row * 8 + col] = 0
-    return result
-
-
-@jit_compile
-def _decode_tile_8bpp_jit(vram_data, tile_offset):
-    result = [0] * 64
-    for row in range(8):
-        for col in range(8):
-            addr = tile_offset + (row * 8) + col
-            if addr >= 0 and addr < len(vram_data):
-                result[row * 8 + col] = int(vram_data[addr])
-            else:
-                result[row * 8 + col] = 0
-    return result
-
-
-# ========================================================================
-# Numba JIT-compiled rendering helpers (cache=True for performance)
-# ========================================================================
-
-@jit_compile
-def _get_palette_color_jit(palette_data, palette_idx):
-    addr = palette_idx * 2
-    if addr + 1 >= len(palette_data):
-        return (0, 0, 0)
-
-    color_val = palette_data[addr] | (palette_data[addr + 1] << 8)
-
-    r = int((color_val >> 0) & 0x1F)
-    g = int((color_val >> 5) & 0x1F)
-    b = int((color_val >> 10) & 0x1F)
-    r8 = int((r << 3) | (r >> 2))
-    g8 = int((g << 3) | (g >> 2))
-    b8 = int((b << 3) | (b >> 2))
-    return (r8, g8, b8)
-
-
-@jit_compile
-def _get_palette_color_256_jit(palette_data, color_idx):
-    addr = color_idx * 2
-    if addr + 1 >= len(palette_data):
-        return (0, 0, 0)
-
-    color_val = palette_data[addr] | (palette_data[addr + 1] << 8)
-
-    r = int((color_val >> 0) & 0x1F)
-    g = int((color_val >> 5) & 0x1F)
-    b = int((color_val >> 10) & 0x1F)
-    r8 = int((r << 3) | (r >> 2))
-    g8 = int((g << 3) | (g >> 2))
-    b8 = int((b << 3) | (b >> 2))
-    return (r8, g8, b8)
-
 
 def _get_vram_bytes(memory, start: int, size: int) -> bytes:
     """Extract VRAM bytes for JIT functions."""
@@ -707,9 +522,6 @@ class PPU:
         self.dispcnt = 0x0403
         self._obj_window_rects = []
         
-        # Numba JIT control for PPU
-        self.numba_ppu_enabled = is_numba_ppu_enabled()
-        
         # Cache for VRAM/palette data (updated each frame for JIT)
         self._vram_cache = None
         self._palette_cache = None
@@ -796,6 +608,12 @@ class PPU:
         # Mirrors _bg2_affine_snapshots so mid-frame WIN0V/WIN1V writes take effect.
         self._win0_snapshots = [None] * self.screen_height
         self._win1_snapshots = [None] * self.screen_height
+
+        # Per-scanline DISPSTAT/VCOUNT latches for games that poll these registers.
+        # Captured at the START of each scanline (before vcount increment),
+        # so reads during HBlank/VBlank return the correct latched values.
+        self._dispstat_snapshot = [0] * 228
+        self._vcount_snapshot = [0] * 228
 
         # Window control bits (which layers enabled in each window)
         self.win0_in_enable = 0  # Bits: 0-3 = BG0-3, 4 = OBJ, 5 = Blend
@@ -895,41 +713,6 @@ class PPU:
             return bytes(self.memory.read_range(palette_start, palette_end - palette_start))
         except:
             return b'\x00' * (palette_end - palette_start)
-
-    def _decode_tile_4bpp_jit_wrapper(self, tile_index: int, char_block_base: int) -> List[int]:
-        """JIT-accelerated 4BPP tile decoding."""
-        vram_data = self._get_vram_data()
-        char_block = char_block_base * 0x4000
-        tile_offset = tile_index * 32
-        return _decode_tile_4bpp_jit(vram_data, char_block + tile_offset)
-
-    def _decode_tile_8bpp_jit_wrapper(self, tile_index: int, char_block_base: int) -> List[int]:
-        """JIT-accelerated 8BPP tile decoding."""
-        vram_data = self._get_vram_data()
-        char_block = char_block_base * 0x4000
-        # Use modulo 256 to match mGBA behavior for out-of-range tile indices
-        tile_offset = (tile_index % 256) * 64
-        return _decode_tile_8bpp_jit(vram_data, char_block + tile_offset)
-
-    def _get_palette_color_jit(self, palette_idx: int) -> Tuple[int, int, int]:
-        """JIT-accelerated palette color lookup."""
-        palette_data = self._get_palette_data()
-        addr = palette_idx * 2
-        color_val = _read_palette_jit(palette_data, addr)
-        r = _c5to8_jit((color_val >> 0) & 0x1F)
-        g = _c5to8_jit((color_val >> 5) & 0x1F)
-        b = _c5to8_jit((color_val >> 10) & 0x1F)
-        return (r, g, b)
-
-    def _get_palette_color_256_jit(self, palette_idx: int) -> Tuple[int, int, int]:
-        """JIT-accelerated 256-color palette lookup."""
-        palette_data = self._get_palette_data()
-        addr = palette_idx * 2
-        color_val = _read_palette_jit(palette_data, addr)
-        r = _c5to8_jit((color_val >> 0) & 0x1F)
-        g = _c5to8_jit((color_val >> 5) & 0x1F)
-        b = _c5to8_jit((color_val >> 10) & 0x1F)
-        return (r, g, b)
 
     def write_register(self, addr: int, value: int):
         """Handle MMIO writes to PPU registers"""
@@ -1172,18 +955,37 @@ class PPU:
             dispcnt |= (self.obj_window_enable & 1) << 15
             return dispcnt
 
-        # VCOUNT read
+        # VCOUNT read — return current scanline counter.
+        # The value is latched at the START of each scanline by step_scanline().
         elif addr == self.REG_VCOUNT:
+            if 0 <= self.vcount < 228:
+                return self._vcount_snapshot[self.vcount]
             return self.vcount
 
-        # DISPSTAT read — return the authoritative latched value from io[]
-        # maintained by step_scanline(). The Python attributes (self.vblank,
-        # self.hblank, self.vcount_trigger) are stale; only io[4]/io[5] reflect
-        # the real per-scanline state.
+        # DISPSTAT read — return per-scanline latched value.
+        # Games polling DISPSTAT mid-scanline need the value latched at the
+        # START of the current scanline, including VBlank/HBlank/VCOUNT-match bits.
         elif addr == self.REG_DISPSTAT:
+            # Compute DISPSTAT dynamically based on CURRENT self.vcount.
+            # This ensures that ROMs polling in tight loops see VBlank=1 when
+            # self.vcount >= 160, even if they started polling in the visible region.
+            if 0 <= self.vcount < 228:
+                dispstat = 0
+                # VBlank bit: set when vcount >= 160 (VBlank period)
+                if self.vcount >= self.screen_height:
+                    dispstat |= 0x0001
+                # HBlank bit: set for all scanlines (simplified model)
+                dispstat |= 0x0002
+                # LYC match bit: set when vcount == lyc
+                if self.vcount == self.lyc:
+                    dispstat |= 0x0004
+                # Preserve IRQ enable bits from io[] (VBlank IRQ=3, HBlank IRQ=4, VCount IRQ=5)
+                dispstat |= self.memory.io[4] & 0x38
+                # Preserve LYC value (bits 8-15)
+                dispstat |= self.memory.io[5] << 8
+                return dispstat
+            # Fallback: compute from current io[] state
             return self.memory.io[4] | (self.memory.io[5] << 8)
-
-        # BG Control registers read
         elif addr == self.REG_BG0CNT:
             return self._read_bg_control(0)
         elif addr == self.REG_BG1CNT:
@@ -1577,10 +1379,14 @@ class PPU:
         Updates VCount in MMIO, fires HBlank/VBlank DMA and IRQs.
         Called 160+ times per frame by the main loop between instruction batches.
         Does NOT render pixels — use render_frame() for that."""
+        
         if self.vcount == 0:
             self._bg2_affine_snapshots = [None] * self.screen_height
             self._win0_snapshots = [None] * self.screen_height
             self._win1_snapshots = [None] * self.screen_height
+            # Reset DISPSTAT/VCOUNT snapshots at frame start
+            self._dispstat_snapshot = [0] * 228
+            self._vcount_snapshot = [0] * 228
 
         # Per-scanline window snapshot: capture (left, right) from WIN0H/WIN1H
         # for the CURRENT scanline if it falls within the window's Y range.
@@ -1601,6 +1407,32 @@ class PPU:
                 win1_y2 = 160
             if win1_y1 <= self.vcount < win1_y2:
                 self._win1_snapshots[self.vcount] = (self.win1_left, self.win1_right)
+
+        # Capture per-scanline DISPSTAT/VCOUNT latches BEFORE vcount increment.
+        # Games polling these registers mid-scanline need the values valid at
+        # the START of this scanline. This mirrors the affine/window snapshot
+        # pattern: latch before any HBlank/VBlank state changes.
+        # CRITICAL: Also populate snapshot for the NEXT scanline at the END of
+        # this function, so that ROMs spinning in tight loops see the correct
+        # value when they read DISPSTAT during instruction execution.
+        if 0 <= self.vcount < 228:
+            # Build current DISPSTAT value
+            # Update VBlank bit based on CURRENT vcount (before increment)
+            # VBlank = scanlines 160-227 (after visible display completes)
+            vblank_current = self.vcount >= self.screen_height
+            dispstat = 0
+            if vblank_current:
+                dispstat |= 0x0001
+            # HBlank bit: on GBA, HBlank occurs after every scanline (including VBlank)
+            # For snapshot purposes, set HBlank=1 for all scanlines since games
+            # typically poll DISPSTAT during HBlank waiting periods
+            dispstat |= 0x0002
+            # Update LYC match bit (VCount compare) - use self.lyc attribute
+            if self.vcount == self.lyc:
+                dispstat |= 0x0004
+            # Latch for this scanline
+            self._dispstat_snapshot[self.vcount] = dispstat
+            self._vcount_snapshot[self.vcount] = self.vcount
 
         # Snapshot BG2 affine params for the CURRENT scanline BEFORE HBlank-DMA
         # modifies them. On hardware the PPU latches the affine matrix at the
@@ -1630,18 +1462,19 @@ class PPU:
         io[6] = self.vcount & 0xFF
         io[7] = 0
 
-        dispstat = io[4] | (io[5] << 8)
+        # Update DISPSTAT in io[] array
+        # Preserve IRQ enable bits (3-5) and LYC (8-15) from existing value
+        old_dispstat = io[4] | (io[5] << 8)
+        dispstat = 0
         if self.vblank:
             dispstat |= 0x0001
-        else:
-            dispstat &= ~0x0001
-        dispstat |= 0x0002
-
-        lyc = (dispstat >> 8) & 0xFF
-        if self.vcount == lyc:
+        dispstat |= 0x0002  # HBlank bit
+        if self.vcount == self.lyc:
             dispstat |= 0x0004
-        else:
-            dispstat &= ~0x0004
+        # Preserve IRQ enable bits (VBlank IRQ=3, HBlank IRQ=4, VCount IRQ=5)
+        dispstat |= old_dispstat & 0x00E8
+        # Preserve LYC value (bits 8-15)
+        dispstat |= old_dispstat & 0xFF00
         io[4] = dispstat & 0xFF
         io[5] = (dispstat >> 8) & 0xFF
 
@@ -1663,6 +1496,25 @@ class PPU:
             mod = sys.modules.get("generated_rom")
             if mod is not None:
                 mod.z = 1
+
+        # PRE-populate snapshot for the NEXT scanline (after vcount increment).
+        # This ensures that ROMs spinning in tight loops see the correct DISPSTAT
+        # value when they read it during instruction execution, BEFORE step_scanline
+        # is called for the next scanline. Without this, the snapshot for the
+        # current scanline is still 0 when the ROM reads DISPSTAT.
+        next_vcount = self.vcount  # vcount was already incremented at line 1484
+        if 0 <= next_vcount < 228:
+            next_vblank = next_vcount >= self.screen_height
+            next_dispstat = 0
+            if next_vblank:
+                next_dispstat |= 0x0001
+            # HBlank bit
+            next_dispstat |= 0x0002
+            # LYC match bit - use self.lyc attribute instead of reading from io[5]
+            if next_vcount == self.lyc:
+                next_dispstat |= 0x0004
+            self._dispstat_snapshot[next_vcount] = next_dispstat
+            self._vcount_snapshot[next_vcount] = next_vcount
 
     def fire_hblank_irq(self):
         """Fire the HBlank IRQ for the scanline just completed by step_scanline.

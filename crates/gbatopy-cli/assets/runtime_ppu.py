@@ -382,12 +382,19 @@ class PPU:
         elif addr == self.REG_VCOUNT:
             return self.vcount
 
-        # DISPSTAT read
+        # DISPSTAT read - compute dynamically based on CURRENT self.vcount
+        # This ensures that ROMs polling in tight loops see VBlank=1 when
+        # self.vcount >= 160, even if they started polling in the visible region.
         elif addr == self.REG_DISPSTAT:
             dispstat = 0
-            dispstat |= (self.vblank & 1) << 0
-            dispstat |= (self.hblank & 1) << 1
-            dispstat |= (self.vcount_trigger & 1) << 2
+            # VBlank bit: set when vcount >= 160 (VBlank period)
+            if self.vcount >= self.screen_height:
+                dispstat |= 0x0001
+            # HBlank bit: set for all scanlines (simplified model)
+            dispstat |= 0x0002
+            # LYC match bit: set when vcount == lyc
+            if self.vcount == self.lyc:
+                dispstat |= 0x0004
             return dispstat
 
         # BG Control registers read

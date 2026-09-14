@@ -222,12 +222,34 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
         return result
 
     # --- Level 3: Visual Comparison ---
+    # For non-visual test types, check if golden exists and run comparison anyway
+    # Zero-SKIP policy: only skip if NO golden exists AND test type doesn't support visual comparison
     if test_type not in VISUAL_TEST_TYPES:
-        result["level3_status"] = "skipped"
-        result["level3_detail"] = f"test_type={test_type}"
+        # Check if a golden screenshot exists for this ROM
+        rom_base = rom_name.replace('.gba', '')
+        golden_candidates = [
+            GOLDEN_DIR / f"{rom_base}_f{frame}.png",
+            GOLDEN_DIR / f"{rom_base}_f10.png",
+            GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}.png",
+            GOLDEN_DIR / f"golden_{rom_base}_frame_10.png",
+        ]
+        has_golden = any(p.exists() for p in golden_candidates)
+        
+        if has_golden:
+            # Golden exists - run screenshot comparison even for non-visual test types
+            status, detail = compare_screenshot(screenshot_path, rom_name, frame=frame)
+            result["level3_status"] = status
+            result["level3_detail"] = detail if status != "pass" else None
+            result["level3"] = (status == "pass")
+        else:
+            # No golden exists - FAIL (not SKIP) per zero-SKIP policy
+            result["level3_status"] = "fail"
+            result["level3_detail"] = f"no golden screenshot for test_type={test_type}"
+            result["level3"] = False
         result["elapsed"] = round(time() - start, 2)
         return result
 
+    # Visual test types (ScreenshotMgba, ScreenshotGolden) - run as before
     status, detail = compare_screenshot(screenshot_path, rom_name, frame=frame)
     result["level3_status"] = status
     result["level3_detail"] = detail if status != "pass" else None

@@ -61,7 +61,7 @@ enum Commands {
         no_dma: bool,
         #[arg(long, default_value = "false")]
         no_numba: bool,
-        #[arg(long, default_value = "500000")]
+        #[arg(long, default_value = "2000000")]
         max_output_lines: u64,
     },
     Pipeline {
@@ -89,7 +89,7 @@ enum Commands {
         no_dma: bool,
         #[arg(long, default_value = "false")]
         no_numba: bool,
-        #[arg(long, default_value = "500000")]
+        #[arg(long, default_value = "2000000")]
         max_output_lines: u64,
         #[arg(long)]
         save_state: Option<PathBuf>,

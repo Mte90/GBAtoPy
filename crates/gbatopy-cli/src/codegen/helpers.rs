@@ -41,6 +41,7 @@ pub fn embed_runtime_files() -> String {
         "crates/gbatopy-cli/assets/gba_runtime/input.py",
         "crates/gbatopy-cli/assets/gba_runtime/apu.py",
         "crates/gbatopy-cli/assets/gba_runtime/bios.py",
+        "crates/gbatopy-cli/assets/gba_runtime/numba.py",
     ];
 
     code.push_str("# === GBA Runtime (embedded) ===\n\n");

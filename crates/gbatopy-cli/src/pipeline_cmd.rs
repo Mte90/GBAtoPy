@@ -218,6 +218,12 @@ pub fn run_pipeline(
 
     let mut disasm = Disassembler::new();
     instructions = disasm.selective_disassemble(&rom, &reachable, &cfg.mode_map);
+    eprintln!("DEBUG MODE_MAP: 0x080000C8 in mode_map={}", cfg.mode_map.iter().any(|&(a, m)| a == 0x080000C8));
+    for &(addr, mode) in &cfg.mode_map {
+        if addr >= 0x080000C0 && addr <= 0x080000D0 {
+            eprintln!("DEBUG MODE_MAP: 0x{:08X} mode={:?}", addr, mode);
+        }
+    }
     let data_stats = disasm.mark_data_regions(&mut instructions);
     eprintln!("  Disassembled {} instructions ({} marked as data in {} regions)",
               instructions.len(), data_stats.data_instructions_marked, data_stats.unknown_regions_found);
@@ -274,6 +280,9 @@ pub fn run_pipeline(
     }
     if flags.audio {
         optional_files.push("crates/gbatopy-cli/assets/gba_runtime/apu.py");
+    }
+    if flags.numba {
+        optional_files.push("crates/gbatopy-cli/assets/gba_runtime/numba.py");
     }
 
     // Combine core and optional files
@@ -494,13 +503,21 @@ pub fn run_pipeline(
 
     for inst in &instructions {
         let addr = inst.address as u64;
+        if addr >= 0x08000100 && addr <= 0x08000120 {
+            eprintln!("PASS2: instr at 0x{:08X}: {} mode={:?}", addr, inst.opcode, inst.mode);
+        }
+        let addr = inst.address as u64;
         let mode = inst.mode;
         let instr_size = inst.width as u64;
         let next_expected = prev_addr.map(|a| a + instr_size);
         let is_branch = writes_r15(inst);
+        if addr >= 0x08000100 && addr <= 0x08000130 {
+            eprintln!("DEBUG: instr at 0x{:08X}: {} is_branch={}", addr, inst.opcode, is_branch);
+        }
 
         // CRITICAL: Branch instructions ALWAYS start their own block and terminate it
         if is_branch {
+            eprintln!("DEBUG: Branch at 0x{:08X}: {} - starting new block", addr, inst.opcode);
             // Start a new block for this branch instruction
             current_block_start = Some((addr, mode));
             // Add this instruction to its own block
@@ -627,7 +644,16 @@ pub fn run_pipeline(
     }
     code.push_str("]\n\n");
 
-    // ROM manages its own VRAM/palette writes at runtime; do not pre-load extracted assets
+    // Copy extracted tile/palette data to VRAM at initialization
+    code.push_str("# Copy extracted assets to VRAM/palette at initialization\n");
+    code.push_str("if tile_data:\n");
+    code.push_str("    for i, b in enumerate(tile_data):\n");
+    code.push_str("        memory.vram[i] = b\n");
+    code.push_str("if palette_data:\n");
+    code.push_str("    for i, val in enumerate(palette_data):\n");
+    code.push_str("        memory.palette[i*2] = val & 0xFF\n");
+    code.push_str("        memory.palette[i*2+1] = (val >> 8) & 0xFF\n");
+    code.push_str("\n");
 
     // Generate sample playback function
     code.push_str("# Sample playback helper\n");
@@ -816,6 +842,12 @@ pub fn run_pipeline(
     let mut current_line_count = code.lines().count() as u64;
 
     for (&(func_start, func_mode_key), func_instructions) in &func_groups {
+        if func_start >= 0x08000100 && func_start <= 0x08000130 {
+            eprintln!("DEBUG: Block at 0x{:08X} (mode={:?}), {} instructions", func_start, func_mode_key, func_instructions.len());
+            for inst in func_instructions {
+                eprintln!("  - 0x{:08X}: {}", inst.address, inst.opcode);
+            }
+        }
         let mode_suffix = if func_mode_key == ArmMode::Arm { "a" } else { "t" };
         let func_name = format!("func_{:08X}_{}", func_start, mode_suffix);
         let block_len = func_instructions.len();
@@ -878,9 +910,16 @@ pub fn run_pipeline(
             false
         });
 
+        if func_start == 0x0800010C {
+            eprintln!("DEBUG: Block at 0x0800010C, is_nop={}", is_nop);
+            eprintln!("DEBUG: Body preview: {}", body.lines().take(5).collect::<Vec<_>>().join("\n"));
+        }
         if is_nop {
             // NOP block: skip generating function, will redirect func_map
             // NOP blocks are implicitly handled by chaining
+            if func_start == 0x0800010C {
+                eprintln!("DEBUG: Skipping NOP block at 0x0800010C!");
+            }
         } else {
             let func_code = format!("\ndef {}(registers, cpsr):\n", func_name) + &body;
             let lines_to_add = func_code.lines().count() as u64;
@@ -970,7 +1009,7 @@ pub fn run_pipeline(
     code.push_str("dispatch_table_arm = {\n");
     for &(addr, mode) in &non_nop_addrs {
         if mode != ArmMode::Arm { continue; }
-        let idx = (addr - base_addr) >> 1;
+        let idx = (addr - base_addr) >> 2;
         if idx >= 0x100000 { continue; }
         code.push_str(&format!("    0x{:07X}: func_{:08X}_a,\n", idx, addr));
     }
@@ -984,9 +1023,6 @@ pub fn run_pipeline(
         code.push_str(&format!("    0x{:07X}: func_{:08X}_t,\n", idx, addr));
     }
     code.push_str("}\n\n");
-
-    // Merged table for _interp_fallback boundary checks (mode-agnostic membership test)
-    code.push_str("dispatch_table = {**dispatch_table_arm, **dispatch_table_thumb}\n\n");
 
     // Add game loop (from generate_game_loop in pipeline.rs)
     code.push_str(&generate_game_loop());
@@ -1338,7 +1374,6 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
                 _ib['r10'] = _b.get('r10', 0); _ib['r11'] = _b.get('r11', 0)
                 _ib['r12'] = _b.get('r12', 0)
     _step_count = 0
-    _handler_context = 0x02000000 <= registers[15] < 0x03008000
     while _step_count < max_steps:
         _pc = _interp_cpu.registers[15]
         if not (0x00000000 <= _pc < 0x00004000
@@ -1355,16 +1390,40 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
             break
         if irq_return_pc is not None and (_pc == irq_return_pc or _pc == ((irq_return_pc + 4) & 0xFFFFFFFF) or _pc == ((irq_return_pc + 4) & 0xFFFFFFFC)):
             break
-        if not _handler_context and 0x08000000 <= _pc < 0x0A000000:
-            _idx = (_pc - 0x08000000) >> 1
+        # Check for ROM dispatch table lookup
+        if 0x08000000 <= _pc < 0x0A000000:
+            _idx = (_pc - 0x08000000) >> (1 if _interp_cpu.thumb_mode else 2)
+            if _pc == 0x0800010A:
+                print(f"  FALLBACK DEBUG: PC=0x{_pc:08X}, thumb_mode={_interp_cpu.thumb_mode}, _idx=0x{_idx:05X}", file=sys.stderr, flush=True)
             if _interp_cpu.thumb_mode:
-                if _idx in dispatch_table_thumb:
+                if dispatch_table_thumb.get(_idx) is not None:
+                    if _pc == 0x0800010A:
+                        print(f"  FALLBACK DEBUG: 0x{_idx:05X} IS in dispatch_table_thumb with func, breaking", file=sys.stderr, flush=True)
                     break
             else:
-                if _idx in dispatch_table_arm:
+                if dispatch_table_arm.get(_idx) is not None:
                     break
+        # If PC is NOT in ROM range (e.g., IWRAM, EWRAM, BIOS), execute one step and return
+        # This allows the main loop to advance the PPU
+        if not (0x08000000 <= _pc < 0x0A000000):
+            break
+        _old_pc = _pc
         _interp_cpu.step()
         _step_count += 1
+        
+        # Dynamic dispatch table expansion for indirect calls
+        # When BX Rm or BLX Rm executes, the new PC may not be in the dispatch table
+        _new_pc = _interp_cpu.registers[15]
+        if 0x08000000 <= _new_pc < 0x0A000000 and _new_pc != _old_pc:
+            # PC changed to a new ROM address - add to dispatch table
+            _new_idx = (_new_pc - 0x08000000) >> (1 if _interp_cpu.thumb_mode else 2)
+            if _interp_cpu.thumb_mode:
+                if _new_idx not in dispatch_table_thumb:
+                    dispatch_table_thumb[_new_idx] = None  # Add entry only if not already present
+            else:
+                if _new_idx not in dispatch_table_arm:
+                    dispatch_table_arm[_new_idx] = None  # Add entry only if not already present
+        
         if getattr(_interp_cpu, '_halted', False):
             _interp_cpu._halted = False
             _cpu_halted = True
@@ -1451,20 +1510,45 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                         _df.write(bytes(_rd))
                     print(f"Dumped {_dump_region_name} ({len(_rd)} bytes) at PC=0x{pc:08X}", flush=True)
                     _dump_done = True
-                idx = (pc - 0x08000000) >> 1
+                idx = (pc - 0x08000000) >> (1 if cpsr.get('t', 0) else 2)
                 _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
                 func = _dt.get(idx)
                 if func is None:
-                    _budget = instr_per_scanline - (ic - _inner_ic_start)
-                    if _budget <= 0:
-                        _budget = 1
-                    if 0x02000000 <= pc < 0x03008000:
-                        _budget = max(_budget, 100000)
-                    _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
-                    _steps = max(1, _steps)
-                    ic += _steps
-                    if timers_instance is not None:
-                        timers_instance.step(4 * _steps)
+                    # PC not in dispatch table - could be IWRAM/EWRAM code or unknown ROM address
+                    # If PC is NOT in ROM range, execute one CPU step directly and continue
+                    # This prevents infinite fallback loops for IWRAM code
+                    if not (0x08000000 <= pc < 0x0A000000):
+                        # Non-ROM address: execute one step and advance instruction counter
+                        global _interp_cpu
+                        if _interp_cpu is None:
+                            _interp_cpu = ARM7TDMI(memory)
+                            memory.cpu = _interp_cpu
+                        # Sync CPU state
+                        for i in range(16):
+                            _interp_cpu.registers[i] = registers[i]
+                        _interp_cpu.cpsr = _cpsr_to_int(cpsr)
+                        _interp_cpu.mode = cpsr.get('mode', 0x1F) & 0x1F
+                        _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
+                        # Execute one instruction
+                        _interp_cpu.step()
+                        # Sync back to registers
+                        for i in range(16):
+                            registers[i] = _interp_cpu.registers[i]
+                        _cpsr_from_int(cpsr, _interp_cpu.cpsr)
+                        cpsr['mode'] = _interp_cpu.mode & 0x1F
+                        ic += 1
+                        if timers_instance is not None:
+                            timers_instance.step(4)
+                    else:
+                        # ROM address not in dispatch table - use fallback interpreter
+                        _budget = instr_per_scanline - (ic - _inner_ic_start)
+                        if _budget <= 0:
+                            _budget = 1
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                        _steps = max(1, _steps)
+                        ic += _steps
+                        if timers_instance is not None:
+                            timers_instance.step(4 * _steps)
                     if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
                         break
                 else:
@@ -1589,22 +1673,47 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 if _cpu_halted or ic >= mi:
                     break
                 pc = registers[15]
-                idx = (pc - 0x08000000) >> 1
+                idx = (pc - 0x08000000) >> (1 if cpsr.get('t', 0) else 2)
                 _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
                 func = _dt.get(idx)
                 if func is None:
-                    _budget = instr_per_scanline - (ic - _inner_ic_start)
-                    if _budget <= 0:
-                        _budget = 1
-                    if 0x02000000 <= pc < 0x03008000:
-                        _budget = max(_budget, 100000)
-                    _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
-                    _steps = max(1, _steps)
-                    ic += _steps
-                    if timers_instance is not None:
-                        timers_instance.step(4 * _steps)
-                    if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
-                        break
+                    # PC not in dispatch table - could be IWRAM/EWRAM code or unknown ROM address
+                    # If PC is NOT in ROM range, execute one CPU step directly and continue
+                    # This prevents infinite fallback loops for IWRAM code
+                    if not (0x08000000 <= pc < 0x0A000000):
+                        # Non-ROM address: execute one step and advance instruction counter
+                        global _interp_cpu
+                        if _interp_cpu is None:
+                            _interp_cpu = ARM7TDMI(memory)
+                            memory.cpu = _interp_cpu
+                        # Sync CPU state
+                        for i in range(16):
+                            _interp_cpu.registers[i] = registers[i]
+                        _interp_cpu.cpsr = _cpsr_to_int(cpsr)
+                        _interp_cpu.mode = cpsr.get('mode', 0x1F) & 0x1F
+                        _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
+                        # Execute one instruction
+                        _interp_cpu.step()
+                        # Sync back to registers
+                        for i in range(16):
+                            registers[i] = _interp_cpu.registers[i]
+                        _cpsr_from_int(cpsr, _interp_cpu.cpsr)
+                        cpsr['mode'] = _interp_cpu.mode & 0x1F
+                        ic += 1
+                        if timers_instance is not None:
+                            timers_instance.step(4)
+                    else:
+                        # ROM address not in dispatch table - use fallback interpreter
+                        _budget = instr_per_scanline - (ic - _inner_ic_start)
+                        if _budget <= 0:
+                            _budget = 1
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                        _steps = max(1, _steps)
+                        ic += _steps
+                        if timers_instance is not None:
+                            timers_instance.step(4 * _steps)
+                        if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
+                            break
                     continue
                 func(registers, cpsr); ic += 1
                 if timers_instance is not None:

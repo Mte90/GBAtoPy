@@ -271,7 +271,7 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
                 if sets_flags {
                     let borrow = if with_borrow { " - (0 if cpsr.get('c', 0) else 1)" } else { "" };
                     return Some(format!(
-                        "_a_val = {}\n_b_val = {}\n_full = _a_val - _b_val{}\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _full >= 0 else 0\n_a_s = _a_val if _a_val < 0x80000000 else _a_val - 0x100000000\n_b_s = _b_val if _b_val < 0x80000000 else _b_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_a_s >= 0 and _b_s < 0 and _result_s < 0) or (_a_s < 0 and _b_s >= 0 and _result_s >= 0) else 0",
+                        "_a_val = {}\n_b_val = {}\n_full = _a_val - _b_val{}\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _a_val >= _b_val else 0\n_a_s = _a_val if _a_val < 0x80000000 else _a_val - 0x100000000\n_b_s = _b_val if _b_val < 0x80000000 else _b_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_a_s >= 0 and _b_s < 0 and _result_s < 0) or (_a_s < 0 and _b_s >= 0 and _result_s >= 0) else 0",
                         a, b, borrow, rd
                     ));
                 }
@@ -291,7 +291,7 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
                 if sets_flags {
                     let borrow = if with_borrow { " - (0 if cpsr.get('c', 0) else 1)" } else { "" };
                     return Some(format!(
-                        "_a_val = {}\n_b_val = {}\n_full = _a_val - _b_val{}\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _full >= 0 else 0\n_a_s = _a_val if _a_val < 0x80000000 else _a_val - 0x100000000\n_b_s = _b_val if _b_val < 0x80000000 else _b_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_a_s >= 0 and _b_s < 0 and _result_s < 0) or (_a_s < 0 and _b_s >= 0 and _result_s >= 0) else 0",
+                        "_a_val = {}\n_b_val = {}\n_full = _a_val - _b_val{}\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _a_val >= _b_val else 0\n_a_s = _a_val if _a_val < 0x80000000 else _a_val - 0x100000000\n_b_s = _b_val if _b_val < 0x80000000 else _b_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_a_s >= 0 and _b_s < 0 and _result_s < 0) or (_a_s < 0 and _b_s >= 0 and _result_s >= 0) else 0",
                         a, b, borrow, rd
                     ));
                 }

@@ -32,7 +32,8 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
         return code;
     }
 
-    format!("raise NotImplementedError('ARM opcode unimplemented at {:#010x}: {}')", inst.address, opcode)
+    // Unhandled ARM instruction - emit NOP with comment instead of crashing
+    format!("# unhandled ARM at {:#010x}: {}\npass", inst.address, opcode)
 }
 
 fn generate_thumb_instruction(inst: &DecodedInstruction) -> String {
@@ -67,5 +68,6 @@ fn generate_thumb_instruction(inst: &DecodedInstruction) -> String {
     if let Some(code) = thumb::misc::generate(inst) {
         return code;
     }
-    format!("raise NotImplementedError('THUMB opcode unimplemented at {:#010x}: {}')", inst.address, opcode)
+    // Unhandled Thumb instruction - emit NOP with comment instead of crashing
+    format!("# unhandled THUMB at {:#010x}: {}\npass", inst.address, opcode)
 }

@@ -37,17 +37,17 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     // ARM7TDMI has no system coprocessor; coprocessor instructions indicate
     // either data-decoded-as-code (CFG bug) or an undefined instruction trap.
     if opcode_upper.starts_with("COPROCESSOR") {
-        return Some("raise NotImplementedError('COPROCESSOR instruction - no coprocessor on ARM7TDMI')".to_string());
+        return Some(format!("_interp_fallback({})", inst.address));
     }
 
     if base_opcode == "MRC" || base_opcode == "MCR" {
-        return Some(format!("raise NotImplementedError('{} - no coprocessor on ARM7TDMI')", base_opcode));
+        return Some(format!("_interp_fallback({})", inst.address));
     }
     if base_opcode == "LDC" || base_opcode == "STC" {
-        return Some(format!("raise NotImplementedError('{} - no coprocessor on ARM7TDMI')", base_opcode));
+        return Some(format!("_interp_fallback({})", inst.address));
     }
     if base_opcode == "CDP" {
-        return Some("raise NotImplementedError('CDP - no coprocessor on ARM7TDMI')".to_string());
+        return Some(format!("_interp_fallback({})", inst.address));
     }
     if base_opcode == "SWI" || base_opcode == "SVC" {
         // SWI/SVC: software interrupt - call the global swi_handler(swi_num)
@@ -94,18 +94,18 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     code.push_str(&format!("cpsr['v'] = ({} >> 28) & 1", source));
                 }
                 if code.is_empty() {
-                    code.push_str("raise NotImplementedError('MSR with no effect')");
+                    code.push_str(&format!("_interp_fallback({})", inst.address));
                 }
                 return Some(code);
             }
         }
-        return Some("raise NotImplementedError('MSR unhandled operand form')".to_string());
+        return Some(format!("_interp_fallback({})", inst.address));
     }
     if base_opcode == "MRS" {
         if let Some(Operand::Register(rd)) = ops.get(0) {
             return Some(format!("registers[{}] = (cpsr['n'] << 31) | (cpsr['z'] << 30) | (cpsr['c'] << 29) | (cpsr['v'] << 28)", rd));
         }
-        return Some("raise NotImplementedError('MRS unhandled operand form')".to_string());
+        return Some(format!("_interp_fallback({})", inst.address));
     }
     if base_opcode == "NOP" {
         return Some("pass  # NOP".to_string());

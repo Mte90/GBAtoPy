@@ -364,6 +364,43 @@ else
     echo -e "  ${YELLOW}No public download URL - must be manually provided${NC}"
 fi
 
+# 26. JeffRuLz/Celeste-Classic-GBA (Platformer game - sprites, audio, mode0)
+# Celeste Classic port to GBA. Tests sprites, platformer mechanics, audio.
+# License: MIT
+echo -e "\n${GREEN}[26/26] JeffRuLz/Celeste-Classic-GBA${NC}"
+if [ -f "$ROMS_DIR/celeste-classic-gba.gba" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    if curl -L -o "$ROMS_DIR/celeste-classic-gba.gba" \
+        "https://github.com/JeffRuLz/Celeste-Classic-GBA/releases/download/v1.2/Celeste.Classic.v1.2.Homebrew.gba" 2>&1 | tail -1; then
+        echo -e "  ${GREEN}Downloaded celeste-classic-gba.gba${NC}"
+    else
+        echo -e "  ${RED}Download failed${NC}"
+    fi
+fi
+
+# 27. agbrs/agb (Rust GBA framework examples - codegen stress test)
+# 30+ examples testing affine transforms, DMA effects, sprites, audio, saving.
+# License: MPL-2.0
+echo -e "\n${GREEN}[27/27] agbrs/agb examples (Rust framework)${NC}"
+if [ -d "$SOURCES_DIR/agb-examples" ] && [ "$(ls -A $SOURCES_DIR/agb-examples 2>/dev/null)" ]; then
+    echo -e "  ${GREEN}Already exists, skipping${NC}"
+else
+    rm -rf "$SOURCES_DIR/agb-examples" /tmp/agb-examples.zip 2>/dev/null || true
+    if curl -L -o /tmp/agb-examples.zip "https://github.com/agbrs/agb/releases/latest/download/examples.zip" 2>&1 | tail -1; then
+        if unzip -q -o /tmp/agb-examples.zip -d "$SOURCES_DIR/agb-examples" 2>/dev/null; then
+            echo -e "  ${GREEN}Extracted agb examples${NC}"
+            echo -e "  ${YELLOW}Note: Examples are Rust source - must be built with devkitARM/rustup${NC}"
+            echo -e "  ${YELLOW}Built ROMs should be placed in $ROMS_DIR manually or via build script${NC}"
+        else
+            echo -e "  ${RED}Extraction failed${NC}"
+        fi
+        rm -f /tmp/agb-examples.zip
+    else
+        echo -e "  ${RED}Download failed${NC}"
+    fi
+fi
+
 # Custom ROMs (GBAtoPy team - must be built separately)
 echo -e "\n${YELLOW}=== Custom GBAtoPy Test ROMs ===${NC}"
 mkdir -p custom

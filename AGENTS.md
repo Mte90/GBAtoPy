@@ -129,6 +129,33 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 
 0c. **Keep at least 3 pending todos** — at any work boundary, if fewer than 3 pending todos remain, run the work discovery loop (0b) before continuing. Always have a visible backlog of upcoming work.
 
+### Context Management (Avoid Compaction Death Spirals)
+
+0d. **Delegate when context is saturated** — if tool outputs are being compacted before they can be read, STOP running bash commands yourself. Delegate ALL build/verify/diagnose work to a fresh subagent (fixer or explorer) which has its own clean context. Only retrieve the subagent's final text result via `task_result`.
+
+0e. **One all-in-one script over many small commands** — when running multi-step verification (build + transpile + run + compare), write ONE self-contained shell script to /tmp/, run it in the background, and read the tiny result file. Do not chain 10+ bash calls serially — each output fills context and triggers compaction.
+
+0f. **Write results to files, not stdout** — long-running commands must write their result to a tiny file (e.g. /tmp/result.txt) as a one-line summary. Read the file with the `read` tool, not `cat` via bash. The `read` tool is cheaper than bash output.
+
+0g. **Aggressively drop spent tool outputs** — after extracting what you need from a tool output, immediately mark it discardable with `ctx_reduce`. Do not hoard outputs until end of turn. Large file reads, grep results, and build logs are the primary cause of context saturation.
+
+0h. **Do not retry the same failing command** — if a bash command's output gets compacted 3 times in a row, STOP. The context is too saturated to read bash output. Delegate to a subagent instead. Retrying the same command wastes context budget without progress.
+
+0i. **Subagent results survive compaction better than bash output** — `task_result` returns the subagent's final assistant message as text, which is cheaper in context than raw bash output. When context is tight, prefer delegation over direct bash execution.
+
+0j. **Detect saturation early** — if a bash command's output gets dropped/compacted before you can read it TWICE in a row, STOP running bash commands yourself immediately. You are in a compaction death spiral. Delegate ALL subsequent build/verify/diagnose work to a fresh subagent (fixer or explorer) which has its own clean context.
+
+0k. **Massive context reduction is sometimes necessary** — if context is critically saturated (even `echo X` output gets dropped), use `ctx_reduce` with a large range like "1-100" to drop old tool outputs. This is destructive but necessary to escape a death spiral.
+
+0l. **Never run the same build command more than twice** — if `cargo build --release` output gets compacted twice in a row, STOP running bash commands. Delegate ALL build/verify/diagnose work to a fresh subagent (fixer or explorer) which has its own clean context. Retrieve only the final text result via `task_result`.
+
+0m. **Checkpoint before risky multi-file changes** — before any change touching >3 files or critical paths (auth, data layer, config, codegen, runtime templates), create a checkpoint with `aft_safety checkpoint`. This is the plan-level rollback point.
+
+0n. **Use `read` tool over `cat` in bash** — when you need to read a file's contents, use the `read` tool, not `cat`/`head`/`tail` via bash. The `read` tool is cheaper in context than bash output and survives compaction better.
+
+0o. **Delegate build+verify cycles to subagents** — when you need to build, transpile, and verify a ROM, delegate the ENTIRE cycle to ONE fixer subagent. The subagent has its own clean context and can run all the commands without filling your context. Retrieve only the final text result via `task_result`.
+
+0p. **End turn after spawning background tasks** — after spawning independent background tasks, end your turn immediately with a brief status message. Do NOT poll for status. The system notifies you automatically when tasks finish. Polling wastes context.
 ### Parallelization
 25. **Always use subagents when possible** — subagents are the DEFAULT, not the exception. Any non-trivial work (multiple steps, multiple files, research, investigation, implementation >20 lines) MUST be delegated to a subagent. The orchestrator coordinates, plans, dispatches, reconciles, and verifies — it does not implement serially when a specialist can do the work in parallel.
 

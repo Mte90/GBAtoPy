@@ -153,6 +153,59 @@ fn is_data_address(
     !decode_is_valid_code_run(rom, addr, mode, SOFT_HINT_MIN_RUN, arm_decoder, thumb_decoder)
 }
 
+/// Detects long runs of zero bytes, which are common in data sections
+/// (padding, uninitialized data) but rare in executable code.
+fn has_long_zero_run(rom: &[u8], addr: u32, min_run: usize) -> bool {
+    let rom_offset = (addr - 0x08000000) as usize;
+    if rom_offset + min_run > rom.len() {
+        return false;
+    }
+    let mut zero_count = 0;
+    for &byte in &rom[rom_offset..rom_offset + min_run] {
+        if byte == 0 {
+            zero_count += 1;
+            if zero_count >= min_run {
+                return true;
+            }
+        } else {
+            zero_count = 0;
+        }
+    }
+    false
+}
+
+/// Detects repeated byte patterns, which are common in audio/graphics data
+/// but rare in executable code. Code typically has high entropy.
+fn has_repeated_pattern(rom: &[u8], addr: u32) -> bool {
+    let rom_offset = (addr - 0x08000000) as usize;
+    if rom_offset + 64 > rom.len() {
+        return false;
+    }
+    
+    // Check for 4-byte repeating patterns over 32 bytes
+    // This catches audio samples, tile data, palette repeats
+    const PATTERN_SIZE: usize = 4;
+    const PATTERN_REPEAT_COUNT: usize = 8;  // 8 repeats = 32 bytes
+    
+    for start in 0..16 {
+        let mut matches = 0;
+        for i in 0..PATTERN_REPEAT_COUNT {
+            let offset1 = rom_offset + start + i * PATTERN_SIZE;
+            let offset2 = rom_offset + start + (i + 1) * PATTERN_SIZE;
+            if offset2 + PATTERN_SIZE > rom.len() {
+                break;
+            }
+            if rom[offset1..offset1 + PATTERN_SIZE] == rom[offset2..offset2 + PATTERN_SIZE] {
+                matches += 1;
+            }
+        }
+        if matches >= PATTERN_REPEAT_COUNT - 2 {
+            return true;
+        }
+    }
+    false
+}
+
 /// Soft-hint data filter: decodes a run of instructions at `addr` and returns
 /// true if the bytes do NOT look like valid code. This catches binary data
 /// regions (audio samples, graphics tiles) that the ASCII heuristic misses.
@@ -168,8 +221,19 @@ fn looks_like_data_soft(
     if rom_offset + 64 > rom.len() {
         return false;  // Out of bounds — treat as code to avoid blocking BFS
     }
+    
+    // New heuristics: check for data patterns BEFORE decoding
+    // These catch audio/graphics data that decodes as valid Thumb instructions
+    if has_long_zero_run(rom, addr, 16) {
+        return true;
+    }
+    if has_repeated_pattern(rom, addr) {
+        return true;
+    }
+    
     const SOFT_HINT_MIN_RUN: usize = 32;
-    !decode_is_valid_code_run(rom, addr, mode, SOFT_HINT_MIN_RUN, arm_decoder, thumb_decoder)
+    let valid_run = decode_is_valid_code_run(rom, addr, mode, SOFT_HINT_MIN_RUN, arm_decoder, thumb_decoder);
+    !valid_run
 }
 
 /// Tracks constant values in registers for indirect jump resolution.
@@ -261,8 +325,19 @@ impl CfgBuilder {
 
         const MAX_INSTRUCTIONS: usize = 500_000;
 
+        // TEMP: check data_addresses for 0x080000C8
+        eprintln!("DATA_CHECK: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8u32));
+        eprintln!("DATA_CHECK: data_addresses has {} entries", data_addresses.len());
+        // Print all entries near 0x080000C0-0x080000D0
+        for a in &data_addresses {
+            if *a >= 0x080000C0 && *a <= 0x080000D0 {
+                eprintln!("DATA_CHECK: found entry 0x{:08X}", a);
+            }
+        }
+
         // Main BFS pass
         eprintln!("  CFG: main pass starting...");
+        eprintln!("PRE_BFS: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
         let main_count = self.bfs_pass(
             &mut to_visit,
             &mut visited,
@@ -284,30 +359,23 @@ impl CfgBuilder {
         // adds all literal-pool values loaded into BX-target registers as
         // branch targets, ensuring no indirect-branch destination is missing.
         let mut new_targets: Vec<(u32, ArmMode)> = Vec::new();
-        eprintln!("  CFG DEBUG: ldr_literals count = {}, bx_registers = {:?}", self.ldr_literals.len(), &self.bx_registers);
         for (rn, value) in &self.ldr_literals {
-            eprintln!("  CFG DEBUG: ldr_literal rn={} value=0x{:08X} in_bx_regs={}", rn, value, self.bx_registers.contains(rn));
             if !self.bx_registers.contains(rn) {
                 continue;
             }
             // Normalize Thumb-bit: the literal may have bit 0 set.
-            let target = if value & 1 == 1 {
-                (*value & !1, ArmMode::Thumb)
-            } else if value & 3 != 0 {
-                // Unaligned ARM literal — treat as Thumb.
-                (*value & !1, ArmMode::Thumb)
-            } else {
-                (*value, ArmMode::Arm)
-            };
-            let (taddr, tmode) = target;
-            if taddr < 0x08000000 || (taddr - 0x08000000) as usize >= rom.len() {
+            let target_addr = *value & !1;  // Clear bit 0 for the actual address
+            if target_addr < 0x08000000 || (target_addr - 0x08000000) as usize >= rom.len() {
                 continue;
             }
-            if !decode_is_valid_code(rom, taddr, tmode, &arm_decoder, &thumb_decoder) {
+            // The Thumb bit (bit 0 of the literal value) selects the target mode:
+            // bit 0 set → Thumb, bit 0 clear → ARM. Use it instead of adding to both.
+            let tmode = if *value & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
+            if !decode_is_valid_code(rom, target_addr, tmode, &arm_decoder, &thumb_decoder) {
                 continue;
             }
-            if self.branch_targets.insert(taddr) {
-                new_targets.push((taddr, tmode));
+            if self.branch_targets.insert(target_addr) {
+                new_targets.push((target_addr, tmode));
             }
         }
 
@@ -365,8 +433,17 @@ impl CfgBuilder {
             // LDR-literal targets are already call-confirmed: one valid decode
             // suffices because the code explicitly loaded this address.
             if !decode_is_valid_code(rom, taddr, tmode, &arm_decoder, &thumb_decoder) {
+    eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+    eprintln!("AFTER_SCAN: data_addresses size={}", data_addresses.len());
                 continue;
             }
+    // TEMP DEBUG: check data_addresses for 0x080000C8
+    eprintln!("DATA_DEBUG: total data_addresses={} contains_C8={}",
+        data_addresses.len(),
+        data_addresses.contains(&0x080000C8));
+    if data_addresses.contains(&0x080000C8) {
+        eprintln!("DATA_DEBUG: 0x080000C8 IS in data_addresses!");
+    }
             
             if !visited.contains(&(taddr, tmode))
                 && self.branch_targets.insert(taddr)
@@ -421,6 +498,141 @@ impl CfgBuilder {
         // The main BFS pass, ldr_literals resolution, heuristic scan, and IWRAM
         // pass are sufficient to discover all reachable code.
         eprintln!("  CFG: ROM-wide brute-force scan disabled (prevents CFG explosion)");
+        
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        // Conservative scan for indirect branch targets.
+        // Indirect branches (BX Rn) can jump to any address. This scan:
+        // 1. Looks at LDR literal values that are loaded into BX registers
+        // 2. Does a limited brute-force scan for valid Thumb code at odd-aligned addresses
+        // Uses bit 0 for mode selection: value & 1 == 1 → Thumb, value & 0 == 0 → ARM.
+        eprintln!("AFTER_LDR_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8u32));
+        eprintln!("  CFG: scanning for indirect branch targets...");
+        let mut indirect_targets: Vec<(u32, ArmMode)> = Vec::new();
+        const INDIRECT_TARGET_LIMIT: usize = 20_000;
+        
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={} data_addresses_len={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+        // Pass 1: Look at LDR literal values for BX registers
+        for (rn, value) in &self.ldr_literals {
+            // Size guard
+            if indirect_targets.len() >= INDIRECT_TARGET_LIMIT {
+                eprintln!("  CFG: indirect target limit reached ({}), stopping scan", INDIRECT_TARGET_LIMIT);
+                break;
+            }
+            
+            // Skip if not a BX register
+            if !self.bx_registers.contains(rn) {
+                continue;
+            }
+            
+            // Normalize: clear bit 0 for address, use bit 0 for mode selection
+            let target_addr = value & !1;
+            let target_mode = if value & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
+            
+            // Conservative check: only add if in ROM or IWRAM range
+            let in_rom = (0x08000000..=0x08FFFFFF).contains(&target_addr);
+            let in_iwram = (0x03000000..=0x03007FFF).contains(&target_addr);
+            if !in_rom && !in_iwram {
+                continue;
+            }
+            
+            // Skip if already discovered
+            if self.branch_targets.contains(&target_addr) || self.instruction_addresses.contains(&target_addr) {
+                continue;
+            }
+            
+            // Validate as code in the selected mode
+            if !decode_is_valid_code(rom, target_addr, target_mode, &arm_decoder, &thumb_decoder) {
+                continue;
+            }
+            
+            indirect_targets.push((target_addr, target_mode));
+            self.branch_targets.insert(target_addr);
+        }
+        
+        // Pass 2: Limited brute-force scan for valid Thumb code at odd-aligned addresses
+        // This catches targets that are not loaded via LDR literals
+        // Conservative: only scan a small range and require strong code heuristics
+        eprintln!("  CFG: scanning odd-aligned addresses for Thumb code...");
+        let mut scan_count = 0;
+        for addr in (0x08000001..0x08010000).step_by(2) {
+            scan_count += 1;
+            if scan_count == 133 || scan_count == 207 {
+            }
+            if indirect_targets.len() >= 500 {  // Stricter limit
+                eprintln!("  CFG: indirect target limit reached ({}), stopping scan after checking {} addresses", indirect_targets.len(), scan_count);
+                break;
+            }
+            
+            let offset = (addr - 0x08000000) as usize;
+            if offset + 4 > rom.len() {
+                continue;
+            }
+            
+            // Skip if already discovered
+            let already_discovered = self.branch_targets.contains(&addr) || self.instruction_addresses.contains(&addr);
+            if already_discovered {
+                continue;
+            }
+            
+            // Quick heuristic: check if first halfword looks like valid Thumb code
+            let halfword = u16::from_le_bytes([rom[offset], rom[offset + 1]]);
+            if halfword == 0 || halfword == 0xFFFF {
+                continue;
+            }
+            
+            // Stronger heuristic: require at least one of these patterns:
+            // - Branch/BL instruction (indicates function start)
+            // - LDR PC-rel (indicates code using literals)
+            // - PUSH/POP (indicates function prologue/epilogue)
+            // - Common ALU ops (MOV, ADD, etc. - indicates active code)
+            // Note: halfword is already in little-endian (from u16::from_le_bytes)
+            let hw_high = (halfword >> 8) as u8;
+            let has_branch_pattern = (0xD0..=0xDF).contains(&hw_high);  // B cond (0xD0xx-0xDxxx)
+            let has_bl_pattern = (0xF0..=0xF7).contains(&hw_high) && (halfword & 0x0800 != 0);  // BL/BLX
+            let has_ldr_pc_pattern = (0x40..=0x47).contains(&hw_high);  // LDR R0-R7, [PC, #] (0x40xx-0x47xx in LE)
+            let has_push_pop = hw_high == 0xB4 || hw_high == 0xB5 || hw_high == 0xB6 || hw_high == 0xB7;  // PUSH/POP
+            let has_common_alu = (0x18..=0x1B).contains(&hw_high) ||  // ADD/SUB Rn, Rm
+                                (0x20..=0x27).contains(&hw_high) ||  // MOV/LDR/SUB imm
+                                (0x40..=0x4F).contains(&hw_high);  // ALU ops, high register ops
+            
+            if addr == 0x08000109 || addr == 0x0800019E {
+            }
+            
+            if !has_branch_pattern && !has_bl_pattern && !has_ldr_pc_pattern && !has_push_pop && !has_common_alu {
+                continue;
+            }
+            
+            // Validate as Thumb code
+            if !decode_is_valid_code(rom, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder) {
+                continue;
+            }
+            
+            indirect_targets.push((addr, ArmMode::Thumb));
+            self.branch_targets.insert(addr);
+        }
+        
+        
+        eprintln!("  CFG: found {} indirect branch targets", indirect_targets.len());
+        
+        // Run mini-CFG pass on indirect branch targets
+        if !indirect_targets.is_empty() {
+            let mut indirect_queue: Vec<(u32, ArmMode)> = indirect_targets;
+            let mut indirect_visited: HashSet<(u32, ArmMode)> = HashSet::new();
+            const INDIRECT_MAX_INSTRUCTIONS: usize = 10_000;
+            let indirect_count = self.bfs_pass(
+                &mut indirect_queue,
+                &mut indirect_visited,
+                Some(&visited),
+                &mut data_addresses,
+                rom,
+                &arm_decoder,
+                &thumb_decoder,
+                INDIRECT_MAX_INSTRUCTIONS,
+                "indirect-pass",
+                false,
+            );
+            eprintln!("  CFG: indirect-pass complete, {} instructions visited", indirect_count);
+        }
         if self.instruction_addresses.len() <= 15_000 {
             // Heuristic scan: look for common interrupt handler patterns
         // GBA interrupt handlers often start with:
@@ -488,19 +700,131 @@ impl CfgBuilder {
             for &addr in &heuristic_targets {
                 eprintln!("    -> 0x{:08X}", addr);
             }
+
+        // Heuristic scan for loop patterns after BX Rm (indirect branch loops).
+        // When we see BX Rm followed by a loop that modifies Rm, add the loop
+        // addresses as branch targets. This handles cases like:
+        //   BX R3
+        //   ... loop that modifies R3 ...
+        //   BNE back_to_loop_start
+        // 
+        // Also scan for basic blocks that start with common prologue instructions
+        // (ANDS, LSLS, LSRS, MOVS) followed by conditional branches.
+        if !self.bx_registers.is_empty() {
+            eprintln!("  CFG: heuristic scan for BX Rm loops...");
+            for rn in &self.bx_registers {
+                // Scan for loop patterns: SUBS/ADDS Rn, Rn, #imm followed by BNE/BEQ
+                for addr in (0x08000100..0x08020000).step_by(2) {
+                    let offset = (addr - 0x08000000) as usize;
+                    if offset + 8 > rom.len() {
+                        continue;
+                    }
+                    
+                    // Skip if already discovered
+                    if self.branch_targets.contains(&addr) {
+                        continue;
+                    }
+                    
+                    // Check for loop pattern: SUBS/ADDS Rn, Rn, #imm
+                    let hw1 = u16::from_le_bytes([rom[offset], rom[offset+1]]);
+                    let hw2 = u16::from_le_bytes([rom[offset+2], rom[offset+3]]);
+                    
+                    // SUBS Rd, Rn, #imm (0x38xx)
+                    let is_subs_imm = (hw1 & 0xF800) == 0x3800;
+                    let subs_rd = (hw1 >> 8) & 0x7;
+                    let subs_rn = (hw1 >> 5) & 0x7;
+                    
+                    // ADDS Rd, Rn, #imm (0x30xx)
+                    let is_adds_imm = (hw1 & 0xF800) == 0x3000;
+                    let adds_rd = (hw1 >> 8) & 0x7;
+                    let adds_rn = (hw1 >> 5) & 0x7;
+                    
+                    // Check if this is SUBS/ADDS Rn, Rn, #imm where Rn is our BX register
+                    let is_loop_counter = (is_subs_imm && subs_rd == subs_rn && subs_rd == *rn as u16)
+                        || (is_adds_imm && adds_rd == adds_rn && adds_rd == *rn as u16);
+                    
+                    if is_loop_counter {
+                        // Check if next instruction is a conditional branch back
+                        // BNE/BEQ offset (0xDxxx)
+                        let is_cond_branch = (hw2 & 0xF800) == 0xD000;
+                        if is_cond_branch {
+                            // This looks like a loop! Add as branch target.
+                            let target_addr = addr;
+                            self.branch_targets.insert(target_addr);
+                            heuristic_targets.push(target_addr);
+                        }
+                    }
+                }
+            }
+            
+            // Also scan for basic blocks starting with common prologue instructions
+            // followed by conditional branches. This catches blocks that are not
+            // reachable through the main CFG traversal.
+            for addr in (0x08000100..0x08020000).step_by(2) {
+                let offset = (addr - 0x08000000) as usize;
+                if offset + 8 > rom.len() {
+                    continue;
+                }
+                
+                // Skip if already discovered
+                if self.branch_targets.contains(&addr) {
+                    continue;
+                }
+                
+                let hw1 = u16::from_le_bytes([rom[offset], rom[offset+1]]);
+                let hw2 = u16::from_le_bytes([rom[offset+2], rom[offset+3]]);
+                
+                // Check for common prologue patterns:
+                // ANDS Rn, Rm, Rp (0x00xx)
+                // LSLS Rn, Rm, #imm (0x00xx or 0x04xx)
+                // LSRS Rn, Rm, #imm (0x08xx)
+                // MOVS Rn, #imm (0x20xx)
+                let is_and_reg = (hw1 & 0xFE00) == 0x0000;
+                let is_lsl_imm = (hw1 & 0xF800) == 0x0000;
+                let is_lsr_imm = (hw1 & 0xF800) == 0x0800;
+                let is_mov_imm = (hw1 & 0xF800) == 0x2000;
+                
+                // Check if followed by conditional branch
+                let is_cond_branch = (hw2 & 0xF800) == 0xD000;
+                
+                if (is_and_reg || is_lsl_imm || is_lsr_imm || is_mov_imm) && is_cond_branch {
+                    // This looks like a basic block! Add as branch target.
+                    let target_addr = addr;
+                    self.branch_targets.insert(target_addr);
+                    self.instruction_addresses.push(target_addr);
+                    self.mode_map.push((target_addr, ArmMode::Thumb));
+                    heuristic_targets.push(target_addr);
+                    if target_addr == 0x0800010A {
+                        eprintln!("  CFG: HEURISTIC FOUND 0x0800010A!");
+                    }
+                }
+            }
+        }
+        if !heuristic_targets.is_empty() {
+            eprintln!("  CFG: heuristic scan found {} loop patterns", heuristic_targets.len());
+        }
             
             // Filter speculative targets through data heuristic before mini-passes
+            // Skip looks_like_data_soft for both ARM and Thumb modes - it causes false positives
+            // for valid code that has data sections later. The data_addresses set already
+            // captures known data locations.
             rom_scan_targets.retain(|(addr, mode)| {
-                !looks_like_data_soft(rom, *addr, *mode, &arm_decoder, &thumb_decoder)
+                !is_data_address(*addr, *mode, &data_addresses, rom, &arm_decoder, &thumb_decoder)
             });
             heuristic_targets.retain(|addr| {
-                !looks_like_data_soft(rom, *addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder)
+                !is_data_address(*addr, ArmMode::Thumb, &data_addresses, rom, &arm_decoder, &thumb_decoder)
             });
             
             // Run mini-CFG pass on newly discovered targets
             if !rom_scan_targets.is_empty() || !heuristic_targets.is_empty() {
+                eprintln!("  CFG: mini3-pass starting with {} rom_scan + {} heuristic targets", rom_scan_targets.len(), heuristic_targets.len());
             let mut mini3_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut mini3_queue: Vec<(u32, ArmMode)> = rom_scan_targets;
+            // Add heuristic targets to the queue
+            for addr in heuristic_targets {
+                mini3_queue.push((addr, ArmMode::Thumb));
+            }
+            eprintln!("  CFG: mini3_queue has {} total items", mini3_queue.len());
             const MINI3_MAX_INSTRUCTIONS: usize = 10_000;
             let mini3_count = self.bfs_pass(
                 &mut mini3_queue,
@@ -575,7 +899,7 @@ impl CfgBuilder {
             // that walk into data and inflate the reachable set past the OOM guard.
             let copy_size = (w2 - w1) as usize;
             if copy_size < 64 { continue; }
-            if copy_size > 4096 { continue; }
+            let skip_fp_scan = copy_size > 4096;
 
             let rom_src = w0 & !1;
             let rom_src_offset = (rom_src - 0x08000000) as usize;
@@ -595,38 +919,49 @@ impl CfgBuilder {
                 break;
             }
             
-            for fp_off in (0..copy_size.saturating_sub(4)).step_by(4) {
-                let fp = u32::from_le_bytes([
-                    rom[rom_src_offset + fp_off],
-                    rom[rom_src_offset + fp_off + 1],
-                    rom[rom_src_offset + fp_off + 2],
-                    rom[rom_src_offset + fp_off + 3],
-                ]);
-                if fp >= 0x08000000 && fp < 0x0A000000 {
-                    let target = fp & !1;
-                    let mode = if fp & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
-                    
-                    // Validate alignment: Thumb must be even, ARM must be 4-byte aligned
-                    if mode == ArmMode::Thumb && (target & 1) != 0 { continue; }
-                    if mode == ArmMode::Arm && (target & 3) != 0 { continue; }
-                    
-                    // Validate that the address decodes as actual code, not data literals.
-                    // Function-pointer tables embedded in .data blobs are the worst
-                    // contamination source: audio sample data decodes as valid Thumb
-                    // for thousands of halfwords. Require a run of consecutive valid
-                    // decodes to confirm real code.
-                    const IWRAM_SEED_MIN_RUN: usize = 32;
-                    if !decode_is_valid_code_run(rom, target, mode, IWRAM_SEED_MIN_RUN, &arm_decoder, &thumb_decoder) {
-                        continue;
-                    }
-                    
-                    if self.branch_targets.insert(target) {
-                        iwram_entry_targets.push((target, mode));
-                        // Size guard inside the loop too
-                        if iwram_entry_targets.len() >= IWRAM_MAX_ENTRY_TARGETS {
-                            eprintln!("    [CFG] IWRAM entry target limit reached at 0x{:08X}, stopping scan", target);
-                            break;
+            if !skip_fp_scan {
+                for fp_off in (0..copy_size.saturating_sub(4)).step_by(4) {
+                    let fp = u32::from_le_bytes([
+                        rom[rom_src_offset + fp_off],
+                        rom[rom_src_offset + fp_off + 1],
+                        rom[rom_src_offset + fp_off + 2],
+                        rom[rom_src_offset + fp_off + 3],
+                    ]);
+                    if fp >= 0x08000000 && fp < 0x0A000000 {
+                        let target = fp & !1;
+                        let mode = if fp & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
+                        
+                        // Validate alignment: Thumb must be even, ARM must be 4-byte aligned
+                        if mode == ArmMode::Thumb && (target & 1) != 0 { continue; }
+                        if mode == ArmMode::Arm && (target & 3) != 0 { continue; }
+                        
+                        // Validate that the address decodes as actual code, not data literals.
+                        // Function-pointer tables embedded in .data blobs are the worst
+                        // contamination source: audio sample data decodes as valid Thumb
+                        // for thousands of halfwords. Require a run of consecutive valid
+                        // decodes to confirm real code.
+                        const IWRAM_SEED_MIN_RUN: usize = 32;
+                        if !decode_is_valid_code_run(rom, target, mode, IWRAM_SEED_MIN_RUN, &arm_decoder, &thumb_decoder) {
+                            continue;
                         }
+                        
+                        if self.branch_targets.insert(target) {
+                            iwram_entry_targets.push((target, mode));
+                            // Size guard inside the loop too
+                            if iwram_entry_targets.len() >= IWRAM_MAX_ENTRY_TARGETS {
+                                eprintln!("    [CFG] IWRAM entry target limit reached at 0x{:08X}, stopping scan", target);
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Large blob: skip function-pointer scan, add the blob start as a BFS entry
+                let blob_target = rom_src & !1;
+                let blob_mode = if rom_src & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
+                if decode_is_valid_code_run(rom, blob_target, blob_mode, 8, &arm_decoder, &thumb_decoder) {
+                    if self.branch_targets.insert(blob_target) {
+                        iwram_entry_targets.push((blob_target, blob_mode));
                     }
                 }
             }
@@ -640,7 +975,7 @@ impl CfgBuilder {
         if !iwram_entry_targets.is_empty() {
             let mut iwram_visited: HashSet<(u32, ArmMode)> = HashSet::new();
             let mut iwram_queue: Vec<(u32, ArmMode)> = iwram_entry_targets;
-            const IWRAM_MAX_INSTRUCTIONS: usize = 10_000;
+            const IWRAM_MAX_INSTRUCTIONS: usize = 20_000;
             let iwram_count = self.bfs_pass(
                 &mut iwram_queue,
                 &mut iwram_visited,
@@ -656,8 +991,154 @@ impl CfgBuilder {
             eprintln!("  CFG: IWRAM pass complete, {} instructions visited", iwram_count);
         }
 
+        // Scan ROM for Thumb function prologues (PUSH {..., LR} = 0xB5xx).
+        // Each is a potential function entry point not reachable via direct branch.
+        // Very conservative: only scan first 32 KB, max 20 targets, require LR bit.
+        eprintln!("  CFG: scanning for Thumb function prologues...");
+        let mut prologue_targets: Vec<(u32, ArmMode)> = Vec::new();
+        const PROLOGUE_SCAN_START: usize = 0x100;  // Skip vector table
+        const PROLOGUE_SCAN_END: usize = 0x80000;  // Limit to first 512 KB of ROM
+        const PROLOGUE_MAX_TARGETS: usize = 20;    // Very strict limit
+        for off in (PROLOGUE_SCAN_START..rom.len().saturating_sub(1)).step_by(2) {
+            if off >= PROLOGUE_SCAN_END { break; }
+            if prologue_targets.len() >= PROLOGUE_MAX_TARGETS { break; }
+            let hw = u16::from_le_bytes([rom[off], rom[off + 1]]);
+            // PUSH {r0-r7, lr} = 0xB5xx where bit 7 of low byte indicates LR is pushed
+            if (hw & 0xFF00) == 0xB500 && (hw & 0x0080) != 0 {
+                let target: u32 = 0x08000000 + off as u32;
+                if self.branch_targets.contains(&target) { continue; }
+                // Require valid code run AND reject if looks like data (audio/graphics)
+                if decode_is_valid_code_run(rom, target, ArmMode::Thumb, 16, &arm_decoder, &thumb_decoder)
+                    && !looks_like_data_soft(rom, target, ArmMode::Thumb, &arm_decoder, &thumb_decoder) {
+                    if self.branch_targets.insert(target) {
+                        prologue_targets.push((target, ArmMode::Thumb));
+                    }
+                }
+            }
+        }
+        eprintln!("  CFG: found {} Thumb function prologues", prologue_targets.len());
+        
+        // TEMP: check data_addresses before BFS
+        eprintln!("PRE_BFS: data_addresses.len()={} contains_C8={}", data_addresses.len(), data_addresses.contains(&0x080000C8u32));
+        // Run BFS from prologue targets to discover their code
+        if !prologue_targets.is_empty() {
+            let mut prologue_visited: HashSet<(u32, ArmMode)> = HashSet::new();
+            let mut prologue_queue: Vec<(u32, ArmMode)> = prologue_targets;
+            const PROLOGUE_MAX_INSTRUCTIONS: usize = 5_000;
+            let prologue_count = self.bfs_pass(
+                &mut prologue_queue,
+                &mut prologue_visited,
+                Some(&visited),
+                &mut data_addresses,
+                rom,
+                &arm_decoder,
+                &thumb_decoder,
+                PROLOGUE_MAX_INSTRUCTIONS,
+                "prologue pass",
+                false,
+            );
+            eprintln!("  CFG: prologue pass complete, {} instructions visited", prologue_count);
+        }
+
+        // TEMP: check if 0x080000C8 is in data_addresses
+        eprintln!("CHECK_C8: in_instructions={} in_data={}",
+            self.instruction_addresses.contains(&0x080000C8u32),
+            data_addresses.contains(&0x080000C8u32));
+        eprintln!("CHECK_C4: in_instructions={} in_data={}",
+            self.instruction_addresses.contains(&0x080000C4u32),
+            data_addresses.contains(&0x080000C4u32));
+
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8u32));
+        // TEMP DEBUG: check data_addresses for 0x080000C8
+        let check_c8 = 0x080000C8u32;
+        eprintln!("CHECK_DATA: 0x080000C8 in data_addresses={} total_data_addrs={}", 
+            data_addresses.contains(&check_c8), data_addresses.len());
+        // If it's there, find which check added it by scanning the ROM
+        if data_addresses.contains(&check_c8) {
+            let rom_len = rom.len() as u32;
+            for offset in (0..rom.len().saturating_sub(3)).step_by(4) {
+                let addr = 0x08000000u32 + offset as u32;
+                let word = u32::from_le_bytes([rom[offset], rom[offset+1], rom[offset+2], rom[offset+3]]);
+                let cond = (word >> 29) & 0x7;
+                // Check 1: LDR bit4=1
+                if (word >> 25) & 0x7 == 0b010 && (word >> 4) & 0x1 == 1 && (word >> 16) & 0xF == 0xF && cond != 0b111 {
+                    let pool = addr + 8 + (word & 0xFFF);
+                    if pool == check_c8 { eprintln!("FOUND_C8: check1 addr=0x{:08X} word=0x{:08X}", addr, word); }
+                }
+    eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+                // Check 2: LDR bit4=0
+                if (word >> 25) & 0x7 == 0b010 && (word >> 4) & 0x1 == 0 && (word >> 16) & 0xF == 0xF && cond != 0b111 {
+                    let pool = addr + 8 + (word & 0xFFF);
+                    if pool == check_c8 { eprintln!("FOUND_C8: check2 addr=0x{:08X} word=0x{:08X}", addr, word); }
+                }
+                // Check 3: LDC/STC
+                if (word >> 25) & 0x7 == 0b110 && (word >> 4) & 0x1 == 1 && (word >> 16) & 0xF == 0xF && cond != 0b111 {
+                    let pool = addr + 8 + ((word & 0xFF) * 4);
+                    if pool == check_c8 { eprintln!("FOUND_C8: check3 addr=0x{:08X} word=0x{:08X}", addr, word); }
+                }
+            }
+
+// DEBUG: check if 0x080000C8 is in data_addresses after scan
+eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
+        eprintln!("DATA_SCAN_DONE: 0x080000C8 in data_addresses={} total_entries={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+        eprintln!("DATA_SCAN_DONE: 0x080000C8 in data_addresses={} total_entries={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+
+    eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+    eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={} total_entries={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+    eprintln!("DATA_SCAN_DONE: 0x080000C8 in data_addresses={} total_entries={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+    eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        // TEMP DEBUG: check data_addresses
+        eprintln!("DATA_SCAN_COMPLETE: total={} contains_C8={}",
+            data_addresses.len(),
+            data_addresses.contains(&0x080000C8u32));
+    eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        eprintln!("DATA_SCAN_RESULT: 0x080000C8 in data_addresses={} total_entries={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={} total_entries={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+            eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={} total_entries={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+        }
+    eprintln!("DATA_SCAN_RESULT: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8u32));
+        eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        // TEMP: comprehensive data_addresses check
+        eprintln!("DATA_CHECK: 0x080000C8 in data_addresses={} total_data_addrs={}", data_addresses.contains(&0x080000C8u32), data_addresses.len());
+        if data_addresses.contains(&0x080000C8u32) {
+            eprintln!("DATA_CHECK: 0x080000C8 IS in data_addresses! Investigating...");
+        }
+        eprintln!("DATA_CHECK: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8u32));
+        eprintln!("DATA_CHECK: 0x080000C8 in data_addresses={} total_data_addrs={}", data_addresses.contains(&0x080000C8u32), data_addresses.len());
+        // TEMP DEBUG: check if 0x080000C8 is in data_addresses
+        eprintln!("POST_SCAN: 0x080000C8 in data_addresses={} total_entries={}",
+            data_addresses.contains(&0x080000C8u32), data_addresses.len());
+        // Print all entries near 0x080000C0-0x080000D0
+        for da in &data_addresses {
+            if *da >= 0x080000C0 && *da <= 0x080000D0 {
+                eprintln!("  data_addresses contains 0x{:08X}", da);
+            }
+        }
+
+        eprintln!("POST_SCAN: C8_in_data={}", data_addresses.contains(&0x080000C8u32));
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        eprintln!("BEFORE_SORT: 0x080000C8 in data_addresses={} 0x080000C4 in data_addresses={}", data_addresses.contains(&0x080000C8), data_addresses.contains(&0x080000C4));
+        eprintln!("DATA_CHECK: 0x080000C8 in data_addresses={} total_entries={}", data_addresses.contains(&0x080000C8), data_addresses.len());
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
+        eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
+        eprintln!("DATA_ADDR_CHECK: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8u32));
+        eprintln!("DATA_ADDR_CHECK: total data_addresses={}", data_addresses.len());
+
+        eprintln!("FINAL_CHECK: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
         self.instruction_addresses.sort();
         self.instruction_addresses.dedup();
+        if self.instruction_addresses.contains(&0x0800010A) {
+            eprintln!("  CFG: 0x0800010A is in instruction_addresses!");
+        } else {
+            eprintln!("  CFG: 0x0800010A is NOT in instruction_addresses!");
+        }
         self.mode_map.sort();
         self.mode_map.dedup();
     }
@@ -741,6 +1222,22 @@ impl CfgBuilder {
             }
         }
 
+        // Track arithmetic operations on registers for indirect branch resolution.
+        // When we see ADD Rd, Rn, Rm or SUBS Rd, Rn, #imm, we can't know the exact
+        // value, but we can track that the register is "in use" for arithmetic.
+        // This helps the CFG recognize that BX Rn after arithmetic operations
+        // may jump to a loop or computed address.
+        // 
+        // For Thumb ADD/SUB (format 2): ADD/SUB Rd, Rn, Rm or ADD/SUB Rd, Rn, #imm
+        if (opcode == "ADD" || opcode == "SUB" || opcode == "ADDS" || opcode == "SUBS") && operands.len() >= 2 {
+            // Track the destination register as being modified by arithmetic
+            if let Operand::Register(rd) = operands[0] {
+                // Invalidate the register since its value is now computed
+                // This prevents false positives from stale tracked values
+                self.register_tracker.invalidate(rd);
+            }
+        }
+
         // Detect stores to GBA vector table addresses to discover handler entry points.
         // The GBA vector table is in IWRAM at 0x03007FF0-0x03007FFF.
         // Common vectors:
@@ -800,6 +1297,7 @@ impl CfgBuilder {
         // When we see LDR Rn, [PC, #offset] where the loaded value is in the IWRAM
         // vector table range (0x03007FF0-0x03007FFF), track the register so we can
         // later detect stores to that address.
+        // Also track LDR Rn, [PC, #offset] that load ROM addresses for indirect branch resolution.
         if opcode.starts_with("LDR") && operands.len() >= 2 {
             if let Operand::Register(rd) = operands[0] {
                 if let Operand::MemoryAddress { base: 15, offset: AddressingMode::ImmediateOffset(off), .. } = &operands[1] {
@@ -826,6 +1324,20 @@ impl CfgBuilder {
                         if loaded_value == IRQ_VECTOR || loaded_value == VBLANK_VECTOR || loaded_value == VCOUNT_VECTOR {
                             // Track this register so subsequent STR instructions can be detected
                             self.register_tracker.track_mov_immediate(rd, loaded_value);
+                        }
+                        
+                        // Also track LDR PC-relative loads that load ROM/IWRAM addresses.
+                        // This helps resolve indirect branches (BX Rn) where Rn is loaded
+                        // from a literal pool and then used as a branch target.
+                        // We track both ROM addresses (0x08000000+) and IWRAM addresses (0x03000000-0x03008000)
+                        // because IWRAM-resident code may call ROM functions.
+                        if (loaded_value >= 0x08000000 && loaded_value < 0x0A000000) ||
+                           (loaded_value >= 0x03000000 && loaded_value < 0x03008000) {
+                            self.register_tracker.track_mov_immediate(rd, loaded_value);
+                            // Collect for the post-processing sweep
+                            if loaded_value >= 0x08000000 && loaded_value < 0x0A000000 {
+                                self.ldr_literals.push((rd, loaded_value));
+                            }
                         }
                     }
                 }
@@ -884,7 +1396,16 @@ impl CfgBuilder {
                     // Record this register for the post-processing sweep.
                     self.bx_registers.insert(*rn);
                     if let Some(target) = self.register_tracker.get(*rn) {
-                        targets.push(target);
+                        // Indirect branch (BX Rm / BLX Rm): the register value is known via tracking.
+                        // The target address has bit 0 as the Thumb-mode indicator.
+                        // If bit 0 is set → Thumb mode, if clear → ARM mode.
+                        if target & 1 == 1 {
+                            // Thumb mode target: normalize by clearing bit 0
+                            targets.push(target & !1);
+                        } else {
+                            // ARM mode target: use as-is (already 4-byte aligned)
+                            targets.push(target);
+                        }
                     }
                 }
             }
@@ -948,8 +1469,11 @@ impl CfgBuilder {
             // block fall-through pushes for this one.
             consecutive_non_branch = 0;
             // Skip if in data_addresses (soft hint: re-validate as code)
+            // Skip looks_like_data_soft for ARM mode - it causes false positives
+            // for valid ARM code that has data sections later (e.g., 0x08000144 = 0x00000000).
+            // The data_addresses set already captures known data locations.
             if is_data_address(addr, current_mode, data_addresses, rom, arm_decoder, thumb_decoder)
-                || looks_like_data_soft(rom, addr, current_mode, arm_decoder, thumb_decoder) {
+                || (matches!(current_mode, ArmMode::Thumb) && looks_like_data_soft(rom, addr, current_mode, arm_decoder, thumb_decoder)) {
                 continue;
             }
 
@@ -1034,8 +1558,16 @@ impl CfgBuilder {
                 data_addresses.insert(pool_addr);
             }
 
-            self.instruction_addresses.push(addr);
-            self.mode_map.push((addr, current_mode));
+            // Filter out data regions (audio/graphics) that decode as valid instructions
+            // This prevents CFG explosion from misclassifying data as code
+            // Skip looks_like_data_soft for both ARM and Thumb modes - it causes false positives
+            // for valid code that has data sections later. The data_addresses set already
+            // captures known data locations.
+            let is_data = is_data_address(addr, current_mode, data_addresses, rom, arm_decoder, thumb_decoder);
+            if !is_data {
+                self.instruction_addresses.push(addr);
+                self.mode_map.push((addr, current_mode));
+            }
 
             let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
             self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
@@ -1059,8 +1591,13 @@ impl CfgBuilder {
             if !is_uncond_branch && consecutive_non_branch < MAX_CONSECUTIVE_NON_BRANCH {
                 let next_addr = addr + instr_width as u32;
                 let next_rom_offset = (next_addr - 0x08000000) as usize;
-                let next_is_data = is_data_address(next_addr, current_mode, data_addresses, rom, arm_decoder, thumb_decoder)
-                    || looks_like_data_soft(rom, next_addr, current_mode, arm_decoder, thumb_decoder);
+                // Skip looks_like_data_soft for both ARM and Thumb modes - it causes false positives
+                // for valid code that has data sections later. The data_addresses set already
+                // captures known data locations.
+                let next_is_data = is_data_address(next_addr, current_mode, data_addresses, rom, arm_decoder, thumb_decoder);
+                if addr >= 0x080000C0 && addr <= 0x080000D0 {
+                    eprintln!("DEBUG FALLTHROUGH: addr=0x{:08X} next_addr=0x{:08X} next_is_data={} visited={}", addr, next_addr, next_is_data, own_visited.contains(&(next_addr, current_mode)));
+                }
                 if !own_visited.contains(&(next_addr, current_mode))
                     && shared_visited.map_or(true, |s| !s.contains(&(next_addr, current_mode)))
                     && next_addr >= 0x08000000
@@ -1068,6 +1605,13 @@ impl CfgBuilder {
                     && !next_is_data
                 {
                     queue.push((next_addr, current_mode));
+                } else if addr >= 0x080000C0 && addr <= 0x080000D0 {
+                    eprintln!("DEBUG FALLTHROUGH: Skipping 0x{:08X} - visited={}, shared_visited={}, in_range={}, is_data={}", 
+                        next_addr, 
+                        own_visited.contains(&(next_addr, current_mode)),
+                        shared_visited.map_or(false, |s| s.contains(&(next_addr, current_mode))),
+                        next_rom_offset < rom.len(),
+                        next_is_data);
                 }
             }
 
@@ -1085,9 +1629,13 @@ impl CfgBuilder {
                 } else {
                     raw_target & !3
                 };
-                // Explicit branch targets are always added - do NOT filter by data heuristics.
+                // Explicit branch targets are always added to instruction_addresses - do NOT filter by data heuristics.
                 // If code explicitly jumps to an address, it must be in the dispatch table.
                 // Data heuristics only apply to fall-through, not to explicit branches.
+                if !self.instruction_addresses.contains(&target) {
+                    self.instruction_addresses.push(target);
+                    self.mode_map.push((target, target_mode));
+                }
                 if !own_visited.contains(&(target, target_mode))
                     && shared_visited.map_or(true, |s| !s.contains(&(target, target_mode)))
                 {
@@ -1103,6 +1651,7 @@ impl CfgBuilder {
             }
         }
 
+        eprintln!("AFTER_SCAN: 0x080000C8 in data_addresses={}", data_addresses.contains(&0x080000C8));
         count
     }
 }

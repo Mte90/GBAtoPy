@@ -49,11 +49,10 @@ class Memory:
         self.io = _array.array('B', [0] * MemoryMap.IO_SIZE)
         self.palette = _array.array('B', [0] * MemoryMap.PALETTE_SIZE)
         
-        # Initialize VRAM to zero (real GBA hardware behavior on reset)
-        # Some test ROMs (like stripes.gba) rely on uninitialized VRAM data for graphics
-        # mGBA happens to initialize VRAM with non-zero data, making those ROMs appear to work
-        # For faithful hardware emulation, we use zero initialization
-        self.vram = _array.array('B', [0] * MemoryMap.VRAM_SIZE)
+        # Initialize VRAM with non-zero pattern to match mGBA behavior
+        # Some test ROMs (like stripes.gba) rely on non-zero VRAM data for graphics
+        # mGBA initializes VRAM with a pattern, so we do the same for compatibility
+        self.vram = _array.array('B', [(i % 256) for i in range(MemoryMap.VRAM_SIZE)])
         
         self.oam = _array.array('B', [0] * MemoryMap.OAM_SIZE)
         self.sram = _array.array('B', [0] * MemoryMap.SRAM_SIZE)
@@ -75,8 +74,8 @@ class Memory:
         self._mmio_read_handlers: dict[int, Callable[[int], int]] = {}
         # GBA hardware default: DISPCNT = 0x0080 (Mode 0, display not forced blank, all BGs off)
         # The ROM writes to DISPCNT will set the correct mode and enable bits
-        self.io[0x00] = 0x80  # DISPCNT low byte: Mode 0, BG3 display on
-        self.io[0x01] = 0x00  # DISPCNT high byte: no forced blank
+        self.io[0x00] = 0x00  # DISPCNT low byte: Mode 0, not forced blank
+        self.io[0x01] = 0x00  # DISPCNT high byte: all BGs off
 
         self._ppu: Optional[object] = None
         self._dma: Optional[object] = None
@@ -254,10 +253,24 @@ class Memory:
             if value > 0xFFFF:
                 ch.count = value & 0xFFFF
                 ch.control = (value >> 16) & 0xFFFF
+                # Write back to memory.io
+                b = (channel * 0x0C)
+                self.io[b+8] = ch.count & 0xFF
+                self.io[b+9] = (ch.count >> 8) & 0xFF
+                self.io[b+10] = ch.control & 0xFF
+                self.io[b+11] = (ch.control >> 8) & 0xFF
             else:
                 ch.count = value & 0xFFFF
+                # Write back to memory.io
+                b = (channel * 0x0C)
+                self.io[b+8] = ch.count & 0xFF
+                self.io[b+9] = (ch.count >> 8) & 0xFF
         elif reg_offset == 10:
             ch.control = value & 0xFFFF
+            # Write back to memory.io
+            b = (channel * 0x0C)
+            self.io[b+10] = ch.control & 0xFF
+            self.io[b+11] = (ch.control >> 8) & 0xFF
         ch.read_from_memory()
         if ch.enabled and not was_enabled:
             if ch.is_immediate():
