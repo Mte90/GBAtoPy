@@ -57,6 +57,7 @@ class ARM7TDMI:
         self.registers = [0] * 16  # r0-r15
         self.cpsr = 0  # Current Program Status Register
         self.spsr = [0] * 7  # Saved PSR for each mode (USR, SYS, SVC, ABT, UND, FIQ, IRQ)
+        self._bl_pending = False  # Track BL prefix -> suffix pairing
 
         # ARM condition codes
         self.COND_EQ = 0x0  # Z set
@@ -310,7 +311,7 @@ class ARM7TDMI:
             return 4
 
         is_immediate = (instr >> 25) & 1
-        if not is_immediate:
+        if not is_immediate and (instr >> 26) & 0x3 == 0:
             op_lo = instr & 0xF0
             if op_lo == 0x90:
                 if (instr >> 24) & 1:
@@ -1557,26 +1558,26 @@ class ARM7TDMI:
         """
         op = (instr >> 11) & 0x1F  # bits 15-11
         imm5 = (instr >> 6) & 0x1F  # bits 10-6
-        rb = (instr >> 3) & 7       # bits 5-3
-        rd = instr & 7              # bits 2-0
+        rn = (instr >> 3) & 7       # bits 5-3: Rn (base register)
+        rd = instr & 7              # bits 2-0: Rd (source/data register)
 
-        if op == 0b01100:  # STR Rd, [Rb, #Imm5*4]
-            addr = self.registers[rb] + imm5 * 4
+        if op == 0b01100:  # STR Rd, [Rn, #Imm5*4]
+            addr = self.registers[rn] + imm5 * 4
             self.memory.write_u32(addr, self.registers[rd])
-        elif op == 0b01101:  # LDR Rd, [Rb, #Imm5*4]
-            addr = self.registers[rb] + imm5 * 4
+        elif op == 0b01101:  # LDR Rd, [Rn, #Imm5*4]
+            addr = self.registers[rn] + imm5 * 4
             self.write_register(rd, self.memory.read_u32(addr))
-        elif op == 0b01110:  # STRB Rd, [Rb, #Imm5]
-            addr = self.registers[rb] + imm5
+        elif op == 0b01110:  # STRB Rd, [Rn, #Imm5]
+            addr = self.registers[rn] + imm5
             self.memory.write_u8(addr, self.registers[rd] & 0xFF)
-        elif op == 0b01111:  # LDRB Rd, [Rb, #Imm5]
-            addr = self.registers[rb] + imm5
+        elif op == 0b01111:  # LDRB Rd, [Rn, #Imm5]
+            addr = self.registers[rn] + imm5
             self.write_register(rd, self.memory.read_u8(addr))
-        elif op == 0b10000:  # STRH Rd, [Rb, #Imm5*2]
-            addr = self.registers[rb] + imm5 * 2
+        elif op == 0b10000:  # STRH Rd, [Rn, #Imm5*2]
+            addr = self.registers[rn] + imm5 * 2
             self.memory.write_u16(addr, self.registers[rd] & 0xFFFF)
-        elif op == 0b10001:  # LDRH Rd, [Rb, #Imm5*2]
-            addr = self.registers[rb] + imm5 * 2
+        elif op == 0b10001:  # LDRH Rd, [Rn, #Imm5*2]
+            addr = self.registers[rn] + imm5 * 2
             self.write_register(rd, self.memory.read_u16(addr))
 
         self.registers[15] += 2
@@ -1779,16 +1780,23 @@ class ARM7TDMI:
         # Thumb PC reads as current instruction + 4
         pc = (self.registers[15] + 4) & 0xFFFFFFFE
         self.registers[14] = (pc + offset_high) | 1
+        self._bl_pending = True
         self.registers[15] += 2
         return 1
 
     def exec_thumb_bl_suffix(self, instr: int) -> int:
         """Thumb BL suffix (format 19)."""
+        if not self._bl_pending:
+            # No BL prefix preceded this — treat as undefined instruction
+            # Advance PC and return without branching
+            self.registers[15] += 2
+            return 1
         offset_low = (instr & 0x7FF) << 1  # bits 10-0, *2
         target = (self.registers[14] & 0xFFFFFFFE) + offset_low
         # Return address = next instruction with Thumb bit set
         self.registers[14] = (self.registers[15] + 2) | 1
         self.registers[15] = target & 0xFFFFFFFE
+        self._bl_pending = False
         return 2
 
     def exec_thumb_swi(self, instr: int) -> int:

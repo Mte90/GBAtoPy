@@ -1,6 +1,7 @@
 """GBA CPU (ARM7TDMI) implementation"""
 
 from typing import Any, Literal
+from bios import BIOS
 
 _CONDITION = (
     # Each entry: (flag_key_bitmask, invert) for simple flags, or a 16-entry tuple for compound
@@ -86,6 +87,9 @@ class CPU:
         # Halt state for SWI-based interrupt waiting
         self._halted: bool = False
         self._halt_reason: str | None = None
+        
+        # BIOS for SWI handlers
+        self.bios = BIOS(memory) if memory else None
 
     def reset(self, entry_point: int) -> None:
         """
@@ -641,12 +645,66 @@ class CPU:
         return True
 
     def _arm_swi(self, opcode: int) -> bool:
-        """Execute ARM SWI instruction"""
+        """Execute ARM SWI instruction - delegates to full SWI handler"""
         swi_num = (opcode >> 16) & 0xFF
-        if swi_num in (0x02, 0x03):
+        self._swi_handler(swi_num)
+        return True
+
+    def _swi_handler(self, num: int):
+        """Handle BIOS SWI calls.
+        
+        GBA SWI numbers (from bios.h):
+        0x00: SoftReset
+        0x01: RegisterRamReset
+        0x02: Halt
+        0x03: Stop
+        0x04: IntrWait
+        0x05: VBlankIntrWait
+        0x06: Div
+        0x07: DivArm
+        0x08: Sqrt
+        0x09: ArcTan
+        0x0A: ArcTan2
+        0x0B: CpuSet
+        0x0C: CpuFastSet
+        0x0E: BgAffineSet
+        0x0F: ObjAffineSet
+        0x11: LZ77UnCompWram
+        0x12: LZ77UnCompVram
+        """
+        if num == 0x00:  # SoftReset
+            for i in range(13):
+                self.registers[i] = 0
+            self.registers[13] = 0x03007F00
+            self.registers[15] = 0x08000000
+        elif num == 0x01:  # RegisterRamReset
+            flags = self.registers[0]
+            # Reset EWRAM
+            if flags & 0x01:
+                for addr in range(0x02000000, 0x02040000, 4):
+                    self.memory.write_u32(addr, 0)
+            # Reset IWRAM
+            if flags & 0x02:
+                for addr in range(0x03000000, 0x03008000, 4):
+                    self.memory.write_u32(addr, 0)
+            # Reset Palette
+            if flags & 0x04:
+                for addr in range(0x05000000, 0x05000400, 2):
+                    self.memory.write_u16(addr, 0)
+            # Reset VRAM
+            if flags & 0x08:
+                for addr in range(0x06000000, 0x06018000, 2):
+                    self.memory.write_u16(addr, 0)
+            # Reset OAM
+            if flags & 0x10:
+                for addr in range(0x07000000, 0x07000400, 2):
+                    self.memory.write_u16(addr, 0)
+        elif num == 0x02:  # Halt
             self._halted = True
             self._halt_reason = "any"
-        elif swi_num == 0x04:
+        elif num == 0x03:  # Stop
+            pass  # Simplified: no-op
+        elif num == 0x04:  # IntrWait
             _wait_flag = self.registers[0] & 0xFF
             _ic = getattr(getattr(self, 'memory', None), '_interrupts', None)
             if _wait_flag & 0x01 and _ic is not None:
@@ -655,14 +713,99 @@ class CPU:
                 if _pending:
                     _ic.if_reg &= ~_pending
                     self.registers[0] = 1
-                    self.cpsr |= (1 << 30)
-                    return True
+                    if hasattr(self, 'cpsr'):
+                        self.cpsr |= (1 << 30)
+                    return
             self._halted = True
             self._halt_reason = "any"
-        elif swi_num == 0x05:
+        elif num == 0x05:  # VBlankIntrWait
+            # Per GBATEK: set IME=1, IE.0=1, clear IF.0, then halt until VBlank
+            if hasattr(self, 'memory') and hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
+                ic = self.memory._interrupts
+                ic.ime_reg |= 0x0001
+                ic.ie_reg |= 0x0001
+                ic.if_reg &= ~0x0001
+                ic._enabled_mask = ic.ie_reg
+                # Set DISPSTAT.3 so step_scanline fires vblank_irq()
+                _ds = self.memory.read_u16(0x04000004)
+                self.memory.write_u16(0x04000004, _ds | 0x0008)
             self._halted = True
             self._halt_reason = "vblank"
-        return True
+        elif num == 0x06:  # Div
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_div(self.registers[0], self.registers[1])
+                remainder = self.registers[0] % self.registers[1] if self.registers[1] != 0 else 0
+                self.registers[0] = result & 0xFFFFFFFF
+                self.registers[1] = remainder & 0xFFFFFFFF
+        elif num == 0x07:  # DivArm (unsigned division)
+            if hasattr(self, 'bios') and self.bios is not None:
+                dividend = self.registers[0] & 0xFFFFFFFF
+                divisor = self.registers[1] & 0xFFFFFFFF
+                if divisor == 0:
+                    self.registers[0] = 0
+                else:
+                    result = dividend // divisor
+                    self.registers[0] = result & 0xFFFFFFFF
+        elif num == 0x08:  # Sqrt
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_sqrt(self.registers[0])
+                self.registers[0] = result & 0xFFFFFFFF
+        elif num == 0x09:  # ArcTan
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_arctan(self.registers[0])
+                self.registers[0] = result & 0xFFFF
+        elif num == 0x0A:  # ArcTan2
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_arctan2(self.registers[0], self.registers[1])
+                self.registers[0] = result & 0xFFFF
+        elif num == 0x0B:  # CpuSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_cpuset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
+        elif num == 0x0C:  # CpuFastSet - CRITICAL: initializes IWRAM
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_cpufastset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
+        elif num == 0x0E:  # BgAffineSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_bg_affine_set(self.registers[0], self.registers[1], self.registers[2], self.registers[3])
+        elif num == 0x0F:  # ObjAffineSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                data = self.registers[0]
+                param_table = self.registers[1]
+                num_objects = self.registers[2]
+                increment = self.registers[3]
+                for i in range(num_objects):
+                    offset = i * increment
+                    self.bios.swi_obj_affine_set(
+                        param_table + offset,
+                        self.memory.read_u16(data + offset * 2),
+                        self.memory.read_u16(data + offset * 2 + 2),
+                        self.memory.read_u16(data + offset * 2 + 4)
+                    )
+        elif num == 0x11:  # LZ77UnCompWram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_lz77_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x12:  # LZ77UnCompVram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_lz77_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x10:  # BitUnPack
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_bit_unpack(self.registers[0], self.registers[1], self.registers[2])
+        elif num == 0x13:  # HuffmanUnComp
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_huff_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x14:  # RLUnCompWram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_rl_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x15:  # RLUnCompVram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_rl_uncomp(self.registers[0], self.registers[1])
+        elif num == 0x16:  # BitUnPackVram
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_bit_unpack(self.registers[0], self.registers[1], self.registers[2])
+        elif num == 0x18:  # DiffUnCompFilterWrite
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_diff_uncomp_filter(self.registers[0], self.registers[1])
+        # Unknown SWI: no-op (graceful handling)
 
     def _arm_halfword_transfer(self, opcode: int) -> bool:
         """Execute ARM half-word/signed load/store (LDRH, STRH, LDRSB, LDRSH)"""

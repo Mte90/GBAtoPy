@@ -159,6 +159,7 @@ if command -v systemd-run >/dev/null 2>&1; then
     if ! systemd-run --user --scope --property=MemoryMax=${MEM_LIMIT} \
             --setenv=LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
             --setenv=SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-dummy}" \
+            --setenv=SDL_VIDEODRIVER=offscreen \
             "${RUNNER[@]}" 2>&1; then
         echo "Error: Transpiled Python execution failed (memory cap ${MEM_LIMIT})" >&2
         exit 1

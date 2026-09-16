@@ -7,6 +7,7 @@ cd "$PROJECT_ROOT"
 
 export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:${LD_LIBRARY_PATH:-}"
 export SDL_AUDIODRIVER=dummy
+export SDL_VIDEODRIVER=offscreen
 
 ROMS=$(cat /tmp/need_golden.txt)
 RESULTS_FILE="/tmp/batch_results.csv"
@@ -31,7 +32,7 @@ for ROM in $ROMS; do
 
     export GBATOPY_SCREENSHOT_PATH="$GOLDEN"
     export GBATOPY_TARGET_FRAME=60
-    timeout 30 xvfb-run -a -s "-screen 0 640x480x24" ./mgba/build/sdl/mgba -S scripts/screenshot/screenshot.lua "$ROM_FILE" > /dev/null 2>&1
+    timeout 30 ./mgba/build/sdl/mgba -S scripts/screenshot/screenshot.lua "$ROM_FILE" > /dev/null 2>&1
     if [ ! -f "$GOLDEN_PNG" ]; then
         echo "  SKIP: golden generation failed"
         echo "$ROM,0,0,0,SKIP_NO_GOLDEN" >> "$RESULTS_FILE"

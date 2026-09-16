@@ -2,7 +2,7 @@
 # mGBA Golden Screenshot Capture Suite
 #
 # Captures golden screenshots for all test ROMs using mGBA.
-# Uses xvfb-run for headless display and proper environment setup.
+# Uses SDL_VIDEODRIVER=offscreen for headless rendering.
 #
 # Usage:
 #   ./scripts/generate_mgba_goldens.sh                    # All ROMs, frame 60
@@ -11,7 +11,7 @@
 #   ./scripts/generate_mgba_goldens.sh --workers 4        # Parallel instances
 #
 # Environment:
-#   Automatically sets LD_LIBRARY_PATH, SDL_AUDIODRIVER=dummy, SDL_VIDEODRIVER=dummy
+#   Automatically sets LD_LIBRARY_PATH, SDL_AUDIODRIVER=dummy, SDL_VIDEODRIVER=offscreen
 
 set -e
 
@@ -88,20 +88,13 @@ if [[ ! -f "$LUA_SCRIPT" ]]; then
     exit 1
 fi
 
-# --- Check xvfb-run ---
-if ! command -v xvfb-run &> /dev/null; then
-    echo "ERROR: xvfb-run not found. Install it with:" >&2
-    echo "  sudo apt-get install xvfb" >&2
-    exit 1
-fi
-
 # --- Create golden directory ---
 mkdir -p "$GOLDEN_DIR"
 
 # --- Set environment variables ---
 export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH"
 export SDL_AUDIODRIVER=dummy
-export SDL_VIDEODRIVER=dummy
+export SDL_VIDEODRIVER=offscreen
 
 # --- Collect ROMs ---
 collect_roms() {
@@ -143,9 +136,8 @@ capture_golden() {
     export GBATOPY_SCREENSHOT_PATH="$output_path"
     export GBATOPY_TARGET_FRAME="$frame"
     
-    # Run mGBA with xvfb for headless display
-    xvfb-run -a -s "-screen 0 256x240x24" \
-        "$MGBA_BIN" -S "$LUA_SCRIPT" "$rom_path" \
+    # Run mGBA with offscreen rendering
+    "$MGBA_BIN" -S "$LUA_SCRIPT" "$rom_path" \
         2>/dev/null
     
     # Check result
@@ -199,11 +191,10 @@ for item in "${WORK_ITEMS[@]}"; do
         export GBATOPY_SCREENSHOT_PATH="$output_path"
         export GBATOPY_TARGET_FRAME="$frame"
         export SDL_AUDIODRIVER=dummy
-        export SDL_VIDEODRIVER=dummy
+        export SDL_VIDEODRIVER=offscreen
         
-        # Run mGBA with xvfb for headless display
-        xvfb-run -a -s "-screen 0 256x240x24" \
-            "$MGBA_BIN" -S "$LUA_SCRIPT" "$rom" \
+        # Run mGBA with offscreen rendering
+        "$MGBA_BIN" -S "$LUA_SCRIPT" "$rom" \
             2>/dev/null
         
         # Check result

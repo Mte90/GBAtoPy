@@ -1353,6 +1353,9 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
         if opcode == "BL" {
             if let Some(Operand::Immediate(target)) = operands.first() {
                 targets.push(*target);
+                // Add fall-through for BL (return address)
+                let fallthrough = addr + 2; // Thumb BL is 2 bytes
+                targets.push(fallthrough);
             }
             return targets;
         }
@@ -1362,6 +1365,9 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
         if opcode == "BLX" {
             if let Some(Operand::Immediate(target)) = operands.first() {
                 targets.push(*target);
+                // Add fall-through for BLX (return address)
+                let fallthrough = addr + 2; // Thumb BLX is 2 bytes
+                targets.push(fallthrough);
             }
             return targets;
         }
@@ -1388,9 +1394,29 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
             && !upper_op.starts_with("BIC")
             && upper_op != "BKPT";
 
+        // Check if this is a conditional branch (has fall-through)
+        // Conditional branches have two targets: the branch target and the fall-through
+        let is_conditional_branch = is_branch && (
+            upper_op == "BEQ" || upper_op == "BNE" || upper_op == "BCS" || upper_op == "BCC" ||
+            upper_op == "BMI" || upper_op == "BPL" || upper_op == "BVS" || upper_op == "BVC" ||
+            upper_op == "BHI" || upper_op == "BLS" || upper_op == "BGE" || upper_op == "BLT" ||
+            upper_op == "BGT" || upper_op == "BLE" || upper_op == "BAL" || upper_op == "BNV" ||
+            // Thumb conditional branches (CBZ, CBNZ)
+            upper_op == "CBZ" || upper_op == "CBNZ"
+        );
+
+        // Check if this is a BL instruction (has fall-through)
+        // BL calls have two targets: the call target and the return address (fall-through)
+        let is_bl = opcode == "BL" || opcode == "BLX";
+
         if is_branch {
             if let Some(Operand::Immediate(target)) = operands.first() {
                 targets.push(*target);
+                // Add fall-through for conditional branches and BL instructions
+                if is_conditional_branch || is_bl {
+                    let fallthrough = addr + 2; // Thumb instructions are 2 bytes
+                    targets.push(fallthrough);
+                }
             } else if opcode == "BX" || opcode == "BLX" {
                 if let Some(Operand::Register(rn)) = operands.first() {
                     // Record this register for the post-processing sweep.

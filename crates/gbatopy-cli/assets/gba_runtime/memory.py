@@ -48,11 +48,10 @@ class Memory:
         self.iwram = _array.array('B', [0] * MemoryMap.IWRAM_SIZE)
         self.io = _array.array('B', [0] * MemoryMap.IO_SIZE)
         self.palette = _array.array('B', [0] * MemoryMap.PALETTE_SIZE)
-        
-        # Initialize VRAM with non-zero pattern to match mGBA behavior
-        # Some test ROMs (like stripes.gba) rely on non-zero VRAM data for graphics
-        # mGBA initializes VRAM with a pattern, so we do the same for compatibility
-        self.vram = _array.array('B', [(i % 256) for i in range(MemoryMap.VRAM_SIZE)])
+        # Initialize VRAM with zeros — all memory regions should be zero-initialized
+        # The stripes.gba ROM only writes 32 bytes of tile data; the rest should be zero
+        # to decode to palette index 0 (the first palette entry, not unwritten/black).
+        self.vram = _array.array('B', [0] * MemoryMap.VRAM_SIZE)
         
         self.oam = _array.array('B', [0] * MemoryMap.OAM_SIZE)
         self.sram = _array.array('B', [0] * MemoryMap.SRAM_SIZE)
@@ -172,13 +171,13 @@ class Memory:
                 self._handle_interrupt_write(addr, value)
 
     def _dispatch_hal_read(self, addr: int) -> Optional[int]:
+        # Window registers (0x04000048-0x0400004F) — check before generic PPU range
+        if 0x04000048 <= addr <= 0x0400004F:
+            return self._handle_window_read(addr)
         # PPU registers (0x04000000-0x0400005F) — return live values from PPU
         if 0x04000000 <= addr <= 0x0400005F and self._ppu is not None:
             val16 = self._ppu.read_register(addr & ~1)
             return (val16 >> (8 * (addr & 1))) & 0xFF
-        # Window registers (0x04000048-0x0400004F)
-        if 0x04000048 <= addr <= 0x0400004F:
-            return self._handle_window_read(addr)
         if 0x04000020 <= addr <= 0x0400002E:
             return self._handle_affine_bg_read(addr)
         # Sound registers (0x04000060-0x0400008F, exclusive of affine range)
@@ -333,9 +332,26 @@ class Memory:
         return self.io[offset]
 
     def _handle_window_write(self, addr: int, value: int):
+        """Write to window registers (WIN0H, WIN1H, WIN0V, WIN1V, WININ, WINOUT).
+        
+        16-bit writes must be preserved - do NOT truncate to 8-bit.
+        WININ/WINOUT are 16-bit registers with separate low/high byte meanings.
+        """
         offset = addr - MemoryMap.IO_START
         if 0 <= offset < MemoryMap.IO_SIZE:
-            self.io[offset] = value & 0xFF
+            # Store full 16-bit value for window registers
+            # This is a codegen/runtime integration point - the transpiler generates
+            # 16-bit writes to window registers, and we must preserve them.
+            if offset in (0x48, 0x4A):  # WININ (0x48), WINOUT (0x4A)
+                # 16-bit window control registers
+                current = self.io[offset] | (self.io[offset + 1] << 8)
+                # Store low byte at current offset, high byte at offset+1
+                self.io[offset] = value & 0xFF
+                if offset + 1 < MemoryMap.IO_SIZE:
+                    self.io[offset + 1] = (value >> 8) & 0xFF
+            else:
+                # 8-bit window position registers (WIN0H, WIN1H, WIN0V, WIN1V)
+                self.io[offset] = value & 0xFF
 
     def _handle_affine_bg_read(self, addr: int) -> int:
         """Read affine background parameter (byte read - 8-bit only)."""

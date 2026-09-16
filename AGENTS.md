@@ -76,6 +76,9 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 3. **No step_scanline in memory reads.** `read_u16`/`read_u32`/`read_u64` must NEVER call `step_scanline()`.
 4. **HBlank/VBlank DMA = full-count burst on first trigger.** `hblank_fire()` and `vblank_fire()` call `_do_transfer()`, NOT `_do_transfer_single()`.
 5. **Per-scanline affine snapshots.** `step_scanline(capture_snapshot=True)` captures BG2PA/PB/PC/PD/X/Y BEFORE DMA fires. Fallback interpreter calls `step_scanline(capture_snapshot=False)`.
+6. **All memory regions must be zero-initialized at construction.** `memory.py` must use `[0] * SIZE` for VRAM, Palette RAM, OAM, IWRAM, EWRAM. Debug patterns like `[(i%256) for i in range(SIZE)]` left in production cause uninitialized tiles to decode to non-zero palette indices → black screens.
+7. **All instruction/SWI dispatch tables must be single-source.** Two SWI dispatchers existed (cpu.py:_arm_swi with 4 handlers, arm7tdmi.py:swi_handler with 24). The fast-path CPU silently dropped CpuSet/CpuFastSet. There must be ONE dispatch table for SWI instructions, shared by both the fast-path and fallback interpreters.
+8. **PPU `forced_blank` must track DISPCNT bit 7 live.** `ppu.py` maintains `self.forced_blank` as the authoritative field; code that reads `self.dispcnt & 0x0080` uses a stale cached value (initialized to 0x0480 at line 519, never updated). This caused a GLOBAL white-screen regression — every ROM rendered blank. All forced-blank checks must read `self.forced_blank`, not `self.dispcnt`.
 
 ## Non-Negotiable Rules
 
@@ -83,11 +86,12 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 1. **Read `WORKPLAN.md` first** at session start — it is the source of truth for pending work. Reconcile against `docs/reference/test-roms.md` and the live codebase.
 2. **Read `docs/roadmap.md`** for full status and strategy.
 3. **Read `docs/how-debug.md`** for systematic debug workflow + known bug classes.
-4. **One ROM at a time** — never run the full 76-ROM suite during active debugging. Use `python3 scripts/run_tests.py --level 3 --rom <name>`.
+4. **One ROM at a time for fixing** — parallel root-cause *investigation* across multiple ROMs is allowed and encouraged (dispatch multiple @explorer in parallel). But apply fixes sequentially, one ROM at a time, verifying each before moving to the next. Never run the full 76-ROM suite during active debugging. Use `python3 scripts/run_tests.py --level 3 --rom <name>`.
 5. **Always respond in English** — even if the user writes in other languages.
 
 ### Verification
 6. **Test with pixels** — "no crash" is not enough. Verify screenshot content against mGBA golden via `compare_screenshots.py`. See [RUNBOOK.md](RUNBOOK.md).
+6a. **Re-test all previously-passing ROMs after codegen/dispatch changes** — a fix that targets one ROM can regress others. The peephole `+4` fix for Thumb loops regressed start-delay from 1.75% PASS to 100% blank. After any change to shared dispatch, peephole optimizer, or codegen headers, run `python3 scripts/run_tests.py --level 3` on the last known-passing set before declaring done.
 7. **One-shot verification** — `./scripts/verify/verify_rom.sh <rom> --no-golden` transpiles, runs, compares in one step.
 8. **Verify subagent claims** — always check their work manually.
 
@@ -100,12 +104,15 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 ### Debugging
 13. **Debug workflow** — modify generated Python first to verify a fix, then apply to Rust codegen.
 14. **Use built-in debug flags** — `--pc-trace=FILE`, `--trace-n=N`, `--max-instrs=N`. Do not inject `print(f"PC={...}")`. See [RUNBOOK.md](RUNBOOK.md) and `docs/how-debug.md`.
-15. **Debug probes must flush** — `print(..., flush=True)` BEFORE any `os._exit(0)`; the runtime exits hard, bypassing buffer flush.
-16. **Never add step_scanline to memory reads** — see invariant #3. PPU stepping is exclusively in the main loop.
-17. **Fallback interpreter is pure CPU** — see invariant #1.
-18. **Check known bug classes first** — consult "Known Codegen Bug Classes" (5) and "Known Runtime Bug Classes" (2) in `docs/how-debug.md` before deep debugging. Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py` first.
-19. **Check dispatch table completeness** — NOP block bug may skip initialization code.
-20. **Verify STRH/LDRH offsets** — disassembler may use wrong bit field (bits 7-3 vs bits 3-0).
+15. **Goldens must be validated before comparison** — a golden screenshot <1KB (typically 33 bytes) is a segfault artifact from mGBA, not a real golden. Always check `ls -la` on golden PNGs before running compare_screenshots.py. Correct mGBA headless setup: `export SDL_VIDEODRIVER=offscreen` + `export SDL_AUDIODRIVER=dummy` + `export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH"`. Do NOT use `SDL_VIDEODRIVER=dummy` (causes 33-byte segfault artifacts). Do NOT use `xvfb-run` alone (produces >1KB but all-black blank goldens). `SDL_VIDEODRIVER=offscreen` is the only proven working backend for mGBA screenshot generation on a headless server.
+16. **Golden screenshots must be validated as >1KB before comparison** — a golden <1KB is a segfault artifact, not a real reference image. Comparing transpiled output against a broken golden produces meaningless results. Always `ls -la` the golden first.
+17. **Debug probes must flush** — `print(..., flush=True)` BEFORE any `os._exit(0)`; the runtime exits hard, bypassing buffer flush.
+17. **Never add step_scanline to memory reads** — see invariant #3. PPU stepping is exclusively in the main loop.
+18. **Fallback interpreter is pure CPU** — see invariant #1.
+19. **Check known bug classes first** — consult "Known Codegen Bug Classes" (5), "Known Runtime Bug Classes" (2), and "New Bug Classes" (3: SWI dispatch truncation, memory non-zero init, IRQ vector missing) in `docs/how-debug.md` before deep debugging. Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py` first.
+20. **Check dispatch table completeness** — NOP block bug may skip initialization code.
+21. **Verify STRH/LDRH offsets** — disassembler may use wrong bit field (bits 7-3 vs bits 3-0).
+21a. **Verify explorer code-pattern claims by reading the cited line** — an explorer hallucinated a NOP-detection mask `(opcode & 0xFF000000) == 0xEA000000` at emitter_arm.rs:609; grep found no such pattern. Before acting on any subagent's claim about a code pattern, read the cited file:line with `read` or `aft_zoom` and confirm the pattern exists as described.
 
 ### Work Management
 21. **Autonomous todo creation** — when you discover work (new bug, stale doc, missing test, done WORKPLAN item, regression risk, flagged follow-up), IMMEDIATELY create a `todowrite` entry. Review at every work boundary and prune irrelevant items.
@@ -156,6 +163,17 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 0o. **Delegate build+verify cycles to subagents** — when you need to build, transpile, and verify a ROM, delegate the ENTIRE cycle to ONE fixer subagent. The subagent has its own clean context and can run all the commands without filling your context. Retrieve only the final text result via `task_result`.
 
 0p. **End turn after spawning background tasks** — after spawning independent background tasks, end your turn immediately with a brief status message. Do NOT poll for status. The system notifies you automatically when tasks finish. Polling wastes context.
+
+0q. **PROACTIVE context budget enforcement** — the rules above (0d-0p) are reactive; they fire after saturation. The following rules are PROACTIVE and must be followed before saturation occurs:
+  1. **Drop after every extract** — after extracting information from any tool output >2KB, immediately call `ctx_reduce` to mark it discardable. Do not wait for "end of turn". The pattern is: read → extract → drop → act. NOT: read → read → read → act → drop at end.
+  2. **One-drop rule** — if ANY tool output is dropped/compacted even once, IMMEDIATELY delegate all subsequent build/verify/diagnose work to a fresh subagent. Do NOT retry the same call in the orchestrator context. One drop = death spiral already started.
+  3. **5-call checkpoint** — after every 5th consecutive tool call, stop and drop all spent outputs before making the next call. If you cannot drop anything because everything is still needed, delegate to a subagent instead of continuing.
+  4. **No retry on drop** — never retry a tool call whose output was dropped. The context is too saturated to read it. Delegate to a subagent with clean context instead.
+  5. **Pre-flight check before long sequences** — before starting a sequence of 3+ tool calls (build + verify + compare), drop all currently-held spent outputs first. A 3-call sequence against a full context will fail.
+
+0r. **Check context budget before each new tool call** — if the last 3 tool outputs were large (>2KB each) and you haven't dropped anything in the last 5 tool calls, STOP and drop spent outputs BEFORE making the next call (see proactive rule 0q). Do not wait for saturation. Think of it as garbage collection after each logical step, not at end of turn.
+
+0s. **Prefer small targeted reads over full file dumps** — use `read` with `startLine`/`endLine` or `offset`/`limit` instead of reading entire files. Use `aft_zoom` for specific symbols instead of `read` for whole files. Use `aft_search` instead of `grep` through bash. Every full-file read is a context bomb — if you need 20 lines from a 500-line file, read 20 lines, not 500.
 ### Parallelization
 25. **Always use subagents when possible** — subagents are the DEFAULT, not the exception. Any non-trivial work (multiple steps, multiple files, research, investigation, implementation >20 lines) MUST be delegated to a subagent. The orchestrator coordinates, plans, dispatches, reconciles, and verifies — it does not implement serially when a specialist can do the work in parallel.
 

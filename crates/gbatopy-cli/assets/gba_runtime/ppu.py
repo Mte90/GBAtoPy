@@ -287,17 +287,14 @@ class PPU:
                     # 8BPP: 256-color sprite palette at 0x05000200
                     palette_addr = 0x05000200 + (color_idx * 2)
                 
-                try:
-                    color_val = self.memory.read_u16(palette_addr)
-                    r = _c5to8((color_val >> 0) & 0x1F)
-                    g = _c5to8((color_val >> 5) & 0x1F)
-                    b = _c5to8((color_val >> 10) & 0x1F)
-                    self.second_target_framebuffer[screen_y][screen_x] = self.framebuffer[screen_y][screen_x]
-                    self.second_target_layer[screen_y][screen_x] = self.layer_origin[screen_y][screen_x]
-                    self.framebuffer[screen_y][screen_x] = (r, g, b)
-                    self.layer_origin[screen_y][screen_x] = 4
-                except Exception:
-                    continue
+                color_val = self.memory.read_u16(palette_addr)
+                r = _c5to8((color_val >> 0) & 0x1F)
+                g = _c5to8((color_val >> 5) & 0x1F)
+                b = _c5to8((color_val >> 10) & 0x1F)
+                self.second_target_framebuffer[screen_y][screen_x] = self.framebuffer[screen_y][screen_x]
+                self.second_target_layer[screen_y][screen_x] = self.layer_origin[screen_y][screen_x]
+                self.framebuffer[screen_y][screen_x] = (r, g, b)
+                self.layer_origin[screen_y][screen_x] = 4
 
     def _render_affine_sprite(self, sprite: dict):
         """Render a sprite with rotation/scaling transformation.
@@ -519,7 +516,7 @@ class PPU:
             self.obj_enable = bool(dispcnt & 0x1000)
         self.win1_enable = False
         self.obj_window_enable = False
-        self.dispcnt = 0x0403
+        self.dispcnt = 0x0480  # GBA hardware default: force blank ON (bit 7)
         self._obj_window_rects = []
         
         # Cache for VRAM/palette data (updated each frame for JIT)
@@ -608,6 +605,15 @@ class PPU:
         # Mirrors _bg2_affine_snapshots so mid-frame WIN0V/WIN1V writes take effect.
         self._win0_snapshots = [None] * self.screen_height
         self._win1_snapshots = [None] * self.screen_height
+        
+        # Per-scanline window control snapshots: winin, winout, and dispcnt window-enable bits
+        # These are needed for mid-frame window changes to take effect per-scanline
+        self._win0_in_snapshots = [None] * self.screen_height
+        self._win0_out_snapshots = [None] * self.screen_height
+        self._win1_in_snapshots = [None] * self.screen_height
+        self._win1_out_snapshots = [None] * self.screen_height
+        self._win0_enable_snapshots = [None] * self.screen_height
+        self._win1_enable_snapshots = [None] * self.screen_height
 
         # Per-scanline DISPSTAT/VCOUNT latches for games that poll these registers.
         # Captured at the START of each scanline (before vcount increment),
@@ -828,7 +834,7 @@ class PPU:
             self.display_frame_select = (value >> 4) & 1
             self.hblank_interval_free = bool((value >> 5) & 1)
             self.obj_character_vram_mapping = bool((value >> 6) & 1)
-            self.forced_blank = bool((value >> 7) & 1)
+            self.forced_blank = bool((value >> 15) & 1)
             self.bg0_enable = bool((value >> 8) & 1)
             self.bg1_enable = bool((value >> 9) & 1)
             self.bg2_enable = bool((value >> 10) & 1)
@@ -1236,23 +1242,39 @@ class PPU:
 
     def _get_window_layer_enable(self, x: int, y: int) -> int:
         """Get which layers are enabled at the given coordinate based on windows"""
+        # Use per-scanline snapshots to capture mid-frame window register changes
+        if 0 <= y < self.screen_height:
+            win0_in = self._win0_in_snapshots[y] if self._win0_in_snapshots[y] is not None else self.win0_in_enable
+            win0_out = self._win0_out_snapshots[y] if self._win0_out_snapshots[y] is not None else self.win0_out_enable
+            win0_en = self._win0_enable_snapshots[y] if self._win0_enable_snapshots[y] is not None else self.win0_enable
+            win1_in = self._win1_in_snapshots[y] if self._win1_in_snapshots[y] is not None else self.win1_in_enable
+            win1_out = self._win1_out_snapshots[y] if self._win1_out_snapshots[y] is not None else self.win1_out_enable
+            win1_en = self._win1_enable_snapshots[y] if self._win1_enable_snapshots[y] is not None else self.win1_enable
+        else:
+            win0_in = self.win0_in_enable
+            win0_out = self.win0_out_enable
+            win0_en = self.win0_enable
+            win1_in = self.win1_in_enable
+            win1_out = self.win1_out_enable
+            win1_en = self.win1_enable
+        
         # Check WIN0 first
-        if self.win0_enable and self._is_in_window(x, y, 0):
-            return self.win0_in_enable
+        if win0_en and self._is_in_window(x, y, 0):
+            return win0_in
 
         # Check WIN1
-        if self.win1_enable and self._is_in_window(x, y, 1):
-            return self.win1_in_enable
+        if win1_en and self._is_in_window(x, y, 1):
+            return win1_in
 
         if self.obj_window_enable and self._obj_window_rects:
             if self._is_in_obj_window(x, y):
                 return 0x10 if self.winout_obj_enable else 0
             else:
-                return 0x10 if (self.win0_out_enable & 0x10) else 0
+                return 0x10 if (win0_out & 0x10) else 0
 
         # Default to out enables
-        if self.win0_enable or self.win1_enable:
-            return self.win0_out_enable
+        if win0_en or win1_en:
+            return win0_out
 
         return 0x3F  # All enabled by default (BG0-3 + OBJ + Blend)
 
@@ -1384,29 +1406,47 @@ class PPU:
             self._bg2_affine_snapshots = [None] * self.screen_height
             self._win0_snapshots = [None] * self.screen_height
             self._win1_snapshots = [None] * self.screen_height
+            # Reset window control snapshots
+            self._win0_in_snapshots = [None] * self.screen_height
+            self._win0_out_snapshots = [None] * self.screen_height
+            self._win1_in_snapshots = [None] * self.screen_height
+            self._win1_out_snapshots = [None] * self.screen_height
+            self._win0_enable_snapshots = [None] * self.screen_height
+            self._win1_enable_snapshots = [None] * self.screen_height
             # Reset DISPSTAT/VCOUNT snapshots at frame start
             self._dispstat_snapshot = [0] * 228
             self._vcount_snapshot = [0] * 228
 
-        # Per-scanline window snapshot: capture (left, right) from WIN0H/WIN1H
-        # for the CURRENT scanline if it falls within the window's Y range.
-        # Using the PPU's cached fields (self.win0_top etc.) which are updated
-        # from MMIO writes, so mid-frame VCount-IRQ writes to WIN0V/WIN1V
-        # take effect on subsequent scanlines.
-        # GBATEK: y1 >= y2 means the window covers the full screen (y2=160).
-        # GBATEK: left >= right means the window covers the full width (right=240).
         if 0 <= self.vcount < self.screen_height:
+            # Always capture window control bits for this scanline
+            self._win0_in_snapshots[self.vcount] = self.win0_in_enable
+            self._win0_out_snapshots[self.vcount] = self.win0_out_enable
+            self._win0_enable_snapshots[self.vcount] = self.win0_enable
+            self._win1_in_snapshots[self.vcount] = self.win1_in_enable
+            self._win1_out_snapshots[self.vcount] = self.win1_out_enable
+            self._win1_enable_snapshots[self.vcount] = self.win1_enable
+            
+            # Only capture window position (left/right) when scanline is within Y range
+            # GBATEK: Y1 >= Y2 means the window covers the full screen (Y2=160)
             win0_y1, win0_y2 = self.win0_top, self.win0_bottom
             if win0_y1 >= win0_y2:
-                win0_y2 = 160
-            if win0_y1 <= self.vcount < win0_y2:
-                self._win0_snapshots[self.vcount] = (self.win0_left, self.win0_right)
+                # Full screen window: covers all visible scanlines (0-159)
+                if 0 <= self.vcount < self.screen_height:
+                    self._win0_snapshots[self.vcount] = (self.win0_left, self.win0_right)
+            else:
+                # Normal window: covers scanlines Y1 to Y2-1
+                if win0_y1 <= self.vcount < win0_y2:
+                    self._win0_snapshots[self.vcount] = (self.win0_left, self.win0_right)
 
             win1_y1, win1_y2 = self.win1_top, self.win1_bottom
             if win1_y1 >= win1_y2:
-                win1_y2 = 160
-            if win1_y1 <= self.vcount < win1_y2:
-                self._win1_snapshots[self.vcount] = (self.win1_left, self.win1_right)
+                # Full screen window: covers all visible scanlines (0-159)
+                if 0 <= self.vcount < self.screen_height:
+                    self._win1_snapshots[self.vcount] = (self.win1_left, self.win1_right)
+            else:
+                # Normal window: covers scanlines Y1 to Y2-1
+                if win1_y1 <= self.vcount < win1_y2:
+                    self._win1_snapshots[self.vcount] = (self.win1_left, self.win1_right)
 
         # Capture per-scanline DISPSTAT/VCOUNT latches BEFORE vcount increment.
         # Games polling these registers mid-scanline need the values valid at
@@ -1437,8 +1477,7 @@ class PPU:
         # Snapshot BG2 affine params for the CURRENT scanline BEFORE HBlank-DMA
         # modifies them. On hardware the PPU latches the affine matrix at the
         # start of the scanline; HBlank DMA fires later and prepares the
-        # value for the NEXT scanline. Capturing before the vcount increment
-        # guarantees snapshot[0] is populated.
+        # value for the NEXT scanline.
         if 0 <= self.vcount < self.screen_height:
             try:
                 self._bg2_affine_snapshots[self.vcount] = self._read_affine_bg2_params()
@@ -1447,23 +1486,19 @@ class PPU:
 
         # Fire HBlank DMA AFTER the snapshot so DMA-written values land in the
         # next scanline's snapshot, not the current one.
-        # mGBA (video.c:217) gates GBADMARunHblank on vcount < 160: HBlank DMA
-        # fires only on visible scanlines, never during VBlank. Firing during
-        # VBlank consumes source values that belong to the next frame's visible
-        # lines, shifting per-scanline gradients (bgpd) by ~50 scanlines.
         dma = self.memory._dma
         if dma is not None and self.vcount < self.screen_height:
             dma.hblank_fire(self.vcount)
-
+    
+        # STEP 2: Increment vcount AFTER all snapshots are captured
         self.vcount = (self.vcount + 1) % 228
         self.vblank = self.vcount >= self.screen_height
-
+    
         io = self.memory.io
         io[6] = self.vcount & 0xFF
         io[7] = 0
-
+    
         # Update DISPSTAT in io[] array
-        # Preserve IRQ enable bits (3-5) and LYC (8-15) from existing value
         old_dispstat = io[4] | (io[5] << 8)
         dispstat = 0
         if self.vblank:
@@ -1477,11 +1512,12 @@ class PPU:
         dispstat |= old_dispstat & 0xFF00
         io[4] = dispstat & 0xFF
         io[5] = (dispstat >> 8) & 0xFF
-
+    
+        # STEP 3: Fire IRQs AFTER vcount increment (IRQ handlers may change window settings)
         if dma is not None:
             if self.vblank:
                 dma.vblank_fire()
-
+    
         # HBlank IRQ is fired separately via fire_hblank_irq() AFTER
         # timer.step() in the main loop, so timer-driven code (e.g.
         # line_timing) sees the correct elapsed count when it wakes from HALT.
@@ -1496,13 +1532,9 @@ class PPU:
             mod = sys.modules.get("generated_rom")
             if mod is not None:
                 mod.z = 1
-
+    
         # PRE-populate snapshot for the NEXT scanline (after vcount increment).
-        # This ensures that ROMs spinning in tight loops see the correct DISPSTAT
-        # value when they read it during instruction execution, BEFORE step_scanline
-        # is called for the next scanline. Without this, the snapshot for the
-        # current scanline is still 0 when the ROM reads DISPSTAT.
-        next_vcount = self.vcount  # vcount was already incremented at line 1484
+        next_vcount = self.vcount
         if 0 <= next_vcount < 228:
             next_vblank = next_vcount >= self.screen_height
             next_dispstat = 0
@@ -1510,7 +1542,7 @@ class PPU:
                 next_dispstat |= 0x0001
             # HBlank bit
             next_dispstat |= 0x0002
-            # LYC match bit - use self.lyc attribute instead of reading from io[5]
+            # LYC match bit
             if next_vcount == self.lyc:
                 next_dispstat |= 0x0004
             self._dispstat_snapshot[next_vcount] = next_dispstat
@@ -1535,13 +1567,19 @@ class PPU:
     def render_frame(self):
         """Render one frame of graphics. Called once per frame after all scanlines."""
         self._read_registers()
+        # Force blank check: if DISPCNT bit 7 is set, output white screen
+        if self.forced_blank:
+            # Fill framebuffer with white (RGB888 = (255, 255, 255))
+            self.framebuffer = [[(255, 255, 255) for _ in range(self.screen_width)] for _ in range(self.screen_height)]
+            self.layer_origin = [[5]*self.screen_width for _ in range(self.screen_height)]
+            return
         self._init_framebuffer()
         _fc = getattr(self, '_frame_count', 0) + 1
         self._frame_count = _fc
         # Get current display mode
         mode = self.mode
 
-        # Render based on mode
+        # Render based on mode (each mode handles its own sprite rendering)
         if mode == 0:
             self._render_mode0()
         elif mode == 1:
@@ -1554,9 +1592,6 @@ class PPU:
             self._render_mode4()
         elif mode == 5:
             self._render_mode5()
-
-        # Render sprites before blending so OBJ can be a blend target
-        self._render_sprites()
 
         # Apply blending if enabled
         if self._blending_enabled():

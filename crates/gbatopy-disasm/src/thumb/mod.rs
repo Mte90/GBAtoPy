@@ -245,13 +245,13 @@ impl ThumbDecoder {
     fn format_9_imm_offset_word(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
         let l_bit = (hw >> 11) & 1;
         let imm5 = ((hw >> 6) & 0x1F) as u32;
-        let rb = ((hw >> 3) & 0x7) as u8;
+        let rn = ((hw >> 3) & 0x7) as u8;
         let rd = (hw & 0x7) as u8;
         let offset = imm5 << 2;
         let name = if l_bit != 0 { "LDR" } else { "STR" };
         (
             name.to_string(),
-            vec![self.reg(rd), self.reg(rb), self.imm(offset)],
+            vec![self.reg(rd), self.reg(rn), self.imm(offset)],
             false,
         )
     }
@@ -259,12 +259,12 @@ impl ThumbDecoder {
     fn format_9_imm_offset_byte(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
         let l_bit = (hw >> 11) & 1;
         let imm5 = ((hw >> 6) & 0x1F) as u32;
-        let rb = ((hw >> 3) & 0x7) as u8;
+        let rn = ((hw >> 3) & 0x7) as u8;
         let rd = (hw & 0x7) as u8;
         let name = if l_bit != 0 { "LDRB" } else { "STRB" };
         (
             name.to_string(),
-            vec![self.reg(rd), self.reg(rb), self.imm(imm5)],
+            vec![self.reg(rd), self.reg(rn), self.imm(imm5)],
             false,
         )
     }
@@ -272,13 +272,13 @@ impl ThumbDecoder {
     fn format_10_halfword(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
         let l_bit = (hw >> 11) & 1;
         let imm5 = ((hw >> 6) & 0x1F) as u32;
-        let rb = ((hw >> 3) & 0x7) as u8;
+        let rn = ((hw >> 3) & 0x7) as u8;
         let rd = (hw & 0x7) as u8;
         let offset = imm5 << 1;
         let name = if l_bit != 0 { "LDRH" } else { "STRH" };
         (
             name.to_string(),
-            vec![self.reg(rd), self.reg(rb), self.imm(offset)],
+            vec![self.reg(rd), self.reg(rn), self.imm(offset)],
             false,
         )
     }

@@ -56,8 +56,8 @@ trap 'rm -f "$RAW_FILE"' EXIT
 export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH"
 export SDL_AUDIODRIVER=disk
 export SDL_DISKAUDIOFILE="$RAW_FILE"
-export SDL_VIDEODRIVER=dummy
 export GBATOPY_TARGET_FRAME="$FRAME"
+export SDL_VIDEODRIVER=offscreen
 
 # --- Calculate runtime for target frames ---
 # GBA runs at ~59.73 fps, approximate as 60 fps

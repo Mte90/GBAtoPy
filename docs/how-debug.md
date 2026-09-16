@@ -373,6 +373,61 @@ Before deep debugging, verify these common failure modes. They have caused the m
 **Check**: `arm7tdmi.py` MSR handler must update `self.mode` and swap banked registers.
 **Test**: `test_dispatch_audit.py::TestARMDispatchAudit::test_msr_cpsr_routes_to_status_transfer`
 
+## New Bug Classes
+
+### Bug Class: SWI Dispatch Table Truncation
+- **Symptom:** ROM hangs or produces all-black output. IWRAM stays zeroed.
+- **Root cause:** Fast-path CPU (`cpu.py:_arm_swi`) has only a subset of SWI handlers. CpuSet (SWI 0x0B) and CpuFastSet (SWI 0x0C) silently return without doing anything.
+- **Detection:** Grep for `_arm_swi` or `swi_handler` — if there are two implementations, the smaller one is the truncation.
+- **Fix:** Delete the fast-path SWI dispatcher. Make the fast-path CPU delegate to the canonical `arm7tdmi.py:swi_handler` which has all 24+ handlers.
+
+### Bug Class: Memory Region Non-Zero Initialization
+- **Symptom:** Tile-based ROMs render garbage or all-black. Bitmap modes may work.
+- **Root cause:** A debug fill pattern (e.g., `[(i%256) for i in range(SIZE)]`) was left in memory.py instead of `[0] * SIZE`.
+- **Detection:** Grep for `i%256` or `i % 256` or `range(.*SIZE)` in memory.py. All memory region constructors should use `[0] * SIZE`.
+- **Fix:** Replace any non-zero fill with `[0] * SIZE`.
+
+### Bug Class: IRQ Vector Not Implemented in Fast-Path CPU
+- **Symptom:** ROMs that use IRQ-driven rendering (HBlank, VBlank) produce wrong output. CPU never jumps to the IRQ handler.
+- **Root cause:** Fast-path CPU (`cpu.py`) doesn't implement IRQ vector dispatch. When an IRQ fires, the CPU should jump to the address stored at the IRQ vector table (0x03007FFC for the default vector, or the BIOS IRQ table at 0x00000000).
+- **Detection:** Grep for `irq\|IRQ\|0x03007FFC` in cpu.py. If missing, IRQs are being silently dropped.
+- **Fix:** Implement IRQ entry in the fast-path CPU: save PC/CPSR to SPSR_svc, switch to IRQ mode, jump to the vector address.
+
+### SWI dispatch table truncation
+The fast-path CPU's `_arm_swi` in cpu.py had only 4 SWI handlers (0x00-0x03), while the fallback interpreter's `swi_handler` in arm7tdmi.py had 24. CpuSet (SWI 0x0B) and CpuFastSet (SWI 0x0C) were silently dropped by the fast-path → IWRAM stayed zeroed → NOP slide → hang. Fix: single-source SWI dispatch.
+
+### Memory region non-zero initialization
+`memory.py` VRAM was initialized with `[(i%256) for i in range(VRAM_SIZE)]` (debug pattern). Uninitialized tiles decoded to palette indices >0 → black screen. Fix: `[0] * VRAM_SIZE` for all memory regions.
+
+### IRQ vector not implemented in fast-path CPU
+The fast-path CPU in cpu.py did not implement IRQ vector delivery. ROMs that rely on IRQ handlers (registered at 0x03007FFC) for rendering (HBlank palette changes, VBlank frame swaps) produced blank screens. Fix: fast-path CPU must deliver IRQs to the registered vector.
+
+### Bug Class: Forced-blank field drift (global white-screen regression)
+- **Symptom:** ALL ROMs render white/blank. No crash, no hang.
+- **Root cause:** `ppu.py` checks `self.dispcnt & 0x0080` for forced-blank, but `self.dispcnt` is initialized to 0x0480 (bit 7 set) and never updated from MMIO writes. The authoritative `self.forced_blank` field exists but is unused.
+- **Detection:** Grep for `dispcnt & 0x0080` or `dispcnt.*0x80` in ppu.py. If found and `self.forced_blank` exists, the check is stale.
+- **Fix:** Replace all `self.dispcnt & 0x0080` with `self.forced_blank`.
+- **Files:** `crates/gbatopy-cli/assets/gba_runtime/ppu.py`
+
+### Bug Class: Thumb load/store rd/rn bit-field swap (critical, systemic)
+- **Symptom:** ROMs with heavy Thumb LDR/STR immediate-offset code produce garbage or blank output. ~6600 instructions affected in a single ROM (start-delay).
+- **Root cause:** Thumb disassembler handlers for format_9_imm_offset_word, format_9_imm_offset_byte, and format_10_halfword swap rd (destination/source) and rn (base) bit fields. Every `LDR Rd, [Rn, #imm]` loads into Rn instead of Rd; every `STR Rd, [Rn, #imm]` stores from Rn instead of Rd.
+- **Detection:** Disassemble a Thumb LDR/STR imm instruction. If rd and rn are swapped vs the GBATEK format table, this is the bug.
+- **Fix:** Swap rd/rn extraction in the three format handlers in `crates/gbatopy-disasm/src/thumb/mod.rs`.
+
+### Bug Class: Peephole optimizer ARM-width assumption in Thumb loops
+- **Symptom:** ROM passes, then regresses to 100% blank after a peephole optimization fix is applied to a different ROM.
+- **Root cause:** Peephole optimizer hardcodes `+ 4` (ARM instruction width) when computing loop offsets, even for Thumb loops where instruction width is 2. This misaligns dispatch table keys for Thumb basic blocks.
+- **Detection:** Grep for `+ 4` in peephole optimizer code in `pipeline_cmd.rs`. If the +4 is not guarded by an ARM/Thumb mode check, it's the bug.
+- **Fix:** Use instruction width based on the block's mode (2 for Thumb, 4 for ARM).
+
+### Bug Class: Window register read ordering (memory.py)
+- **Symptom:** Window-enabled ROMs render backdrop everywhere (window ignored). window_midframe at 43-87% diff.
+- **Root cause:** `_dispatch_hal_read` in memory.py checks the generic PPU range (0x04000000-0x0400005F) BEFORE the window-specific range (0x04000048-0x0400004F). WINOUT reads return 0 instead of the written value → all layers disabled outside window → backdrop everywhere.
+- **Detection:** Read memory.py `_dispatch_hal_read`. If the generic PPU range check comes before window-specific checks, reads are shadowed.
+- **Fix:** Move window register check before the generic PPU range check.
+- **Files:** `crates/gbatopy-cli/assets/gba_runtime/memory.py`
+
 ## Known Runtime Bug Classes
 
 Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets/gba_runtime/`) rather than the Rust codegen. They typically manifest as incorrect PPU/DMA timing or memory access behavior.

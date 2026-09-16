@@ -10,9 +10,8 @@ scripts/
 ├── verify_batch.sh            ← Batch verify: generate golden + transpile + run + compare
 ├── run_tests.py               ← Unified 3-level test runner (syntax → execution → visual)
 ├── generate_goldens.py        ← Batch golden screenshot generator via mGBA (all ROMs, multi-frame, Python)
-├── generate-goldens.sh        ← Canary-set golden generator (12 specific ROMs, bash)
-├── generate_mgba_goldens.sh   ← mGBA golden suite with xvfb-run (all ROMs, headless, bash)
-├── audio/
+# Environment:
+#   Automatically sets LD_LIBRARY_PATH, SDL_AUDIODRIVER=dummy, SDL_VIDEODRIVER=offscreen
 │   └── capture_golden.sh      ← Capture golden audio via mGBA SDL disk driver
 ├── screenshot/
 │   ├── screenshot.lua         ← Parameterized mGBA Lua screenshot capture (env-var driven)
@@ -25,12 +24,12 @@ scripts/
 │   ├── compare_screenshots.py ← Golden screenshot comparison (mGBA vs transpiled)
 │   ├── compare_audio.py       ← Golden audio comparison (WAV diff)
 │   ├── coverage_tracker.py    ← Track test coverage across ROMs
-│   ├── ewram_dump_verify.py   ← Verify EWRAM dump binary format
-│   ├── regress_all.sh         ← Full regression: transpile + run + compare all ROMs
-│   └── regress_resume.sh      ← Resume regression after interruption (skip done ROMs)
+│   └── ewram_dump_verify.py   ← Verify EWRAM dump binary format
 └── check/
+    ├── preflight.sh           ← Run all enforcement checks at once (pre-commit ready)
     ├── no-skip.sh             ← Enforce AGENTS.md rule #26: zero SKIP ROMs
     ├── no-debug-probes.sh     ← Enforce AGENTS.md rule #14: no stray print() probes in source
+    ├── doc-sync.sh            ← Enforce AGENTS.md rule #23: code change must update test-roms.md
     └── status-snapshot.sh     ← Print current PASS/FAIL/SKIP/NEW counts from test-roms.md
 ```
 
@@ -169,20 +168,13 @@ python3 scripts/generate_goldens.py --mgba /path/to/mgba
 ./scripts/generate-goldens.sh --workers 8
 ```
 
----
-
-### `generate_mgba_goldens.sh` — mGBA Golden Suite with xvfb-run
-
-**Purpose:** Bash script for capturing golden screenshots using mGBA with proper headless display support via `xvfb-run`. Automatically sets up environment variables (`LD_LIBRARY_PATH`, `SDL_AUDIODRIVER=dummy`, `SDL_VIDEODRIVER=dummy`).
-
 **Key Features:**
-- ✅ Uses `xvfb-run -a` for headless display (no X server required)
+- ✅ Uses `SDL_VIDEODRIVER=offscreen` for headless rendering (no X server required)
 - ✅ Sets `LD_LIBRARY_PATH` for mGBA shared libraries
-- ✅ Sets `SDL_AUDIODRIVER=dummy` and `SDL_VIDEODRIVER=dummy` for headless operation
+- ✅ Sets `SDL_AUDIODRIVER=dummy` for headless audio
 - ✅ Supports batch processing of all 82 test ROMs
 - ✅ Parallel workers for faster generation
 - ✅ Comma-separated frame numbers for multi-frame capture
-
 **Usage:**
 ```bash
 # All ROMs, frame 60 (default)
@@ -202,16 +194,11 @@ python3 scripts/generate_goldens.py --mgba /path/to/mgba
 
 # Custom timeout
 ./scripts/generate_mgba_goldens.sh --timeout 180
-```
-
 **Environment Setup:**
 The script automatically exports:
 - `LD_LIBRARY_PATH=$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH`
 - `SDL_AUDIODRIVER=dummy`
-- `SDL_VIDEODRIVER=dummy`
-
-**Requirements:**
-- `xvfb-run` must be installed: `sudo apt-get install xvfb`
+- `SDL_VIDEODRIVER=offscreen` for headless rendering
 - mGBA binary must exist at `mgba/build/sdl/mgba`
 
 **Output:** `scripts/screenshot/golden/golden_<rom_name>_frame_<N>.png`
@@ -508,6 +495,44 @@ NEW:  2
 Total: 76
 ==============================
 ```
+
+### `check/doc-sync.sh` — Doc-Sync Enforcement (rule #23)
+
+**Purpose:** Fail non-zero if files under `crates/` or `gba_runtime/` changed but `docs/reference/test-roms.md` did not. Ensures code fixes that change ROM pass/fail status are accompanied by doc updates.
+
+**Usage:**
+```bash
+# Pass changed files as arguments
+scripts/check/doc-sync.sh crates/gbatopy-cli/src/pipeline_cmd.rs crates/gbatopy-cli/assets/gba_runtime/ppu.py
+
+# Or pipe from git diff
+git diff --name-only HEAD | scripts/check/doc-sync.sh
+```
+
+Exit 0 = clean (docs updated or no code changed); exit 1 = code changed without doc update.
+
+---
+
+### `check/preflight.sh` — Run All Checks
+
+**Purpose:** Run all deterministic AGENTS.md enforcement checks in one command. Use before committing, before marking a task done, or at session start.
+
+**Usage:**
+```bash
+# Run all checks (no changed files to check doc-sync)
+scripts/check/preflight.sh
+
+# Pass changed files for doc-sync check
+scripts/check/preflight.sh crates/gbatopy-cli/src/pipeline_cmd.rs
+
+# Wire as pre-commit hook:
+cp scripts/check/preflight.sh .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+Runs: `no-skip.sh`, `no-debug-probes.sh`, `doc-sync.sh` (if files provided), `status-snapshot.sh` (informational). Exits non-zero if any blocking check fails.
+
+---
 
 ### Running All Checks
 

@@ -3,8 +3,8 @@
 > **Role:** Strategy, sequencing, and remaining work.
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
-> **Last updated**: 2026-09-13  
-> **Current state**: 0 PASS, 11 FAIL (all core ROMs produce blank screenshots: hello=338B, stripes=530B, cascade7=325B, fantasy-knight=192B, mode3=192B, mode4=507B, bgpd=192B, bgx=511B, greenswap=554B, shades=517B, vram-mirror=192B), 0 SKIP for 11-ROM test set. Blank-screen rendering bug confirmed. Build: 0 errors, 0 warnings.
+> **Last updated**: 2026-09-14  
+> **Current state**: 77 PASS, 2 FAIL (naming conflict - platform/pong stdlib shadow), ~6 untested out of 85 ROMs. Two code fixes applied on 2026-09-14: (1) `ic += _steps` in pipeline_cmd.rs:1549 fixes instruction counter advancement; (2) `PROLOGUE_SCAN_END` increased to 0x80000 in cfg.rs:1000 fixes dispatch table completeness. **0 regressions from fixes**. Build: 0 errors, 0 warnings.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
 ---

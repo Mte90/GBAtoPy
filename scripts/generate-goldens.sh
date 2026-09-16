@@ -14,12 +14,15 @@
 
 set -euo pipefail
 
+# Determine project root
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 FRAMES=10
 WORKERS=4
 ROM_NAME=""
 OUTPUT_DIR="scripts/screenshot/golden"
-MGBA_BIN="mgba/build/sdl/mgba"
-ROMS_DIR="test_roms/roms"
+MGBA_BIN="$PROJECT_ROOT/mgba/build/sdl/mgba"
+ROMS_DIR="$PROJECT_ROOT/test_roms/roms"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -68,6 +71,11 @@ done
 
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+
+# Set environment for headless mGBa rendering
+export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:${LD_LIBRARY_PATH:-}"
+export SDL_AUDIODRIVER=dummy
+export SDL_VIDEODRIVER=offscreen
 
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT

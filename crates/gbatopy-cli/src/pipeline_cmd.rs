@@ -835,7 +835,180 @@ pub fn run_pipeline(
         false
     }
 
+    // Peephole optimization: detect memset loop pattern across basic blocks
+    // Pattern: STMIA Rb!, {Rs} -> SUB Rc, #4 -> BNE back to STMIA
+    // This detects 3-instruction memset loops that span 3 basic blocks
+    fn detect_memset_loop_pattern_across_blocks(
+        func_groups: &std::collections::HashMap<(u64, ArmMode), Vec<&gbatopy_disasm::DecodedInstruction>>,
+    ) -> std::collections::HashSet<u64> {
+        let mut optimized_blocks = std::collections::HashSet::new();
+        
+        for (&(block_addr, block_mode), block_insts) in func_groups {
+            // Block must have exactly 1 instruction
+            if block_insts.len() != 1 {
+                continue;
+            }
+            let inst0 = block_insts[0];
+            
+            // Instruction 0: STMIA Rb!, {Rs} - single register, post-increment
+            if inst0.opcode != "STMIA" {
+                continue;
+            }
+            let stmia_uses = &inst0.operands;
+            if stmia_uses.len() != 2 {
+                continue;
+            }
+            let Operand::Register(rb) = stmia_uses[0] else { continue };
+            let Operand::Register(rs) = stmia_uses[1] else { continue };
+            
+            // Next block should be at addr + 2 (Thumb instruction size)
+            let next_addr = (inst0.address + 2) as u64;
+            let next_key = (next_addr, block_mode);
+            
+            let Some(next_block) = func_groups.get(&next_key) else { continue };
+            if next_block.len() != 1 {
+                continue;
+            }
+            let inst1 = next_block[0];
+            
+            // Instruction 1: SUB Rc, #4 - sets flags
+            // Can be either "SUB Rc, #4" (2 operands) or "SUB Rc, Rc, #4" (3 operands)
+            if inst1.opcode != "SUB" {
+                continue;
+            }
+            let sub_uses = &inst1.operands;
+            if sub_uses.len() < 2 {
+                continue;
+            }
+            let Operand::Register(rc) = sub_uses[0] else { continue };
+            // Check for immediate 4 - can be at position 1 or 2 depending on format
+            // Format 1: SUB Rd, #imm (2 operands)
+            // Format 2: SUB Rd, Rm, #imm (3 operands)
+            let is_sub_4 = if sub_uses.len() == 2 {
+                // Format 1: SUB Rd, #imm
+                matches!(sub_uses[1], Operand::Immediate(4))
+            } else if sub_uses.len() >= 3 {
+                // Format 2: SUB Rd, Rm, #imm - immediate is at position 2
+                matches!(sub_uses[2], Operand::Immediate(4))
+            } else {
+                false
+            };
+            if !is_sub_4 {
+                continue;
+            }
+            if !inst1.sets_flags {
+                continue;
+            }
+            
+            // Next-next block should be at addr + 4
+            let next2_addr = (inst1.address + 2) as u64;
+            let next2_key = (next2_addr, block_mode);
+            
+            let Some(next2_block) = func_groups.get(&next2_key) else { continue };
+            if next2_block.len() != 1 {
+                continue;
+            }
+            let inst2 = next2_block[0];
+            
+            // Instruction 2: BNE back to instruction 0
+            if inst2.opcode != "BNE" {
+                continue;
+            }
+            let bne_target = if let Some(Operand::Immediate(target)) = inst2.operands.first() {
+                *target as u64
+            } else {
+                continue;
+            };
+            if bne_target != block_addr {
+                continue;
+            }
+            
+            // Pattern matched! Mark all 3 blocks for optimization
+            optimized_blocks.insert(block_addr);
+            optimized_blocks.insert(next_addr);
+            optimized_blocks.insert(next2_addr);
+        }
+        
+        optimized_blocks
+    }
+
+    // Peephole optimization: detect memset loop pattern
+    // Pattern: STMIA Rb!, {Rs} -> SUB Rc, #4 -> BNE back to STMIA
+    // This detects 3-instruction memset loops and emits a single bulk Python loop
+    fn detect_memset_loop_pattern(
+        insts: &[&gbatopy_disasm::DecodedInstruction],
+    ) -> Option<(u8, u8, u8, u64)> {
+        // Need exactly 3 instructions
+        if insts.len() != 3 {
+            return None;
+        }
+
+        let inst0 = insts[0];
+        let inst1 = insts[1];
+        let inst2 = insts[2];
+
+        // Instruction 0: STMIA Rb!, {Rs} - single register, post-increment
+        if inst0.opcode != "STMIA" {
+            return None;
+        }
+        // Check for writeback (!) and single register in list
+        let stmia_uses = &inst0.operands;
+        if stmia_uses.len() != 2 {
+            return None; // Must be exactly 2 operands: base reg and single register to store
+        }
+        let Operand::Register(rb) = stmia_uses[0] else { return None };
+        let Operand::Register(rs) = stmia_uses[1] else { return None };
+        
+        // Verify writeback is present (check raw encoding or operand flags)
+        // For STMIA with writeback, the disassembler should indicate it
+        // We'll check the opcode more carefully - STMIA with ! is typically "STMIA!" or has writeback flag
+        // Looking at the disassembler output, writeback STMIA appears as "STMIA R0!, {R2}"
+        // The operand parsing should have captured this
+
+        // Instruction 1: SUB Rc, #4 - sets flags
+        if inst1.opcode != "SUB" {
+            return None;
+        }
+        let sub_uses = &inst1.operands;
+        if sub_uses.len() < 2 {
+            return None;
+        }
+        let Operand::Register(rc) = sub_uses[0] else { return None };
+        // Check for immediate 4
+        let is_sub_4 = if sub_uses.len() >= 2 {
+            matches!(sub_uses[1], Operand::Immediate(4))
+        } else {
+            false
+        };
+        if !is_sub_4 {
+            return None;
+        }
+        if !inst1.sets_flags {
+            return None; // SUB must set flags for BNE to work
+        }
+
+        // Instruction 2: BNE back to instruction 0
+        if inst2.opcode != "BNE" {
+            return None;
+        }
+        let bne_target = if let Some(Operand::Immediate(target)) = inst2.operands.first() {
+            *target as u64
+        } else {
+            return None;
+        };
+        if bne_target != inst0.address as u64 {
+            return None; // Must branch back to the STMIA
+        }
+
+        // Pattern matched! Return (base_reg, source_reg, counter_reg, fallthrough_addr)
+        Some((rb, rs, rc, inst2.address as u64 + inst2.width as u64)) // Fallthrough is after BNE
+    }
+
     // Generate functions for each branch target, skip pure NOP blocks
+    // Detect memset loop patterns across basic blocks
+    let memset_loop_starts = detect_memset_loop_pattern_across_blocks(&func_groups);
+    eprintln!("  Peephole optimization: detected {} memset loop patterns", memset_loop_starts.len() / 3);
+    
     let mut non_nop_addrs: Vec<(u64, ArmMode)> = Vec::new();
     let mut block_function_code = String::new();
     let address_list: Vec<(u64, ArmMode)> = func_groups.keys().copied().collect();
@@ -848,6 +1021,88 @@ pub fn run_pipeline(
                 eprintln!("  - 0x{:08X}: {}", inst.address, inst.opcode);
             }
         }
+        
+        // Check if this block is part of a memset loop pattern (and is the first block)
+        let is_memset_loop_start = memset_loop_starts.contains(&func_start);
+        
+        // Skip generating functions for the 2nd and 3rd blocks of memset loops
+        // They will be handled by the optimized first block
+        if is_memset_loop_start && func_instructions.len() == 1 {
+            let inst = func_instructions[0];
+            if inst.opcode == "STMIA" {
+                let stmia_uses = &inst.operands;
+                if stmia_uses.len() == 2 {
+                    if let (Operand::Register(rb), Operand::Register(rs)) = (&stmia_uses[0], &stmia_uses[1]) {
+                        // This is the start of a memset loop - generate optimized code
+                        let mode_suffix = if func_mode_key == ArmMode::Arm { "a" } else { "t" };
+                        let func_name = format!("func_{:08X}_{}", func_start, mode_suffix);
+                        
+                        // Get the counter register from the next block
+                        let next_addr = (inst.address + 2) as u64;
+                        let next_key = (next_addr, func_mode_key);
+                        if let Some(next_block) = func_groups.get(&next_key) {
+                            if next_block.len() == 1 && next_block[0].opcode == "SUB" {
+                                let sub_uses = &next_block[0].operands;
+                                if sub_uses.len() >= 2 {
+                                    if let Operand::Register(rc) = sub_uses[0] {
+                                        // Get fallthrough address from the BNE block
+                                        let next2_addr = (next_block[0].address + 2) as u64;
+                                        let next2_key = (next2_addr, func_mode_key);
+                                        let fallthrough_addr = if let Some(next2_block) = func_groups.get(&next2_key) {
+                                            if next2_block.len() == 1 && next2_block[0].opcode == "BNE" {
+                                                next2_block[0].address as u64 + next2_block[0].width as u64
+                                            } else {
+                                                next2_addr
+                                            }
+                                        } else {
+                                            next2_addr
+                                        };
+                                        
+                                        // Generate optimized bulk loop
+                                        let mut body = String::new();
+                                        body.push_str("    # Peephole optimization: memset loop detected\n");
+                                        body.push_str(&format!("    _count = (registers[{}] // 4) & 0xFFFFFFFF\n", rc));
+                                        body.push_str(&format!("    _base = registers[{}]\n", rb));
+                                        body.push_str(&format!("    _val = registers[{}] & 0xFFFFFFFF\n", rs));
+                                        body.push_str("    for _i in range(_count):\n");
+                                        body.push_str("        memory.write_u32(_base + _i * 4, _val)\n");
+                                        body.push_str(&format!("    registers[{}] = (_base + _count * 4) & 0xFFFFFFFF\n", rb));
+                                        body.push_str(&format!("    registers[{}] = 0\n", rc));
+                                        body.push_str("    cpsr['z'] = 1\n");
+                                        body.push_str("    cpsr['n'] = 0\n");
+                                        body.push_str("    cpsr['c'] = 1\n");
+                                        body.push_str("    cpsr['v'] = 0\n");
+                                        body.push_str(&format!("    registers[15] = 0x{:08X}\n", fallthrough_addr));
+                                        
+                                        let func_code = format!("\ndef {}(registers, cpsr):\n", func_name) + &body;
+                                        let lines_to_add = func_code.lines().count() as u64;
+                                        
+                                        if current_line_count + lines_to_add > max_output_lines {
+                                            eprintln!("ERROR: Output exceeded {} lines, aborting. ROM may be too large or data is being misclassified as code.", max_output_lines);
+                                            std::process::exit(1);
+                                        }
+                                        
+                                        block_function_code.push_str(&func_code);
+                                        current_line_count += lines_to_add;
+                                        non_nop_addrs.push((func_start, func_mode_key));
+                                        
+                                        // Skip to next block - the 2nd and 3rd blocks will be skipped
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Skip blocks that are part of memset loops but not the first block
+        if memset_loop_starts.contains(&func_start) && !is_memset_loop_start {
+            // This is the 2nd or 3rd block of a memset loop - skip it
+            continue;
+        }
+        
         let mode_suffix = if func_mode_key == ArmMode::Arm { "a" } else { "t" };
         let func_name = format!("func_{:08X}_{}", func_start, mode_suffix);
         let block_len = func_instructions.len();
@@ -856,38 +1111,84 @@ pub fn run_pipeline(
 
         // Generate function body into a temp buffer
         let mut body = String::new();
-        for (idx, inst) in func_instructions.iter().enumerate() {
-            if inst.is_data { continue; }
-            let py_stmt = generate_instruction_python(inst);
-            // Indent ALL lines, not just the first one
-            for line in py_stmt.lines() {
-                body.push_str(&format!("    {}\n", line));
-            }
-            let is_last = idx == block_len - 1;
+        
+        // Check for memset loop pattern within a single block (for completeness)
+        let memset_optimized = detect_memset_loop_pattern(func_instructions);
+        
+        if let Some((rb, rs, rc, fallthrough_addr)) = memset_optimized {
+            // Emit optimized bulk loop instead of 3 individual instructions
+            body.push_str(&format!(
+                "    # PEephole optimization: memset loop detected\n"
+            ));
+            body.push_str(&format!(
+                "    _count = (registers[{}] // 4) & 0xFFFFFFFF\n",
+                rc
+            ));
+            body.push_str(&format!(
+                "    _base = registers[{}]\n",
+                rb
+            ));
+            body.push_str(&format!(
+                "    _val = registers[{}] & 0xFFFFFFFF\n",
+                rs
+            ));
+            body.push_str("    for _i in range(_count):\n");
+            body.push_str(&format!(
+                "        memory.write_u32(_base + _i * 4, _val)\n"
+            ));
+            body.push_str(&format!(
+                "    registers[{}] = (_base + _count * 4) & 0xFFFFFFFF\n",
+                rb
+            ));
+            body.push_str(&format!(
+                "    registers[{}] = 0\n",
+                rc
+            ));
+            body.push_str("    cpsr['z'] = 1\n");
+            body.push_str("    cpsr['n'] = 0\n");
+            body.push_str("    cpsr['c'] = 1\n");
+            body.push_str("    cpsr['v'] = 0\n");
+            body.push_str(&format!(
+                "    registers[15] = 0x{:08X}\n",
+                fallthrough_addr
+            ));
+        } else {
+            // Normal code generation for each instruction
+            for (idx, inst) in func_instructions.iter().enumerate() {
+                if inst.is_data { continue; }
+                let py_stmt = generate_instruction_python(inst);
+                // Indent ALL lines, not just the first one
+                for line in py_stmt.lines() {
+                    body.push_str(&format!("    {}\n", line));
+                }
+                let is_last = idx == block_len - 1;
 
-            // Emit PC advance only when needed
-            if !is_last && !writes_r15(inst) {
-                if let Some(next_inst) = func_instructions.get(idx + 1) {
-                    if reads_r15(next_inst) {
-                        let next_addr = inst.address as u64 + instr_size;
-                        body.push_str(&format!("    registers[15] = 0x{:08X}\n", next_addr));
+                // Emit PC advance only when needed
+                if !is_last && !writes_r15(inst) {
+                    if let Some(next_inst) = func_instructions.get(idx + 1) {
+                        if reads_r15(next_inst) {
+                            let next_addr = inst.address as u64 + instr_size;
+                            body.push_str(&format!("    registers[15] = 0x{:08X}\n", next_addr));
+                        }
                     }
                 }
             }
         }
-        // End of block: always advance PC for dispatch loop
-        let last_inst = func_instructions.last().unwrap();
-        let last_addr = last_inst.address as u64;
-        if !writes_r15(last_inst) {
-            let end_addr = last_addr + instr_size;
-            body.push_str(&format!("    registers[15] = 0x{:08X}\n", end_addr));
-        } else if is_conditional_non_branch(last_inst) {
-            // Conditional non-branch that writes R15 (e.g. LDRLS PC, [PC, Rn, LSL #2])
-            // sets PC only when the condition is true. When false, PC must still
-            // advance to the fall-through address or the interpreter stalls.
-            let end_addr = last_addr + instr_size;
-            body.push_str("    else:\n");
-            body.push_str(&format!("        registers[15] = 0x{:08X}\n", end_addr));
+        // End of block: always advance PC for dispatch loop (unless memset optimization was applied)
+        if memset_optimized.is_none() {
+            let last_inst = func_instructions.last().unwrap();
+            let last_addr = last_inst.address as u64;
+            if !writes_r15(last_inst) {
+                let end_addr = last_addr + instr_size;
+                body.push_str(&format!("    registers[15] = 0x{:08X}\n", end_addr));
+            } else if is_conditional_non_branch(last_inst) {
+                // Conditional non-branch that writes R15 (e.g. LDRLS PC, [PC, Rn, LSL #2])
+                // sets PC only when the condition is true. When false, PC must still
+                // advance to the fall-through address or the interpreter stalls.
+                let end_addr = last_addr + instr_size;
+                body.push_str("    else:\n");
+                body.push_str(&format!("        registers[15] = 0x{:08X}\n", end_addr));
+            }
         }
 
         // Check if block is pure NOP (only comments and sequential PC advances)

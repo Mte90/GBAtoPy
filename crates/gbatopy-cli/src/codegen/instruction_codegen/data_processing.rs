@@ -212,7 +212,7 @@ fn generate_add(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
                     ));
                 }
                 if is_adc {
-                    return Some(format!("{} = ({} + {} + (1 if cpsr['c'] else 0)) & 0xFFFFFFFF", rd_str, rd_str, op2));
+                    return Some(format!("{} = ({} + (({})) + (1 if cpsr['c'] else 0)) & 0xFFFFFFFF", rd_str, rd_str, op2));
                 }
                 return Some(format!("{} = ({} + {}) & 0xFFFFFFFF", rd_str, rd_str, op2));
             }
@@ -227,7 +227,7 @@ fn generate_add(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
                     ));
                 }
                 if is_adc {
-                    return Some(format!("registers[{}] = ({} + {} + (1 if cpsr['c'] else 0)) & 0xFFFFFFFF", rd, rn, op2));
+                    return Some(format!("registers[{}] = ({} + (({})) + (1 if cpsr['c'] else 0)) & 0xFFFFFFFF", rd, rn, op2));
                 }
                 return Some(format!("registers[{}] = ({} + {}) & 0xFFFFFFFF", rd, rn, op2));
             }
@@ -276,7 +276,7 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
                     ));
                 }
                 if with_borrow {
-                    return Some(format!("registers[{}] = ({} - {} - (0 if cpsr.get('c', 0) else 1)) & 0xFFFFFFFF", rd, a, b));
+                    return Some(format!("registers[{}] = ({} - (({})) - (0 if cpsr.get('c', 0) else 1)) & 0xFFFFFFFF", rd, a, b));
                 }
                 return Some(format!("registers[{}] = ({} - {}) & 0xFFFFFFFF", rd, a, b));
             }
@@ -296,7 +296,7 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
                     ));
                 }
                 if with_borrow {
-                    return Some(format!("registers[{}] = ({} - {} - (0 if cpsr.get('c', 0) else 1)) & 0xFFFFFFFF", rd, a, b));
+                    return Some(format!("registers[{}] = ({} - (({})) - (0 if cpsr.get('c', 0) else 1)) & 0xFFFFFFFF", rd, a, b));
                 }
                 return Some(format!("registers[{}] = ({} - {}) & 0xFFFFFFFF", rd, a, b));
             }

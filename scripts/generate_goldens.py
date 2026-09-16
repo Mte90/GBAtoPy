@@ -32,10 +32,16 @@ def capture_golden(rom_path, frame, mgba_bin, timeout=120):
     rom_base = rom_path.stem  # e.g. "hello" from "hello.gba"
     output_path = GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}"
     output_png = str(output_path) + ".png"
+def capture_golden(rom_path, frame, mgba_bin, timeout=120):
+    """Capture a single golden screenshot. Returns (success, error_msg)."""
+    rom_base = rom_path.stem  # e.g. "hello" from "hello.gba"
+    output_path = GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}"
+    output_png = str(output_path) + ".png"
 
     env = os.environ.copy()
     env["GBATOPY_SCREENSHOT_PATH"] = str(output_path)
     env["GBATOPY_TARGET_FRAME"] = str(frame)
+    env["SDL_VIDEODRIVER"] = "offscreen"
 
     try:
         result = subprocess.run(
@@ -45,15 +51,6 @@ def capture_golden(rom_path, frame, mgba_bin, timeout=120):
             timeout=timeout,
             env=env,
         )
-        if result.returncode != 0:
-            return False, f"mGBA exit {result.returncode}: {result.stderr[-200:]}"
-        if not os.path.exists(output_png):
-            return False, "screenshot not created"
-        return True, None
-    except subprocess.TimeoutExpired:
-        return False, f"timeout after {timeout}s"
-    except Exception as e:
-        return False, str(e)
 
 
 def main():
