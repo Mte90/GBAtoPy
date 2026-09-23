@@ -71,9 +71,9 @@ class Memory:
 
         self._mmio_write_handlers: dict[int, Callable[[int, int], None]] = {}
         self._mmio_read_handlers: dict[int, Callable[[int], int]] = {}
-        # GBA hardware default: DISPCNT = 0x0080 (Mode 0, display not forced blank, all BGs off)
+        # GBA hardware default: DISPCNT = 0x0000 (Mode 0, no forced blank, all BGs off)
         # The ROM writes to DISPCNT will set the correct mode and enable bits
-        self.io[0x00] = 0x00  # DISPCNT low byte: Mode 0, not forced blank
+        self.io[0x00] = 0x00  # DISPCNT low byte: Mode 0, no forced blank
         self.io[0x01] = 0x00  # DISPCNT high byte: all BGs off
 
         self._ppu: Optional[object] = None
@@ -314,6 +314,20 @@ class Memory:
 
 
     def _handle_interrupt_write(self, addr: int, value: int):
+        # Update io[] buffer for live reads (fixes stale cache bug)
+        offset = addr - 0x04000000
+        if 0 <= offset < MemoryMap.IO_SIZE:
+            # Write byte(s) to io[] buffer
+            if addr & 1:
+                # Odd address: write high byte
+                self.io[offset] = (value >> 8) & 0xFF
+            else:
+                # Even address: write low byte
+                self.io[offset] = value & 0xFF
+                # If 16-bit write, also write high byte
+                if offset + 1 < MemoryMap.IO_SIZE:
+                    self.io[offset + 1] = (value >> 8) & 0xFF
+        
         if addr in (0x04000200, 0x04000201):
             self._interrupts.write_ie(value)
         elif addr in (0x04000202, 0x04000203):

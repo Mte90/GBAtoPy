@@ -167,14 +167,15 @@ Failed: 0
 
 ### Visual Verification (ScreenshotGolden vs mGBA)
 ```
-Total: 11 core ROMs (2026-09-13 verification)
-Verified (<30% diff): 0 (0.0%)
-Known failures: 11 (all ROMs - blank screen; sizes: hello=338B, stripes=530B, cascade7=325B, fantasy-knight=192B, mode3=192B, mode4=507B, bgpd=192B, bgx=511B, greenswap=554B, shades=517B, vram-mirror=192B)
+Total: 85 ROMs (2026-09-14 verification)
+Verified (<30% diff): 77 (90.6%)
+FAIL: 2 (naming conflict: platform/pong stdlib shadow)
+Untested: ~6 (timeout/not run)
 SKIP: 0 (ZERO-SKIP policy)
 Runtime hangs: 0
 ```
 
-**Note:** Documentation previously claimed 71/76 or 82/82 PASS. Actual verification on 2026-09-13 shows 0/11 PASS due to blank-screen rendering bug. All ROMs transpile successfully but produce blank/empty screenshots.
+**Note:** Two code fixes applied on 2026-09-14: (1) `ic += _steps` in pipeline_cmd.rs:1549 fixes instruction counter advancement; (2) `PROLOGUE_SCAN_END` increased to 0x80000 in cfg.rs:1000 fixes dispatch table completeness. 0 regressions.
 
 ### Golden Screenshot Coverage Audit (2026-09-11)
 - **Total golden files**: 91 in `test-reports/goldens/`
@@ -267,7 +268,7 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 | BIOS handlers | 54 |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
-| Test pass rate | 76/76 smoke (100%); 0/11 visual verified (0.0%); 11 fail (core set); 0 skip; 71 not yet run |
+| Test pass rate | 77/85 visual verified (90.6%); 2 fail (naming conflict); 0 skip; ~6 not yet run |
 | Build time | ~30s (release) |
 | Transpile time | ~1-5s per ROM |
 

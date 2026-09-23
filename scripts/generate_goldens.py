@@ -32,16 +32,13 @@ def capture_golden(rom_path, frame, mgba_bin, timeout=120):
     rom_base = rom_path.stem  # e.g. "hello" from "hello.gba"
     output_path = GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}"
     output_png = str(output_path) + ".png"
-def capture_golden(rom_path, frame, mgba_bin, timeout=120):
-    """Capture a single golden screenshot. Returns (success, error_msg)."""
-    rom_base = rom_path.stem  # e.g. "hello" from "hello.gba"
-    output_path = GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}"
-    output_png = str(output_path) + ".png"
 
     env = os.environ.copy()
     env["GBATOPY_SCREENSHOT_PATH"] = str(output_path)
     env["GBATOPY_TARGET_FRAME"] = str(frame)
     env["SDL_VIDEODRIVER"] = "offscreen"
+    env["SDL_AUDIODRIVER"] = "dummy"
+    env["LD_LIBRARY_PATH"] = f"{PROJECT_ROOT}/mgba/build:{PROJECT_ROOT}/mgba/build/sdl:{env.get('LD_LIBRARY_PATH', '')}"
 
     try:
         result = subprocess.run(
@@ -52,7 +49,15 @@ def capture_golden(rom_path, frame, mgba_bin, timeout=120):
             env=env,
         )
 
-
+        # Check result
+        if result.returncode == 0:
+            return True, None
+        else:
+            return False, result.stderr.strip() or "Unknown error"
+    except subprocess.TimeoutExpired:
+        return False, "Timeout"
+    except Exception as e:
+        return False, str(e)
 def main():
     parser = argparse.ArgumentParser(description="Generate golden screenshots via mGBA")
     parser.add_argument("--rom", type=str, help="Single ROM name (without .gba)")

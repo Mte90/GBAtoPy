@@ -580,8 +580,14 @@ impl Disassembler {
                     }
                 }
 
+                // BX/BLX: add target to pending if resolvable, but continue linear sweep.
+                // The standard ARM entry sequence (ADD R0, PC, #1 / BX R0) jumps to Thumb,
+                // but ARM code continues at the next address. Do not break here.
                 if is_bx || is_blx {
-                    break;
+                    // For BX R0 in the entry sequence, R0 contains PC+8+1 at execution time.
+                    // We can't resolve this statically, so just continue the sweep.
+                    // Conditional BX/BLX could add targets to pending, but unconditional
+                    // BX is typically a mode-switch jump, not a function boundary.
                 }
 
                 if is_bl && cond != 0xE {

@@ -342,6 +342,8 @@ pub fn run_pipeline(
         code.push_str("interrupts_instance = InterruptController()\n");
         // Attach interrupts to memory for MMIO-based IRQ handling
         code.push_str("memory.attach_interrupts(interrupts_instance)\n");
+        // Link irq._io to live MMIO for write-through
+        code.push_str("interrupts_instance._io = memory.io\n");
     } else {
         code.push_str("interrupts_instance = None\n");
     }
@@ -1013,12 +1015,112 @@ pub fn run_pipeline(
     let mut block_function_code = String::new();
     let address_list: Vec<(u64, ArmMode)> = func_groups.keys().copied().collect();
     let mut current_line_count = code.lines().count() as u64;
+    
+    // Worklist algorithm: recursively follow BL targets to ensure all called functions
+    // are included in the dispatch table. Without this, BL targets route to _interp_fallback
+    // causing severe performance degradation (10-100x slower).
+    let mut dispatch_worklist: Vec<(u64, ArmMode)> = address_list.clone();
+    let mut dispatch_table_set: std::collections::HashSet<(u64, ArmMode)> = std::collections::HashSet::new();
+    
+    // Helper: extract BL/BLX targets from a function's instructions
+    fn extract_bl_targets(func_instructions: &[&gbatopy_disasm::DecodedInstruction]) -> Vec<(u64, ArmMode)> {
+        let mut targets = Vec::new();
+        let mut lr_value: Option<u64> = None;  // Track LR (r14) for BL_PREFIX/BL_SUFFIX
+        
+        for inst in func_instructions {
+            let opcode_upper = inst.opcode.to_uppercase();
+            
+            // Track LR value for BL_PREFIX/BL_SUFFIX pattern
+            if opcode_upper == "BL_PREFIX" {
+                // BL_PREFIX stores the upper target bits in LR
+                for op in &inst.operands {
+                    if let gbatopy_disasm::Operand::Immediate(prefix_target) = op {
+                        if *prefix_target >= 0x08000000 && *prefix_target < 0x0A000000 {
+                            lr_value = Some(*prefix_target as u64);
+                        }
+                    }
+                }
+                continue;  // BL_PREFIX doesn't branch directly
+            }
+            
+            if opcode_upper == "BL_SUFFIX" {
+                // BL_SUFFIX combines LR (from BL_PREFIX) with the lower offset
+                for op in &inst.operands {
+                    if let gbatopy_disasm::Operand::Immediate(suffix_offset) = op {
+                        if let Some(lr) = lr_value {
+                            let suffix_shifted = *suffix_offset as u64;  // Already shifted by 1
+                            let target = lr.wrapping_add(suffix_shifted);
+                            if target >= 0x08000000 && target < 0x0A000000 {
+                                let target_mode = inst.mode;  // BL_SUFFIX preserves mode
+                                targets.push((target, target_mode));
+                            }
+                        }
+                    }
+                }
+                // Reset LR after BL_SUFFIX
+                lr_value = None;
+                continue;
+            }
+            
+            // Check for BL, BLX (both ARM and Thumb)
+            if opcode_upper == "BL" || opcode_upper == "BLX" {
+                // Try to extract immediate target from operands
+                for op in &inst.operands {
+                    if let gbatopy_disasm::Operand::Immediate(target) = op {
+                        // Only include valid ROM addresses
+                        if *target >= 0x08000000 && *target < 0x0A000000 {
+                            // Determine target mode based on instruction type:
+                            // BL preserves mode; BLX switches mode
+                            let target_mode = if opcode_upper == "BLX" {
+                                match inst.mode {
+                                    gbatopy_disasm::ArmMode::Arm => gbatopy_disasm::ArmMode::Thumb,
+                                    gbatopy_disasm::ArmMode::Thumb => gbatopy_disasm::ArmMode::Arm,
+                                }
+                            } else {
+                                inst.mode
+                            };
+                            let target_addr = *target;  // already even, no Thumb bit to strip
+                            targets.push((target_addr as u64, target_mode));
+                        }
+                    }
+                }
+            }
+        }
+        targets
+    }
 
-    for (&(func_start, func_mode_key), func_instructions) in &func_groups {
-        if func_start >= 0x08000100 && func_start <= 0x08000130 {
-            eprintln!("DEBUG: Block at 0x{:08X} (mode={:?}), {} instructions", func_start, func_mode_key, func_instructions.len());
-            for inst in func_instructions {
-                eprintln!("  - 0x{:08X}: {}", inst.address, inst.opcode);
+    // Worklist algorithm: process functions and recursively follow BL targets
+    let mut processed_funcs: std::collections::HashSet<(u64, ArmMode)> = std::collections::HashSet::new();
+    
+    eprintln!("DEBUG: Initial worklist size: {}", dispatch_worklist.len());
+    
+    while let Some(&(func_start, func_mode_key)) = dispatch_worklist.first() {
+        // Remove from worklist
+        dispatch_worklist.remove(0);
+        
+        // Skip if already processed or already in dispatch table
+        if processed_funcs.contains(&(func_start, func_mode_key)) {
+            continue;
+        }
+        if dispatch_table_set.contains(&(func_start, func_mode_key)) {
+            continue;
+        }
+        
+        // Get function instructions
+        let func_key = (func_start, func_mode_key);
+        let func_instructions = match func_groups.get(&func_key) {
+            Some(instrs) => instrs,
+            None => continue, // Not a valid function start
+        };
+        
+        // Mark as being processed (to avoid infinite loops)
+        processed_funcs.insert(func_key);
+        
+        // Extract BL targets BEFORE generating the function, so we can add them to worklist
+        let bl_targets = extract_bl_targets(func_instructions);
+        for target in bl_targets {
+            if !dispatch_table_set.contains(&target) && !processed_funcs.contains(&target) {
+                dispatch_worklist.push(target);
             }
         }
         
@@ -1211,8 +1313,8 @@ pub fn run_pipeline(
             false
         });
 
-        if func_start == 0x0800010C {
-            eprintln!("DEBUG: Block at 0x0800010C, is_nop={}", is_nop);
+        if func_start == 0x08002000 {
+            eprintln!("DEBUG: Block at 0x08002000, is_nop={}", is_nop);
             eprintln!("DEBUG: Body preview: {}", body.lines().take(5).collect::<Vec<_>>().join("\n"));
         }
         if is_nop {
@@ -1233,6 +1335,7 @@ pub fn run_pipeline(
             block_function_code.push_str(&func_code);
             current_line_count += lines_to_add;
             non_nop_addrs.push((func_start, func_mode_key));
+            dispatch_table_set.insert((func_start, func_mode_key));
         }
     }
 
@@ -1425,9 +1528,13 @@ const DELIVER_IRQ_BODY: &str = r#"
         _irq = getattr(memory, '_interrupts', None)
         if _irq is None:
             return
+        # Use cached IF/IE registers (avoids misinterpreting raw STRH writes to IF)
+        if_live = _irq.if_reg
+        ie_live = _irq.ie_reg
         if _cpu_halted:
             if _halt_reason == "vblank":
-                if (_irq.if_reg & (1 << 0)) and (_irq.ie_reg & (1 << 0)) and (_irq.ime_reg & 0x0001):
+                ime_live = (memory.io[0x208] | (memory.io[0x209] << 8)) & 0x0001
+                if (_irq.if_reg & (1 << 0)) and (_irq.ie_reg & (1 << 0)) and ime_live:
                     _cpu_halted = False
                     _halt_reason = None
             elif _halt_reason == "any":
@@ -1435,8 +1542,7 @@ const DELIVER_IRQ_BODY: &str = r#"
                 if _any_pending:
                     _cpu_halted = False
                     _halt_reason = None
-        if _cpu_halted:
-            return
+        # Do NOT return early if CPU was just woken up - continue to deliver the IRQ
         if _irq_return_pc is not None:
             _bx_lr_return = (registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC))
             if registers[15] != _irq_return_pc and not _bx_lr_return:
@@ -1455,6 +1561,7 @@ const DELIVER_IRQ_BODY: &str = r#"
             cpsr['z'] = (_saved >> 30) & 1
             cpsr['c'] = (_saved >> 29) & 1
             cpsr['v'] = (_saved >> 28) & 1
+            # Clear pending bits
             _irq.if_reg &= ~_pending_irq_bits
             _pending_irq_bits = 0
             registers[0] = _irq_saved_r0
@@ -1474,7 +1581,8 @@ const DELIVER_IRQ_BODY: &str = r#"
         _pending = _irq.if_reg & _irq.ie_reg
         if not _pending:
             return
-        if not (_irq.ime_reg & 0x0001):
+        ime_live = (memory.io[0x208] | (memory.io[0x209] << 8)) & 0x0001
+        if not ime_live:
             return
         _handler = memory.read_u32(0x03007FFC)
         if not ((0x02000000 <= _handler < 0x04000000) or (0x08000000 <= _handler < 0x0A000000)):
@@ -1865,6 +1973,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             _deliver_irq()
             ppu_instance.step_scanline()
             _deliver_irq()
+            ppu_instance.recapture_window_snapshot()
             if timers_instance is not None:
                 timers_instance.step(960)
             ppu_instance.fire_hblank_irq()
@@ -2046,6 +2155,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             _deliver_irq()
             ppu_instance.step_scanline()
             _deliver_irq()
+            ppu_instance.recapture_window_snapshot()
             if timers_instance is not None:
                 timers_instance.step(960)
             ppu_instance.fire_hblank_irq()

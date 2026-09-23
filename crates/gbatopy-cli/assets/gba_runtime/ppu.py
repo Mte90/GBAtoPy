@@ -228,8 +228,10 @@ class PPU:
         
         for py in range(height):
             for px in range(width):
+                # Calculate actual scanline Y for this pixel (handles screen wrap)
+                scanline_y = (y + py) % self.screen_height
                 if sprite.get("mosaic", 0):
-                    src_px, src_py = self._apply_mosaic(px, py, is_obj=True)
+                    src_px, src_py = self._apply_mosaic(px, py, is_obj=True, scanline_y=scanline_y)
                 else:
                     src_px, src_py = px, py
                 tile_x = src_px // 8
@@ -533,6 +535,10 @@ class PPU:
         # the same vcount overwrites the same slot instead of appending duplicates.
         self._bg2_affine_snapshots = [None] * self.screen_height
 
+        # Per-scanline OBJ mosaic snapshots for mid-frame MOSAIC register changes.
+        # Each entry is (h_size, v_size) tuple for that scanline's sprite rendering.
+        self._obj_mosaic_snapshots = [(1, 1)] * self.screen_height
+
         # BG configurations (per layer)
         self.bg_priority = [0] * 4
         self.bg_char_block = [0] * 4
@@ -834,7 +840,7 @@ class PPU:
             self.display_frame_select = (value >> 4) & 1
             self.hblank_interval_free = bool((value >> 5) & 1)
             self.obj_character_vram_mapping = bool((value >> 6) & 1)
-            self.forced_blank = bool((value >> 15) & 1)
+            self.forced_blank = bool((value >> 7) & 1)
             self.bg0_enable = bool((value >> 8) & 1)
             self.bg1_enable = bool((value >> 9) & 1)
             self.bg2_enable = bool((value >> 10) & 1)
@@ -1279,11 +1285,14 @@ class PPU:
         return 0x3F  # All enabled by default (BG0-3 + OBJ + Blend)
 
     def _apply_mosaic(self, x: int, y: int,
-                      is_obj: bool = False, bg: int = 0) -> Tuple[int, int]:
+                      is_obj: bool = False, bg: int = 0, scanline_y: int = None) -> Tuple[int, int]:
         """Apply mosaic effect to pixel coordinates"""
         if is_obj:
-            h_size = self.obj_mosaic_h
-            v_size = self.obj_mosaic_v
+            if scanline_y is not None and 0 <= scanline_y < self.screen_height:
+                h_size, v_size = self._obj_mosaic_snapshots[scanline_y]
+            else:
+                h_size = self.obj_mosaic_h
+                v_size = self.obj_mosaic_v
         else:
             if not self.bg_mosaic[bg]:
                 return x, y
@@ -1413,6 +1422,8 @@ class PPU:
             self._win1_out_snapshots = [None] * self.screen_height
             self._win0_enable_snapshots = [None] * self.screen_height
             self._win1_enable_snapshots = [None] * self.screen_height
+            # Reset OBJ mosaic snapshots
+            self._obj_mosaic_snapshots = [(1, 1)] * self.screen_height
             # Reset DISPSTAT/VCOUNT snapshots at frame start
             self._dispstat_snapshot = [0] * 228
             self._vcount_snapshot = [0] * 228
@@ -1484,6 +1495,16 @@ class PPU:
             except Exception:
                 self._bg2_affine_snapshots[self.vcount] = None
 
+            # Snapshot OBJ mosaic params for the CURRENT scanline BEFORE HBlank-DMA
+            # or VCount IRQ modifies them. The MOSAIC register (0x0400004C) can be
+            # changed mid-frame, so each scanline needs its own (h_size, v_size).
+            mosaic_val = self.memory.io[0x4C >> 1]
+            obj_mosaic_h = (mosaic_val >> 8) & 0xF
+            obj_mosaic_v = (mosaic_val >> 12) & 0xF
+            h_size = obj_mosaic_h + 1 if obj_mosaic_h > 0 else 1
+            v_size = obj_mosaic_v + 1 if obj_mosaic_v > 0 else 1
+            self._obj_mosaic_snapshots[self.vcount] = (h_size, v_size)
+
         # Fire HBlank DMA AFTER the snapshot so DMA-written values land in the
         # next scanline's snapshot, not the current one.
         dma = self.memory._dma
@@ -1493,6 +1514,7 @@ class PPU:
         # STEP 2: Increment vcount AFTER all snapshots are captured
         self.vcount = (self.vcount + 1) % 228
         self.vblank = self.vcount >= self.screen_height
+
     
         io = self.memory.io
         io[6] = self.vcount & 0xFF
@@ -1507,7 +1529,7 @@ class PPU:
         if self.vcount == self.lyc:
             dispstat |= 0x0004
         # Preserve IRQ enable bits (VBlank IRQ=3, HBlank IRQ=4, VCount IRQ=5)
-        dispstat |= old_dispstat & 0x00E8
+        dispstat |= old_dispstat & 0x00F8
         # Preserve LYC value (bits 8-15)
         dispstat |= old_dispstat & 0xFF00
         io[4] = dispstat & 0xFF
@@ -1525,6 +1547,8 @@ class PPU:
         if irq is not None:
             if self.vcount == self.screen_height and (dispstat & 0x0008):
                 irq.vblank_irq()
+                self.memory.io[0x202] = irq.if_reg & 0xFF
+                self.memory.io[0x203] = (irq.if_reg >> 8) & 0xFF
             if (dispstat & 0x0004) and (dispstat & 0x0020):
                 irq.vcounter_irq()
         if self.vblank:
@@ -1548,6 +1572,76 @@ class PPU:
             self._dispstat_snapshot[next_vcount] = next_dispstat
             self._vcount_snapshot[next_vcount] = next_vcount
 
+    def recapture_window_snapshot(self):
+        """Re-capture window register snapshot for the current vcount after IRQ handlers run.
+
+        Called by the main loop AFTER _deliver_irq() so that window changes made by
+        VCount IRQ handlers are captured for the CURRENT scanline. This fixes the
+        timing bug where window position changes would take effect one scanline late.
+
+        Only recaptures window registers (WIN0H, WIN1H, WIN0V, WIN1V, WININ, WINOUT,
+        DISPCNT window bits) — not affine params or palette data."""
+        if 0 <= self.vcount < self.screen_height:
+            # Re-read window position registers from MMIO
+            win0_left = (self.memory.io[0x52] >> 8) & 0xFF
+            win0_right = self.memory.io[0x52] & 0xFF
+            win1_left = (self.memory.io[0x54] >> 8) & 0xFF
+            win1_right = self.memory.io[0x54] & 0xFF
+            win0_top = (self.memory.io[0x56] >> 8) & 0xFF
+            win0_bottom = self.memory.io[0x56] & 0xFF
+            win1_top = (self.memory.io[0x58] >> 8) & 0xFF
+            win1_bottom = self.memory.io[0x58] & 0xFF
+
+            # Apply same clamping logic as write_register
+            if win0_left > 240 and win0_left > win0_right:
+                win0_left = 0
+            if win0_right > 240:
+                win0_right = 240
+                if win0_left > 240:
+                    win0_left = 240
+            if win1_left > 240 and win1_left > win1_right:
+                win1_left = 0
+            if win1_right > 240:
+                win1_right = 240
+                if win1_left > 240:
+                    win1_left = 240
+
+            # Re-capture window position snapshot
+            win0_y1, win0_y2 = win0_top, win0_bottom
+            if win0_y1 >= win0_y2:
+                if 0 <= self.vcount < self.screen_height:
+                    self._win0_snapshots[self.vcount] = (win0_left, win0_right)
+            else:
+                if win0_y1 <= self.vcount < win0_y2:
+                    self._win0_snapshots[self.vcount] = (win0_left, win0_right)
+
+            win1_y1, win1_y2 = win1_top, win1_bottom
+            if win1_y1 >= win1_y2:
+                if 0 <= self.vcount < self.screen_height:
+                    self._win1_snapshots[self.vcount] = (win1_left, win1_right)
+            else:
+                if win1_y1 <= self.vcount < win1_y2:
+                    self._win1_snapshots[self.vcount] = (win1_left, win1_right)
+
+            # Re-read window control registers
+            winin = self.memory.io[0x5A] | (self.memory.io[0x5B] << 8)
+            winout = self.memory.io[0x5C] | (self.memory.io[0x5D] << 8)
+            dispcnt = self.memory.io[0x4] | (self.memory.io[0x5] << 8)
+
+            self._win0_in_snapshots[self.vcount] = winin & 0x3F
+            self._win1_in_snapshots[self.vcount] = (winin >> 8) & 0x3F
+            self._win0_out_snapshots[self.vcount] = winout & 0x1F
+            self._win1_out_snapshots[self.vcount] = (winout >> 8) & 0x1F
+            self._win0_enable_snapshots[self.vcount] = bool((dispcnt >> 13) & 1)
+            self._win1_enable_snapshots[self.vcount] = bool((dispcnt >> 14) & 1)
+
+            # Re-read MOSAIC register and recapture OBJ mosaic snapshot
+            mosaic_val = self.memory.io[0x4C >> 1]
+            obj_mosaic_h = (mosaic_val >> 8) & 0xF
+            obj_mosaic_v = (mosaic_val >> 12) & 0xF
+            h_size = obj_mosaic_h + 1 if obj_mosaic_h > 0 else 1
+            v_size = obj_mosaic_v + 1 if obj_mosaic_v > 0 else 1
+            self._obj_mosaic_snapshots[self.vcount] = (h_size, v_size)
     def fire_hblank_irq(self):
         """Fire the HBlank IRQ for the scanline just completed by step_scanline.
 

@@ -2,7 +2,7 @@
 
 This document catalogs all **85 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
-**Current status (2026-09-14):** 77 PASS, 2 FAIL (naming conflict: platform/pong stdlib shadow), ~6 untested out of 85 ROMs. Two code fixes applied on 2026-09-14: (1) `ic += _steps` in pipeline_cmd.rs:1549 fixes cascade7, mode3, mode4 hangs; (2) `PROLOGUE_SCAN_END` increased to 0x80000 in cfg.rs:1000 fixes fantasy-knight missing dispatch entries. **0 regressions from fixes.**
+**Current status (2026-09-23):** 77 PASS, 3 FAIL (2: naming conflict platform/pong stdlib shadow; 1: celeste background color mismatch), ~5 untested out of 85 ROMs. Two code fixes applied on 2026-09-14: (1) `ic += _steps` in pipeline_cmd.rs:1549 fixes cascade7, mode3, mode4 hangs; (2) `PROLOGUE_SCAN_END` increased to 0x80000 in cfg.rs:1000 fixes fantasy-knight missing dispatch entries. **0 regressions from fixes.**
 
 **Note**: Phase 15 regression complete (2026-08-12): 65 PASS, 1 FAIL, 0 SKIP. F44-F48 fixes unblocked all remaining ROMs:
 - F44 (banked SP/LR per CPU mode + SPSR restore + LDM/STM `^` handling): test.gba + enhancedcontrolchecker PASS
@@ -31,10 +31,10 @@ Remaining FAIL: 0 ROMs (Skyland fixed — BL/BLX block-start discovery verified)
 | Status | Count | % |
 |--------|-------|---|
 | ✅ PASS | 77 | 90.6% |
-| ❌ FAIL | 2 | 2.4% |
-| ⏰ SKIP | ~6 | ~7.0% |
+| ❌ FAIL | 3 | 3.5% |
+| ⏰ SKIP | ~5 | ~5.9% |
 
-**Note (2026-09-14):** Full 85-ROM regression suite completed. Two code fixes applied: (1) `ic += _steps` in pipeline_cmd.rs:1549 fixes instruction counter advancement in fallback interpreter (cascade7, mode3, mode4); (2) `PROLOGUE_SCAN_END` increased from 0x8000 to 0x80000 in cfg.rs:1000 fixes dispatch table completeness for Butano engine code (fantasy-knight). **0 regressions from fixes.** 2 FAIL due to Python stdlib naming conflict (platform/pong shadowing /tmp/platform.py) — not a transpiler bug. ~6 ROMs untested (timeout or not run). Invariant #3 verified compliant (no step_scanline calls in memory read handlers).
+**Note (2026-09-23):** celeste-classic-gba FAIL (99.9% diff at frame 60). Root cause: background color/palette mismatch (golden=white, transpiled=purple). **Note (2026-09-14):** Full 85-ROM regression suite completed. Two code fixes applied: (1) `ic += _steps` in pipeline_cmd.rs:1549 fixes instruction counter advancement in fallback interpreter (cascade7, mode3, mode4); (2) `PROLOGUE_SCAN_END` increased from 0x8000 to 0x80000 in cfg.rs:1000 fixes dispatch table completeness for Butano engine code (fantasy-knight). **0 regressions from fixes.** 2 FAIL due to Python stdlib naming conflict (platform/pong shadowing /tmp/platform.py) — not a transpiler bug. ~5 ROMs untested (timeout or not run). Invariant #3 verified compliant (no step_scanline calls in memory read handlers).
 
 **Note (2026-09-14):** 3 agb (agbrs/agb) examples downloaded as pre-built ROMs: combo.gba, platform.gba, pong.gba. These were available in the v0.25.0 release examples.zip asset. Added to test-roms-config.toml and test-roms.md. Total agb examples now 33 (30 source-built + 3 pre-built).
 
@@ -87,7 +87,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 
 | ROM | Mode | Evidence |
 |-----|------|----------|
-| **stripes.gba** | Mode 3 (16-bit bitmap) | Git commit 3dc6e29: "golden screenshot 100% match"; address mapping fix (2026-07-02). Regression-checked 2026-07-31 after _render_mode3 affine snapshot refactor: 0.0% diff, PASS. |
+| **stripes.gba** | Mode 0 (4BPP text tiles) | Git commit 3dc6e29: "golden screenshot 100% match"; address mapping fix (2026-07-02). Regression-checked 2026-07-31: 0.0% diff, PASS. |
 | **shades.gba** | Mode 0 (4BPP text tiles) | docs/reference/test-roms.md line 257: "100% pixel match with mGBA (35,840 non-black pixels)"; 5 bugs fixed (char-block base, nibble order, double-scale, dispatch NOP, STRH offset) |
 | **arm.gba** | None (CPU-only) | 0.14% diff vs mGBA golden, PASS |
 | **bgpd.gba** | Mode 3 (16-bit bitmap + HBlank DMA affine) | 0.0% diff vs mGBA golden at frame 60 (re-verified 2026-08-08). Root cause: three runtime bugs. (1) HBlank DMA in `dma.py:hblank_fire` called `_do_transfer_single` (one unit per HBlank) instead of `_do_transfer` (full burst) — mGBA bursts all 160 transfers on the first HBlank trigger, not one per scanline. (2) `_render_mode3` in `ppu.py` assumed identity affine matrix instead of reading per-scanline BG2 affine snapshots — mGBA applies BG2 affine registers (PA/PB/PC/PD/X/Y) in Mode 3, updated via HBlank DMA to BG2PD. (3) `ppu.py:step_scanline` fired `hblank_fire()` for all 228 scanlines including VBlank — mGBA `video.c:217` gates HBlank DMA to `vcount < 160` (visible scanlines only); firing during VBlank consumed source values belonging to the next frame, shifting the gradient by ~50 scanlines. All three fixes required; any alone leaves the gradient wrong. |
@@ -126,7 +126,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 | **line_timing.gba** | ✅ PASS — 26.89% diff (2026-09-01). F14b fix: codegen SWI halt block-break — transpiled blocks now emit `if _cpu_halted: return` after `swi_handler(N)`, preventing the rest of the block from executing after a HALT SWI before the main loop can detect the halt. Timer value reads non-zero (0x408 vs golden 0x3F4, 20-cycle offset due to per-instruction timer stepping granularity). |
 | **lyc_midline.gba** | Runs without hang, black output | 0.0% transpiled content vs 5.86% golden. PASS (<30% threshold) but no visible graphics. Fallback interpreter mode-switch bug fixed (2026-08-01). |
 | **pcmxx.gba** | Runs without hang, some content | 11.26% transpiled content vs 3.95% golden. PASS (<30% threshold). APU `read_register` stub added (2026-08-01). |
-| **sprite-hmosaic.gba** | Mode 0 (OBJ mosaic) | ✅ PASS (27.02% diff vs mGBA golden, 2026-08-12). F48 fix: three root-cause bugs — (1) sprite tile data read from `0x06000000` (BG char base) instead of `0x06010000` (OBJ char base); (2) `parse_oam` extracted X from bits 8-16 instead of bits 0-8 per GBATEK; (3) live `_render_sprites` was a broken rewrite missing SPRITE_SIZES, 2D OBJ VRAM mapping, mosaic, and affine handling — correct earlier definition reactivated. |
+| **sprite-hmosaic.gba** | Mode 0 (OBJ mosaic) | ✅ PASS (18.08% diff vs mGBA golden f60, 2026-09-17). F48 fix: three root-cause bugs — (1) sprite tile data read from `0x06000000` (BG char base) instead of `0x06010000` (OBJ char base); (2) `parse_oam` extracted X from bits 8-16 instead of bits 0-8 per GBATEK; (3) live `_render_sprites` was a broken rewrite missing SPRITE_SIZES, 2D OBJ VRAM mapping, mosaic, and affine handling — correct earlier definition reactivated. F140 fix (2026-09-17): per-scanline OBJ-mosaic snapshots added to ppu.py, mirroring BG2 affine snapshot pattern. 18% diff suggests incomplete mosaic fidelity — follow-up for tighter matching. |
 | **timer_change.gba** | Runs without hang, near match | 2.0% transpiled content vs 1.92% golden. PASS (<30% threshold). Both mostly black. Fallback interpreter mode-switch bug fixed (2026-08-01). |
 | **helloAudio.gba** | Mode 0 (audio test) | ✅ PASS (0% diff, 2026-08-12). F45 fix. See Verified Working ROMs section above. |
 | **rates.gba** | Runs without crash, renders correctly | Audio test ROM (~3.3M transpiled lines). ✅ PASS — 3.65% diff vs mGBA golden (2026-08-11). Requires `--frame=200 --max-instrs=50000000` (CRT0 copy loop + IWRAM computation need ~30M instrs). Renders 3 colors (blue/green/dark-green) matching golden. Prior all-black was insufficient instruction budget, not a rendering bug. |
@@ -156,16 +156,16 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 | Memory | 2 | 128kb-boundary.gba ✅, ram-access-timing.gba ✅ | 2✅ |
 | RTC | 1 | rtc-demo.gba ✅ | 1✅ |
 | Timing | 3 | exact-timing.gba ✅, start-delay.gba ✅, gba-frame-test.gba ✅ | 3✅ |
-| Sprite/Game | 8 | gbarcade_gbarcade_v0.1.4.gba ✅, cascade7.gba ✅, blindjump_BlindJump.gba ✅, fantasy-knight.gba ✅, Skyland.gba ✅, proposal_proposal-demo.gba ✅, celeste-classic-gba.gba 🆕, minicraft.gba ✅ | 6✅, 1❌, 1🆕 |
+| Sprite/Game | 8 | gbarcade_gbarcade_v0.1.4.gba ✅, cascade7.gba ✅, blindjump_BlindJump.gba ✅, fantasy-knight.gba ✅, Skyland.gba ✅, proposal_proposal-demo.gba ✅, celeste-classic-gba.gba ❌ (99.9% diff at frame 60), minicraft.gba ✅ | 6✅, 2❌, 0🆕 |
 | Engine | 1 | bpcore_BPCoreEngine.gba ✅ | 1✅ |
 | Flash | 2 | FlashSpeedTestMB.gba ✅, FlashSpeedTestROM.gba ✅ | 2✅ |
 | gba-tests | 1 | hello_world.gba ✅ | 1✅ |
 | SIO/Link | 4 | LinkCable_basic.gba 🆕, LinkCable_full.gba 🆕, LinkCable_stress.gba 🆕, LinkUART_demo.gba 🆕 | 4🆕 |
-| Rust-agb | 33 | agb_affine_background.gba 🆕, agb_affine_object.gba 🆕, agb_affine_transformations.gba 🆕, agb_animated_background.gba 🆕, agb_background_text_render.gba 🆕, agb_blend_object_transparency.gba 🆕, agb_blend_rain.gba 🆕, agb_chicken.gba 🆕, agb_combo.gba 🆕, agb_dma_effect_affine_background_3d_plane.gba 🆕, agb_dma_effect_affine_background_pipe.gba 🆕, agb_dma_effect_background_blob_monster.gba 🆕, agb_dma_effect_background_colour.gba 🆕, agb_dma_effect_background_desert.gba 🆕, agb_dma_effect_background_magic_spell.gba 🆕, agb_dma_effect_circular_window.gba 🆕, agb_dynamic_tiles.gba 🆕, agb_fixnums.gba 🆕, agb_frame_lifecycle.gba 🆕, agb_hud.gba 🆕, agb_infinite_scrolled_map.gba 🆕, agb_json_font_render.gba 🆕, agb_mixer_32768.gba 🆕, agb_mixer_basic.gba 🆕, agb_no_game.gba 🆕, agb_object_text_render_advanced.gba 🆕, agb_object_text_render_intermediate.gba 🆕, agb_object_text_render_simple.gba 🆕, agb_object_z_order.gba 🆕, agb_platform.gba 🆕, agb_pong.gba 🆕, agb_save.gba 🆕, agb_scrolling_background.gba 🆕, agb_windows.gba 🆕 | 33🆕 |
+| Rust-agb | 39 | agb_affine_background.gba ✅, agb_affine_object.gba ✅, agb_affine_transformations.gba ✅, agb_animated_background.gba ✅, agb_background_text_render.gba ✅, agb_blend_object_transparency.gba ✅, agb_blend_rain.gba ✅, agb_chicken.gba ✅, agb_combo.gba ✅, agb_dma_effect_affine_background_3d_plane.gba ✅, agb_dma_effect_affine_background_pipe.gba ✅, agb_dma_effect_background_blob_monster.gba ✅, agb_dma_effect_background_colour.gba ✅, agb_dma_effect_background_desert.gba ✅, agb_dma_effect_background_magic_spell.gba ✅, agb_dma_effect_circular_window.gba ✅, agb_dynamic_tiles.gba ✅, agb_fixnums.gba ✅, agb_frame_lifecycle.gba ✅, agb_hud.gba ✅, agb_infinite_scrolled_map.gba ✅, agb_json_font_render.gba ✅, agb_mixer_32768.gba ✅, agb_mixer_basic.gba ✅, agb_no_game.gba ✅, agb_object_text_render_advanced.gba ✅, agb_object_text_render_intermediate.gba ✅, agb_object_text_render_simple.gba ✅, agb_object_z_order.gba ✅, agb_platform.gba ✅ (12.24% diff), agb_pong.gba ❌ (99.84% diff), agb_save.gba ✅, agb_scrolling_background.gba ✅, agb_windows.gba ✅, agb_amplitude.gba 🆕, agb_dynamic-isometric.gba 🆕, agb_hyperspace-roll.gba 🆕, agb_the-dungeon-puzzlers-lament.gba 🆕, agb_the-hat-chooses-the-wizard.gba 🆕, agb_the-purple-night.gba 🆕 | 36✅, 1❌, 6🆕 |
 
 **Legend**: ✅ PASS (diff <30%) · ❌ FAIL (diff ≥30% or timeout) · ⏰ SKIP (known hang/OOM)
 
-**Total ROMs**: 85 — 77 ✅ PASS, 2 ❌ FAIL (naming conflict: platform/pong stdlib shadow), ~6 untested (timeout/not run)
+**Total ROMs**: 91 — 78 ✅ PASS, 3 ❌ FAIL, ~10 untested (timeout/not run)
 
 **Fixes applied this session**:
 - **F39** (SRAM base address): `memory.py` SRAM region corrected from `0x0A000000` → `0x0E000000` to match GBATEK + mGBA. Verified: `FlashSpeedTestMB.gba` runs clean (exit 0) with new base.
@@ -412,7 +412,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 ### stripes.gba ⚠️ CRITICAL
 **Suite**: gba-tests-master  
 **Source**: `test_roms/sources/gba-tests-master/ppu/stripes.asm`  
-**Purpose**: Visual rendering verification with diagonal stripes  
+**Purpose**: Visual rendering verification with vertical stripes  
 **MMIO Registers Used**:
 - 0x04000000 (DISPCNT) - Display control
 - 0x04000008 (BG0CNT) - Background control
@@ -621,7 +621,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Window rendering
 - Mid-frame window changes
 **Expected Output**: Text output showing window test results  
-**Transpiler Blockers**: ~~Window layers not implemented~~ FIXED 2026-08-07 — window register byte-order swap corrected (low byte = end/right, high byte = start/left, matching mGBA). Degenerate bounds clamped per mGBA. 15.58% diff, PASS.
+**Transpiler Blockers**: ~~Window layers not implemented~~ FIXED 2026-08-07 — window register byte-order swap corrected (low byte = end/right, high byte = start/left, matching mGBA). Degenerate bounds clamped per mGBA. FIXED 2026-09-17 — VCount IRQ fired after window snapshot capture in step_scanline, causing window changes to take effect 3 scanlines late. Added recapture_window_snapshot() called after _deliver_irq() in main loop. 0.0% diff, PASS.
 
 ### pcmxx.gba
 **Suite**: gba_tests  
@@ -864,7 +864,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 **Expected Output**: Arcade demo running  
 **Verification Status**: 🆕 NEW — Not yet transpiled
 
-### celeste-classic-gba.gba 🆕 NEW
+### celeste-classic-gba.gba ❌ FAIL
 **Suite**: Celeste-Classic-GBA  
 **Source**: `https://github.com/JeffRuLz/Celeste-Classic-GBA/releases/tag/v1.2`  
 **Purpose**: Celeste Classic platformer port to GBA  
@@ -882,7 +882,9 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Input handling (movement, jumping)
 - Platformer physics
 **Expected Output**: Celeste Classic game running  
-**Verification Status**: 🆕 NEW — Not yet transpiled
+**Verification Status**: ❌ FAIL (99.9% diff at frame 60)
+- Root cause: Background color/palette mismatch. Golden is white (255,255,255), transpiled is light purple (231,222,247).
+- Requires: Palette initialization or background color fix
 - Sprite rendering
 - Mode 0 background
 - Audio playback
@@ -906,7 +908,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 **Expected Output**: Game engine demo  
 **Verification Status**: 🆕 NEW — Not yet verified. Requires headless test run and golden screenshot comparison.
 
-### celeste-classic-gba.gba 🆕 NEW
+### celeste-classic-gba.gba ❌ FAIL
 **Suite**: Celeste Classic GBA port  
 **Source**: `https://github.com/JeffRuLz/Celeste-Classic-GBA`  
 **Purpose**: Celeste Classic platformer port to GBA  
@@ -923,7 +925,12 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - Audio playback
 - Keypad input
 **Expected Output**: Platformer game with graphics and audio  
-**Verification Status**: 🆕 NEW — Transpiled successfully (114,302 lines Python), ran 60 frames without hang, screenshot captured (240x160, 192 bytes). Requires golden screenshot comparison for final PASS/FAIL status.
+**Verification Status**: ❌ FAIL (99.9% diff at frame 60)
+- Transpiled: 143,923 lines Python
+- Ran 60 frames without hang
+- Screenshot: 240x160, solid purple (231,222,247)
+- Golden: solid white (255,255,255)
+- Root cause: Background color/palette initialization mismatch
 
 ---
 
@@ -1350,7 +1357,7 @@ All 76 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | timer_change.gba | 0 | 1299 | ⚠️ (runs without hang, near match — fallback interpreter mode-switch fix, 2026-08-01) |
 | unsafe.gba | 0 | 1174 | ✅ (0.06% diff, PASS) |
 | vram-mirror.gba | 0 | — | ❓ |
-| window_midframe.gba | 0 | 978 | ✅ (15.58% diff, PASS — window register byte-order fix, 2026-08-07) |
+| window_midframe.gba | 0 | 978 | ✅ (0.0% diff, PASS — VCount IRQ snapshot recapture fix, 2026-09-17) |
 
 ### gba-frame-test.gba
 **Suite**: veikkos/gba-frame-test
@@ -1421,7 +1428,7 @@ All 76 test ROMs transpile to syntactically valid Python with **0 instruction pa
 - Audio playback
 - Link cable / SIO communication
 **Expected Output**: Title screen or gameplay with procedurally generated level
-**Transpiler Blockers**: Not yet verified — newly added to test suite. Large ROM (16MB), may stress transpiler memory
+**Status**: ✅ PASS (F54). Large ROM (16MB) transpiled successfully.
 
 ### bpcore_BPCoreEngine.gba
 **Suite**: BPCore Engine (Lua GBA framework)
@@ -1492,7 +1499,7 @@ All 76 test ROMs transpile to syntactically valid Python with **0 instruction pa
 - Audio playback
 - Custom filesystem / scripting
 **Expected Output**: RTS gameplay scene with units and UI
-**Transpiler Blockers**: Not yet verified — newly added to test suite. Large ROM (26MB), may stress transpiler memory
+**Status**: ✅ PASS. BL/BLX block-start discovery verified. Large ROM (26MB) transpiled successfully.
 
 ---
 

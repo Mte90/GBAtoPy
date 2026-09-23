@@ -106,7 +106,7 @@ mkdir -p "${GOLDEN_DIR}"
 
 GOLDEN_PNG="${GOLDEN_DIR}/${ROM_BASENAME}.png"
 TEMP_GOLDEN="/tmp/${ROM_BASENAME}.png"
-TEMP_PY="/tmp/${ROM_BASENAME}.py"
+TEMP_PY="/tmp/gba_${ROM_BASENAME}.py"
 TEMP_TRANSPILED_SCREENSHOT="/tmp/${ROM_BASENAME}_transpiled.png"
 
 # --- Generate golden screenshot (if needed) ---
@@ -154,7 +154,7 @@ echo "✓ Transpiled: ${TEMP_PY}"
 MEM_LIMIT="${GBATOPY_MEM_LIMIT:-2G}"
 echo "Running transpiled Python (frame ${FRAME_COUNT}, mem cap ${MEM_LIMIT})..."
 cd /tmp
-RUNNER=(python3 "${ROM_BASENAME}.py" --headless --frame="${FRAME_COUNT}" --screenshot="${TEMP_TRANSPILED_SCREENSHOT}")
+RUNNER=(python3 "gba_${ROM_BASENAME}.py" --headless --frame="${FRAME_COUNT}" --screenshot="${TEMP_TRANSPILED_SCREENSHOT}")
 if command -v systemd-run >/dev/null 2>&1; then
     if ! systemd-run --user --scope --property=MemoryMax=${MEM_LIMIT} \
             --setenv=LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \

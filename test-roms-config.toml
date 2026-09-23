@@ -934,3 +934,63 @@ source = "https://github.com/agbrs/agb"
 category = "rust-framework"
 features = ["game-loop", "rust-codegen"]
 license = "MPL-2.0"
+
+[[tests]]
+name = "agb_amplitude"
+rom_path = "amplitude.gba"
+test_type = "Smoke"
+pass_status = "pass"
+source = "https://github.com/agbrs/agb"
+category = "rust-framework"
+features = ["rust-codegen"]
+license = "MPL-2.0"
+
+[[tests]]
+name = "agb_dynamic-isometric"
+rom_path = "dynamic-isometric.gba"
+test_type = "Smoke"
+pass_status = "pass"
+source = "https://github.com/agbrs/agb"
+category = "rust-framework"
+features = ["rust-codegen"]
+license = "MPL-2.0"
+
+[[tests]]
+name = "agb_hyperspace-roll"
+rom_path = "hyperspace-roll.gba"
+test_type = "Smoke"
+pass_status = "pass"
+source = "https://github.com/agbrs/agb"
+category = "rust-framework"
+features = ["rust-codegen"]
+license = "MPL-2.0"
+
+[[tests]]
+name = "agb_the-dungeon-puzzlers-lament"
+rom_path = "the-dungeon-puzzlers-lament.gba"
+test_type = "Smoke"
+pass_status = "pass"
+source = "https://github.com/agbrs/agb"
+category = "rust-framework"
+features = ["rust-codegen"]
+license = "MPL-2.0"
+
+[[tests]]
+name = "agb_the-hat-chooses-the-wizard"
+rom_path = "the-hat-chooses-the-wizard.gba"
+test_type = "Smoke"
+pass_status = "pass"
+source = "https://github.com/agbrs/agb"
+category = "rust-framework"
+features = ["rust-codegen"]
+license = "MPL-2.0"
+
+[[tests]]
+name = "agb_the-purple-night"
+rom_path = "the-purple-night.gba"
+test_type = "Smoke"
+pass_status = "pass"
+source = "https://github.com/agbrs/agb"
+category = "rust-framework"
+features = ["rust-codegen"]
+license = "MPL-2.0"

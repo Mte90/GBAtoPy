@@ -387,8 +387,15 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                 let is_pre_index = *pre_index;
                 let has_s_bit = *s_bit;
 
+                // TODO: S bit handling (bit 22)
+                // - If base NOT in list: S=1 means load/store user bank registers (R13/R14 from/user stack)
+                // - If base IS in list (LDM only): S=1 means restore CPSR from SPSR after loading PC
+                // Current implementation only handles the second case (lines 424-430 for LDM with PC)
+                // Full S bit support requires user bank register access
+
                 let mut code = String::new();
                 let num_regs = reg_list.len();
+                let base_in_list = reg_list.contains(&base_reg);
 
                 // ARM LDM/STM rule: registers are always accessed in ascending register-number
                 // order mapped to ascending addresses. For increment modes (IA/IB) the lowest
@@ -438,12 +445,17 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     }
                 }
 
-                // Writeback: IA/IB → base + n*4; DA/DB → base - n*4
+                // Writeback: save original base if it's in the register list
+                if do_writeback && base_in_list {
+                    code.push_str(&format!("_orig_base = registers[{}]\n", base_reg));
+                }
+                // IA/IB → base + n*4; DA/DB → base - n*4
                 if do_writeback {
+                    let base_expr = if base_in_list { "_orig_base" } else { &format!("registers[{}]", base_reg) };
                     let final_addr = if is_increment {
-                        format!("registers[{}] + {}", base_reg, num_regs * 4)
+                        format!("{} + {}", base_expr, num_regs * 4)
                     } else {
-                        format!("registers[{}] - {}", base_reg, num_regs * 4)
+                        format!("{} - {}", base_expr, num_regs * 4)
                     };
                     code.push_str(&format!("registers[{}] = {}\n", base_reg, final_addr));
                 }

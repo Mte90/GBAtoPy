@@ -618,7 +618,7 @@ impl CfgBuilder {
         if !indirect_targets.is_empty() {
             let mut indirect_queue: Vec<(u32, ArmMode)> = indirect_targets;
             let mut indirect_visited: HashSet<(u32, ArmMode)> = HashSet::new();
-            const INDIRECT_MAX_INSTRUCTIONS: usize = 10_000;
+            const INDIRECT_MAX_INSTRUCTIONS: usize = 100_000;  // Increased from 10,000 to follow more BL targets
             let indirect_count = self.bfs_pass(
                 &mut indirect_queue,
                 &mut indirect_visited,
@@ -1345,29 +1345,25 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
         }
     }
 
-    fn extract_branch_targets(&mut self, opcode: &str, operands: &[Operand], addr: u32) -> Vec<u32> {
+    fn extract_branch_targets(&mut self, opcode: &str, operands: &[Operand], addr: u32, instr_width: u32) -> Vec<u32> {
         let mut targets = Vec::new();
         let upper_op = opcode.to_uppercase();
 
         // BL stores the full target directly - extract it from the operand
+        // Fall-through is handled by the generic mechanism in bfs_pass (addr + instr_width)
         if opcode == "BL" {
             if let Some(Operand::Immediate(target)) = operands.first() {
                 targets.push(*target);
-                // Add fall-through for BL (return address)
-                let fallthrough = addr + 2; // Thumb BL is 2 bytes
-                targets.push(fallthrough);
             }
             return targets;
         }
 
         // BLX (immediate) also stores the full target directly - extract it from the operand
         // This is distinct from BLX Rm (register variant) which is handled below
+        // Fall-through is handled by the generic mechanism in bfs_pass (addr + instr_width)
         if opcode == "BLX" {
             if let Some(Operand::Immediate(target)) = operands.first() {
                 targets.push(*target);
-                // Add fall-through for BLX (return address)
-                let fallthrough = addr + 2; // Thumb BLX is 2 bytes
-                targets.push(fallthrough);
             }
             return targets;
         }
@@ -1414,7 +1410,7 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
                 targets.push(*target);
                 // Add fall-through for conditional branches and BL instructions
                 if is_conditional_branch || is_bl {
-                    let fallthrough = addr + 2; // Thumb instructions are 2 bytes
+                    let fallthrough = addr + instr_width;
                     targets.push(fallthrough);
                 }
             } else if opcode == "BX" || opcode == "BLX" {
@@ -1494,6 +1490,18 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
             // non-branch counter so saturation from a prior block doesn't
             // block fall-through pushes for this one.
             consecutive_non_branch = 0;
+            
+            // Early cross-mode guard: if the opposite mode already visited this address,
+            // skip processing. This prevents ARM-mode BFS from creating blocks at addresses
+            // that are already known to be Thumb code (and vice versa), which happens when
+            // the walk lands inside a 32-bit Thumb instruction and fabricates ARM instructions.
+            let opposite_mode = match current_mode {
+                ArmMode::Arm => ArmMode::Thumb,
+                ArmMode::Thumb => ArmMode::Arm,
+            };
+            if own_visited.contains(&(addr, opposite_mode)) {
+                continue;
+            }
             // Skip if in data_addresses (soft hint: re-validate as code)
             // Skip looks_like_data_soft for ARM mode - it causes false positives
             // for valid ARM code that has data sections later (e.g., 0x08000144 = 0x00000000).
@@ -1513,8 +1521,42 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
                 }
             }
 
+            // Cross-mode guard: prevent ARM-mode BFS from creating blocks at
+            // addresses that are already known to be Thumb code, and vice versa.
+            // This catches the case where ARM-mode walk lands inside a 32-bit Thumb
+            // instruction (e.g., BL at 0x0800659A-0x0800659D) and fabricates ARM
+            // instructions, or Thumb walk lands in ARM code.
+            if matches!(current_mode, ArmMode::Arm) {
+                // Check if this address (or nearby addresses) was already visited as Thumb.
+                // Thumb addresses are always even (bit 0 cleared), so we check:
+                // 1. Exact match: (addr, Thumb)
+                // 2. Aligned match: (addr & !1, Thumb) - catches landing inside 32-bit Thumb instr
+                // 3. Previous instruction: (addr - 2, Thumb) - for 2-byte Thumb instr boundary
+                let addr_aligned = addr & !1;
+                let thumb_conflict = own_visited.contains(&(addr, ArmMode::Thumb))
+                    || own_visited.contains(&(addr_aligned, ArmMode::Thumb))
+                    || shared_visited.map_or(false, |s| s.contains(&(addr, ArmMode::Thumb)))
+                    || shared_visited.map_or(false, |s| s.contains(&(addr_aligned, ArmMode::Thumb)));
+                let thumb_conflict_minus2 = addr >= 2
+                    && (own_visited.contains(&(addr - 2, ArmMode::Thumb))
+                        || shared_visited.map_or(false, |s| s.contains(&(addr - 2, ArmMode::Thumb))));
+                if thumb_conflict || thumb_conflict_minus2 {
+                    eprintln!("[CFG] Cross-mode guard: skipping ARM visit at 0x{:08X} (Thumb already visited)", addr);
+                    continue;
+                }
+            } else {
+                // Thumb mode: check if this address was already visited as ARM
+                let arm_conflict = own_visited.contains(&(addr, ArmMode::Arm))
+                    || shared_visited.map_or(false, |s| s.contains(&(addr, ArmMode::Arm)));
+                if arm_conflict {
+                    eprintln!("[CFG] Cross-mode guard: skipping Thumb visit at 0x{:08X} (ARM already visited)", addr);
+                    continue;
+                }
+            }
+
             own_visited.insert((addr, current_mode));
 
+            count += 1;
             count += 1;
             if report_progress && count % 100_000 == 0 {
                 eprintln!("  CFG progress: {} visited, {} branch targets",
@@ -1532,6 +1574,17 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
             let rom_offset = (decode_addr - 0x08000000) as usize;
             if rom_offset >= rom.len() {
                 continue;
+            }
+
+            // Additional cross-mode guard for ARM mode: detect if addr is the second
+            // halfword of a 32-bit Thumb BL instruction. BL_PREFIX is 0xF000-0xF7FF.
+            if matches!(current_mode, ArmMode::Arm) && rom_offset >= 2 {
+                let prev_hw = u16::from_le_bytes([rom[rom_offset - 2], rom[rom_offset - 1]]);
+                if (prev_hw & 0xF800) == 0xF000 {
+                    // This address is the second halfword of a BL instruction
+                    eprintln!("[CFG] Cross-mode guard: skipping ARM visit at 0x{:08X} (inside BL at 0x{:08X})", addr, addr - 2);
+                    continue;
+                }
             }
 
             let (opcode_str, operands, instr_width) = match current_mode {
@@ -1595,7 +1648,7 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
                 self.mode_map.push((addr, current_mode));
             }
 
-            let targets = self.extract_branch_targets(&opcode_str, &operands, addr);
+            let targets = self.extract_branch_targets(&opcode_str, &operands, addr, instr_width.into());
             self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
 
             let is_uncond_branch = opcode_str == "B"
@@ -1621,23 +1674,30 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
                 // for valid code that has data sections later. The data_addresses set already
                 // captures known data locations.
                 let next_is_data = is_data_address(next_addr, current_mode, data_addresses, rom, arm_decoder, thumb_decoder);
-                if addr >= 0x080000C0 && addr <= 0x080000D0 {
-                    eprintln!("DEBUG FALLTHROUGH: addr=0x{:08X} next_addr=0x{:08X} next_is_data={} visited={}", addr, next_addr, next_is_data, own_visited.contains(&(next_addr, current_mode)));
-                }
+                
+                // Cross-mode guard for fall-through: prevent walking into addresses
+                // already claimed by the other mode.
+                let next_cross_mode_conflict = if matches!(current_mode, ArmMode::Arm) {
+                    // Check exact and aligned addresses for Thumb conflicts
+                    let next_aligned = next_addr & !1;
+                    own_visited.contains(&(next_addr, ArmMode::Thumb))
+                        || own_visited.contains(&(next_aligned, ArmMode::Thumb))
+                        || shared_visited.map_or(false, |s| s.contains(&(next_addr, ArmMode::Thumb)))
+                        || shared_visited.map_or(false, |s| s.contains(&(next_aligned, ArmMode::Thumb)))
+                } else {
+                    // Thumb mode falling through: check if ARM already visited this address
+                    own_visited.contains(&(next_addr, ArmMode::Arm))
+                        || shared_visited.map_or(false, |s| s.contains(&(next_addr, ArmMode::Arm)))
+                };
+                
                 if !own_visited.contains(&(next_addr, current_mode))
                     && shared_visited.map_or(true, |s| !s.contains(&(next_addr, current_mode)))
                     && next_addr >= 0x08000000
                     && next_rom_offset < rom.len()
                     && !next_is_data
+                    && !next_cross_mode_conflict
                 {
                     queue.push((next_addr, current_mode));
-                } else if addr >= 0x080000C0 && addr <= 0x080000D0 {
-                    eprintln!("DEBUG FALLTHROUGH: Skipping 0x{:08X} - visited={}, shared_visited={}, in_range={}, is_data={}", 
-                        next_addr, 
-                        own_visited.contains(&(next_addr, current_mode)),
-                        shared_visited.map_or(false, |s| s.contains(&(next_addr, current_mode))),
-                        next_rom_offset < rom.len(),
-                        next_is_data);
                 }
             }
 
@@ -1645,7 +1705,7 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
                 if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
                     continue;
                 }
-                let target_mode = if opcode_str == "BX" || opcode_str == "BLX" || opcode_str == "BL" {
+                let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
                     if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm }
                 } else {
                     current_mode
@@ -1662,10 +1722,28 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
                     self.instruction_addresses.push(target);
                     self.mode_map.push((target, target_mode));
                 }
+                // Cross-mode guard for branch targets: prevent targeting addresses
+                // already claimed by the other mode.
+                let target_cross_mode_conflict = if matches!(target_mode, ArmMode::Arm) {
+                    // Check exact and aligned addresses for Thumb conflicts
+                    let target_aligned = target & !1;
+                    own_visited.contains(&(target, ArmMode::Thumb))
+                        || own_visited.contains(&(target_aligned, ArmMode::Thumb))
+                        || shared_visited.map_or(false, |s| s.contains(&(target, ArmMode::Thumb)))
+                        || shared_visited.map_or(false, |s| s.contains(&(target_aligned, ArmMode::Thumb)))
+                } else {
+                    // Thumb target: check if ARM already visited this address
+                    own_visited.contains(&(target, ArmMode::Arm))
+                        || shared_visited.map_or(false, |s| s.contains(&(target, ArmMode::Arm)))
+                };
+                
                 if !own_visited.contains(&(target, target_mode))
                     && shared_visited.map_or(true, |s| !s.contains(&(target, target_mode)))
+                    && !target_cross_mode_conflict
                 {
                     queue.push((target, target_mode));
+                } else if target_cross_mode_conflict {
+                    eprintln!("[CFG] Cross-mode guard: skipping ARM target at 0x{:08X} (Thumb already visited)", target);
                 }
                 self.branch_targets.insert(target);
             }

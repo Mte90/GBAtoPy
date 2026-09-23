@@ -114,7 +114,7 @@ def execute_rom(output_path, frame=10, timeout=90):
     try:
         result = subprocess.run(
             ["python3", str(output_path), "--headless", f"--frame={frame}",
-             "--screenshot", str(screenshot_path)],
+             "--screenshot", str(screenshot_path), "--max-instrs", "10000000"],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -182,7 +182,7 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
     start = time()
     rom_output_dir = OUTPUT_DIR / rom_name.replace('.gba', '')
     rom_output_dir.mkdir(parents=True, exist_ok=True)
-    output_py = str(rom_output_dir / "output.py")
+    output_py = str(rom_output_dir / "gba_output.py")
 
     # --- Level 1: Transpile + Syntax ---
     success, err = transpile_rom(rom_path, output_py)
