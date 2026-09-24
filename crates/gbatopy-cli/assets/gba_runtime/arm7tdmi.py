@@ -828,6 +828,11 @@ class ARM7TDMI:
         rn = (instr >> 16) & 0xF
         reg_list = instr & 0xFFFF
 
+        # TODO: S bit handling (bit 22)
+        # - If base NOT in list: S=1 means load/store user bank registers (R13/R14 from/user stack)
+        # - If base IS in list (LDM only): S=1 means restore CPSR from SPSR after loading PC
+        # Current implementation only handles the second case (lines 880-893)
+        # Full S bit support requires user bank register access
         if reg_list == 0:
             return 2
 
@@ -852,6 +857,10 @@ class ARM7TDMI:
                 addr = base - 4 * (n_regs - 1)
 
         if is_load:
+            # Save original base if it's in the register list (ARM rule: writeback uses original base)
+            base_in_list = (reg_list & (1 << rn)) != 0
+            if w_bit and base_in_list:
+                _orig_base = base
             for i in range(16):
                 if reg_list & (1 << i):
                     val = self.memory.read_u32(addr)
@@ -870,10 +879,14 @@ class ARM7TDMI:
                     addr += 4
 
         if w_bit:
+            # ARM LDM rule: if base is in list and not the only register, writeback uses original base
+            # If base IS the only register, writeback is UNPREDICTABLE (we use original base)
             if is_up:
-                self.registers[rn] = (base + n_regs * 4) & 0xFFFFFFFF
+                writeback_base = _orig_base if (is_load and base_in_list) else base
+                self.registers[rn] = (writeback_base + n_regs * 4) & 0xFFFFFFFF
             else:
-                self.registers[rn] = (base - n_regs * 4) & 0xFFFFFFFF
+                writeback_base = _orig_base if (is_load and base_in_list) else base
+                self.registers[rn] = (writeback_base - n_regs * 4) & 0xFFFFFFFF
 
         if not (is_load and (reg_list & (1 << 15))):
             self.registers[15] += 4
@@ -1022,6 +1035,12 @@ class ARM7TDMI:
             self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
             self._halted = True
             self._halt_reason = 'any'
+            import sys
+            _ic = getattr(getattr(self, 'memory', None), '_interrupts', None)
+            _ds = 0
+            if hasattr(self, 'memory'):
+                _ds = self.memory.read_u16(0x04000004)
+            print(f"[DBG-HALT] PC=0x{self.registers[15]:08X} IE=0x{_ic.ie_reg if _ic else 0:04X} IME=0x{_ic.ime_reg if _ic else 0:04X} IF=0x{_ic.if_reg if _ic else 0:04X} DISPSTAT=0x{_ds:04X} lyc={(_ds >> 8) & 0xFF} vcount_irq_en={(_ds >> 5) & 1}", file=sys.stderr, flush=True)
         elif num == 0x03:  # Stop
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_stop(self.registers[0])

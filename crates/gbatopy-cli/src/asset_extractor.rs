@@ -9,6 +9,36 @@ pub struct ExtractedAssets {
     pub samples: Vec<(u32, usize, u8)>,
 }
 fn is_valid_rgb555(color: u16) -> bool {
+    // Reject common Thumb instruction patterns that happen to have bit 15 = 0
+    // 0x47xx: BX register
+    if (color & 0xFF00) == 0x4700 {
+        return false;
+    }
+    // 0x46xx: MOV register (including 0x46C0 = NOP)
+    if (color & 0xFF00) == 0x4600 {
+        return false;
+    }
+    // 0xB5xx: PUSH {reg}
+    if (color & 0xFF00) == 0xB500 {
+        return false;
+    }
+    // 0xBDxx: POP {reg}
+    if (color & 0xFF00) == 0xBD00 {
+        return false;
+    }
+    // 0xF7xx: BL prefix (32-bit branch)
+    if (color & 0xF800) == 0xF700 {
+        return false;
+    }
+    // 0xF8xx: other 32-bit instruction prefix
+    if (color & 0xF800) == 0xF800 {
+        return false;
+    }
+    // 0xF0xx/F1xx: BL prefix variant
+    if (color & 0xF800) == 0xF000 {
+        return false;
+    }
+
     let r = color & 0x1F;
     let g = (color >> 5) & 0x1F;
     let b = (color >> 10) & 0x1F;
@@ -55,6 +85,15 @@ pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
     let mut palette_candidates: std::collections::HashMap<usize, usize> =
         std::collections::HashMap::new();
     for offset in (start_offset..rom_data.len().saturating_sub(64)).step_by(2) {
+        // Skip if this offset doesn't start with 0x0000 (black = palette[0])
+        let first_color = u16::from_le_bytes([
+            rom_data[offset],
+            rom_data[offset + 1],
+        ]);
+        if first_color != 0x0000 {
+            continue;
+        }
+
         let mut consecutive_valid = 0;
         for i in 0..32 {
             let pos = offset + i * 2;
@@ -68,12 +107,15 @@ pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
                 break;
             }
         }
-        if consecutive_valid >= 8 {
+        if consecutive_valid >= 16 {
             let count = palette_candidates.entry(offset).or_insert(0);
             *count = consecutive_valid;
         }
     }
-    if let Some((best_offset, _)) = palette_candidates.iter().max_by_key(|(_, count)| *count) {
+    if let Some((best_offset, _)) = palette_candidates
+        .iter()
+        .max_by_key(|(offset, count)| (*count, std::cmp::Reverse(*offset)))
+    {
         let offset = *best_offset;
         let max_colors = 256;
         for i in 0..max_colors {

@@ -7,7 +7,7 @@
 use crate::arm::ArmDecoder;
 use crate::thumb::ThumbDecoder;
 use crate::{AddressingMode, ArmMode, Operand};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Detects instructions that write to R15 (PC), making them indirect branches.
 /// This covers LDM with R15 in register list (POP {PC}) — the instruction
@@ -282,7 +282,7 @@ pub struct CfgBuilder {
     ldr_literals: Vec<(u8, u32)>,
     /// Registers used in BX/BLX instructions. The post-processing sweep adds
     /// all literal-pool values loaded into these registers as branch targets.
-    bx_registers: HashSet<u8>,
+    bx_registers: BTreeSet<u8>,
 }
 
 impl CfgBuilder {
@@ -815,6 +815,10 @@ impl CfgBuilder {
                 !is_data_address(*addr, ArmMode::Thumb, &data_addresses, rom, &arm_decoder, &thumb_decoder)
             });
             
+            // Sort targets to ensure deterministic exploration order
+            heuristic_targets.sort();
+            rom_scan_targets.sort_by_key(|(addr, _)| *addr);
+            
             // Run mini-CFG pass on newly discovered targets
             if !rom_scan_targets.is_empty() || !heuristic_targets.is_empty() {
                 eprintln!("  CFG: mini3-pass starting with {} rom_scan + {} heuristic targets", rom_scan_targets.len(), heuristic_targets.len());
@@ -825,7 +829,7 @@ impl CfgBuilder {
                 mini3_queue.push((addr, ArmMode::Thumb));
             }
             eprintln!("  CFG: mini3_queue has {} total items", mini3_queue.len());
-            const MINI3_MAX_INSTRUCTIONS: usize = 10_000;
+            const MINI3_MAX_INSTRUCTIONS: usize = 200_000;
             let mini3_count = self.bfs_pass(
                 &mut mini3_queue,
                 &mut mini3_visited,

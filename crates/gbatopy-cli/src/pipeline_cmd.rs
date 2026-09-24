@@ -418,7 +418,7 @@ pub fn run_pipeline(
     code.push_str("registers[15] = 0x08000000\n");
     code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
     code.push_str("_user_sys_bank = {'sp': 0, 'lr': 0}\n");
-    code.push_str("banked_sp_lr = {0x10: _user_sys_bank, 0x1F: _user_sys_bank, 0x11: {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0, 'lr': 0}, 0x13: {'sp': 0, 'lr': 0}, 0x17: {'sp': 0, 'lr': 0}, 0x1B: {'sp': 0, 'lr': 0}}\n");
+    code.push_str("banked_sp_lr = {0x10: {'sp': 0x03007FA0, 'lr': 0}, 0x1F: _user_sys_bank, 0x11: {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0x03007FE0, 'lr': 0}, 0x13: {'sp': 0x03007FE0, 'lr': 0}, 0x17: {'sp': 0x03007FE0, 'lr': 0}, 0x1B: {'sp': 0x03007F00, 'lr': 0}}\n");
     code.push_str("\ndef _switch_mode(new_mode):\n");
     code.push_str("    old_mode = cpsr.get('mode', 0x1F)\n");
     code.push_str("    if new_mode == old_mode:\n");
@@ -1013,7 +1013,8 @@ pub fn run_pipeline(
     
     let mut non_nop_addrs: Vec<(u64, ArmMode)> = Vec::new();
     let mut block_function_code = String::new();
-    let address_list: Vec<(u64, ArmMode)> = func_groups.keys().copied().collect();
+    let mut address_list: Vec<(u64, ArmMode)> = func_groups.keys().copied().collect();
+    address_list.sort();
     let mut current_line_count = code.lines().count() as u64;
     
     // Worklist algorithm: recursively follow BL targets to ensure all called functions

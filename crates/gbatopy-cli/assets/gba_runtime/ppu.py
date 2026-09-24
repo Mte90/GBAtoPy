@@ -115,18 +115,19 @@ class PPU:
             
             # Extract Attribute 0 fields (GBATEK reference)
             y = attr0 & 0xFF  # Y position (0-255, 224+ = offscreen)
-            mode = (attr0 >> 8) & 0x3  # 0=normal, 1=affine, 2=hidden, 3=affine+alt
-            mosaic = (attr0 >> 10) & 0x1
-            color_mode = (attr0 >> 11) & 0x1  # 0=4BPP, 1=8BPP
-            shape = (attr0 >> 12) & 0x3  # 0=square, 1=wide, 2=tall, 3=reserved
+            rotate_scale = (attr0 >> 8) & 0x1  # Bit 8: Rotation/Scaling flag
+            obj_disable = (attr0 >> 9) & 0x1  # Bit 9: OBJ disable (when not affine)
+            mode = (attr0 >> 10) & 0x3  # Bits 10-11: OBJ Mode (0=normal, 1=semi-trans, 2=obj window, 3=prohibited)
+            mosaic = (attr0 >> 12) & 0x1  # Bit 12: Mosaic
+            color_mode = (attr0 >> 13) & 0x1  # Bit 13: 0=4BPP, 1=8BPP
+            shape = (attr0 >> 14) & 0x3  # Bits 14-15: Shape (0=square, 1=horizontal, 2=vertical, 3=prohibited)
             
             # Extract Attribute 1 fields
             x = attr1 & 0x1FF  # X position (0-511, wraps at 256 for display)
-            flip_h = (attr1 >> 9) & 0x1  # Horizontal flip (when not affine)
-            flip_v = (attr1 >> 10) & 0x1  # Vertical flip (when not affine)
-            double_size = (attr1 >> 10) & 0x1  # Double size (when affine)
-            rotate_scale = (attr1 >> 11) & 0x1  # Enable rotation/scaling
-            size = (attr1 >> 14) & 0x3  # Size index
+            affine_param = (attr1 >> 9) & 0x1F  # Bits 9-13: Rotation/scaling parameter (when affine) or unused
+            flip_h = (attr1 >> 12) & 0x1  # Bit 12: Horizontal flip (when NOT affine)
+            flip_v = (attr1 >> 13) & 0x1  # Bit 13: Vertical flip (when NOT affine)
+            size = (attr1 >> 14) & 0x3  # Bits 14-15: Size index
             
             # Extract Attribute 2 fields
             tile_num = attr2 & 0x3FF  # Tile number (0-1023)
@@ -159,8 +160,9 @@ class PPU:
                 "shape": shape,
                 "size": size,
                 "color_mode": color_mode,
-                "rotate_scale": rotate_scale,
-                "double_size": double_size,
+                "rotate_scale": rotate_scale,  # From attr0 bit 8
+                "obj_disable": obj_disable,
+                "affine_param": affine_param,
                 "flip_h": flip_h,
                 "flip_v": flip_v,
                 "tile_num": tile_num,
@@ -193,7 +195,17 @@ class PPU:
         Args:
             sprite: Sprite dictionary from parse_oam()
         """
-        # Skip hidden sprites (mode 2)
+        # Skip disabled sprites per GBATEK:
+        # When rotate_scale=0, bit 9 (obj_disable) disables the sprite
+        # When rotate_scale=1, bit 9 means double-size (not disable)
+        if sprite["rotate_scale"] == 0 and sprite["obj_disable"] == 1:
+            return
+        
+        # Skip forbidden mode (mode 3 is prohibited per GBATEK)
+        if sprite["mode"] == 3:
+            return
+        
+        # Skip hidden sprites (mode 2 - obj window)
         if sprite["mode"] == 2:
             return
         
