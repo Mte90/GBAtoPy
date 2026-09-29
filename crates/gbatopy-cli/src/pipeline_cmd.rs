@@ -7,8 +7,8 @@ use gbatopy_disasm::{
     operand::AddressingMode, operand::Operand, operand::ShiftAmount, ArmMode, CfgBuilder,
     Disassembler,
 };
+use std::env;
 use std::fs;
-use std::path::Path;
 
 /// Feature flags for stripping unused hardware features
 /// These can be auto-detected from ROM or manually overridden via CLI
@@ -183,7 +183,6 @@ fn strip_inline_comment(line: &str) -> String {
 pub fn run_pipeline(
     rom_path: &str,
     output_path: &str,
-    _assets_dir: &Path,
     _use_ir: bool,
     feature_flags: Option<FeatureFlags>,
     minify: bool,
@@ -254,71 +253,70 @@ pub fn run_pipeline(
     eprintln!("  Embedding GBA runtime...");
     let mut code = String::new();
 
-    // Core modules - always included
+    // Core modules - always included (CARGO_MANIFEST_DIR ensures binary works from any CWD)
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let core_files = [
-        "crates/gbatopy-cli/assets/templates/header.py",
-        "crates/gbatopy-cli/assets/gba_runtime/memory.py",
-        "crates/gbatopy-cli/assets/gba_runtime/ppu.py",
-        "crates/gbatopy-cli/assets/gba_runtime/cpu.py",
-        "crates/gbatopy-cli/assets/gba_runtime/arm7tdmi.py",
-        "crates/gbatopy-cli/assets/gba_runtime/input.py",
-        "crates/gbatopy-cli/assets/gba_runtime/bios.py",
-        "crates/gbatopy-cli/assets/gba_runtime/save_state.py",
-        "crates/gbatopy-cli/assets/gba_runtime/hooks.py",
+        &format!("{}/assets/templates/header.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/memory.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/ppu.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/cpu.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/arm7tdmi.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/input.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/bios.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/save_state.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/hooks.py", manifest_dir),
     ];
 
-    // Optional modules - included based on feature flags
+    // Optional modules - included based on feature flags (using manifest_dir from above)
     let mut optional_files = Vec::new();
     if flags.irq {
-        optional_files.push("crates/gbatopy-cli/assets/gba_runtime/interrupts.py");
+        optional_files.push(format!("{}/assets/gba_runtime/interrupts.py", manifest_dir));
     }
     if flags.timers {
-        optional_files.push("crates/gbatopy-cli/assets/gba_runtime/timers.py");
+        optional_files.push(format!("{}/assets/gba_runtime/timers.py", manifest_dir));
     }
     if flags.dma {
-        optional_files.push("crates/gbatopy-cli/assets/gba_runtime/dma.py");
+        optional_files.push(format!("{}/assets/gba_runtime/dma.py", manifest_dir));
     }
     if flags.audio {
-        optional_files.push("crates/gbatopy-cli/assets/gba_runtime/apu.py");
+        optional_files.push(format!("{}/assets/gba_runtime/apu.py", manifest_dir));
     }
     if flags.numba {
-        optional_files.push("crates/gbatopy-cli/assets/gba_runtime/numba.py");
+        optional_files.push(format!("{}/assets/gba_runtime/numba.py", manifest_dir));
     }
 
     // Combine core and optional files
-    let runtime_files: Vec<&str> = core_files.iter().chain(optional_files.iter()).copied().collect();
+    let runtime_files: Vec<String> = core_files.iter().map(|s| s.to_string()).chain(optional_files.into_iter()).collect();
 
     // Add shebang and make executable
     code.push_str("#!/usr/bin/env python3\n");
     code.push_str("# === GBA Runtime (embedded) ===\n\n");
     for file_path in &runtime_files {
-        if let Ok(content) = std::fs::read_to_string(file_path) {
-            let filtered: String = content
-                .lines()
-                .filter(|line| {
-                    let trimmed = line.trim();
-                    !trimmed.starts_with("from .")
-                        && !trimmed.starts_with("from gba_runtime")
-                        && !trimmed.starts_with("import gba_runtime")
-                        && !trimmed.starts_with("from bios")
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            // Minify: remove only blank lines (preserve docstrings for syntax correctness)
-            let minified: String = filtered
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            code.push_str(&minified);
-            code.push_str("\n\n");
-            eprintln!(
-                "    Included: {} (minified)",
-                file_path.split('/').last().unwrap_or("")
-            );
-        } else {
-            eprintln!("    WARNING: Could not read {}", file_path);
-        }
+        let content = std::fs::read_to_string(file_path)
+            .map_err(|e| format!("Failed to read runtime asset {}: {}", file_path, e))?;
+        let filtered: String = content
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.starts_with("from .")
+                    && !trimmed.starts_with("from gba_runtime")
+                    && !trimmed.starts_with("import gba_runtime")
+                    && !trimmed.starts_with("from bios")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Minify: remove only blank lines (preserve docstrings for syntax correctness)
+        let minified: String = filtered
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        code.push_str(&minified);
+        code.push_str("\n\n");
+        eprintln!(
+            "    Included: {} (minified)",
+            file_path.split('/').last().unwrap_or("")
+        );
     }
         code.push_str("# === End of Runtime ===\n\n");
         

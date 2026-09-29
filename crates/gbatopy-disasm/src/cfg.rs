@@ -1561,7 +1561,6 @@ eprintln!("AFTER_SCAN: data_addresses has {} entries", data_addresses.len());
             own_visited.insert((addr, current_mode));
 
             count += 1;
-            count += 1;
             if report_progress && count % 100_000 == 0 {
                 eprintln!("  CFG progress: {} visited, {} branch targets",
                           count, self.branch_targets.len());

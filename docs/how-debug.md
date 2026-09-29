@@ -12,6 +12,18 @@ This skill helps debug GBA ROM transpilation issues by systematically comparing 
 
 ## Debug Workflow
 
+### Step 0: Ghidra Cross-Validation (Static Analysis Oracle)
+
+Before deep debugging a static analysis bug (missing function, wrong basic block, instruction decode error, timeout/hang), run the Ghidra oracle first:
+
+- `scripts/ghidra/ghidra_functions.sh <rom>` — import ROM, get function list, diff against transpiler dispatch table. Every missing function is a CFG bug.
+- `scripts/ghidra/ghidra_decode.sh <rom> <addr>` — verify instruction decode against ground truth.
+- `scripts/ghidra/ghidra_blocks.sh <rom>` — diff basic-block boundaries.
+- `scripts/ghidra/ghidra_decompile.sh <rom> <addr>` — decompile hang loops to understand what the ROM is waiting on.
+
+**GBA processor config:** `ARM:BE:32:v4t`, base address `0x08000000`.  
+See AGENTS.md "Ghidra Static Analysis Oracle" section for full details.
+
 ### Quick Fix Strategy (Python First)
 
 When you find a bug in the transpiled output:

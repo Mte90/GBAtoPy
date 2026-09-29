@@ -71,7 +71,7 @@ Never run the full 76-ROM suite during active debugging — always test one ROM 
 ## mGBA on Headless Server
 
 ```bash
-export LD_LIBRARY_PATH="/home/d.scasciafratte/gbatopy/mgba/build:/home/d.scasciafratte/gbatopy/mgba/build/sdl:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH"
 export SDL_AUDIODRIVER=dummy
 xvfb-run -a -s "-screen 0 640x480x24" ./mgba/build/sdl/mgba ...
 ```

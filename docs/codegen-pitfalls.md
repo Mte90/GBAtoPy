@@ -2,6 +2,8 @@
 
 Catalogue of codegen bugs fixed across sessions.
 
+> **Before debugging any codegen bug in this list, run the Ghidra oracle to get ground truth:** `scripts/ghidra/ghidra_functions.sh <rom>` for function discovery, `scripts/ghidra/ghidra_decode.sh <rom> <addr>` for instruction decode verification. See AGENTS.md "Ghidra Static Analysis Oracle" section.
+
 ## 1. STRH Immediate Offset (Disassembler)
 
 **Symptom:** Half-word stores (STRH) used offset 22 instead of 0.

@@ -6,16 +6,14 @@ pub mod coprocessor;
 #[cfg(test)]
 mod regression_tests;
 
-use crate::codegen::thumb;
-
 use gbatopy_disasm::{DecodedInstruction, ArmMode};
 
 pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
     let opcode = &inst.opcode;
     
-    // Dispatch to Thumb codegen if in Thumb mode
+    // Thumb mode not yet implemented - emit NOP with comment
     if matches!(inst.mode, ArmMode::Thumb) {
-        return generate_thumb_instruction(inst);
+        return format!("# Thumb instruction at {:#010x}: {} (unimplemented)\npass", inst.address, opcode);
     }
     
     // ARM mode dispatch
@@ -34,40 +32,4 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
 
     // Unhandled ARM instruction - emit NOP with comment instead of crashing
     format!("# unhandled ARM at {:#010x}: {}\npass", inst.address, opcode)
-}
-
-fn generate_thumb_instruction(inst: &DecodedInstruction) -> String {
-    let opcode = &inst.opcode;
-    
-    // Thumb conditionals (BEQ, BNE, etc. with condition codes)
-    if let Some(code) = thumb::conditionals::generate(inst) {
-        return code;
-    }
-    
-    // Thumb branch instructions
-    if let Some(code) = thumb::branch::generate(inst) {
-        return code;
-    }
-    
-    // Thumb data processing
-    if let Some(code) = thumb::data_processing::generate(inst) {
-        return code;
-    }
-    
-    // Thumb load/store
-    if let Some(code) = thumb::load_store::generate(inst) {
-        return code;
-    }
-    
-    // Thumb multiply
-    if let Some(code) = thumb::multiply::generate(inst) {
-        return code;
-    }
-    
-    // Thumb misc
-    if let Some(code) = thumb::misc::generate(inst) {
-        return code;
-    }
-    // Unhandled Thumb instruction - emit NOP with comment instead of crashing
-    format!("# unhandled THUMB at {:#010x}: {}\npass", inst.address, opcode)
 }

@@ -74,8 +74,8 @@ class PPU:
     #   Attribute 2 (offset 4): Tile number (bits 0-9), priority, palette
     #
     # GBATEK Reference:
-    #   Attr0 bits: 0-7=Y, 8-9=mode, 10=mosaic, 11=color mode(0=4bpp,1=8bpp), 12-13=shape
-    #   Attr1 bits: 0-8=X, 9=affine/flip, 10=double-size, 11=rotate/scale, 12=color mode, 13=mosaic, 14-15=size
+    #   Attr0 bits: 0-7=Y, 8=rot/scale enable, 9=obj_disable/double_size, 10-11=mode, 12=mosaic, 13=color mode(0=4bpp,1=8bpp), 14-15=shape
+    #   Attr1 bits: 0-8=X, 9-13=affine param (when affine) / 9=H flip, 10=V flip (when non-affine), 14-15=size
     #   Attr2 bits: 0-9=tile#, 10-11=priority, 12-15=palette (4bpp only)
     # ========================================================================
 

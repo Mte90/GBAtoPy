@@ -4,10 +4,8 @@ mod benchmark;
 mod cmds;
 mod codegen;
 mod helpers;
-mod memory;
 mod pipeline_cmd;
 pub mod ppu;
-mod test;
 mod verify;
 
 use clap::{Parser, Subcommand};
@@ -142,9 +140,6 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    let _assets_dir = PathBuf::from("crates/gbatopy-cli/assets");
-    let _assets_dir = _assets_dir.canonicalize().unwrap_or(_assets_dir);
-
     match cli.command {
         Commands::Disasm {
             input,
@@ -192,7 +187,6 @@ fn main() {
             if let Err(e) = pipeline_cmd::run_pipeline(
                 input.to_str().unwrap_or(""),
                 output.to_str().unwrap_or(""),
-                &assets_dir,
                 use_ir,
                 feature_flags,
                 minify,
@@ -230,7 +224,6 @@ fn main() {
             if let Err(e) = pipeline_cmd::run_pipeline(
                 rom.to_str().unwrap_or(""),
                 output.to_str().unwrap_or(""),
-                &assets_dir,
                 use_ir,
                 feature_flags,
                 minify,

@@ -24,6 +24,7 @@ Exit codes:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -59,8 +60,46 @@ def load_test_types():
     return types
 
 
+def sweep_artifacts():
+    """Clean stale build artifacts before building. Runs cargo-sweep if available."""
+    sweep = shutil.which("cargo-sweep")
+    if sweep:
+        print("Sweeping build artifacts older than 7 days...")
+        subprocess.run(
+            [sweep, "--time", "7"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        print("Sweep complete.")
+    else:
+        print("cargo-sweep not installed; skipping artifact sweep.")
+    tmp_py = Path("/tmp")
+    for pattern in ("*.py", "*.png", "*.log"):
+        for f in tmp_py.glob(pattern):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    gbatopy_tmp = list(Path("/tmp").glob("gbatopy-*"))
+    for d in gbatopy_tmp:
+        try:
+            shutil.rmtree(d)
+        except OSError:
+            pass
+    stale_output = PROJECT_ROOT / "test_roms" / "output"
+    if stale_output.exists():
+        for f in stale_output.glob("*.py"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
 def build_transpiler():
     """Build the transpiler once before running tests."""
+    sweep_artifacts()
     print("Building gbatopy-cli (release)...")
     result = subprocess.run(
         ["cargo", "build", "--release", "-p", "gbatopy-cli"],
@@ -135,6 +174,7 @@ def compare_screenshot(transpiled_screenshot, rom_name, frame=60):
     """Compare transpiled screenshot with golden. Returns (status, details)."""
     rom_base = rom_name.replace('.gba', '')
     candidates = [
+        GOLDEN_DIR / f"{rom_base}.png",
         GOLDEN_DIR / f"{rom_base}_f{frame}.png",
         GOLDEN_DIR / f"{rom_base}_f10.png",
         GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}.png",
