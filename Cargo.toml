@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "crates/gbatopy-mgba",
     "crates/gbatopy-cli",
     "crates/gbatopy-test",
 ]

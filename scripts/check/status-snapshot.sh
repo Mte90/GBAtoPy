@@ -7,17 +7,17 @@ set -euo pipefail
 doc="docs/reference/test-roms.md"
 [[ -f "$doc" ]] || { echo "FAIL: $doc not found" >&2; exit 1; }
 
-# Parse: "Total ROMs: 76 — 71 ✅ PASS, 3 ❌ FAIL, 0 ⏰ SKIP, 2 🆕 NEW"
-summary=$(grep -E 'Total ROMs.*PASS.*FAIL.*SKIP' "$doc" | tail -1 || true)
+# Parse: "Current status (2026-09-30): 78 PASS, 2 FAIL, ~5 untested"
+summary=$(grep -E 'Current status.*PASS.*FAIL' "$doc" | tail -1 || true)
 if [[ -z "$summary" ]]; then
-    echo "WARN: could not find summary line in $doc" >&2
+    echo "WARN: could not find status line in $doc" >&2
     exit 0
 fi
 
-pass=$(echo "$summary" | grep -oE '[0-9]+ ✅ PASS' | grep -oE '^[0-9]+' || echo 0)
-fail=$(echo "$summary" | grep -oE '[0-9]+ ❌ FAIL' | grep -oE '^[0-9]+' || echo 0)
-skip=$(echo "$summary" | grep -oE '[0-9]+ ⏰ SKIP' | grep -oE '^[0-9]+' || echo 0)
-new=$(echo "$summary" | grep -oE '[0-9]+ 🆕 NEW' | grep -oE '^[0-9]+' || echo 0)
+pass=$(echo "$summary" | grep -oE '[0-9]+ PASS' | grep -oE '^[0-9]+' || echo 0)
+fail=$(echo "$summary" | grep -oE '[0-9]+ FAIL' | grep -oE '^[0-9]+' || echo 0)
+skip=0  # Current format doesn't use SKIP marker
+new=0   # Current format doesn't use NEW marker
 
 total=$((pass + fail + skip + new))
 cat <<EOF

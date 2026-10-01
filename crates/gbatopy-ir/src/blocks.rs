@@ -55,7 +55,7 @@ impl IrFunction {
             .iter()
             .filter(|(addr, _)| *addr < address)
             .map(|(_, mode)| *mode)
-            .last()
+            .next_back()
             .or(Some(self.mode))
     }
 }

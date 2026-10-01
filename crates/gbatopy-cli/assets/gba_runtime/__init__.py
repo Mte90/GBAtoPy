@@ -29,7 +29,7 @@ _input = Input()
 _memory.attach_input(_input)
 
 # CPSR flag dictionary (N, Z, C, V)
-cpsr = {'n': False, 'z': False, 'c': False, 'v': False}
+cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}
 
 # Register file for generated code
 registers = [0] * 16  # r0-r12, sp, lr, pc (we use indices 0-15)

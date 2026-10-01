@@ -35,7 +35,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
             let is_blx = base_opcode == "BLX";
             if !cond_str.is_empty() {
                 let lr_set = if is_blx {
-                    format!("    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n")
+                    "    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n".to_string()
                 } else {
                     String::new()
                 };
@@ -45,7 +45,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 ));
             }
             let lr_set = if is_blx {
-                format!("registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n")
+                "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n".to_string()
             } else {
                 String::new()
             };

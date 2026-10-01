@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use serde_json::Value;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum TestStatus {

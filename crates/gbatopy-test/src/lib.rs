@@ -9,13 +9,12 @@
 //! - `verifiers`: Verification strategies for different test types
 
 pub mod config;
-pub mod types;
-pub mod runner;
 pub mod report;
+pub mod runner;
+pub mod types;
 pub mod verifiers;
 
 pub use config::TestConfig;
+pub use report::Reporter;
 pub use types::{TestResult, TestStatus, TestSuiteResult};
 pub use verifiers::get_verifier;
-pub use report::Reporter;
-

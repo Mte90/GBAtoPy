@@ -6,10 +6,6 @@ impl ThumbDecoder {
     }
 
     pub fn decode(&self, halfword: u16, address: u32) -> (String, Vec<crate::Operand>, bool) {
-        // DEBUG: Log decoding at 0x0800010A
-        if address == 0x0800010A {
-            eprintln!("DISASM DEBUG: addr=0x{:08X} halfword=0x{:04X} high_byte=0x{:02X}", address, halfword, halfword >> 8);
-        }
         match halfword >> 8 {
             0x00..=0x07 => self.format_1_shift(halfword),
             0x08..=0x0F => self.format_1_shift(halfword),
@@ -328,11 +324,7 @@ impl ThumbDecoder {
             2 => "UXTH",
             _ => "UXTB",
         };
-        (
-            name.to_string(),
-            vec![self.reg(rd), self.reg(rm)],
-            false,
-        )
+        (name.to_string(), vec![self.reg(rd), self.reg(rm)], false)
     }
 
     fn format_14_push_pop(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
@@ -412,7 +404,7 @@ impl ThumbDecoder {
             let rm = (hw & 0xF) as u8;
             return ("BLX".to_string(), vec![self.reg(rm)], false);
         }
-        
+
         let offset = (hw & 0x7FF) as i32;
         let signed_offset = (offset << 21) >> 21;
         let target = address
@@ -432,39 +424,44 @@ impl ThumbDecoder {
             // BL suffix offset is unsigned. The combined BL offset is 22-bit
             // (offset_high << 11 | offset_low), sign-extended from bit 21.
             // The prefix already handles sign extension via offset_high.
-            ("BL_SUFFIX".to_string(), vec![self.imm((offset << 1) as u32)], false)
+            ("BL_SUFFIX".to_string(), vec![self.imm(offset << 1)], false)
         }
     }
 
     /// Decode a 32-bit BL/BLX instruction from its two halfwords.
     /// Returns Some(("BL", [target], false, 4)) or Some(("BLX", [target], false, 4)) if hw1 and hw2 form a valid pair.
     /// Returns None if hw2 is not a valid BL_SUFFIX (caller should fall back to BL_PREFIX).
-    pub fn decode_bl_pair(&self, hw1: u16, hw2: u16, address: u32) -> Option<(String, Vec<crate::Operand>, bool, u8)> {
+    pub fn decode_bl_pair(
+        &self,
+        hw1: u16,
+        hw2: u16,
+        address: u32,
+    ) -> Option<(String, Vec<crate::Operand>, bool, u8)> {
         // hw1 must be BL_PREFIX (bit 11 = 0, opcode range 0xF000-0xF3FF or 0xF400-0xF7FF with S=0)
         let h_flag1 = (hw1 >> 11) & 1;
         if h_flag1 != 0 {
             return None; // hw1 is not a BL_PREFIX
         }
-        
+
         // hw2 must be BL_SUFFIX or BLX_SUFFIX (bit 11 = 1, opcode range 0xF800-0xFBFF or 0xFC00-0xFFFF)
         let h_flag2 = (hw2 >> 11) & 1;
         if h_flag2 != 1 {
             return None; // hw2 is not a BL_SUFFIX
         }
-        
+
         // Check if this is BLX (immediate): bit 10 of hw2 = 1 (BL has 0)
         // BL_SUFFIX:  1111 10xx xxxxx... (bits 11-9 = 100 or 101)
         // BLX_SUFFIX: 1111 11xx xxxxx... (bits 11-9 = 110 or 111)
-        let j1_bit = (hw2 >> 10) & 1;  // bit 10 distinguishes BL (0) from BLX (1)
+        let j1_bit = (hw2 >> 10) & 1; // bit 10 distinguishes BL (0) from BLX (1)
         let is_blx = j1_bit == 1;
-        
+
         // Extract the 23-bit offset (22 bits for BL/BLX, bit 22 is sign bit)
         let offset_high = hw1 & 0x7FF;
         let offset_low = hw2 & 0x7FF;
-        
+
         // Combine: offset = (offset_high << 12) | (offset_low << 1)
         let offset = ((offset_high as u32) << 12) | ((offset_low as u32) << 1);
-        
+
         // Sign-extend from bit 22 (the S bit of the combined 23-bit value)
         let signed_offset = if (offset & (1 << 22)) != 0 {
             // Negative: sign-extend
@@ -472,11 +469,11 @@ impl ThumbDecoder {
         } else {
             offset as i32
         };
-        
+
         // Target = address + 4 + (sign-extended offset)
         // PC-relative: PC = address + 4 (pipeline)
         let target = (address as i32 + 4 + signed_offset) as u32;
-        
+
         // Return address = address + 4 (next instruction after the 4-byte BL/BLX)
         let opcode = if is_blx { "BLX" } else { "BL" };
         Some((opcode.to_string(), vec![self.imm(target)], false, 4))
@@ -499,14 +496,22 @@ impl ThumbDecoder {
         let s_bit = (hw >> 4) & 1;
         let d_bit = (hw >> 3) & 1;
         let immed4 = hw & 0xF;
-        
+
         let opcode = if m_bit != 0 { "CPS" } else { "UNKNOWN" };
         let operands = if m_bit != 0 {
             let mut ops = Vec::new();
-            if a_bit != 0 { ops.push(crate::Operand::Immediate(1)); }
-            if s_bit != 0 { ops.push(crate::Operand::Immediate(2)); }
-            if d_bit != 0 { ops.push(crate::Operand::Immediate(4)); }
-            if immed4 != 0 { ops.push(crate::Operand::Immediate(immed4 as u32)); }
+            if a_bit != 0 {
+                ops.push(crate::Operand::Immediate(1));
+            }
+            if s_bit != 0 {
+                ops.push(crate::Operand::Immediate(2));
+            }
+            if d_bit != 0 {
+                ops.push(crate::Operand::Immediate(4));
+            }
+            if immed4 != 0 {
+                ops.push(crate::Operand::Immediate(immed4 as u32));
+            }
             ops
         } else {
             vec![]

@@ -1,5 +1,5 @@
-#![allow(dead_code, unused_variables, unused_mut)]
 mod asset_extractor;
+mod analysis;
 mod benchmark;
 mod cmds;
 mod codegen;
@@ -27,8 +27,6 @@ enum Commands {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
-        #[arg(long, default_value = "false")]
-        use_ir: bool,
     },
     Lift {
         #[arg(short, long)]
@@ -36,43 +34,11 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
-    Generate {
-        #[arg(short, long)]
-        input: PathBuf,
-        #[arg(short, long)]
-        output: PathBuf,
-        #[arg(short, long, default_value = "assets")]
-        assets_dir: PathBuf,
-        #[arg(long, default_value = "false")]
-        use_ir: bool,
-        #[arg(long, default_value = "false")]
-        minify: bool,
-        #[arg(long, default_value = "false")]
-        minify_aggressive: bool,
-        #[arg(long, default_value = "false")]
-        no_audio: bool,
-        #[arg(long, default_value = "false")]
-        no_irq: bool,
-        #[arg(long, default_value = "false")]
-        no_timers: bool,
-        #[arg(long, default_value = "false")]
-        no_dma: bool,
-        #[arg(long, default_value = "false")]
-        no_numba: bool,
-        #[arg(long, default_value = "2000000")]
-        max_output_lines: u64,
-    },
     Pipeline {
         #[arg(short, long)]
         rom: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
-        #[arg(short, long, default_value = "assets")]
-        assets_dir: PathBuf,
-        #[arg(long, default_value = "false")]
-        use_ir: bool,
-        #[arg(long, default_value = "false")]
-        profile: bool,
         #[arg(long, default_value = "false")]
         minify: bool,
         #[arg(long, default_value = "false")]
@@ -89,10 +55,6 @@ enum Commands {
         no_numba: bool,
         #[arg(long, default_value = "2000000")]
         max_output_lines: u64,
-        #[arg(long)]
-        save_state: Option<PathBuf>,
-        #[arg(long)]
-        load_state: Option<PathBuf>,
     },
     Test {
         #[arg(short, long)]
@@ -100,14 +62,11 @@ enum Commands {
         #[arg(long, default_value = "60")]
         frames: u32,
         #[arg(long)]
-        screenshot: Option<PathBuf>, // screenshot path for verification
+        screenshot: Option<PathBuf>,
         #[arg(long)]
-        dump_memory: Option<PathBuf>, // memory dump path
+        dump_memory: Option<PathBuf>,
         #[arg(long)]
-        dump_region: Option<String>, // memory region to dump
-        #[arg(long, default_value = "false")]
-        #[allow(dead_code)]
-        headless: bool, // available for future use
+        dump_region: Option<String>,
     },
     Verify {
         #[arg(short, long)]
@@ -118,8 +77,6 @@ enum Commands {
         reference_dir: PathBuf,
         #[arg(long, default_value = "100")]
         frames: u32,
-        #[arg(long, default_value = "false")]
-        diff: bool,
     },
     TestAll {
         #[arg(long, default_value = "test_roms/roms")]
@@ -129,27 +86,17 @@ enum Commands {
         #[arg(long, default_value = "10")]
         frames: u32,
     },
-    Benchmark {
-        #[arg(short, long)]
-        rom: PathBuf,
-        #[arg(long, default_value = "1000")]
-        frames: u32,
-    },
+    Benchmark,
 }
 
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Disasm {
-            input,
-            output,
-            use_ir,
-        } => {
+        Commands::Disasm { input, output } => {
             if let Err(e) = cmds::disasm::disassemble(
                 input.to_str().unwrap_or(""),
                 output.to_str().unwrap_or(""),
-                use_ir,
             ) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
@@ -163,46 +110,9 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Generate {
-            input,
-            output,
-            assets_dir,
-            use_ir,
-            minify,
-            minify_aggressive,
-            no_audio,
-            no_irq,
-            no_timers,
-            no_dma,
-            no_numba,
-            max_output_lines,
-        } => {
-            let feature_flags = Some(pipeline_cmd::FeatureFlags {
-                audio: !no_audio,
-                irq: !no_irq,
-                timers: !no_timers,
-                dma: !no_dma,
-                numba: !no_numba,
-            });
-            if let Err(e) = pipeline_cmd::run_pipeline(
-                input.to_str().unwrap_or(""),
-                output.to_str().unwrap_or(""),
-                use_ir,
-                feature_flags,
-                minify,
-                minify_aggressive,
-                max_output_lines,
-            ) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
         Commands::Pipeline {
             rom,
             output,
-            assets_dir,
-            use_ir,
-            profile: _,
             minify,
             minify_aggressive,
             no_audio,
@@ -211,8 +121,6 @@ fn main() {
             no_dma,
             no_numba,
             max_output_lines,
-            save_state,
-            load_state,
         } => {
             let feature_flags = Some(pipeline_cmd::FeatureFlags {
                 audio: !no_audio,
@@ -224,7 +132,6 @@ fn main() {
             if let Err(e) = pipeline_cmd::run_pipeline(
                 rom.to_str().unwrap_or(""),
                 output.to_str().unwrap_or(""),
-                use_ir,
                 feature_flags,
                 minify,
                 minify_aggressive,
@@ -233,9 +140,6 @@ fn main() {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
-            
-            // Note: save_state and load_state are passed to the generated Python script's argparse
-            // They will be used when running the generated Python file, not during transpilation
         }
         Commands::Test {
             rom,
@@ -243,7 +147,6 @@ fn main() {
             screenshot,
             dump_memory,
             dump_region,
-            ..
         } => {
             println!("Running test on {} for {} frames...", rom.display(), frames);
 
@@ -259,7 +162,6 @@ fn main() {
                 .join("output_test");
             let _ = fs::create_dir_all(&output_dir);
             let py_path = output_dir.join(format!("{}_test.py", rom_name));
-            let assets_dir = std::path::Path::new("crates/gbatopy-cli/assets");
 
             let pipeline_status = std::process::Command::new("cargo")
                 .args([
@@ -272,8 +174,6 @@ fn main() {
                     rom.to_str().unwrap_or(""),
                     "--output",
                     py_path.to_str().unwrap_or(""),
-                    "--assets-dir",
-                    assets_dir.to_str().unwrap_or(""),
                 ])
                 .status();
 
@@ -365,7 +265,6 @@ fn main() {
         }
         Commands::Verify {
             rom,
-            diff,
             output_dir,
             reference_dir,
             frames,
@@ -394,11 +293,6 @@ fn main() {
             if let Err(e) = verify::verify_regression(rom_path, output_dir_path, frames) {
                 eprintln!("  FAILED: {}", e);
             }
-
-            if diff {
-                println!("\n=== Diff Mode: Comparing outputs ===");
-                println!("  Diff verification not yet implemented");
-            }
         }
         Commands::TestAll {
             rom_dir,
@@ -413,7 +307,7 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Benchmark { .. } => {
+        Commands::Benchmark => {
             if let Err(e) = benchmark::benchmark_all() {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

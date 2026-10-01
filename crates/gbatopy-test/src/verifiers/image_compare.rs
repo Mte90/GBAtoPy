@@ -1,15 +1,15 @@
-use image::{GenericImageView, Rgba, ImageBuffer};
+use image::{GenericImageView, ImageBuffer, Rgba};
 use serde::Serialize;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 /// Configuration for image comparison thresholds
 #[derive(Debug, Clone)]
 pub struct ComparisonConfig {
-    pub max_diff_percent: f64,      // Default: 0.5%
-    pub min_ssim: f64,              // Default: 0.98
-    pub min_content_ratio: f64,     // Default: 0.1 (10%)
-    pub pixel_tolerance: u8,        // Default: ±2 per channel
+    pub max_diff_percent: f64,  // Default: 0.5%
+    pub min_ssim: f64,          // Default: 0.98
+    pub min_content_ratio: f64, // Default: 0.1 (10%)
+    pub pixel_tolerance: u8,    // Default: ±2 per channel
 }
 
 impl Default for ComparisonConfig {
@@ -129,7 +129,9 @@ pub fn compare_images_comprehensive(
     if golden_nonblack > 0 && transpiled_nonblack == 0 {
         failure_reasons.push("empty_output".to_string());
         failure_classification = Some(FailureClassification::EmptyOutput);
-    } else if golden_nonblack > 0 && transpiled_nonblack < (golden_nonblack as f64 * config.min_content_ratio) as u32 {
+    } else if golden_nonblack > 0
+        && transpiled_nonblack < (golden_nonblack as f64 * config.min_content_ratio) as u32
+    {
         failure_reasons.push("near_black_output".to_string());
         failure_classification = Some(FailureClassification::NearBlackOutput);
     }
@@ -221,9 +223,10 @@ pub fn compare_images_comprehensive(
 
 /// Count pixels that are not completely black
 fn count_nonblack_pixels(pixels: &image::RgbaImage) -> u32 {
-    pixels.pixels().filter(|p| {
-        p[0] > 0 || p[1] > 0 || p[2] > 0
-    }).count() as u32
+    pixels
+        .pixels()
+        .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+        .count() as u32
 }
 
 /// Check if two pixels match within tolerance
@@ -370,7 +373,8 @@ fn generate_diagnostic_report(
             FailureClassification::Offset => "offset",
             FailureClassification::ColorShift => "color_shift",
             FailureClassification::StructuralMismatch => "structural_mismatch",
-        }.to_string()
+        }
+        .to_string()
     });
 
     let report = DiagnosticReport {
@@ -385,8 +389,16 @@ fn generate_diagnostic_report(
         },
         failure_reasons: failure_reasons.to_vec(),
         failure_classification: classification_str,
-        golden_image: golden_path.file_name().unwrap_or_default().to_string_lossy().to_string(),
-        transpiled_image: transpiled_path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+        golden_image: golden_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        transpiled_image: transpiled_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
         diff_image: Some(format!("{}_diff.png", rom_name)),
     };
 
@@ -401,10 +413,7 @@ fn generate_diagnostic_report(
 pub fn format_success_message(metrics: &ComparisonMetrics, tolerance: u8) -> String {
     format!(
         "PASS: {:.1}% match, SSIM={:.2}, {} pixels differ (±{} tolerance)",
-        metrics.match_percent,
-        metrics.ssim,
-        metrics.diff_pixels,
-        tolerance
+        metrics.match_percent, metrics.ssim, metrics.diff_pixels, tolerance
     )
 }
 
@@ -413,16 +422,16 @@ pub fn format_failure_message(
     metrics: &ComparisonMetrics,
     classification: Option<&FailureClassification>,
 ) -> String {
-    let classification_str = classification.map(|c| {
-        match c {
+    let classification_str = classification
+        .map(|c| match c {
             FailureClassification::SizeMismatch => "size_mismatch",
             FailureClassification::EmptyOutput => "empty_output",
             FailureClassification::NearBlackOutput => "near_black_output",
             FailureClassification::Offset => "offset",
             FailureClassification::ColorShift => "color_shift",
             FailureClassification::StructuralMismatch => "structural_mismatch",
-        }
-    }).unwrap_or("unknown");
+        })
+        .unwrap_or("unknown");
 
     format!(
         "FAIL [{}]: {:.1}% match, SSIM={:.2}, {}/{} non-black pixels — see diff_image.png and diagnostic_report.json",

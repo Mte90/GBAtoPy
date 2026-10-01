@@ -3,7 +3,12 @@ use crate::types::TestResult;
 use std::path::Path;
 
 pub trait Verifier: Send + Sync {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult;
+    fn verify(
+        &self,
+        entry: &TestEntry,
+        artifacts_dir: &Path,
+        config: &crate::config::TestConfig,
+    ) -> TestResult;
     fn name(&self) -> &'static str;
 }
 
@@ -18,10 +23,10 @@ pub fn get_verifier(test_type: &TestType) -> Box<dyn Verifier> {
     }
 }
 
-mod smoke;
-mod screenshot;
-mod mgba_oracle;
-mod ewram;
-mod pass_fail;
 mod assertion;
+mod ewram;
 pub mod image_compare;
+mod mgba_oracle;
+mod pass_fail;
+mod screenshot;
+mod smoke;

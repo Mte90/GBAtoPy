@@ -223,7 +223,7 @@ pub fn lift_thumb_stack(ctx: &mut LifterContext, instr: &DecodedInstruction) -> 
 
     let is_pop = instr.opcode == "POP";
 
-    for (_idx, op) in instr.operands.iter().enumerate() {
+    for op in instr.operands.iter() {
         if let Operand::Register(reg) = op {
             if *reg < 13 {
                 if is_pop {
@@ -315,7 +315,7 @@ pub fn lift_thumb(ctx: &mut LifterContext, instr: &DecodedInstruction) -> Vec<Ir
     match instr.opcode.as_str() {
         "NOP" => {
             statements.push(IrStatement::Nop);
-            return statements;
+            statements
         }
         // ALU operations
         "ADD" | "SUB" | "MOV" | "CMP" | "CMN" | "NEG" | "AND" | "EOR" | "ORR" | "LSL" | "LSR"

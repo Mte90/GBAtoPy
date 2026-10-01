@@ -1,19 +1,23 @@
+use super::image_compare::{
+    compare_images_comprehensive, format_failure_message, format_success_message, ComparisonConfig,
+};
+use super::Verifier;
 use crate::config::TestEntry;
 use crate::types::{TestResult, TestStatus};
-use super::Verifier;
+use duct::cmd;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use std::fs;
-use duct::cmd;
-use super::image_compare::{
-    compare_images_comprehensive, ComparisonConfig, format_success_message, 
-    format_failure_message
-};
 
 pub struct ScreenshotMgbaVerifier;
 
 impl Verifier for ScreenshotMgbaVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
+    fn verify(
+        &self,
+        entry: &TestEntry,
+        artifacts_dir: &Path,
+        config: &crate::config::TestConfig,
+    ) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
@@ -23,7 +27,8 @@ impl Verifier for ScreenshotMgbaVerifier {
         // Resolve the full ROM path
         let rom_path = config.roms_dir.join(&entry.rom_path);
         let rom_path_str = rom_path.to_string_lossy().to_string();
-        let rom_stem = entry.rom_path
+        let rom_stem = entry
+            .rom_path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
@@ -98,7 +103,9 @@ impl Verifier for ScreenshotMgbaVerifier {
         let _ = std::fs::copy(&rom_path, &rom_bin_dest);
 
         // Step 5: Run transpiled Python to capture screenshot
-        if let Err(e) = capture_transpiled_screenshot(&transpiled_py, &transpiled_screenshot, frames) {
+        if let Err(e) =
+            capture_transpiled_screenshot(&transpiled_py, &transpiled_screenshot, frames)
+        {
             return TestResult {
                 name: test_name.clone(),
                 test_type: test_type_str.clone(),
@@ -127,7 +134,7 @@ impl Verifier for ScreenshotMgbaVerifier {
 
         // Use comprehensive comparison with new thresholds
         let config = ComparisonConfig::default();
-        
+
         match compare_images_comprehensive(
             &transpiled_screenshot,
             &golden_path,
@@ -152,23 +159,39 @@ impl Verifier for ScreenshotMgbaVerifier {
                     log::error!(
                         "[mGBA Oracle] FAIL: {} ({})",
                         test_name,
-                        format_failure_message(&result.metrics, result.failure_classification.as_ref())
+                        format_failure_message(
+                            &result.metrics,
+                            result.failure_classification.as_ref()
+                        )
                     );
                     TestResult {
                         name: test_name,
                         test_type: test_type_str,
                         status: TestStatus::Fail,
-                        message: format_failure_message(&result.metrics, result.failure_classification.as_ref()),
+                        message: format_failure_message(
+                            &result.metrics,
+                            result.failure_classification.as_ref(),
+                        ),
                         duration: start.elapsed(),
                         metrics: serde_json::to_value(&result.metrics).ok(),
-                        failure_classification: result.failure_classification.map(|c| {
-                            match c {
-                                super::image_compare::FailureClassification::SizeMismatch => "size_mismatch".to_string(),
-                                super::image_compare::FailureClassification::EmptyOutput => "empty_output".to_string(),
-                                super::image_compare::FailureClassification::NearBlackOutput => "near_black_output".to_string(),
-                                super::image_compare::FailureClassification::Offset => "offset".to_string(),
-                                super::image_compare::FailureClassification::ColorShift => "color_shift".to_string(),
-                                super::image_compare::FailureClassification::StructuralMismatch => "structural_mismatch".to_string(),
+                        failure_classification: result.failure_classification.map(|c| match c {
+                            super::image_compare::FailureClassification::SizeMismatch => {
+                                "size_mismatch".to_string()
+                            }
+                            super::image_compare::FailureClassification::EmptyOutput => {
+                                "empty_output".to_string()
+                            }
+                            super::image_compare::FailureClassification::NearBlackOutput => {
+                                "near_black_output".to_string()
+                            }
+                            super::image_compare::FailureClassification::Offset => {
+                                "offset".to_string()
+                            }
+                            super::image_compare::FailureClassification::ColorShift => {
+                                "color_shift".to_string()
+                            }
+                            super::image_compare::FailureClassification::StructuralMismatch => {
+                                "structural_mismatch".to_string()
                             }
                         }),
                     }
@@ -212,7 +235,11 @@ fn find_mgba_binary() -> Result<PathBuf, String> {
     Err("mGBA binary not found in standard locations".to_string())
 }
 
-fn generate_lua_script(lua_path: &Path, frames: u32, output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn generate_lua_script(
+    lua_path: &Path,
+    frames: u32,
+    output_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let content = format!(
         r#"local frame_count = 0
 callbacks:add("frame", function()
@@ -231,7 +258,11 @@ end)
     Ok(())
 }
 
-fn run_mgba_capture(mgba_path: &Path, rom_path: &str, lua_script: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn run_mgba_capture(
+    mgba_path: &Path,
+    rom_path: &str,
+    lua_script: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     cmd!(
         mgba_path.to_string_lossy().as_ref(),
         "-S",
@@ -249,23 +280,38 @@ fn transpile_rom(rom_path: &str, output: &Path) -> Result<(), Box<dyn std::error
     } else {
         "target/debug/gbatopy-cli"
     };
-    
-    cmd!(bin, "pipeline", "--rom", rom_path, "--output", output.to_string_lossy().as_ref())
-        .dir(".")
-        .run()?;
-    
+
+    cmd!(
+        bin,
+        "pipeline",
+        "--rom",
+        rom_path,
+        "--output",
+        output.to_string_lossy().as_ref()
+    )
+    .dir(".")
+    .run()?;
+
     if !output.exists() {
         return Err("Output file not created".into());
     }
-    
+
     Ok(())
 }
 
-fn capture_transpiled_screenshot(py_file: &Path, screenshot_path: &Path, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
+fn capture_transpiled_screenshot(
+    py_file: &Path,
+    screenshot_path: &Path,
+    frames: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
     let frame_arg = format!("--frame={}", frames);
-    let screenshot_name = screenshot_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let screenshot_name = screenshot_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let screenshot_arg = format!("--screenshot={}", screenshot_name);
-    
+
     cmd!(
         "python3",
         py_file.file_name().unwrap().to_string_lossy().as_ref(),
@@ -276,11 +322,11 @@ fn capture_transpiled_screenshot(py_file: &Path, screenshot_path: &Path, frames:
     .env("SDL_VIDEODRIVER", "dummy")
     .dir(py_file.parent().unwrap_or(Path::new(".")))
     .run()?;
-    
+
     if !screenshot_path.exists() {
         return Err("Screenshot file not created".into());
     }
-    
+
     Ok(())
 }
 

@@ -70,27 +70,27 @@ impl TypeInferencer {
     /// Infer a single type from an observed value
     fn infer_type_from_value(&self, val: u32) -> GbaType {
         // Check for MMIO pointer (0x04000000-0x040003FF)
-        if val >= MMIO_BASE && val < MMIO_END {
+        if (MMIO_BASE..MMIO_END).contains(&val) {
             return GbaType::Ptr;
         }
         // Check for VRAM pointer
-        if val >= VRAM_BASE && val < VRAM_END {
+        if (VRAM_BASE..VRAM_END).contains(&val) {
             return GbaType::Ptr;
         }
         // Check for OAM pointer
-        if val >= OAM_BASE && val < OAM_END {
+        if (OAM_BASE..OAM_END).contains(&val) {
             return GbaType::Ptr;
         }
         // Check for Palette pointer
-        if val >= PALETTE_BASE && val < PALETTE_END {
+        if (PALETTE_BASE..PALETTE_END).contains(&val) {
             return GbaType::Ptr;
         }
         // Check for ROM address (0x08000000-0x09FFFFFF)
-        if val >= 0x08000000 && val < 0x0A000000 {
+        if (0x08000000..0x0A000000).contains(&val) {
             return GbaType::Ptr;
         }
         // Check for RAM address (0x02000000-0x03000000)
-        if val >= 0x02000000 && val < 0x03000000 {
+        if (0x02000000..0x03000000).contains(&val) {
             return GbaType::Ptr;
         }
         // Small values can be u8 or u16
@@ -153,7 +153,7 @@ impl TypeInferencer {
             // Add return type if known
             if let Some(ret_ty) = &func.return_type {
                 let name = format!("{}_ret", func.name);
-                types.insert(name, ret_ty.clone());
+                types.insert(name, *ret_ty);
             }
         }
 
@@ -175,18 +175,18 @@ impl TypeInferencer {
         }
 
         match self.reg_types[reg_idx] {
-            GbaType::Ptr => format!("# Ptr"),
-            GbaType::U8 => format!("# U8"),
-            GbaType::U16 => format!("# U16"),
-            GbaType::U32 => format!("# U32"),
-            GbaType::I8 => format!("# I8"),
-            GbaType::I16 => format!("# I16"),
-            GbaType::I32 => format!("# I32"),
-            GbaType::Bool => format!("# Bool"),
+            GbaType::Ptr => "# Ptr".to_string(),
+            GbaType::U8 => "# U8".to_string(),
+            GbaType::U16 => "# U16".to_string(),
+            GbaType::U32 => "# U32".to_string(),
+            GbaType::I8 => "# I8".to_string(),
+            GbaType::I16 => "# I16".to_string(),
+            GbaType::I32 => "# I32".to_string(),
+            GbaType::Bool => "# Bool".to_string(),
             GbaType::Array { size } => format!("# [{}]", size),
-            GbaType::Struct => format!("# Struct"),
-            GbaType::Function => format!("# Fn"),
-            GbaType::Void => format!("# Void"),
+            GbaType::Struct => "# Struct".to_string(),
+            GbaType::Function => "# Fn".to_string(),
+            GbaType::Void => "# Void".to_string(),
             GbaType::Unknown => String::new(),
         }
     }

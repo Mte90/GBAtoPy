@@ -72,7 +72,11 @@ fn main() {
 
     // Apply filters. Use filter if provided, test_type filter if provided, otherwise all entries
     let filtered_entries: Vec<TestEntry> = if let Some(ref filter) = args.filter {
-        entries.iter().filter(|e| e.name.contains(filter)).cloned().collect()
+        entries
+            .iter()
+            .filter(|e| e.name.contains(filter))
+            .cloned()
+            .collect()
     } else {
         entries.clone()
     };
@@ -124,8 +128,14 @@ fn main() {
     }
 
     // Exit with error code if any failures/errors
-    let failed = results_vec.iter().filter(|r| r.status == TestStatus::Fail).count();
-    let errors = results_vec.iter().filter(|r| r.status == TestStatus::Error).count();
+    let failed = results_vec
+        .iter()
+        .filter(|r| r.status == TestStatus::Fail)
+        .count();
+    let errors = results_vec
+        .iter()
+        .filter(|r| r.status == TestStatus::Error)
+        .count();
 
     if failed > 0 || errors > 0 {
         std::process::exit(1);

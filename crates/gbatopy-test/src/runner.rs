@@ -50,19 +50,18 @@ impl TestRunner {
 
     /// Filter and run only specific test types
     pub fn run_by_type(&self, entries: &[TestEntry], test_type: &TestType) -> TestSuiteResult {
-        let filtered: Vec<&TestEntry> = entries.iter()
+        let filtered: Vec<&TestEntry> = entries
+            .iter()
             .filter(|e| &e.test_type == test_type)
             .collect();
-        let results: Vec<TestResult> = filtered
-            .par_iter()
-            .map(|e| self.run_single(e))
-            .collect();
+        let results: Vec<TestResult> = filtered.par_iter().map(|e| self.run_single(e)).collect();
         TestSuiteResult { tests: results }
     }
 
     /// Run a single test by name
     pub fn run_test(&self, entries: &[TestEntry], test_name: &str) -> Option<TestResult> {
-        entries.iter()
+        entries
+            .iter()
             .find(|e| e.name == test_name)
             .map(|e| self.run_single(e))
     }

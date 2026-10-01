@@ -19,7 +19,6 @@ env_logger = { workspace = true }
 clap = { workspace = true }
 
 gbatopy-disasm = { path = "../gbatopy-disasm" }
-gbatopy-mgba = { path = "../gbatopy-mgba" }
 gbatopy-ir = { path = "../gbatopy-ir" }
 unarm = "2.1"
 base64 = "0.22"

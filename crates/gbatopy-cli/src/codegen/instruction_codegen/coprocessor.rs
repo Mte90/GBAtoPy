@@ -37,36 +37,46 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     // ARM7TDMI has no system coprocessor; coprocessor instructions indicate
     // either data-decoded-as-code (CFG bug) or an undefined instruction trap.
     if opcode_upper.starts_with("COPROCESSOR") {
-        return Some(format!("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)"));
+        return Some(
+            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
+        );
     }
 
     if base_opcode == "MRC" || base_opcode == "MCR" {
-        return Some(format!("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)"));
+        return Some(
+            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
+        );
     }
     if base_opcode == "LDC" || base_opcode == "STC" {
-        return Some(format!("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)"));
+        return Some(
+            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
+        );
     }
     if base_opcode == "CDP" {
-        return Some(format!("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)"));
+        return Some(
+            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
+        );
     }
     if base_opcode == "SWI" || base_opcode == "SVC" {
-        // SWI/SVC: software interrupt - call the global swi_handler(swi_num)
-        // GBA BIOS extracts the SWI number from bits 23:16 of the 24-bit
-        // comment field (mGBA: immediate >> 16).
         let swi_num = match ops.first() {
             Some(Operand::Immediate(n)) => (*n >> 16) & 0xFF,
             _ => 0,
         };
-        return Some(format!("swi_handler({:#X})\nif _cpu_halted:\n    return", swi_num));
+        return Some(format!(
+            "swi_handler({:#X})\nif _cpu_halted:\n    return",
+            swi_num
+        ));
     }
     if base_opcode == "MSR" {
         if ops.len() >= 2 {
             if let Operand::Immediate(flags) = ops[0] {
-                // flags bits map to ARM CPSR fields:
-                //   bit 0 (ARM bit 16) = f field → flags (N/Z/C/V) → cpsr dict
-                //   bit 3 (ARM bit 19) = c field → control (mode/T bit) → not tracked by runtime
-                let has_flags = (flags & 1) != 0;
-                let has_control = (flags & 8) != 0;
+                // flags bits map to ARM CPSR field-mask bits [19:16]:
+                //   bit 0 (ARM bit 16) = c field → control (mode, T, I, F)
+                //   bit 1 (ARM bit 17) = x field → extension (reserved on ARM7TDMI)
+                //   bit 2 (ARM bit 18) = s field → status (reserved on ARM7TDMI)
+                //   bit 3 (ARM bit 19) = f field → flags (N/Z/C/V)
+                let has_control = (flags & 1) != 0;
+                let has_flags = (flags & 8) != 0;
                 if !has_flags && !has_control {
                     return Some("pass  # MSR with no fields".to_string());
                 }
@@ -86,7 +96,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                 }
                 if has_flags {
                     if has_control {
-                        code.push_str("\n");
+                        code.push('\n');
                     }
                     code.push_str(&format!("cpsr['n'] = ({} >> 31) & 1\n", source));
                     code.push_str(&format!("cpsr['z'] = ({} >> 30) & 1\n", source));
@@ -94,50 +104,73 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     code.push_str(&format!("cpsr['v'] = ({} >> 28) & 1", source));
                 }
                 if code.is_empty() {
-                    code.push_str("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)");
+                    code.push_str(
+                        "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)",
+                    );
                 }
                 return Some(code);
             }
         }
-        return Some("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string());
+        return Some(
+            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
+        );
     }
     if base_opcode == "MRS" {
-        if let Some(Operand::Register(rd)) = ops.get(0) {
-            return Some(format!("registers[{}] = (cpsr['n'] << 31) | (cpsr['z'] << 30) | (cpsr['c'] << 29) | (cpsr['v'] << 28)", rd));
+        if let Some(Operand::Register(rd)) = ops.first() {
+            return Some(format!("registers[{}] = ((cpsr['n'] << 31) | (cpsr['z'] << 30) | (cpsr['c'] << 29) | (cpsr['v'] << 28) | (cpsr['f'] << 6) | (cpsr['i'] << 7) | (cpsr['t'] << 5) | cpsr['mode']) & 0xFFFFFFFF", rd));
         }
-        return Some("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string());
+        return Some(
+            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
+        );
     }
     if base_opcode == "NOP" {
         return Some("pass  # NOP".to_string());
     }
+    #[allow(clippy::collapsible_if)]
     if base_opcode == "MUL" || base_opcode == "MLA" {
         if ops.len() >= 3 {
             if let Operand::Register(rd) = ops[0] {
                 let rm = if let Operand::Register(r) = ops[1] {
                     format!("registers[{}]", r)
-                } else { "0".to_string() };
+                } else {
+                    "0".to_string()
+                };
                 let rs = if let Operand::Register(r) = ops[2] {
                     format!("registers[{}]", r)
-                } else { "0".to_string() };
+                } else {
+                    "0".to_string()
+                };
                 let acc = if base_opcode == "MLA" && ops.len() >= 4 {
                     if let Operand::Register(a) = ops[3] {
                         format!(" + registers[{}]", a)
-                    } else { String::new() }
-                } else { String::new() };
-                return Some(format!("registers[{}] = ({} * {} {}) & 0xFFFFFFFF", rd, rm, rs, acc));
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+                return Some(format!(
+                    "registers[{}] = ({} * {} {}) & 0xFFFFFFFF",
+                    rd, rm, rs, acc
+                ));
             }
         }
     }
+    #[allow(clippy::collapsible_if)]
     if base_opcode == "UMULL" || base_opcode == "SMULL" {
         if ops.len() >= 4 {
             if let Operand::Register(rlo) = ops[0] {
                 if let Operand::Register(rhi) = ops[1] {
                     let rm = if let Operand::Register(r) = ops[2] {
                         format!("registers[{}]", r)
-                    } else { "0".to_string() };
+                    } else {
+                        "0".to_string()
+                    };
                     let rs = if let Operand::Register(r) = ops[3] {
                         format!("registers[{}]", r)
-                    } else { "0".to_string() };
+                    } else {
+                        "0".to_string()
+                    };
                     return Some(format!(
                         "result = {} * {}; registers[{}] = result & 0xFFFFFFFF; registers[{}] = (result >> 32) & 0xFFFFFFFF",
                         rm, rs, rlo, rhi

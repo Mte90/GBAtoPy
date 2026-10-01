@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub enum GbaType {
     I8,
     I16,
@@ -10,15 +10,12 @@ pub enum GbaType {
     U32,
     Bool,
     Ptr,
-    Array { size: usize },
+    Array {
+        size: usize,
+    },
     Struct,
     Function,
     Void,
+    #[default]
     Unknown,
-}
-
-impl GbaType {
-    pub fn default() -> Self {
-        GbaType::Unknown
-    }
 }

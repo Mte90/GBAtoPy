@@ -53,11 +53,7 @@ fn strh_preserves_nonzero_immediate_offset() {
 /// Regression: BL was not storing the return address in LR (R14).
 #[test]
 fn bl_sets_lr_before_branch() {
-    let inst = arm_inst(
-        "BL",
-        vec![Operand::Immediate(0x08000100)],
-        false,
-    );
+    let inst = arm_inst("BL", vec![Operand::Immediate(0x08000100)], false);
     let code = generate_instruction_python(&inst);
     assert!(
         code.contains("registers[14]"),
@@ -81,11 +77,7 @@ fn bl_sets_lr_before_branch() {
 /// Bug T1.3: Conditional branch BNE/BEQ must fall through to PC+4 when condition false.
 #[test]
 fn conditional_branch_has_else_pc_advance() {
-    let inst = arm_inst(
-        "BNE",
-        vec![Operand::Immediate(0x08000200)],
-        false,
-    );
+    let inst = arm_inst("BNE", vec![Operand::Immediate(0x08000200)], false);
     let code = generate_instruction_python(&inst);
     assert!(
         code.contains("cpsr_check('NE')"),
@@ -131,7 +123,9 @@ fn ldm_with_pc_in_list_writes_r15() {
     );
 }
 
-/// Bug T1.5: STMFD (push) address order must be DECREASING (base-4, base-8, ...).
+/// Bug T1.5: STMFD (push) walks from frame bottom with addr += 4.
+/// ARM rule: lowest register maps to lowest address. For STMDB/STMFD with 3 regs,
+/// frame bottom = base - 12, then walk up: base-12, base-8, base-4.
 #[test]
 fn stmfd_uses_decreasing_addresses() {
     let inst = arm_inst(
@@ -142,7 +136,7 @@ fn stmfd_uses_decreasing_addresses() {
                 base: 13,
                 registers: vec![4, 5, 14],
                 increment: false,
-                pre_index: false,
+                pre_index: true, // STMFD = STMDB = pre-indexed decrement
                 writeback: true,
                 s_bit: false,
             },
@@ -152,13 +146,13 @@ fn stmfd_uses_decreasing_addresses() {
     );
     let code = generate_instruction_python(&inst);
     assert!(
-        code.contains("addr = registers[13]"),
-        "STMFD must start at SP (post-dec), got: {}",
+        code.contains("addr = registers[13] - 12"),
+        "STMFD must start at frame bottom (SP - 12 for 3 regs), got: {}",
         code
     );
     assert!(
-        code.contains("addr -= 4"),
-        "STMFD must decrement address by 4 between stores, got: {}",
+        code.contains("addr += 4"),
+        "STMFD must increment address by 4 between stores (lowest reg → lowest addr), got: {}",
         code
     );
     assert!(
@@ -272,6 +266,66 @@ fn add_immediate_strips_hash_prefix() {
     assert!(
         code.contains('5'),
         "ADD immediate 5 must appear, got: {}",
+        code
+    );
+}
+
+/// Bug T1.10: MRS must emit full CPSR round-trip (NZCV + F + I + T + mode).
+/// Regression: MRS was only reconstructing NZCV bits, dropping bits 7 (I), 6 (F), 5 (T), and 4-0 (mode).
+/// This caused MSR CPSR_c, rd to fail because rd & 0x1F = 0 → _switch_mode(0) → banked SP/LR corruption.
+#[test]
+fn mrs_emits_full_cpsr_round_trip() {
+    let inst = arm_inst(
+        "MRS",
+        vec![Operand::Register(0), Operand::Immediate(0)], // rd=0, CPSR (not SPSR)
+        false,
+    );
+    let code = generate_instruction_python(&inst);
+    // Must emit all CPSR bits, not just NZCV
+    assert!(
+        code.contains("cpsr['n']"),
+        "MRS must include cpsr['n'], got: {}",
+        code
+    );
+    assert!(
+        code.contains("cpsr['z']"),
+        "MRS must include cpsr['z'], got: {}",
+        code
+    );
+    assert!(
+        code.contains("cpsr['c']"),
+        "MRS must include cpsr['c'], got: {}",
+        code
+    );
+    assert!(
+        code.contains("cpsr['v']"),
+        "MRS must include cpsr['v'], got: {}",
+        code
+    );
+    assert!(
+        code.contains("cpsr['f']"),
+        "MRS must include cpsr['f'] (bit 6), got: {}",
+        code
+    );
+    assert!(
+        code.contains("cpsr['i']"),
+        "MRS must include cpsr['i'] (bit 7), got: {}",
+        code
+    );
+    assert!(
+        code.contains("cpsr['t']"),
+        "MRS must include cpsr['t'] (bit 5), got: {}",
+        code
+    );
+    assert!(
+        code.contains("cpsr['mode']"),
+        "MRS must include cpsr['mode'] (bits 4-0), got: {}",
+        code
+    );
+    // Must mask to 32 bits
+    assert!(
+        code.contains("& 0xFFFFFFFF"),
+        "MRS must mask result to 32 bits, got: {}",
         code
     );
 }

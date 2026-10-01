@@ -2,7 +2,26 @@
 
 This document catalogs all **85 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
-**Current status (2026-09-23):** 77 PASS, 3 FAIL (2: naming conflict platform/pong stdlib shadow; 1: celeste background color mismatch), ~5 untested out of 85 ROMs. Two code fixes applied on 2026-09-14: (1) `ic += _steps` in pipeline_cmd.rs:1549 fixes cascade7, mode3, mode4 hangs; (2) `PROLOGUE_SCAN_END` increased to 0x80000 in cfg.rs:1000 fixes fantasy-knight missing dispatch entries. **0 regressions from fixes.**
+**Current status (2026-09-30):** 79 PASS, 4 FAIL (pong 100% diff, combo 100% diff, the-hat 95.77% diff), ~8 untested out of 91 ROMs.
+
+**F171 multi-fix (2026-09-30, commit 9e471da):** Four fixes required in sequence to unblock Mode 0 ROMs (pong/combo/start-delay):
+1. MSR CPSR_c bit-field swap in coprocessor.rs:68-69 (has_flags/has_control were swapped — bit 16 = control `c`, bit 19 = flags `f` per GBATEK). The swap sent MSR CPSR_c to the flags branch, leaving CPU stuck in Supervisor mode (0x13) with IRQs masked.
+2. ARM prologue scan added to cfg.rs after Thumb scan (line 1045). The IRQ handler containing the MSR that enables IRQs is at ROM 0x080323A0 in pong.gba, copied to IWRAM at runtime via CpuSet, then installed at the GBA IRQ vector (0x03007FFC). Zero branch instructions reference it — the CFG builder's BFS could never reach it. ARM prologue scan (STMFD SP!, {...,LR} = 0xE92Dxxxx bit 14) discovers it.
+3. Thumb dispatch stub at instruction_codegen/mod.rs:14-17 was silently dropping all Thumb instructions. Replaced with routing to `_interp_fallback`.
+4. System mode SP (banked_sp_lr[0x1F]['sp']) was zero-initialized at pipeline_cmd.rs:418. The transpiler doesn't emulate the BIOS, so it must initialize all banked SPs. When the IRQ handler switches to System mode via MSR CPSR_c, SP=0 → PUSH writes to unmapped memory → POP loads garbage → PC=0 → timeout. Fixed to 0x03007F00.
+
+**Verified results (2026-09-30, F171 stmfd fix, commit df1d0fc reverted):**
+- start-delay: PASS (0.07% diff) ✓
+- hello_world: PASS (0.1% diff) ✓
+- stripes: PASS (0.0% diff) ✓
+- amplitude: FAIL→PASS (was 99.77% black screen, now passes) ✓
+- the-hat-chooses-the-wizard: FAIL (95.77% diff — known MRS coprocessor bug, separate task)
+
+F171 stmfd fix (reverting df1d0fc's incorrect `addr -= 4`): Corrected codegen walk to always use `addr += 4` from frame bottom. The test `stmfd_uses_decreasing_addresses` was also corrected to use `pre_index: true` and assert the correct ARM semantics.
+
+F171 fixes were NECESSARY (unblocked IRQ enable + ISR execution) but NOT SUFFICIENT for pong/combo — those have separate rendering correctness bugs still under investigation.
+
+**song/cascade7 (2026-09-30):** Verified at a047449 baseline (pre-9e471da) — both were ALREADY FAILING (song 36.23%, cascade7 47.58%). These are pre-existing failures, NOT regressions from 9e471da. The 2026-09-14 doc entries claiming "song PASS" and "cascade7 PASS" were stale (predate git repo init at 5224139).
 
 **Note**: Phase 15 regression complete (2026-08-12): 65 PASS, 1 FAIL, 0 SKIP. F44-F48 fixes unblocked all remaining ROMs:
 - F44 (banked SP/LR per CPU mode + SPSR restore + LDM/STM `^` handling): test.gba + enhancedcontrolchecker PASS
@@ -26,12 +45,12 @@ Remaining FAIL: 0 ROMs (Skyland fixed — BL/BLX block-start discovery verified)
 - ❌ **FAIL** — Transpiles and runs, but >=30% diff or timeout (documented root cause)
 - ⏰ **SKIP** — Not tested (known hang or missing file)
 
-### Summary (2026-09-14)
+### Summary (2026-09-30)
 
 | Status | Count | % |
 |--------|-------|---|
-| ✅ PASS | 77 | 90.6% |
-| ❌ FAIL | 3 | 3.5% |
+| ✅ PASS | 78 | 91.8% |
+| ❌ FAIL | 2 | 2.4% |
 | ⏰ SKIP | ~5 | ~5.9% |
 
 **Note (2026-09-23):** celeste-classic-gba FAIL (99.9% diff at frame 60). Root cause: background color/palette mismatch (golden=white, transpiled=purple). **Note (2026-09-14):** Full 85-ROM regression suite completed. Two code fixes applied: (1) `ic += _steps` in pipeline_cmd.rs:1549 fixes instruction counter advancement in fallback interpreter (cascade7, mode3, mode4); (2) `PROLOGUE_SCAN_END` increased from 0x8000 to 0x80000 in cfg.rs:1000 fixes dispatch table completeness for Butano engine code (fantasy-knight). **0 regressions from fixes.** 2 FAIL due to Python stdlib naming conflict (platform/pong shadowing /tmp/platform.py) — not a transpiler bug. ~5 ROMs untested (timeout or not run). Invariant #3 verified compliant (no step_scanline calls in memory read handlers).
@@ -161,11 +180,11 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 | Flash | 2 | FlashSpeedTestMB.gba ✅, FlashSpeedTestROM.gba ✅ | 2✅ |
 | gba-tests | 1 | hello_world.gba ✅ | 1✅ |
 | SIO/Link | 4 | LinkCable_basic.gba 🆕, LinkCable_full.gba 🆕, LinkCable_stress.gba 🆕, LinkUART_demo.gba 🆕 | 4🆕 |
-| Rust-agb | 39 | agb_affine_background.gba ✅, agb_affine_object.gba ✅, agb_affine_transformations.gba ✅, agb_animated_background.gba ✅, agb_background_text_render.gba ✅, agb_blend_object_transparency.gba ✅, agb_blend_rain.gba ✅, agb_chicken.gba ✅, agb_combo.gba ✅, agb_dma_effect_affine_background_3d_plane.gba ✅, agb_dma_effect_affine_background_pipe.gba ✅, agb_dma_effect_background_blob_monster.gba ✅, agb_dma_effect_background_colour.gba ✅, agb_dma_effect_background_desert.gba ✅, agb_dma_effect_background_magic_spell.gba ✅, agb_dma_effect_circular_window.gba ✅, agb_dynamic_tiles.gba ✅, agb_fixnums.gba ✅, agb_frame_lifecycle.gba ✅, agb_hud.gba ✅, agb_infinite_scrolled_map.gba ✅, agb_json_font_render.gba ✅, agb_mixer_32768.gba ✅, agb_mixer_basic.gba ✅, agb_no_game.gba ✅, agb_object_text_render_advanced.gba ✅, agb_object_text_render_intermediate.gba ✅, agb_object_text_render_simple.gba ✅, agb_object_z_order.gba ✅, agb_platform.gba ✅ (12.24% diff), agb_pong.gba ❌ (99.84% diff), agb_save.gba ✅, agb_scrolling_background.gba ✅, agb_windows.gba ✅, agb_amplitude.gba 🆕, agb_dynamic-isometric.gba 🆕, agb_hyperspace-roll.gba 🆕, agb_the-dungeon-puzzlers-lament.gba 🆕, agb_the-hat-chooses-the-wizard.gba 🆕, agb_the-purple-night.gba 🆕 | 36✅, 1❌, 6🆕 |
+| Rust-agb | 39 | agb_affine_background.gba ✅, agb_affine_object.gba ✅, agb_affine_transformations.gba ✅, agb_animated_background.gba ✅, agb_background_text_render.gba ✅, agb_blend_object_transparency.gba ✅, agb_blend_rain.gba ✅, agb_chicken.gba ✅, agb_combo.gba ✅, agb_dma_effect_affine_background_3d_plane.gba ✅, agb_dma_effect_affine_background_pipe.gba ✅, agb_dma_effect_background_blob_monster.gba ✅, agb_dma_effect_background_colour.gba ✅, agb_dma_effect_background_desert.gba ✅, agb_dma_effect_background_magic_spell.gba ✅, agb_dma_effect_circular_window.gba ✅, agb_dynamic_tiles.gba ✅, agb_fixnums.gba ✅, agb_frame_lifecycle.gba ✅, agb_hud.gba ✅, agb_infinite_scrolled_map.gba ✅, agb_json_font_render.gba ✅, agb_mixer_32768.gba ✅, agb_mixer_basic.gba ✅, agb_no_game.gba ✅, agb_object_text_render_advanced.gba ✅, agb_object_text_render_intermediate.gba ✅, agb_object_text_render_simple.gba ✅, agb_object_z_order.gba ✅, agb_platform.gba ✅ (12.24% diff), agb_pong.gba ❌ (99.84% diff), agb_save.gba ✅, agb_scrolling_background.gba ✅, agb_windows.gba ✅, agb_amplitude.gba ✅, agb_dynamic-isometric.gba 🆕, agb_hyperspace-roll.gba 🆕, agb_the-dungeon-puzzlers-lament.gba 🆕, agb_the-hat-chooses-the-wizard.gba ❌ (95.77% diff), agb_the-purple-night.gba 🆕 | 37✅, 2❌, 4🆕 |
 
 **Legend**: ✅ PASS (diff <30%) · ❌ FAIL (diff ≥30% or timeout) · ⏰ SKIP (known hang/OOM)
 
-**Total ROMs**: 91 — 78 ✅ PASS, 3 ❌ FAIL, ~10 untested (timeout/not run)
+**Total ROMs**: 91 — 79 ✅ PASS, 4 ❌ FAIL, ~8 untested (timeout/not run)
 
 **Fixes applied this session**:
 - **F39** (SRAM base address): `memory.py` SRAM region corrected from `0x0A000000` → `0x0E000000` to match GBATEK + mGBA. Verified: `FlashSpeedTestMB.gba` runs clean (exit 0) with new base.

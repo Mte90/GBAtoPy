@@ -1,18 +1,22 @@
+use super::image_compare::{
+    compare_images_comprehensive, format_failure_message, format_success_message, ComparisonConfig,
+};
+use super::Verifier;
 use crate::config::TestEntry;
 use crate::types::{TestResult, TestStatus};
-use super::Verifier;
+use duct::cmd;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use duct::cmd;
-use super::image_compare::{
-    compare_images_comprehensive, ComparisonConfig, format_success_message,
-    format_failure_message
-};
 
 pub struct ScreenshotGoldenVerifier;
 
 impl Verifier for ScreenshotGoldenVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
+    fn verify(
+        &self,
+        entry: &TestEntry,
+        artifacts_dir: &Path,
+        config: &crate::config::TestConfig,
+    ) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
@@ -22,18 +26,16 @@ impl Verifier for ScreenshotGoldenVerifier {
         // Resolve the full ROM path
         let rom_path = config.roms_dir.join(&entry.rom_path);
         let rom_path_str = rom_path.to_string_lossy().to_string();
-        let rom_stem = entry.rom_path
+        let rom_stem = entry
+            .rom_path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
         let transpiled_py = artifacts_dir.join(format!("{}.py", rom_stem));
         let screenshot_path = artifacts_dir.join("transpiled.png");
-        
-        let golden_path = PathBuf::from(format!(
-            "test-reports/goldens/{}_f60.png",
-            rom_stem
-        ));
+
+        let golden_path = PathBuf::from(format!("test-reports/goldens/{}_f60.png", rom_stem));
 
         if let Err(e) = self.transpile(&rom_path_str, &transpiled_py) {
             return TestResult {
@@ -47,7 +49,10 @@ impl Verifier for ScreenshotGoldenVerifier {
             };
         }
 
-        log::info!("[ScreenshotGolden] Transpilation succeeded for {}", test_name);
+        log::info!(
+            "[ScreenshotGolden] Transpilation succeeded for {}",
+            test_name
+        );
 
         // Copy ROM .bin alongside transpiled script for load_rom_data()
         let rom_bin_dest = artifacts_dir.join(format!("{}.bin", rom_stem));
@@ -82,7 +87,7 @@ impl Verifier for ScreenshotGoldenVerifier {
 
         // Use comprehensive comparison with new thresholds
         let config = ComparisonConfig::default();
-        
+
         match compare_images_comprehensive(
             &screenshot_path,
             &golden_path,
@@ -107,23 +112,39 @@ impl Verifier for ScreenshotGoldenVerifier {
                     log::error!(
                         "[ScreenshotGolden] FAIL: {} ({})",
                         test_name,
-                        format_failure_message(&result.metrics, result.failure_classification.as_ref())
+                        format_failure_message(
+                            &result.metrics,
+                            result.failure_classification.as_ref()
+                        )
                     );
                     TestResult {
                         name: test_name,
                         test_type: test_type_str,
                         status: TestStatus::Fail,
-                        message: format_failure_message(&result.metrics, result.failure_classification.as_ref()),
+                        message: format_failure_message(
+                            &result.metrics,
+                            result.failure_classification.as_ref(),
+                        ),
                         duration: start.elapsed(),
                         metrics: serde_json::to_value(&result.metrics).ok(),
-                        failure_classification: result.failure_classification.map(|c| {
-                            match c {
-                                super::image_compare::FailureClassification::SizeMismatch => "size_mismatch".to_string(),
-                                super::image_compare::FailureClassification::EmptyOutput => "empty_output".to_string(),
-                                super::image_compare::FailureClassification::NearBlackOutput => "near_black_output".to_string(),
-                                super::image_compare::FailureClassification::Offset => "offset".to_string(),
-                                super::image_compare::FailureClassification::ColorShift => "color_shift".to_string(),
-                                super::image_compare::FailureClassification::StructuralMismatch => "structural_mismatch".to_string(),
+                        failure_classification: result.failure_classification.map(|c| match c {
+                            super::image_compare::FailureClassification::SizeMismatch => {
+                                "size_mismatch".to_string()
+                            }
+                            super::image_compare::FailureClassification::EmptyOutput => {
+                                "empty_output".to_string()
+                            }
+                            super::image_compare::FailureClassification::NearBlackOutput => {
+                                "near_black_output".to_string()
+                            }
+                            super::image_compare::FailureClassification::Offset => {
+                                "offset".to_string()
+                            }
+                            super::image_compare::FailureClassification::ColorShift => {
+                                "color_shift".to_string()
+                            }
+                            super::image_compare::FailureClassification::StructuralMismatch => {
+                                "structural_mismatch".to_string()
                             }
                         }),
                     }
@@ -156,15 +177,22 @@ impl ScreenshotGoldenVerifier {
         } else {
             "target/debug/gbatopy-cli"
         };
-        
-        cmd!(bin, "pipeline", "--rom", rom_path, "--output", output.to_string_lossy().as_ref())
-            .dir(".")
-            .run()?;
-        
+
+        cmd!(
+            bin,
+            "pipeline",
+            "--rom",
+            rom_path,
+            "--output",
+            output.to_string_lossy().as_ref()
+        )
+        .dir(".")
+        .run()?;
+
         if !output.exists() {
             return Err("Output file not created".into());
         }
-        
+
         Ok(())
     }
 
@@ -175,9 +203,13 @@ impl ScreenshotGoldenVerifier {
         frames: u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let frame_arg = format!("--frame={}", frames);
-        let screenshot_name = screenshot_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let screenshot_name = screenshot_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let screenshot_arg = format!("--screenshot={}", screenshot_name);
-        
+
         cmd!(
             "python3",
             py_file.file_name().unwrap().to_string_lossy().as_ref(),
@@ -188,11 +220,11 @@ impl ScreenshotGoldenVerifier {
         .env("SDL_VIDEODRIVER", "dummy")
         .dir(py_file.parent().unwrap_or(Path::new(".")))
         .run()?;
-        
+
         if !screenshot_path.exists() {
             return Err("Screenshot file not created".into());
         }
-        
+
         Ok(())
     }
 }

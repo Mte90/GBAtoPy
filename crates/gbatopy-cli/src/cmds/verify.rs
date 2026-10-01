@@ -16,7 +16,7 @@ pub fn verify_all(
         let entry = entry?;
         let path = entry.path();
 
-        if path.extension().map_or(false, |ext| ext == "gba") {
+        if path.extension().is_some_and(|ext| ext == "gba") {
             let rom_path = path.to_str().unwrap_or("");
             println!(
                 "\n--- Testing: {} ---",

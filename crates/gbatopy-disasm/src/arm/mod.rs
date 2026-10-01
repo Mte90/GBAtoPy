@@ -95,17 +95,17 @@ impl ArmDecoder {
 
         // Check bits 27-25 FIRST for instructions that span multiple (bits_27_26, bit_25) combinations
         let bits_27_25 = (word >> 25) & 0x7;
-        
+
         // LDM/STM: bits 27-25 = 100 (can have bits_27_26 = 10 or 11 depending on encoding)
         if bits_27_25 == 0b100 {
             return self.decode_block_transfer(word, address);
         }
-        
+
         // B/BL: bits 27-25 = 101
         if bits_27_25 == 0b101 {
             return self.decode_branch(word, address);
         }
-        
+
         // Halfword load/store (LDRH/STRH/LDRSB/LDRSH), SWP, MUL, MLA all have
         // bits 27-26 = 00 and are handled by decode_data_processing via the
         // (0b00, _) match arm below. No early return here — routing through the
@@ -117,12 +117,12 @@ impl ArmDecoder {
             (0b11, _) => {
                 // Check bit 25 for more specific classification
                 match bits_27_25 {
-                    0b110 => (format!("COPROCESSOR"), vec![], false),
+                    0b110 => ("COPROCESSOR".to_string(), vec![], false),
                     0b111 => {
-                        let swi_num = (word & 0xFFFFFF) as u32;
-                        (format!("SWI"), vec![Operand::Immediate(swi_num)], false)
+                        let swi_num = word & 0xFFFFFF;
+                        ("SWI".to_string(), vec![Operand::Immediate(swi_num)], false)
                     }
-                    _ => (format!("UNKNOWN"), vec![], false),
+                    _ => ("UNKNOWN".to_string(), vec![], false),
                 }
             }
             _ => (
@@ -159,11 +159,13 @@ impl ArmDecoder {
         let bits_19_16 = (word >> 16) & 0xF;
         let bits_7_4 = (word >> 4) & 0xF;
 
-        let is_bx_blx =
-            bits_27_24 == 0x1 && (bits_23_20 == 0x2 || bits_23_20 == 0x3) && bits_19_16 == 0xF && bits_7_4 == 0x1;
+        let is_bx_blx = bits_27_24 == 0x1
+            && (bits_23_20 == 0x2 || bits_23_20 == 0x3)
+            && bits_19_16 == 0xF
+            && bits_7_4 == 0x1;
 
         if is_bx_blx {
-            let l_bit = (word >> 20) & 1;  // bit 20 distinguishes BX (0) from BLX (1)
+            let l_bit = (word >> 20) & 1; // bit 20 distinguishes BX (0) from BLX (1)
             let rm = (word & 0xF) as u8;
             let op = if l_bit != 0 { "BLX" } else { "BX" };
             return (op.to_string(), vec![Operand::Register(rm)], false);
@@ -181,7 +183,11 @@ impl ArmDecoder {
         // Halfword/signed transfers only exist when I-bit (bit 25) = 0.
         // When I=1, bits 7-0 are the immediate value of a data-processing op,
         // and bit_7/bit_4 being set is just part of the immediate, not a halfword indicator.
-        if i_bit == 0 && bit_7 == 1 && bit_4 == 1 && (bit_7_4 == 0xB || bit_7_4 == 0xD || bit_7_4 == 0xF) {
+        if i_bit == 0
+            && bit_7 == 1
+            && bit_4 == 1
+            && (bit_7_4 == 0xB || bit_7_4 == 0xD || bit_7_4 == 0xF)
+        {
             let l_bit = (word >> 20) & 1 != 0;
             let rn = ((word >> 16) & 0xF) as u8;
             let rd = ((word >> 12) & 0xF) as u8;
@@ -189,9 +195,22 @@ impl ArmDecoder {
 
             // Determine opcode from bits[7:4] pattern
             let op_name = match bit_7_4 {
-                0xB => if l_bit { "LDRH" } else { "STRH" },    // halfword
-                0xD => if l_bit { "LDRSB" } else { "UNDEFINED" }, // signed byte
-                0xF => if l_bit { "LDRSH" } else { "UNDEFINED" }, // signed halfword
+                0xB => {
+                    if l_bit {
+                        "LDRH"
+                    } else {
+                        "STRH"
+                    }
+                } // halfword
+                0xD => {
+                    if l_bit {
+                        "LDRSB"
+                    } else {
+                        "UNDEFINED"
+                    }
+                } // signed byte
+                0xF if l_bit => "LDRSH", // signed halfword
+                0xF => "UNDEFINED",      // signed halfword
                 _ => "UNDEFINED",
             };
 
@@ -206,9 +225,17 @@ impl ArmDecoder {
                 let imm = ((imm4h << 4) | imm4l) as i32;
                 let signed_imm = if up_bit { imm } else { -imm };
                 if !p_bit {
-                    AddressingMode::PostIndexed { base: rn, offset: signed_imm, writeback: w_bit }
+                    AddressingMode::PostIndexed {
+                        base: rn,
+                        offset: signed_imm,
+                        writeback: w_bit,
+                    }
                 } else if w_bit {
-                    AddressingMode::PreIndexed { base: rn, offset: signed_imm, writeback: true }
+                    AddressingMode::PreIndexed {
+                        base: rn,
+                        offset: signed_imm,
+                        writeback: true,
+                    }
                 } else {
                     AddressingMode::ImmediateOffset(signed_imm)
                 }
@@ -311,8 +338,11 @@ impl ArmDecoder {
                 ],
                 false,
             )
-        } else if bits_27_24 == 0x1 && ((word >> 20) & 0x3) == 0x0 && bits_7_4 == 0x0
-            && ((word >> 16) & 0xF) == 0xF && ((word >> 12) & 0xF) == 0x0
+        } else if bits_27_24 == 0x1
+            && ((word >> 20) & 0x3) == 0x0
+            && bits_7_4 == 0x0
+            && ((word >> 16) & 0xF) == 0xF
+            && ((word >> 12) & 0xF) == 0x0
         {
             // MRS: cond 0001 0R 00 1111 0000 Rd 0000
             // bits 21-20 = 00, bits 19-16 = 1111, bits 15-12 = 0000, bits 7-4 = 0000
@@ -324,8 +354,11 @@ impl ArmDecoder {
                 vec![Operand::Register(rd), Operand::Immediate(sr as u32)],
                 false,
             )
-        } else if bits_27_24 == 0x1 && ((word >> 20) & 0x3) == 0x2 && bits_7_4 == 0x0
-            && ((word >> 23) & 1) == 0 && ((word >> 12) & 0xF) == 0xF
+        } else if bits_27_24 == 0x1
+            && ((word >> 20) & 0x3) == 0x2
+            && bits_7_4 == 0x0
+            && ((word >> 23) & 1) == 0
+            && ((word >> 12) & 0xF) == 0xF
         {
             let s_bit = (word >> 20) & 1 != 0;
             let flags = (word >> 16) & 0xF;
@@ -366,18 +399,24 @@ impl ArmDecoder {
             let rn = ((word >> 16) & 0xF) as u8;
             let rd = ((word >> 12) & 0xF) as u8;
             let rm = (word & 0xF) as u8;
-            
+
             let op_name = if l_bit {
-                if b_bit { "LDRB" }
-                else { "LDR" }
+                if b_bit {
+                    "LDRB"
+                } else {
+                    "LDR"
+                }
             } else {
-                if b_bit { "STRB" }
-                else { "STR" }
+                if b_bit {
+                    "STRB"
+                } else {
+                    "STR"
+                }
             };
-            
+
             // Register offset addressing mode
             let addressing_mode = AddressingMode::RegisterOffset(rm);
-            
+
             (
                 op_name.to_string(),
                 vec![
@@ -416,14 +455,14 @@ impl ArmDecoder {
                     let rot = (operand2_bits >> 8) & 0xF;
                     // Rotate right by 2*rot bits
                     let imm_val = if rot == 0 {
-                        imm8 as u32
+                        imm8
                     } else {
-                        let shift = ((2 * rot) % 32) as u32;
+                        let shift = (2 * rot) % 32;
                         if shift == 0 {
-                            imm8 as u32
+                            imm8
                         } else {
-                            let imm32 = imm8 as u32;
-                            ((imm32 >> shift) | (imm32 << (32 - shift))) & 0xFFFFFFFF
+                            let imm32 = imm8;
+                            imm32.rotate_right(shift)
                         }
                     };
                     if has_rn {
@@ -456,7 +495,9 @@ impl ArmDecoder {
                         let shift_type_bits = ((operand2_bits >> 5) & 0x3) as u8;
                         if shift_imm == 0 && shift_type_bits == 0 {
                             operands.push(Operand::Register(rm));
-                        } else if let Some(shift) = crate::operand::ShiftType::from_bits(shift_type_bits) {
+                        } else if let Some(shift) =
+                            crate::operand::ShiftType::from_bits(shift_type_bits)
+                        {
                             operands.push(Operand::ShiftedRegister {
                                 reg: rm,
                                 shift,
@@ -484,15 +525,23 @@ impl ArmDecoder {
         let l_bit = (word >> 20) & 1 != 0;
         let rn = ((word >> 16) & 0xF) as u8;
         let rd = ((word >> 12) & 0xF) as u8;
-        
+
         // Halfword/signed transfers (LDRH/STRH/LDRSB/LDRSH) have bits 27-25 = 000
         // and are decoded by decode_data_processing (lines 116-237). This function
         // only handles word/byte transfers (bits 27-26 = 01), so the B bit alone
         // distinguishes LDR/STR (word) from LDRB/STRB (byte).
         let op_name = if b_bit {
-            if l_bit { "LDRB" } else { "STRB" }
+            if l_bit {
+                "LDRB"
+            } else {
+                "STRB"
+            }
         } else {
-            if l_bit { "LDR" } else { "STR" }
+            if l_bit {
+                "LDR"
+            } else {
+                "STR"
+            }
         };
 
         if rn == 15 && !i_bit {
@@ -522,7 +571,8 @@ impl ArmDecoder {
         // Extract shift type from bits [6:5]
         let shift_type = crate::ShiftType::from_bits(shift_type_bits);
         // Unshifted = I=1 AND (shift_type=LSL OR invalid) AND shift_imm=0
-        let is_unshifted_reg = i_bit && (shift_type_bits == 0 || shift_type.is_none()) && shift_imm == 0;
+        let is_unshifted_reg =
+            i_bit && (shift_type_bits == 0 || shift_type.is_none()) && shift_imm == 0;
 
         let writeback = w_bit || !p_bit;
 
@@ -544,7 +594,11 @@ impl ArmDecoder {
                     crate::operand::AddressingMode::RegisterOffset(rm)
                 }
             } else {
-                crate::operand::AddressingMode::PostIndexed { base: rn, offset: signed_imm, writeback: true }
+                crate::operand::AddressingMode::PostIndexed {
+                    base: rn,
+                    offset: signed_imm,
+                    writeback: true,
+                }
             }
         } else if w_bit {
             // Pre-indexed with writeback: transfer uses [base + offset], base = base + offset
@@ -562,7 +616,11 @@ impl ArmDecoder {
                     crate::operand::AddressingMode::RegisterOffset(rm)
                 }
             } else {
-                crate::operand::AddressingMode::PreIndexed { base: rn, offset: signed_imm, writeback: true }
+                crate::operand::AddressingMode::PreIndexed {
+                    base: rn,
+                    offset: signed_imm,
+                    writeback: true,
+                }
             }
         } else {
             // Offset addressing: transfer uses [base + offset], base unchanged
@@ -735,7 +793,7 @@ impl ArmDecoder {
         // where x = 20-bit offset, bit[20] = 1 (L bit)
         let bits_27_21 = (word >> 21) & 0x7F;
         let bit_20 = (word >> 20) & 1;
-        
+
         if bits_27_21 == 0x7F && bit_20 == 1 {
             // BLX (immediate): 20-bit signed offset, multiply by 4
             let offset = (word & 0xFFFFF) as i32;
@@ -747,11 +805,11 @@ impl ArmDecoder {
             let target = address
                 .wrapping_add(8)
                 .wrapping_add((sign_extended << 2) as u32);
-            
+
             // BLX is always unconditional in ARM mode
             return ("BLX".to_string(), vec![Operand::Immediate(target)], false);
         }
-        
+
         let l_bit = (word >> 24) & 1 != 0;
         let offset = word & 0xFFFFFF;
         let signed_offset = ((offset as i32) << 8) >> 8;
@@ -764,20 +822,35 @@ impl ArmDecoder {
         // Get condition code (bits 28-31)
         let cond_bits = ((word >> 28) & 0xF) as u8;
         let _cond = decode_condition(cond_bits);
-        
+
         // Build opcode name with condition for conditional branches
         // AL (0xE) is unconditional, so use plain B/BL
         // Other conditions: BEQ, BNE, BCS, BCC, etc.
         let op_name = if cond_bits == 0xE {
             // Unconditional branch (AL condition)
-            if l_bit { "BL".to_string() } else { "B".to_string() }
+            if l_bit {
+                "BL".to_string()
+            } else {
+                "B".to_string()
+            }
         } else {
             // Conditional branch: add condition suffix
             let cond_str = match cond_bits {
-                0x0 => "EQ", 0x1 => "NE", 0x2 => "CS", 0x3 => "CC",
-                0x4 => "MI", 0x5 => "PL", 0x6 => "VS", 0x7 => "VC",
-                0x8 => "HI", 0x9 => "LS", 0xA => "GE", 0xB => "LT",
-                0xC => "GT", 0xD => "LE", _ => "AL",
+                0x0 => "EQ",
+                0x1 => "NE",
+                0x2 => "CS",
+                0x3 => "CC",
+                0x4 => "MI",
+                0x5 => "PL",
+                0x6 => "VS",
+                0x7 => "VC",
+                0x8 => "HI",
+                0x9 => "LS",
+                0xA => "GE",
+                0xB => "LT",
+                0xC => "GT",
+                0xD => "LE",
+                _ => "AL",
             };
             if l_bit {
                 format!("BL{}", cond_str)

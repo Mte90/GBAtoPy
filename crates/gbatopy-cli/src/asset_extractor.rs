@@ -1,4 +1,3 @@
-#![allow(unused_variables, unused_mut)]
 /// Extracted assets from GBA ROM
 #[derive(Default)]
 pub struct ExtractedAssets {
@@ -23,7 +22,7 @@ fn is_valid_4bpp_tile(data: &[u8]) -> bool {
     unique_nibbles.iter().filter(|&&x| x).count() >= 3
 }
 fn is_likely_tilemap(data: &[u8]) -> bool {
-    if data.len() < 4 || data.len() % 2 != 0 {
+    if data.len() < 4 || !data.len().is_multiple_of(2) {
         return false;
     }
     let mut valid_entries = 0usize;
@@ -43,20 +42,12 @@ fn is_likely_tilemap(data: &[u8]) -> bool {
 pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
     let mut assets = ExtractedAssets::default();
     let start_offset = 0x100;
-    // Audio samples in IWRAM (0x03000000-0x03007FFF) at ROM offset 0x08000000+(IWRAM_OFFSET)
-    let iwram_base = 0x03000000;
-    let rom_base = 0x08000000;
-    let sample_scan_start = (0x03007FFC - iwram_base) as usize + rom_base;
-    let sample_scan_end = (0x03000000 - iwram_base) as usize + rom_base;
     assets.samples = Vec::new();
     let mut palette_candidates: std::collections::BTreeMap<usize, usize> =
         std::collections::BTreeMap::new();
     for offset in (start_offset..rom_data.len().saturating_sub(64)).step_by(2) {
         // Skip if this offset doesn't start with 0x0000 (black = palette[0])
-        let first_color = u16::from_le_bytes([
-            rom_data[offset],
-            rom_data[offset + 1],
-        ]);
+        let first_color = u16::from_le_bytes([rom_data[offset], rom_data[offset + 1]]);
         if first_color != 0x0000 {
             continue;
         }
@@ -81,7 +72,7 @@ pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
     }
     if let Some((best_offset, _)) = palette_candidates
         .iter()
-        .max_by_key(|(offset, count)| *count)
+        .max_by_key(|(_offset, count)| *count)
     {
         let offset = *best_offset;
         let max_colors = 256;
@@ -145,7 +136,7 @@ pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
             let mut count = 0;
             for i in (0..sample.len()).step_by(2) {
                 let entry = u16::from_le_bytes([sample[i], sample[i + 1]]);
-                if (entry & 0x3FF) <= 1023 {
+                if (entry & 0x3FF) == entry {
                     count += 1;
                 }
             }
@@ -168,35 +159,5 @@ pub fn extract_assets(rom_data: &[u8]) -> ExtractedAssets {
             best_tilemap_count, best_tilemap_offset
         );
     }
-
-    // Detect audio samples in IWRAM region (0x03007FFF to 0x03000000)
-    eprintln!("  Scanning for audio samples in IWRAM...");
-    let sample_region_end = sample_scan_end.min(rom_data.len());
-    for sample_addr in (sample_region_end..=sample_scan_start).rev() {
-        // GBA audio samples: up to 32 bytes total, 4-bit or 8-bit
-        let max_samples = 32;
-        if sample_addr + max_samples > rom_data.len() {
-            continue;
-        }
-
-        let sample_data = &rom_data[sample_addr..sample_addr + max_samples];
-        let mut _detected = false;
-
-        // Check if this looks like valid sample data (some non-zero bytes)
-        let non_zero = sample_data.iter().filter(|&&b| b != 0).count();
-        if non_zero > 0 && non_zero < max_samples {
-            // Heuristic: sample bank starting point
-            assets.samples.push((sample_addr as u32, max_samples, 0)); // format: 0 = 4-bit, 1 = 8-bit
-            _detected = true;
-            break;
-        }
-    }
-
-    if !assets.samples.is_empty() {
-        eprintln!("  Found {} audio samples", assets.samples.len());
-    } else {
-        eprintln!("  No audio samples found");
-    }
-
     assets
 }

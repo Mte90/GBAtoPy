@@ -93,7 +93,12 @@ def calculate_difference(
     base_pass = diff_percentage < 30
     inconclusive_reason = None
 
-    if golden_content_pct < MIN_CONTENT_PCT and transpiled_content_pct < MIN_CONTENT_PCT:
+    if transpiled_content_pct == 0 and golden_content_pct > MIN_CONTENT_PCT:
+        inconclusive_reason = (
+            f"Transpiled output is completely blank (0.0% content) while golden has "
+            f"{golden_content_pct:.2f}% content - blank-screen regression"
+        )
+    elif golden_content_pct < MIN_CONTENT_PCT and transpiled_content_pct < MIN_CONTENT_PCT:
         if base_pass:
             status = "pass"
         else:

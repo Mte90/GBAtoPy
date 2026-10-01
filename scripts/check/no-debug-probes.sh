@@ -15,16 +15,20 @@ patterns=(
     'print(f"VRAM'
     'print(f"DMA'
     'print(f"IRQ'
+    'print(f"  FALLBACK'
+    'print(f"FRAME '
+    'eprintln!("DEBUG'
 )
 
 files=(
     crates/gbatopy-cli/src/pipeline_cmd.rs
+    crates/gbatopy-cli/src/codegen/mod.rs
+    crates/gbatopy-disasm/src/cfg.rs
+    crates/gbatopy-disasm/src/thumb/mod.rs
 )
 
-# Also scan runtime templates for stray probes
 shopt -s nullglob
-for f in crates/gbatopy-cli/assets/gba_runtime/*.py; do
-    # Skip test files — probes in tests are fine
+for f in crates/gbatopy-cli/assets/gba_runtime/*.py crates/gbatopy-cli/assets/templates/*.py; do
     [[ "$f" == *test* ]] && continue
     files+=("$f")
 done

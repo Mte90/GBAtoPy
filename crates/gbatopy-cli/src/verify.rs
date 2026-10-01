@@ -23,7 +23,7 @@ fn generate_python_if_missing(
             "--rom",
             rom_path,
             "--output",
-            &output_dir,
+            output_dir,
             "--assets-dir",
             assets_dir.to_str().unwrap_or("assets"),
         ])
@@ -56,7 +56,6 @@ pub fn verify_registers(
         .arg(&py_path)
         .arg("--headless")
         .arg("--frame=1")
-        .arg("--debug")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()?;
@@ -91,7 +90,6 @@ pub fn verify_memory(rom_path: &str, output_dir: &str) -> Result<(), Box<dyn std
         .arg(&py_path)
         .arg("--headless")
         .arg("--frame=1")
-        .arg("--debug")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()?;

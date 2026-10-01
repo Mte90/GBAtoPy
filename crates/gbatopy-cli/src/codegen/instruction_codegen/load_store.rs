@@ -13,17 +13,29 @@ fn base_address_expr(base: u8, inst: &DecodedInstruction) -> String {
     }
 }
 
-fn scaled_reg_offset_expr(reg: u8, shift: gbatopy_disasm::operand::ShiftType, amount: u8) -> String {
+fn scaled_reg_offset_expr(
+    reg: u8,
+    shift: gbatopy_disasm::operand::ShiftType,
+    amount: u8,
+) -> String {
     use gbatopy_disasm::operand::ShiftType;
     match shift {
         ShiftType::Lsl if amount == 0 => format!(" + registers[{}]", reg),
         ShiftType::Lsl => format!(" + ((registers[{}] << {}) & 0xFFFFFFFF)", reg, amount),
         ShiftType::Lsr if amount == 0 => format!(" + (0 if registers[{}] == 0 else 0)", reg),
         ShiftType::Lsr => format!(" + (registers[{}] >> {})", reg, amount),
-        ShiftType::Asr if amount == 0 => format!(" + (0xFFFFFFFF if registers[{}] & 0x80000000 else 0)", reg),
-        ShiftType::Asr => format!(" + ((registers[{}] >> {}) | (0xFFFFFFFF if registers[{}] & 0x80000000 else 0))", reg, amount, reg),
+        ShiftType::Asr if amount == 0 => {
+            format!(" + (0xFFFFFFFF if registers[{}] & 0x80000000 else 0)", reg)
+        }
+        ShiftType::Asr => format!(
+            " + ((registers[{}] >> {}) | (0xFFFFFFFF if registers[{}] & 0x80000000 else 0))",
+            reg, amount, reg
+        ),
         ShiftType::Ror if amount == 0 => format!(" + ((registers[{}] >> 1) & 0x7FFFFFFF)", reg),
-        ShiftType::Ror => format!(" + (((registers[{}] >> {}) | (registers[{}] << (32 - {}))) & 0xFFFFFFFF)", reg, amount, reg, amount),
+        ShiftType::Ror => format!(
+            " + (((registers[{}] >> {}) | (registers[{}] << (32 - {}))) & 0xFFFFFFFF)",
+            reg, amount, reg, amount
+        ),
     }
 }
 
@@ -61,324 +73,524 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
 
     if base_opcode == "LDR" && ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
-            if let Operand::MemoryAddress { base, offset, writeback } = &ops[1] {
+            if let Operand::MemoryAddress {
+                base,
+                offset,
+                writeback,
+            } = &ops[1]
+            {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
-                        if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                        if *n >= 0 {
+                            format!(" + {}", n)
+                        } else {
+                            format!(" - {}", -n)
+                        }
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
-                        scaled_reg_offset_expr(*reg, *shift, *amount)
-                    }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
-                        String::new()
-                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
+                        reg,
+                        shift,
+                        amount,
+                    } => scaled_reg_offset_expr(*reg, *shift, *amount),
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => String::new(),
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                        if *offset >= 0 {
+                            format!(" + {}", offset)
+                        } else {
+                            format!(" - {}", -offset)
+                        }
                     }
                     _ => String::new(),
                 };
-                
+
                 let base_expr = base_address_expr(*base, inst);
-                let mut code = format!("registers[{}] = memory.read_u32({}{})", rd, base_expr, offset_expr);
-                
+                let mut code = format!(
+                    "registers[{}] = memory.read_u32({}{})",
+                    rd, base_expr, offset_expr
+                );
+
                 // Handle post-increment writeback for LDR
                 if *writeback {
                     match offset {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
-                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister {
+                            reg,
+                            ..
+                        } => {
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF",
+                                base, base, reg
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::ImmediateOffset(_) => {
                             // For LDR with writeback, assume post-increment by word size (4 bytes)
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + 4) & 0xFFFFFFFF", base, base));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + 4) & 0xFFFFFFFF",
+                                base, base
+                            ));
                         }
                         _ => {}
                     }
                 }
-                
+
                 return Some(code);
             }
         }
     }
     if base_opcode == "STR" && ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
-            if let Operand::MemoryAddress { base, offset, writeback } = &ops[1] {
+            if let Operand::MemoryAddress {
+                base,
+                offset,
+                writeback,
+            } = &ops[1]
+            {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
-                        if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                        if *n >= 0 {
+                            format!(" + {}", n)
+                        } else {
+                            format!(" - {}", -n)
+                        }
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
-                        scaled_reg_offset_expr(*reg, *shift, *amount)
-                    }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
-                        String::new()
-                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
+                        reg,
+                        shift,
+                        amount,
+                    } => scaled_reg_offset_expr(*reg, *shift, *amount),
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => String::new(),
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                        if *offset >= 0 {
+                            format!(" + {}", offset)
+                        } else {
+                            format!(" - {}", -offset)
+                        }
                     }
                     _ => String::new(),
                 };
-                
+
                 let base_expr = base_address_expr(*base, inst);
-                let mut code = format!("memory.write_u32({}{}, registers[{}])", base_expr, offset_expr, rd);
-                
+                let mut code = format!(
+                    "memory.write_u32({}{}, registers[{}])",
+                    base_expr, offset_expr, rd
+                );
+
                 // Handle post-increment writeback for STR
                 if *writeback {
                     match offset {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
-                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister {
+                            reg,
+                            ..
+                        } => {
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF",
+                                base, base, reg
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::ImmediateOffset(_) => {
                             // For STR with writeback, assume post-increment by word size (4 bytes)
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + 4) & 0xFFFFFFFF", base, base));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + 4) & 0xFFFFFFFF",
+                                base, base
+                            ));
                         }
                         _ => {}
                     }
                 }
-                
+
                 return Some(code);
             }
         }
     }
     if base_opcode == "LDRB" && ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
-            if let Operand::MemoryAddress { base, offset, writeback } = &ops[1] {
+            if let Operand::MemoryAddress {
+                base,
+                offset,
+                writeback,
+            } = &ops[1]
+            {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
-                        if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                        if *n >= 0 {
+                            format!(" + {}", n)
+                        } else {
+                            format!(" - {}", -n)
+                        }
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
-                        scaled_reg_offset_expr(*reg, *shift, *amount)
-                    }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
-                        String::new()
-                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
+                        reg,
+                        shift,
+                        amount,
+                    } => scaled_reg_offset_expr(*reg, *shift, *amount),
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => String::new(),
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                        if *offset >= 0 {
+                            format!(" + {}", offset)
+                        } else {
+                            format!(" - {}", -offset)
+                        }
                     }
                     _ => String::new(),
                 };
-                
+
                 let base_expr = base_address_expr(*base, inst);
-                let mut code = format!("registers[{}] = memory.read_u8({}{}) & 0xFF", rd, base_expr, offset_expr);
-                
+                let mut code = format!(
+                    "registers[{}] = memory.read_u8({}{}) & 0xFF",
+                    rd, base_expr, offset_expr
+                );
+
                 // Handle post-increment writeback for LDRB
                 if *writeback {
                     match offset {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
-                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister {
+                            reg,
+                            ..
+                        } => {
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF",
+                                base, base, reg
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::ImmediateOffset(_) => {
                             // For LDRB with writeback, assume post-increment by byte size (1 byte)
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + 1) & 0xFFFFFFFF", base, base));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + 1) & 0xFFFFFFFF",
+                                base, base
+                            ));
                         }
                         _ => {}
                     }
                 }
-                
+
                 return Some(code);
             }
         }
     }
     if base_opcode == "STRB" && ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
-            if let Operand::MemoryAddress { base, offset, writeback } = &ops[1] {
+            if let Operand::MemoryAddress {
+                base,
+                offset,
+                writeback,
+            } = &ops[1]
+            {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
-                        if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                        if *n >= 0 {
+                            format!(" + {}", n)
+                        } else {
+                            format!(" - {}", -n)
+                        }
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
-                        scaled_reg_offset_expr(*reg, *shift, *amount)
-                    }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
-                        String::new()
-                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
+                        reg,
+                        shift,
+                        amount,
+                    } => scaled_reg_offset_expr(*reg, *shift, *amount),
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => String::new(),
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                        if *offset >= 0 {
+                            format!(" + {}", offset)
+                        } else {
+                            format!(" - {}", -offset)
+                        }
                     }
                     _ => String::new(),
                 };
-                
+
                 let base_expr = base_address_expr(*base, inst);
-                let mut code = format!("memory.write_u8({}{}, registers[{}] & 0xFF)", base_expr, offset_expr, rd);
-                
+                let mut code = format!(
+                    "memory.write_u8({}{}, registers[{}] & 0xFF)",
+                    base_expr, offset_expr, rd
+                );
+
                 // Handle post-increment writeback for STRB
                 if *writeback {
                     match offset {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
-                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister {
+                            reg,
+                            ..
+                        } => {
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF",
+                                base, base, reg
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::ImmediateOffset(_) => {
                             // For STRB with writeback, assume post-increment by byte size (1 byte)
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + 1) & 0xFFFFFFFF", base, base));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + 1) & 0xFFFFFFFF",
+                                base, base
+                            ));
                         }
                         _ => {}
                     }
                 }
-                
+
                 return Some(code);
             }
         }
     }
     if base_opcode == "LDRH" && ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
-            if let Operand::MemoryAddress { base, offset, writeback } = &ops[1] {
+            if let Operand::MemoryAddress {
+                base,
+                offset,
+                writeback,
+            } = &ops[1]
+            {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
-                        if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                        if *n >= 0 {
+                            format!(" + {}", n)
+                        } else {
+                            format!(" - {}", -n)
+                        }
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
-                        scaled_reg_offset_expr(*reg, *shift, *amount)
-                    }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
-                        String::new()
-                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
+                        reg,
+                        shift,
+                        amount,
+                    } => scaled_reg_offset_expr(*reg, *shift, *amount),
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => String::new(),
                     gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { .. } => {
                         String::new()
                     }
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                        if *offset >= 0 {
+                            format!(" + {}", offset)
+                        } else {
+                            format!(" - {}", -offset)
+                        }
                     }
                     _ => String::new(),
                 };
-                
+
                 let base_expr = base_address_expr(*base, inst);
-                let mut code = format!("registers[{}] = memory.read_u16({}{}) & 0xFFFF", rd, base_expr, offset_expr);
-                
+                let mut code = format!(
+                    "registers[{}] = memory.read_u16({}{}) & 0xFFFF",
+                    rd, base_expr, offset_expr
+                );
+
                 // Handle post-increment writeback for LDRH
                 if *writeback {
                     match offset {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
-                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister {
+                            reg,
+                            ..
+                        } => {
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF",
+                                base, base, reg
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::ImmediateOffset(_) => {
                             // For LDRH with writeback, assume post-increment by halfword size (2 bytes)
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + 2) & 0xFFFFFFFF", base, base));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + 2) & 0xFFFFFFFF",
+                                base, base
+                            ));
                         }
                         _ => {}
                     }
                 }
-                
+
                 return Some(code);
             }
         }
     }
     if base_opcode == "STRH" && ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
-            if let Operand::MemoryAddress { base, offset, writeback } = &ops[1] {
+            if let Operand::MemoryAddress {
+                base,
+                offset,
+                writeback,
+            } = &ops[1]
+            {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
-                        if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                        if *n >= 0 {
+                            format!(" + {}", n)
+                        } else {
+                            format!(" - {}", -n)
+                        }
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
                     }
-                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset { reg, shift, amount } => {
-                        scaled_reg_offset_expr(*reg, *shift, *amount)
-                    }
-                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => {
-                        String::new()
-                    }
+                    gbatopy_disasm::operand::AddressingMode::ScaledRegisterOffset {
+                        reg,
+                        shift,
+                        amount,
+                    } => scaled_reg_offset_expr(*reg, *shift, *amount),
+                    gbatopy_disasm::operand::AddressingMode::PostIndexed { .. } => String::new(),
                     gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { .. } => {
                         String::new()
                     }
                     gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
-                        if *offset >= 0 { format!(" + {}", offset) } else { format!(" - {}", -offset) }
+                        if *offset >= 0 {
+                            format!(" + {}", offset)
+                        } else {
+                            format!(" - {}", -offset)
+                        }
                     }
                     _ => String::new(),
                 };
-                
+
                 let base_expr = base_address_expr(*base, inst);
-                let mut code = format!("memory.write_u16({}{}, registers[{}] & 0xFFFF)", base_expr, offset_expr, rd);
-                
+                let mut code = format!(
+                    "memory.write_u16({}{}, registers[{}] & 0xFFFF)",
+                    base_expr, offset_expr, rd
+                );
+
                 // Handle post-increment writeback for STRH
                 if *writeback {
                     match offset {
                         gbatopy_disasm::operand::AddressingMode::PostIndexed { offset, .. } => {
                             // Post-increment: add the offset after the store
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
-                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister { reg, .. } => {
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF", base, base, reg));
+                        gbatopy_disasm::operand::AddressingMode::PostIndexedRegister {
+                            reg,
+                            ..
+                        } => {
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + registers[{}]) & 0xFFFFFFFF",
+                                base, base, reg
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::PreIndexed { offset, .. } => {
                             // Pre-increment writeback: the address was already adjusted before the store
                             // For STRH with pre-indexed writeback, we still need to update the base register
                             let increment = *offset;
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF", base, base, increment));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + {}) & 0xFFFFFFFF",
+                                base, base, increment
+                            ));
                         }
                         gbatopy_disasm::operand::AddressingMode::ImmediateOffset(_) => {
                             // For STRH with writeback but ImmediateOffset, assume post-increment by halfword size (2 bytes)
                             // This handles cases where the disassembler doesn't distinguish pre/post indexed
-                            code.push_str(&format!("\nregisters[{}] = (registers[{}] + 2) & 0xFFFFFFFF", base, base));
+                            code.push_str(&format!(
+                                "\nregisters[{}] = (registers[{}] + 2) & 0xFFFFFFFF",
+                                base, base
+                            ));
                         }
                         _ => {}
                     }
                 }
-                
+
                 return Some(code);
             }
         }
     }
 
-    if (base_opcode.starts_with("LDM") || base_opcode.starts_with("STM")) && ops.len() >= 1 {
-        if let Operand::MemoryAddress { base, offset, writeback } = &ops[0] {
-            if let gbatopy_disasm::operand::AddressingMode::Multi { registers, increment, pre_index, writeback: wb, s_bit, .. } = offset {
+    if (base_opcode.starts_with("LDM") || base_opcode.starts_with("STM")) && !ops.is_empty() {
+        if let Operand::MemoryAddress {
+            base,
+            offset,
+            writeback,
+        } = &ops[0]
+        {
+            #[allow(clippy::collapsible_match)]
+            if let gbatopy_disasm::operand::AddressingMode::Multi {
+                registers,
+                increment,
+                pre_index,
+                writeback: wb,
+                s_bit,
+                ..
+            } = offset
+            {
                 let is_load = base_opcode.starts_with("LDM");
                 let base_reg = *base;
                 let reg_list = registers;
@@ -423,8 +635,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                 };
                 code.push_str(&format!("addr = {}\n", lowest_addr_expr));
 
-                // Walk the register list in order, incrementing address by 4 each time.
-                let has_pc = reg_list.iter().any(|&r| r == 15);
+                // Walk the register list in order, always incrementing address by 4 each time.
+                // Lowest register maps to lowest address in all four addressing modes (IA/IB/DA/DB).
+                let _has_pc = reg_list.contains(&15);
                 for (i, &reg) in reg_list.iter().enumerate() {
                     if is_load {
                         if reg == 15 && has_s_bit {
@@ -451,7 +664,11 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                 }
                 // IA/IB → base + n*4; DA/DB → base - n*4
                 if do_writeback {
-                    let base_expr = if base_in_list { "_orig_base" } else { &format!("registers[{}]", base_reg) };
+                    let base_expr = if base_in_list {
+                        "_orig_base"
+                    } else {
+                        &format!("registers[{}]", base_reg)
+                    };
                     let final_addr = if is_increment {
                         format!("{} + {}", base_expr, num_regs * 4)
                     } else {
@@ -471,7 +688,11 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
             if let Operand::MemoryAddress { base, offset, .. } = &ops[1] {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
-                        if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                        if *n >= 0 {
+                            format!(" + {}", n)
+                        } else {
+                            format!(" - {}", -n)
+                        }
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
@@ -480,7 +701,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                 };
                 return Some(format!(
                     "temp = memory.read_u16({}{})\nregisters[{}] = (temp << 16) >> 16",
-                    base_address_expr(*base, inst), offset_expr, rd
+                    base_address_expr(*base, inst),
+                    offset_expr,
+                    rd
                 ));
             }
         }
@@ -492,7 +715,11 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
             if let Operand::MemoryAddress { base, offset, .. } = &ops[1] {
                 let offset_expr = match offset {
                     gbatopy_disasm::operand::AddressingMode::ImmediateOffset(n) => {
-                        if *n >= 0 { format!(" + {}", n) } else { format!(" - {}", -n) }
+                        if *n >= 0 {
+                            format!(" + {}", n)
+                        } else {
+                            format!(" - {}", -n)
+                        }
                     }
                     gbatopy_disasm::operand::AddressingMode::RegisterOffset(reg) => {
                         format!(" + registers[{}]", reg)
@@ -501,21 +728,32 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                 };
                 return Some(format!(
                     "temp = memory.read_u8({}{})\nregisters[{}] = (temp << 24) >> 24",
-                    base_address_expr(*base, inst), offset_expr, rd
+                    base_address_expr(*base, inst),
+                    offset_expr,
+                    rd
                 ));
             }
         }
     }
 
     // SWP/SWPB: swap register with memory
+    #[allow(clippy::collapsible_if)]
     if base_opcode == "SWP" || base_opcode == "SWPB" {
         if ops.len() >= 3 {
             if let Operand::Register(rd) = ops[0] {
                 if let Operand::Register(rm) = ops[1] {
                     if let Operand::Register(rn) = ops[2] {
                         let is_byte = base_opcode == "SWPB";
-                        let read = if is_byte { "memory.read_u8" } else { "memory.read_u32" };
-                        let write = if is_byte { "memory.write_u8" } else { "memory.write_u32" };
+                        let read = if is_byte {
+                            "memory.read_u8"
+                        } else {
+                            "memory.read_u32"
+                        };
+                        let write = if is_byte {
+                            "memory.write_u8"
+                        } else {
+                            "memory.write_u32"
+                        };
                         let mask = if is_byte { " & 0xFF" } else { "" };
                         return Some(format!(
                             "temp = {}(registers[{}])\nregisters[{}] = temp\n{}(registers[{}], registers[{}]{})",

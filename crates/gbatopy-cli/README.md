@@ -97,12 +97,10 @@ python3 game.py --screenshot final_frame.png
 | `gbatopy-disasm` | ARM/Thumb disassembler for GBA ROMs |
 | `gbatopy-ir` | Intermediate representation for transpilation |
 | `gbatopy-codegen` | Python code generator from IR |
-| `gbatopy-mgba` | Mgba emulator integration for branch/trace analysis |
 | `gbatopy-types` | Shared type definitions |
 
 
 - `gbatopy-disasm`: ARM/Thumb disassembler for GBA ROMs
 - `gbatopy-ir`: Intermediate representation for transpilation
 - `gbatopy-codegen`: Python code generator from IR
-- `gbatopy-mgba`: Mgba emulator integration for branch/trace analysis
 - `gbatopy-types`: Shared type definitions

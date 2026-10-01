@@ -1,7 +1,7 @@
 use gbatopy_disasm::Disassembler;
 use std::fs;
 
-pub fn disassemble(rom_path: &str, output_path: &str, _use_ir: bool) -> Result<(), String> {
+pub fn disassemble(rom_path: &str, output_path: &str) -> Result<(), String> {
     println!("Disassembling ROM: {}", rom_path);
 
     let rom_data = fs::read(rom_path).map_err(|e| format!("Failed to read ROM: {}", e))?;

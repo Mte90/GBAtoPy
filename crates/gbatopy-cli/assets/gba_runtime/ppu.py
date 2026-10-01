@@ -1490,8 +1490,9 @@ class PPU:
             # For snapshot purposes, set HBlank=1 for all scanlines since games
             # typically poll DISPSTAT during HBlank waiting periods
             dispstat |= 0x0002
-            # Update LYC match bit (VCount compare) - use self.lyc attribute
-            if self.vcount == self.lyc:
+            # Update LYC match bit (VCount compare) - read from memory.io[5]
+            lyc_value = self.memory.io[5] & 0xFF
+            if self.vcount == lyc_value:
                 dispstat |= 0x0004
             # Latch for this scanline
             self._dispstat_snapshot[self.vcount] = dispstat
@@ -1523,6 +1524,9 @@ class PPU:
         if dma is not None and self.vcount < self.screen_height:
             dma.hblank_fire(self.vcount)
     
+        # Save old vcount for DISPSTAT write (before increment)
+        old_vcount = self.vcount
+        
         # STEP 2: Increment vcount AFTER all snapshots are captured
         self.vcount = (self.vcount + 1) % 228
         self.vblank = self.vcount >= self.screen_height
@@ -1538,7 +1542,8 @@ class PPU:
         if self.vblank:
             dispstat |= 0x0001
         dispstat |= 0x0002  # HBlank bit
-        if self.vcount == self.lyc:
+        lyc_value = self.memory.io[5] & 0xFF
+        if old_vcount == lyc_value:
             dispstat |= 0x0004
         # Preserve IRQ enable bits (VBlank IRQ=3, HBlank IRQ=4, VCount IRQ=5)
         dispstat |= old_dispstat & 0x00F8

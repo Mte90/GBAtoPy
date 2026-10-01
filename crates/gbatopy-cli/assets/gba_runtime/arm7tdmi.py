@@ -776,10 +776,8 @@ class ARM7TDMI:
         target = self._operand(rm)
         
         # Intercept BX to BIOS region (0x00000000-0x00007FFF)
-        # BIOS addresses are relative (0x00-0x7FFF), so check low 16 bits
-        bios_addr = target & 0x7FFF
-        
-        if bios_addr < 0x8000:  # BIOS region
+        if target < 0x8000:
+            bios_addr = target & 0xFFFFFFFE  # clear Thumb bit for comparison
             # Handle BIOS callback functions
             if bios_addr == 0x0A0:  # VBlank IRQ handler (standard GBA BIOS callback)
                 # Acknowledge VBlank interrupt (clear IF bit 0)
@@ -800,9 +798,13 @@ class ARM7TDMI:
                 self.thumb_mode = False
                 return 3
             else:
-                # Other BIOS addresses: log warning and return to LR
-                # This handles unknown BIOS callbacks gracefully
-                pass
+                # Unknown BIOS address: return to LR to avoid executing empty BIOS space.
+                # The comment previously said "return to LR" but the code fell through to
+                # normal BX execution, setting PC into unmapped BIOS space and spinning.
+                return_lr = self.registers[14]
+                self.registers[15] = return_lr & 0xFFFFFFFE
+                self.thumb_mode = (return_lr & 1) != 0
+                return 3
         
         # Normal BX execution for non-BIOS targets
         self.thumb_mode = (target & 1) != 0
@@ -1035,12 +1037,6 @@ class ARM7TDMI:
             self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
             self._halted = True
             self._halt_reason = 'any'
-            import sys
-            _ic = getattr(getattr(self, 'memory', None), '_interrupts', None)
-            _ds = 0
-            if hasattr(self, 'memory'):
-                _ds = self.memory.read_u16(0x04000004)
-            print(f"[DBG-HALT] PC=0x{self.registers[15]:08X} IE=0x{_ic.ie_reg if _ic else 0:04X} IME=0x{_ic.ime_reg if _ic else 0:04X} IF=0x{_ic.if_reg if _ic else 0:04X} DISPSTAT=0x{_ds:04X} lyc={(_ds >> 8) & 0xFF} vcount_irq_en={(_ds >> 5) & 1}", file=sys.stderr, flush=True)
         elif num == 0x03:  # Stop
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_stop(self.registers[0])

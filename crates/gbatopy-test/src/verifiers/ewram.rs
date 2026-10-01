@@ -1,22 +1,32 @@
+use super::Verifier;
 use crate::config::TestEntry;
 use crate::types::{TestResult, TestStatus};
-use super::Verifier;
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 use std::time::Instant;
 
 pub struct EwramDumpVerifier;
 
 impl Verifier for EwramDumpVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
+    fn verify(
+        &self,
+        entry: &TestEntry,
+        artifacts_dir: &Path,
+        config: &crate::config::TestConfig,
+    ) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
 
         log::info!("[eWRAM Dump] Testing {}...", test_name);
 
-        let rom_path = config.roms_dir.join(&entry.rom_path).to_string_lossy().to_string();
-        let rom_stem = entry.rom_path
+        let rom_path = config
+            .roms_dir
+            .join(&entry.rom_path)
+            .to_string_lossy()
+            .to_string();
+        let rom_stem = entry
+            .rom_path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy()
@@ -133,8 +143,8 @@ impl Verifier for EwramDumpVerifier {
 /// Represents a single FuzzARM failure record (64 bytes)
 #[derive(Debug, Clone)]
 pub struct FuzzArmFailure {
-    pub mode: &'static str,      // "ARM" or "Thumb"
-    pub opcode: String,          // Mnemonic (e.g., "tst", "cmp")
+    pub mode: &'static str, // "ARM" or "Thumb"
+    pub opcode: String,     // Mnemonic (e.g., "tst", "cmp")
     pub r3_got: u32,
     #[allow(dead_code)]
     pub r3_expected: u32,
@@ -160,24 +170,39 @@ impl FuzzArmFailure {
 fn transpile_rom(rom_path: &str, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use duct::cmd;
     let bin = "target/debug/gbatopy-cli";
-    
-    cmd!(bin, "pipeline", "--rom", rom_path, "--output", output.to_string_lossy().as_ref())
-        .dir(".")
-        .run()?;
-    
+
+    cmd!(
+        bin,
+        "pipeline",
+        "--rom",
+        rom_path,
+        "--output",
+        output.to_string_lossy().as_ref()
+    )
+    .dir(".")
+    .run()?;
+
     if !output.exists() {
         return Err("Output file not created".into());
     }
-    
+
     Ok(())
 }
 
-fn run_with_dump(py_file: &Path, dump_path: &Path, frames: u32) -> Result<(), Box<dyn std::error::Error>> {
+fn run_with_dump(
+    py_file: &Path,
+    dump_path: &Path,
+    frames: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
     use duct::cmd;
     let frame_arg = format!("--frame={}", frames);
-    let dump_name = dump_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let dump_name = dump_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let dump_arg = format!("--dump-memory={}", dump_name);
-    
+
     cmd!(
         "python3",
         py_file.file_name().unwrap().to_string_lossy().as_ref(),
@@ -188,11 +213,11 @@ fn run_with_dump(py_file: &Path, dump_path: &Path, frames: u32) -> Result<(), Bo
     .env("SDL_VIDEODRIVER", "dummy")
     .dir(py_file.parent().unwrap_or(Path::new(".")))
     .run()?;
-    
+
     if !dump_path.exists() {
         return Err("Dump file not created".into());
     }
-    
+
     Ok(())
 }
 
@@ -227,23 +252,23 @@ pub fn parse_fuzzarm_dump(data: &[u8]) -> Result<Vec<FuzzArmFailure>, Box<dyn st
         // Skip shift info (4 bytes) and reserved (4 bytes)
         // r3_got at offset 0x14 (20)
         let r3_got = u32::from_le_bytes([record[20], record[21], record[22], record[23]]);
-        
+
         // r4_got at offset 0x18 (24)
         let r4_got = u32::from_le_bytes([record[24], record[25], record[26], record[27]]);
-        
+
         // Skip padding (4 bytes at 0x1C)
-        
+
         // CPSR_got at offset 0x24 (36)
         let cpsr_got = u32::from_le_bytes([record[36], record[37], record[38], record[39]]);
-        
+
         // r3_expected at offset 0x28 (40)
         let r3_expected = u32::from_le_bytes([record[40], record[41], record[42], record[43]]);
-        
+
         // r4_expected at offset 0x2C (44)
         let r4_expected = u32::from_le_bytes([record[44], record[45], record[46], record[47]]);
-        
+
         // Skip padding (4 bytes at 0x3C)
-        
+
         // CPSR_expected at offset 0x40 (64) - wait, this is beyond 64 bytes
         // Actually CPSR_expected is at 0x40 which is byte 64, but record is 64 bytes (0-63)
         // Let me re-check: 0x40 = 64, but we only have 64 bytes (0-63)
@@ -293,28 +318,28 @@ mod tests {
     fn test_parse_arm_failure_record() {
         // Create a synthetic 64-byte ARM failure record
         let mut record = vec![0u8; 64];
-        
+
         // Mode marker: "AAAA" (ARM)
         record[0..4].copy_from_slice(b"AAAA");
-        
+
         // Opcode: "tst       " (8 bytes, padded)
         record[4..12].copy_from_slice(b"tst     ");
-        
+
         // r3_got = 0x12345678
         record[20..24].copy_from_slice(&0x12345678u32.to_le_bytes());
-        
+
         // r4_got = 0xABCDEF00
         record[24..28].copy_from_slice(&0xABCDEF00u32.to_le_bytes());
-        
+
         // CPSR_got = 0x60000010
         record[36..40].copy_from_slice(&0x60000010u32.to_le_bytes());
-        
+
         // r3_expected = 0x12345678 (same as got)
         record[40..44].copy_from_slice(&0x12345678u32.to_le_bytes());
-        
+
         // r4_expected = 0xABCDEF00 (same as got)
         record[44..48].copy_from_slice(&0xABCDEF00u32.to_le_bytes());
-        
+
         // CPSR_expected = 0x60000013 (different from got)
         record[60..64].copy_from_slice(&0x60000013u32.to_le_bytes());
 
@@ -342,8 +367,11 @@ mod tests {
             cpsr_got: 0x0,
             cpsr_expected: 0x0,
         };
-        
+
         let summary = failure.summary();
-        assert_eq!(summary, "[ARM] tst — r3: got 0x12345678 expected 0x1234567A");
+        assert_eq!(
+            summary,
+            "[ARM] tst — r3: got 0x12345678 expected 0x1234567A"
+        );
     }
 }

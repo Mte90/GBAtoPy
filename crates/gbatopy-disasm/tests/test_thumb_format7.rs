@@ -23,11 +23,7 @@ fn test_format7_register_offset_decode() {
     ];
     for (hw, want) in cases {
         let (got, ops, _) = d.decode(*hw, 0);
-        assert_eq!(
-            got, *want,
-            "opcode 0x{:04X}: got {} want {}",
-            hw, got, want
-        );
+        assert_eq!(got, *want, "opcode 0x{:04X}: got {} want {}", hw, got, want);
         assert_eq!(ops.len(), 3, "opcode 0x{:04X}: expected 3 operands", hw);
     }
 }

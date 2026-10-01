@@ -1,13 +1,18 @@
+use super::Verifier;
 use crate::config::TestEntry;
 use crate::types::{TestResult, TestStatus};
-use super::Verifier;
 use std::path::Path;
 use std::time::Instant;
 
 pub struct SmokeVerifier;
 
 impl Verifier for SmokeVerifier {
-    fn verify(&self, entry: &TestEntry, artifacts_dir: &Path, config: &crate::config::TestConfig) -> TestResult {
+    fn verify(
+        &self,
+        entry: &TestEntry,
+        artifacts_dir: &Path,
+        config: &crate::config::TestConfig,
+    ) -> TestResult {
         let start = Instant::now();
         let test_name = entry.name.clone();
         let test_type_str = format!("{:?}", entry.test_type);
@@ -22,7 +27,7 @@ impl Verifier for SmokeVerifier {
         let output_path = artifacts_dir.join("output.py");
         let rom_path_str = rom_path.to_string_lossy().to_string();
         let output_path_str = output_path.to_string_lossy().to_string();
-        
+
         let transpile_result = duct::cmd!(
             "cargo",
             "run",
@@ -81,7 +86,11 @@ impl Verifier for SmokeVerifier {
             .run();
 
             if let Err(e) = syntax_result {
-                log::error!("[Smoke] Python syntax check failed for {}: {}", test_name, e);
+                log::error!(
+                    "[Smoke] Python syntax check failed for {}: {}",
+                    test_name,
+                    e
+                );
                 return TestResult {
                     name: test_name,
                     test_type: test_type_str.clone(),

@@ -198,31 +198,33 @@ impl Disassembler {
                     let halfword = u16::from_le_bytes([rom_data[offset], rom_data[offset + 1]]);
 
                     // Check if this is the first half of a 32-bit BL instruction
-                    let (opcode, operands, sets_flags, width) =
-                        if (halfword & 0xF800) == 0xF000 {
-                            // Potential BL_PREFIX: opcode range 0xF000-0xF7FF with bit 11 = 0
-                            let hw1 = halfword;
-                            // Try to read the next halfword for BL_SUFFIX
-                            if offset + 4 <= rom_data.len() {
-                                let hw2 = u16::from_le_bytes([rom_data[offset + 2], rom_data[offset + 3]]);
-                                // Check if hw2 is a valid BL_SUFFIX (bit 11 = 1)
-                                if let Some((op, ops, flags, w)) = self.thumb_decoder.decode_bl_pair(hw1, hw2, address) {
-                                    (op, ops, flags, w)
-                                } else {
-                                    // hw2 is not a valid BL_SUFFIX, fall back to BL_PREFIX
-                                    let (op, ops, flags) = self.thumb_decoder.decode(hw1, address);
-                                    (op, ops, flags, 2)
-                                }
+                    let (opcode, operands, sets_flags, width) = if (halfword & 0xF800) == 0xF000 {
+                        // Potential BL_PREFIX: opcode range 0xF000-0xF7FF with bit 11 = 0
+                        let hw1 = halfword;
+                        // Try to read the next halfword for BL_SUFFIX
+                        if offset + 4 <= rom_data.len() {
+                            let hw2 =
+                                u16::from_le_bytes([rom_data[offset + 2], rom_data[offset + 3]]);
+                            // Check if hw2 is a valid BL_SUFFIX (bit 11 = 1)
+                            if let Some((op, ops, flags, w)) =
+                                self.thumb_decoder.decode_bl_pair(hw1, hw2, address)
+                            {
+                                (op, ops, flags, w)
                             } else {
-                                // Can't read next halfword, fall back to BL_PREFIX
+                                // hw2 is not a valid BL_SUFFIX, fall back to BL_PREFIX
                                 let (op, ops, flags) = self.thumb_decoder.decode(hw1, address);
                                 (op, ops, flags, 2)
                             }
                         } else {
-                            // Not a BL_PREFIX, decode normally
-                            let (op, ops, flags) = self.thumb_decoder.decode(halfword, address);
+                            // Can't read next halfword, fall back to BL_PREFIX
+                            let (op, ops, flags) = self.thumb_decoder.decode(hw1, address);
                             (op, ops, flags, 2)
-                        };
+                        }
+                    } else {
+                        // Not a BL_PREFIX, decode normally
+                        let (op, ops, flags) = self.thumb_decoder.decode(halfword, address);
+                        (op, ops, flags, 2)
+                    };
                     (opcode, operands, sets_flags, width)
                 }
             };
@@ -282,28 +284,25 @@ impl Disassembler {
                         let b_target_reg = *r;
                         // Check previous instruction for ADD Rd, PC, #N pattern
                         // Common GBA Thumb entry: ADD R0, PC, #1 / BX R0
-                        instructions.last().map_or(false, |prev: &DecodedInstruction| {
-                            if prev.opcode == "ADD" && prev.mode == ArmMode::Arm {
-                                let same_rd = match prev.operands.first() {
-                                    Some(crate::Operand::Register(rd)) => *rd == b_target_reg,
-                                    _ => false,
-                                };
-                                if same_rd {
-                                    prev.operands.iter().any(|op| {
-                                        match op {
-                                            crate::Operand::Immediate(val) => {
-                                                (address + 8 + val) % 2 == 1
-                                            }
-                                            _ => false,
+                        instructions
+                            .last()
+                            .is_some_and(|prev: &DecodedInstruction| {
+                                prev.opcode == "ADD"
+                                    && prev.mode == ArmMode::Arm
+                                    && match prev.operands.first() {
+                                        Some(crate::Operand::Register(rd))
+                                            if *rd == b_target_reg =>
+                                        {
+                                            prev.operands.iter().any(|op| match op {
+                                                crate::Operand::Immediate(val) => {
+                                                    (address + 8 + val) % 2 == 1
+                                                }
+                                                _ => false,
+                                            })
                                         }
-                                    })
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
-                        })
+                                        _ => false,
+                                    }
+                            })
                     }
                     _ => false,
                 };
@@ -472,7 +471,7 @@ impl Disassembler {
         let mut stats = FunctionDiscoveryStats::default();
 
         let start_address = base_address;
-        if start_address >= 0x08000000 && start_address < 0x09000000 {
+        if (0x08000000..0x09000000).contains(&start_address) {
             let reset_addr = 0x08000000;
             if !discovered.contains(&reset_addr) {
                 discovered.insert(reset_addr);
@@ -761,9 +760,13 @@ impl Disassembler {
         // the CFG visited the same address in both ARM and Thumb modes, both
         // instructions are generated.
         for &(addr, mode) in mode_map {
-            let decode_addr = if mode == ArmMode::Thumb { addr & !1 } else { addr };
+            let decode_addr = if mode == ArmMode::Thumb {
+                addr & !1
+            } else {
+                addr
+            };
             let rom_offset = (decode_addr - 0x08000000) as usize;
-            
+
             if rom_offset >= rom.len() {
                 continue;
             }
@@ -781,7 +784,7 @@ impl Disassembler {
                     ]);
                     let (opcode, operands, sets_flags) = arm_decoder.decode(word, decode_addr);
                     let condition = crate::decode_condition(((word >> 28) & 0xF) as u8);
-                    
+
                     instructions.push(DecodedInstruction {
                         address: addr,
                         opcode,
@@ -799,34 +802,36 @@ impl Disassembler {
                         continue;
                     }
                     let halfword = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                    
+
                     // Check if this is the first half of a 32-bit BL instruction
-                    let (opcode, operands, sets_flags, width) =
-                        if (halfword & 0xF800) == 0xF000 {
-                            // Potential BL_PREFIX: opcode range 0xF000-0xF7FF with bit 11 = 0
-                            let hw1 = halfword;
-                            // Try to read the next halfword for BL_SUFFIX
-                            if rom_offset + 4 <= rom.len() {
-                                let hw2 = u16::from_le_bytes([rom[rom_offset + 2], rom[rom_offset + 3]]);
-                                // Check if hw2 is a valid BL_SUFFIX (bit 11 = 1)
-                                if let Some((op, ops, flags, w)) = thumb_decoder.decode_bl_pair(hw1, hw2, decode_addr) {
-                                    (op, ops, flags, w)
-                                } else {
-                                    // hw2 is not a valid BL_SUFFIX, fall back to BL_PREFIX
-                                    let (op, ops, flags) = thumb_decoder.decode(hw1, decode_addr);
-                                    (op, ops, flags, 2)
-                                }
+                    let (opcode, operands, sets_flags, width) = if (halfword & 0xF800) == 0xF000 {
+                        // Potential BL_PREFIX: opcode range 0xF000-0xF7FF with bit 11 = 0
+                        let hw1 = halfword;
+                        // Try to read the next halfword for BL_SUFFIX
+                        if rom_offset + 4 <= rom.len() {
+                            let hw2 =
+                                u16::from_le_bytes([rom[rom_offset + 2], rom[rom_offset + 3]]);
+                            // Check if hw2 is a valid BL_SUFFIX (bit 11 = 1)
+                            if let Some((op, ops, flags, w)) =
+                                thumb_decoder.decode_bl_pair(hw1, hw2, decode_addr)
+                            {
+                                (op, ops, flags, w)
                             } else {
-                                // Can't read next halfword, fall back to BL_PREFIX
+                                // hw2 is not a valid BL_SUFFIX, fall back to BL_PREFIX
                                 let (op, ops, flags) = thumb_decoder.decode(hw1, decode_addr);
                                 (op, ops, flags, 2)
                             }
                         } else {
-                            // Not a BL_PREFIX, decode normally
-                            let (op, ops, flags) = thumb_decoder.decode(halfword, decode_addr);
+                            // Can't read next halfword, fall back to BL_PREFIX
+                            let (op, ops, flags) = thumb_decoder.decode(hw1, decode_addr);
                             (op, ops, flags, 2)
-                        };
-                    
+                        }
+                    } else {
+                        // Not a BL_PREFIX, decode normally
+                        let (op, ops, flags) = thumb_decoder.decode(halfword, decode_addr);
+                        (op, ops, flags, 2)
+                    };
+
                     instructions.push(DecodedInstruction {
                         address: addr,
                         opcode,

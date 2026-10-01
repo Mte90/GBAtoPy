@@ -1,7 +1,7 @@
 """Test PPU VCOUNT increment and DISPSTAT latching per scanline."""
 
-import sys
-sys.path.insert(0, '/home/d.scasciafratte/gbatopy/crates/gbatopy-cli/assets/gba_runtime')
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from memory import Memory
 from ppu import PPU
@@ -145,7 +145,7 @@ def test_dispstat_vcount_match():
     
     # Set LYC to 50
     lyc_value = 50
-    dispstat_initial = 0x0100 | (lyc_value << 8)  # Set LYC to 50
+    dispstat_initial = (lyc_value << 8)  # Set LYC to 50 (bits 8-15)
     memory.io[4] = dispstat_initial & 0xFF
     memory.io[5] = (dispstat_initial >> 8) & 0xFF
     

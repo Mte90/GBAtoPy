@@ -52,8 +52,8 @@ cargo run --release -p gbatopy-cli -- pipeline --rom game.gba --output game.py
 # Disassemble only
 cargo run --release -p gbatopy-cli -- disasm --input game.gba --output disasm.json
 
-# Generate Python from ROM (code-gen only, no IR)
-cargo run --release -p gbatopy-cli -- generate --input game.gba --output game.py
+# Generate Python from ROM
+cargo run --release -p gbatopy-cli -- pipeline --rom game.gba --output game.py
 ```
 
 ### CLI commands
@@ -61,8 +61,7 @@ cargo run --release -p gbatopy-cli -- generate --input game.gba --output game.py
 | Command | Description |
 |---------|-------------|
 | `disasm` | Disassemble ROM to JSON |
-| `generate` | Generate Python from ROM (code-gen only) |
-| `pipeline` | Run all stages end-to-end |
+| `pipeline` | Generate Python from ROM (run all stages end-to-end) |
 | `test` | Test a single ROM |
 | `test-all` | Test all ROMs in a directory |
 | `verify` | Verify output against reference |
@@ -127,11 +126,10 @@ mgba/build/sdl/mgba --script scripts/screenshot/screenshot.lua test_roms/roms/st
 GBAtoPy/
 ├── Cargo.toml                    # Workspace definition
 ├── crates/
-│   ├── gbatopy-cli/              # CLI driver + runtime assets (disassembler + codegen)
-│   │   └── assets/
-│   │       ├── gba_runtime/      # Python runtime modules (PPU, APU, Memory, etc.)
-│   │       └── templates/        # Python code templates
-│   └── gbatopy-mgba/             # mGBA oracle interface
+│   └── gbatopy-cli/              # CLI driver + runtime assets (disassembler + codegen)
+│       └── assets/
+│           ├── gba_runtime/      # Python runtime modules (PPU, APU, Memory, etc.)
+│           └── templates/        # Python code templates
 ├── scripts/
 │   ├── screenshot/               # mGBA Lua scripts + compare_screenshots.py
 │   ├── setup/                    # Download scripts
