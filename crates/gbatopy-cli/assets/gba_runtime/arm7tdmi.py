@@ -798,12 +798,10 @@ class ARM7TDMI:
                 self.thumb_mode = False
                 return 3
             else:
-                # Unknown BIOS address: return to LR to avoid executing empty BIOS space.
-                # The comment previously said "return to LR" but the code fell through to
-                # normal BX execution, setting PC into unmapped BIOS space and spinning.
-                return_lr = self.registers[14]
-                self.registers[15] = return_lr & 0xFFFFFFFE
-                self.thumb_mode = (return_lr & 1) != 0
+                # Unknown BIOS address (e.g. 0x88=Halt, 0x8C=Stop). Halt the CPU
+                # until an IRQ wakes it. Previously fell through (else: pass) which
+                # set PC into empty BIOS space and spun until timeout.
+                self._halted = True
                 return 3
         
         # Normal BX execution for non-BIOS targets

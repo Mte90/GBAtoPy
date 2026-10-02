@@ -29,7 +29,7 @@ def swi_handler(swi_field):
     ARM codegen extracts bits 23:16 of the 24-bit comment field (GBA BIOS
     convention, mGBA: immediate >> 16). Thumb codegen extracts bits 7:0.
     Handler receives the 8-bit SWI number directly."""
-    global _cpu_halted, _halt_reason
+    global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
     swi_num = swi_field & 0xFF
     if swi_num == 0x00:  # SoftReset
         registers[0] = 0
@@ -54,10 +54,14 @@ def swi_handler(swi_field):
             for addr in range(0x07000000, 0x07000400, 2):
                 memory.write_u16(addr, 0)
     elif swi_num == 0x02:  # Halt — wakes on ANY enabled IRQ
+        _swi_lr = registers[14]
+        _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
         _cpu_halted = True
         _halt_reason = "any"
         return
     elif swi_num == 0x03:  # Stop — low-power mode, treat as Halt
+        _swi_lr = registers[14]
+        _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
         _cpu_halted = True
         _halt_reason = "any"
         return
@@ -72,11 +76,12 @@ def swi_handler(swi_field):
                 registers[0] = 1
                 cpsr['z'] = 1
                 return
+        _swi_lr = registers[14]
+        _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
         _cpu_halted = True
         _halt_reason = "any"
         return
     elif swi_num == 0x05:  # VBlankIntrWait — wakes on VBlank IRQ ONLY
-        global _swi_lr, _swi_caller_pc
         _swi_lr = registers[14]  # Save LR_svc (SWI return address)
         _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
         # Per GBATEK: set IE.0 (VBlank enable), clear IF.0 (acknowledge pending VBlank)
