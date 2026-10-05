@@ -702,8 +702,9 @@ class CPU:
         elif num == 0x02:  # Halt
             self._halted = True
             self._halt_reason = "any"
-        elif num == 0x03:  # Stop
-            pass  # Simplified: no-op
+        elif num == 0x03:  # Stop — halt CPU until interrupt (over-approximation of hardware behavior)
+            self._halted = True
+            self._halt_reason = "any"
         elif num == 0x04:  # IntrWait
             _wait_flag = self.registers[0] & 0xFF
             _ic = getattr(getattr(self, 'memory', None), '_interrupts', None)
@@ -723,6 +724,8 @@ class CPU:
             if hasattr(self, 'memory') and hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
                 ic = self.memory._interrupts
                 ic.ime_reg |= 0x0001
+                self.memory.io[0x208] = ic.ime_reg & 0xFF
+                self.memory.io[0x209] = (ic.ime_reg >> 8) & 0xFF
                 ic.ie_reg |= 0x0001
                 ic.if_reg &= ~0x0001
                 ic._enabled_mask = ic.ie_reg

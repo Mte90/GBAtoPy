@@ -1,17 +1,12 @@
-"""GBA BIOS SWI handlers - software interrupt implementations
+"""GBA BIOS SWI handlers — software interrupt implementations.
 
-GBA BIOS has 42 SWI handlers (0x00-0x29). Most games use only ~10-15 of them.
-Critical handlers for game compatibility:
-- Halt (0x02), IntrWait (0x04), VBlankIntrWait (0x05) - timing/interrupts
-- CpuFastSet (0x0C) - fast memory operations
-- Div/DivArm/Divmod (0x06-0x07) - arithmetic
-- LZ77/Huff/RL decompression (0x11-0x15) - asset decompression
+Only the 13 handlers wired into the SWI dispatch tables (arm7tdmi.py,
+templates/game_loop.py, cpu.py) are implemented here. Other SWI numbers
+are handled inline in the dispatch tables themselves.
 """
 
 import math
 import struct
-import time
-from typing import List, Optional, Tuple
 
 
 class BIOS:
@@ -26,36 +21,6 @@ class BIOS:
         """Division: r0 = dividend / divisor, r1 = remainder"""
         if divisor == 0:
             # GBA ARM7TDMI: division by zero returns 0 (no exception)
-            return 0
-
-        result = dividend // divisor
-        remainder = dividend % divisor
-
-        if (dividend < 0) != (divisor < 0):
-            if remainder != 0:
-                result -= 1
-                remainder = divisor - abs(remainder)
-
-        return result
-
-    def swi_divmod(self, dividend: int, divisor: int) -> tuple:
-        """Division with remainder: returns (quotient, remainder)"""
-        if divisor == 0:
-            return (0, 0)
-
-        quotient = dividend // divisor
-        remainder = dividend % divisor
-
-        if (dividend < 0) != (divisor < 0):
-            if remainder != 0:
-                quotient -= 1
-                remainder = divisor - abs(remainder)
-
-        return (quotient, remainder)
-
-    def swi_divarm(self, dividend: int, divisor: int) -> int:
-        """Division with r0 = dividend, r1 = divisor input/output"""
-        if divisor == 0:
             return 0
 
         result = dividend // divisor
@@ -292,77 +257,6 @@ class BIOS:
 
         return len(dst)
 
-    def swi_vblank_intr_wait(self):
-        cpu = self.memory.cpu
-        cpu._halted = True
-
-    def swi_intr_wait(self, wait_flag: int, vblank_flag: int):
-        """Wait for interrupt. Check IF first (R0=1), then halt."""
-        cpu = getattr(getattr(self, "memory", None), "cpu", None)
-        memory = getattr(self, "memory", None)
-        interrupts = getattr(memory, "_interrupts", None) if memory is not None else None
-        if wait_flag & 0x01 and interrupts is not None and cpu is not None:
-            flag_mask = vblank_flag & 0xFFFF
-            pending = interrupts.if_reg & flag_mask
-            if pending:
-                interrupts.if_reg &= ~pending
-                cpu.registers[0] = 1
-                cpu.cpsr |= (1 << 30)
-                return
-        if cpu is not None:
-            cpu._halted = True
-            cpu._halt_reason = 'any'
-
-    def swi_soft_reset(self):
-        """Soft reset - restart from reset vector"""
-        reset_addr = self.memory.read_u32(0x08000000)
-        self.memory.cpu.registers[15] = reset_addr
-        self.memory.cpu.running = True
-
-    def swi_register_ram_reset(self, mode: int):
-        """Reset/initialize RAM"""
-        if mode & 0x01:
-            for addr in range(0x02000000, 0x02400000):
-                self.memory.write_u8(addr, 0)
-        if mode & 0x02:
-            for addr in range(0x03000000, 0x03007FFF):
-                self.memory.write_u8(addr, 0)
-        if mode & 0x04:
-            for addr in range(0x05000000, 0x05000400):
-                self.memory.write_u8(addr, 0)
-        if mode & 0x08:
-            for addr in range(0x06000000, 0x06018000):
-                self.memory.write_u8(addr, 0)
-        if mode & 0x10:
-            for addr in range(0x07000000, 0x07000400):
-                self.memory.write_u8(addr, 0)
-
-    def swi_halt(self):
-        """Halt CPU until any enabled interrupt fires.
-
-        Sets the halt flag only — the main loop owns all PPU timing.
-        The _deliver_irq routine in the main loop checks _cpu_halted and
-        wakes the CPU when an enabled interrupt becomes pending.
-        """
-        cpu = getattr(self, "cpu", None) or getattr(getattr(self, "memory", None), "cpu", None)
-        if cpu is not None:
-            cpu._halted = True
-            cpu._halt_reason = 'any'
-        else:
-            self._sleep_mode = True
-
-    def swi_vsync(self):
-        """Trigger a VBlank interrupt."""
-        interrupts = getattr(self.memory, "_interrupts", None)
-        if interrupts is not None:
-            interrupts.vblank_irq()
-
-    def swi_stop(self, mode: int):
-        """Stop CPU until key press"""
-        self._sleep_mode = True
-        time.sleep(0.1)
-        self._sleep_mode = False
-
     def swi_arctan2(self, y: int, x: int) -> int:
         """Arc tangent 2"""
         angle = math.atan2(y, x)
@@ -372,27 +266,6 @@ class BIOS:
         """Arc tangent"""
         angle = math.atan(x)
         return int((angle / (2 * math.pi)) * 0x10000) & 0xFFFF
-
-    def swi_sin_cos(self, angle: int) -> Tuple[int, int]:
-        """Sine and cosine"""
-        rad = (angle / 0x10000) * 2 * math.pi
-        sin_val = int(math.sin(rad) * 0x10000)
-        cos_val = int(math.cos(rad) * 0x10000)
-        return (sin_val, cos_val)
-
-    def swi_sin(self, angle: int) -> int:
-        """Sine"""
-        rad = (angle / 0x10000) * 2 * math.pi
-        return int(math.sin(rad) * 0x10000)
-
-    def swi_cos(self, angle: int) -> int:
-        """Cosine"""
-        rad = (angle / 0x10000) * 2 * math.pi
-        return int(math.cos(rad) * 0x10000)
-
-    def swi_bit_count(self, value: int) -> int:
-        """Count set bits"""
-        return bin(value & 0xFFFFFFFF).count("1")
 
     def swi_obj_affine_set(self, param_addr: int, angle: int, scale_x: int, scale_y: int):
         """Set up affine matrix for sprites"""
@@ -413,139 +286,6 @@ class BIOS:
     def swi_bg_affine_set(self, param_addr: int, angle: int, scale_x: int, scale_y: int):
         """Set up affine matrix for backgrounds"""
         self.swi_obj_affine_set(param_addr, angle, scale_x, scale_y)
-
-    def swi_get_time(self) -> int:
-        """Get current time"""
-        return int(time.time() % 86400)
-
-    def swi_set_sleep(self, seconds: int):
-        """Set sleep duration"""
-        time.sleep(min(seconds, 60))
-
-    def swi_is_sleep(self) -> bool:
-        """Check if in sleep mode"""
-        return self._sleep_mode
-
-    def swi_ref_count(self, value: int) -> int:
-        """Count trailing zeros"""
-        if value == 0:
-            return 32
-        count = 0
-        while (value & 1) == 0:
-            value >>= 1
-            count += 1
-        return count
-
-    def swi_get_clock(self) -> int:
-        """Get system clock"""
-        return int(time.time() * 1000) & 0xFFFFFFFF
-
-    def swi_set_sound_mode(self, mode: int):
-        """Set sound mode (0=off, 1=on, 2=DSound, 3=reserved)"""
-        self._sound_mode = mode & 3
-
-    def swi_get_sound_mode(self) -> int:
-        """Get current sound mode"""
-        return getattr(self, "_sound_mode", 1)
-
-    def swi_sound_bias_change(self, bias: int):
-        """Change sound bias level"""
-        self._sound_bias = bias
-
-    def swi_midi_alt_scale(self, note: int, scale: int) -> int:
-        """MIDI alternate scale note"""
-        return note
-
-    def swi_midi_alt_key(self, note: int, key: int) -> int:
-        """MIDI alternate key"""
-        return note
-
-    def swi_midi_inc_octave(self, note: int) -> int:
-        """MIDI increase octave"""
-        return min(note + 12, 127)
-
-    def swi_midi_dec_octave(self, note: int) -> int:
-        """MIDI decrease octave"""
-        return max(note - 12, 0)
-
-    def swi_midi_inc_note(self, note: int) -> int:
-        """MIDI increase note"""
-        return min(note + 1, 127)
-
-    def swi_midi_dec_note(self, note: int) -> int:
-        """MIDI decrease note"""
-        return max(note - 1, 0)
-
-    def swi_midi_chord(self, root_note: int, chord_type: int) -> List[int]:
-        """MIDI chord - returns note numbers for chord"""
-        # Chord intervals: 0=major, 1=minor, 2=dim, 3=aug, etc.
-        intervals = {
-            0: [0, 4, 7],  # Major
-            1: [0, 3, 7],  # Minor
-            2: [0, 3, 6],  # Diminished
-            3: [0, 4, 8],  # Augmented
-            4: [0, 4, 7, 11],  # Major 7th
-            5: [0, 3, 7, 10],  # Minor 7th
-            6: [0, 4, 7, 10],  # Dominant 7th
-        }
-        chord_intervals = intervals.get(chord_type % 7, intervals[0])
-        return [(root_note + interval) % 128 for interval in chord_intervals]
-
-    def swi_midi_volume_voice(self, channel: int, volume: int, voice: int):
-        """MIDI set volume for voice"""
-        if not hasattr(self, "_midi_volumes"):
-            self._midi_volumes = {}
-        self._midi_volumes[(channel, voice)] = volume & 0xFF
-
-    def swi_midi_freq_note(self, freq: int) -> int:
-        """Convert frequency to MIDI note number"""
-        if freq <= 0:
-            return 0
-        # MIDI note = 69 + 12 * log2(freq / 440)
-        import math
-
-        note = 69 + 12 * math.log2(freq / 440.0)
-        return max(0, min(127, int(note + 0.5)))
-
-    def swi_midi_note_to_freq(self, note: int) -> int:
-        """Convert MIDI note number to frequency"""
-        if note < 0:
-            return 0
-        # freq = 440 * 2^((note - 69) / 12)
-        import math
-
-        freq = 440.0 * (2.0 ** ((note - 69) / 12.0))
-        return int(freq)
-
-    def swi_2d_geo_set(self, param: int, value: int):
-        """Set 2D geometry parameter"""
-        if not hasattr(self, "_geo_params"):
-            self._geo_params = {}
-        self._geo_params[param] = value
-
-    def swi_2d_geo_get(self, param: int) -> int:
-        """Get 2D geometry parameter"""
-        return getattr(self, "_geo_params", {}).get(param, 0)
-
-    def swi_1d_to_2d_based_on_width(self, x: int, width: int) -> Tuple[int, int]:
-        """Convert 1D coordinate to 2D based on width"""
-        y = x // width
-        x = x % width
-        return (x, y)
-
-    def swi_1d_to_2d_based_on_height(self, x: int, height: int) -> Tuple[int, int]:
-        """Convert 1D coordinate to 2D based on height"""
-        y = x // height
-        x = x % height
-        return (x, y)
-
-    def swi_2d_to_1d_based_on_width(self, x: int, y: int, width: int) -> int:
-        """Convert 2D coordinate to 1D based on width"""
-        return y * width + x
-
-    def swi_2d_to_1d_based_on_height(self, x: int, y: int, height: int) -> int:
-        """Convert 2D coordinate to 1D based on height"""
-        return y * height + x
 
     def swi_bit_unpack(self, src_addr: int, dst_addr: int, params_addr: int) -> int:
         """Bit unpack (SWI 0x10/0x16)"""
@@ -594,14 +334,6 @@ class BIOS:
         else:
             return 0
 
-    def swi_rle_uncomp_wram(self, src_addr: int, dst_addr: int) -> int:
-        """RLE decompression to WRAM"""
-        return self.swi_rl_uncomp(src_addr, dst_addr)
-
-    def swi_rle_uncomp_vram(self, src_addr: int, dst_addr: int) -> int:
-        """RLE decompression to VRAM"""
-        return self.swi_rl_uncomp(src_addr, dst_addr)
-
     def swi_diff_uncomp_filter(self, src_addr: int, dst_addr: int) -> int:
         """Difference decompression with filter (SWI 0x18). Header: [0x81][size:u24]."""
         src = self.memory.read_bytes(src_addr, 102400)
@@ -644,19 +376,3 @@ class BIOS:
             prev = value
 
         return len(temp)
-
-    def swi_huff_uncomp_wram(self, src_addr: int, dst_addr: int) -> int:
-        """Huffman decompression to WRAM"""
-        return self.swi_huff_uncomp(src_addr, dst_addr)
-
-    def swi_huff_uncomp_vram(self, src_addr: int, dst_addr: int) -> int:
-        """Huffman decompression to VRAM"""
-        return self.swi_huff_uncomp(src_addr, dst_addr)
-
-    def swi_lz77_uncomp_wram(self, src_addr: int, dst_addr: int) -> int:
-        """LZ77 decompression to WRAM"""
-        return self.swi_lz77_uncomp(src_addr, dst_addr)
-
-    def swi_lz77_uncomp_vram(self, src_addr: int, dst_addr: int) -> int:
-        """LZ77 decompression to VRAM"""
-        return self.swi_lz77_uncomp(src_addr, dst_addr)

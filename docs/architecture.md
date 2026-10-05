@@ -74,7 +74,7 @@ ROM data (tiles, palettes, tilemaps, audio samples) is embedded directly in the 
 
 ## mGBA Verification
 
-The verification pipeline uses a modified mGBA build with extended Lua scripting (branch `extend-lua`). Lua scripts in `scripts/screenshot/` control mGBA programmatically:
+The verification pipeline uses mGBA 0.11 with custom patches from `mgba-custom-patches.diff` (adds `--script` flag and Lua scripting hooks). Lua scripts in `scripts/screenshot/` control mGBA programmatically:
 
 - `screenshot.lua` — Captures frames for visual verification
 - `compare_screenshots.py` — Compares golden vs transpiled screenshots
@@ -112,7 +112,7 @@ The output is a single `.py` file with all runtime code inlined. The only extern
 |-----------|--------|-------|
 | Rust pipeline | ✅ Builds | Zero compiler warnings |
 | Disassembler | ✅ Working | ~100% ARM/Thumb coverage |
-| Python generation | ✅ Working | All 76 ROMs produce valid Python |
+| Python generation | ✅ Working | All 91 ROMs produce valid Python |
 | Memory map | ✅ Working | Full GBA memory layout with mirrors |
 | CPU core | ✅ Working | Code-gen generates Python functions; runtime uses PyBoyAdvance modules; STMFD/LDMFD register order bug FIXED (enhancedcontrolchecker PASSES) |
 | PPU Mode 0 | ✅ Verified | shades.gba 100% golden match (after 5 bug fixes) |

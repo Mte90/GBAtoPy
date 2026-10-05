@@ -352,16 +352,8 @@ class RTC:
         """Apply written status register value."""
         if len(self.write_buffer) >= 1:
             status = self.write_buffer[0]
-            # Update status1 register
+            # STOP bit stored in status1 (time progression not implemented)
             self.status1 = status
-            
-            # Handle STOP bit (bit 3)
-            if status & self.STATUS1_STOP:
-                # Clock stopped - don't update time
-                pass
-            else:
-                # Clock running - time updates normally
-                pass
             
             # Handle RESET bit (bit 4)
             if status & self.STATUS1_RESET:
@@ -434,26 +426,6 @@ class RTC:
                 self._sync_from_system()
         else:
             self._sync_from_system()
-    
-    def save_state(self):
-        """Save RTC state to file."""
-        # Update time before saving
-        self.update_time()
-        
-        state = {
-            'base_timestamp': self.base_timestamp,
-            'seconds': self.seconds,
-            'minutes': self.minutes,
-            'hours': self.hours,
-            'day': self.day,
-            'month': self.month,
-            'year': self.year,
-            'status1': self.status1,
-            'status2': self.status2
-        }
-        
-        with open(self.state_file, 'w') as f:
-            json.dump(state, f)
     
     def get_time_string(self) -> str:
         """Get current RTC time as string."""

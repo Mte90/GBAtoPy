@@ -1,4 +1,5 @@
 
+import os
 import time
 
 def calibrate_gba_timing(measure_cycles=100000):
@@ -17,6 +18,27 @@ def calibrate_gba_timing(measure_cycles=100000):
     target_cycles_per_frame = gba_hz / 60.0
     calibrated_delay = 1.0 / cycles_per_second * target_cycles_per_frame
     return speed_ratio, calibrated_delay, cycles_per_second, gba_hz
+
+def _save_file_path():
+    return os.path.splitext(__file__)[0] + '.sav'
+
+def _load_sram():
+    try:
+        with open(_save_file_path(), 'rb') as f:
+            data = f.read()
+        if data and len(data) <= len(memory.sram):
+            memory.sram[:len(data)] = data
+    except (FileNotFoundError, OSError):
+        pass
+
+def _save_sram():
+    if not any(memory.sram):
+        return
+    try:
+        with open(_save_file_path(), 'wb') as f:
+            f.write(memory.sram)
+    except OSError as e:
+        print(f"Warning: Failed to save SRAM: {e}", file=sys.stderr)
 
 _interp_cpu = None
 _halt_reason = None  # None, "any" (Halt), or "vblank" (VBlankIntrWait)
@@ -249,12 +271,12 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
                     break
         # If PC is NOT in ROM range (e.g., IWRAM, EWRAM, BIOS), execute one step and return
         # This allows the main loop to advance the PPU
-        if not (0x08000000 <= _pc < 0x0A000000):
-            break
+        # NOTE: This break was removed to allow batch execution of non-ROM code
+        # if not (0x08000000 <= _pc < 0x0A000000):
+        #     break
         _old_pc = _pc
         _interp_cpu.step()
         _step_count += 1
-        
         # Dynamic dispatch table expansion for indirect calls
         # When BX Rm or BLX Rm executes, the new PC may not be in the dispatch table
         _new_pc = _interp_cpu.registers[15]
@@ -312,7 +334,12 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     _audio_synth_per_frame = 735
     instr_per_scanline = max(50, int(gba_hz / 60.0) // 228)
     _instr_per_frame = instr_per_scanline * 228
+    _max_inner_stalls = max(50, instr_per_scanline // 2)
     __DELIVER_IRQ_BODY__
+    _load_sram()
+    _dt_arm = dispatch_table_arm
+    _dt_thumb = dispatch_table_thumb
+    _has_timers = timers_instance is not None
     while ic < mi:
         if frame_limit and fc >= frame_limit: break
         for _scanline in range(228):
@@ -337,22 +364,24 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                         _df.write(bytes(_rd))
                     print(f"Dumped {_dump_region_name} ({len(_rd)} bytes) at PC=0x{pc:08X}", flush=True)
                     _dump_done = True
-                idx = (pc - 0x08000000) >> (1 if cpsr.get('t', 0) else 2)
-                _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
+                _t = cpsr.get('t', 0)
+                idx = (pc - 0x08000000) >> (1 if _t else 2)
+                _dt = _dt_thumb if _t else _dt_arm
                 func = _dt.get(idx)
                 if func is None:
                     # PC not in dispatch table - could be IWRAM/EWRAM code or unknown ROM address
                     # If PC is NOT in ROM range, execute one CPU step directly and continue
                     # This prevents infinite fallback loops for IWRAM code
                     if not (0x08000000 <= pc < 0x0A000000):
-                        # Non-ROM address: execute one step and advance instruction counter
-                        global _interp_cpu
-                        _sync_state_to_cpu(registers, cpsr)
-                        _interp_cpu.step()
-                        _sync_state_from_cpu(registers, cpsr)
-                        ic += 1
-                        if timers_instance is not None:
-                            timers_instance.step(4)
+                        # Non-ROM address: batch execute via fallback interpreter
+                        _budget = instr_per_scanline - (ic - _inner_ic_start)
+                        if _budget <= 0:
+                            _budget = 1
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                        _steps = max(1, _steps)
+                        ic += _steps
+                        if _has_timers:
+                            timers_instance.step(4 * _steps)
                     else:
                         # ROM address not in dispatch table - use fallback interpreter
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
@@ -361,17 +390,17 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                         _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                         _steps = max(1, _steps)
                         ic += _steps
-                        if timers_instance is not None:
+                        if _has_timers:
                             timers_instance.step(4 * _steps)
-                    if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
-                        break
+                        if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
+                            break
                 else:
                     func(registers, cpsr); ic += 1
-                    if timers_instance is not None:
+                    if _has_timers:
                         timers_instance.step(4)
                     if registers[15] == pc:
                         _inner_stalls += 1
-                        if _inner_stalls > 10000:
+                        if _inner_stalls > _max_inner_stalls:
                             break
                     else:
                         _inner_stalls = 0
@@ -379,7 +408,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             ppu_instance.step_scanline()
             _deliver_irq()
             ppu_instance.recapture_window_snapshot()
-            if timers_instance is not None:
+            if _has_timers:
                 timers_instance.step(960)
             ppu_instance.fire_hblank_irq()
             _deliver_irq()
@@ -399,6 +428,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             _wav.setsampwidth(2)
             _wav.setframerate(44100)
             _wav.writeframes(_s16.tobytes())
+    _save_sram()
     return fc
 
 def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scale=1, dump_memory=None, dump_region=None, load_state=None, save_state=None, hook_file=None, pc_trace=None, trace_n=0, max_instrs=10000000, watch_reg=None, dump_at=None):
@@ -444,6 +474,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     _irq_saved_r3 = 0
     _irq_saved_r12 = 0
     __DELIVER_IRQ_BODY__
+    _load_sram()
     running = True
     fc = 0; mi = max_instrs; ic = 0
     while running and ic < mi and fc < (frame_limit or 10000):
@@ -471,7 +502,10 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         # Each scanline: run a batch of instructions, then advance VCount + fire HBlank DMA
         target_cycles_per_frame = int(gba_hz / 60.0)
         instr_per_scanline = max(50, target_cycles_per_frame // 228)
-        max_inner_stalls = 10000
+        max_inner_stalls = max(50, instr_per_scanline // 2)
+        _dt_arm = dispatch_table_arm
+        _dt_thumb = dispatch_table_thumb
+        _has_timers = timers_instance is not None
         for _scanline in range(228):
             if ic >= mi:
                 break
@@ -481,22 +515,24 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                 if _cpu_halted or ic >= mi:
                     break
                 pc = registers[15]
-                idx = (pc - 0x08000000) >> (1 if cpsr.get('t', 0) else 2)
-                _dt = dispatch_table_thumb if cpsr.get('t', 0) else dispatch_table_arm
+                _t = cpsr.get('t', 0)
+                idx = (pc - 0x08000000) >> (1 if _t else 2)
+                _dt = _dt_thumb if _t else _dt_arm
                 func = _dt.get(idx)
                 if func is None:
                     # PC not in dispatch table - could be IWRAM/EWRAM code or unknown ROM address
                     # If PC is NOT in ROM range, execute one CPU step directly and continue
                     # This prevents infinite fallback loops for IWRAM code
                     if not (0x08000000 <= pc < 0x0A000000):
-                        # Non-ROM address: execute one step and advance instruction counter
-                        global _interp_cpu
-                        _sync_state_to_cpu(registers, cpsr)
-                        _interp_cpu.step()
-                        _sync_state_from_cpu(registers, cpsr)
-                        ic += 1
-                        if timers_instance is not None:
-                            timers_instance.step(4)
+                        # Non-ROM address: batch execute via fallback interpreter
+                        _budget = instr_per_scanline - (ic - _inner_ic_start)
+                        if _budget <= 0:
+                            _budget = 1
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                        _steps = max(1, _steps)
+                        ic += _steps
+                        if _has_timers:
+                            timers_instance.step(4 * _steps)
                     else:
                         # ROM address not in dispatch table - use fallback interpreter
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
@@ -505,13 +541,13 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                         _steps = max(1, _steps)
                         ic += _steps
-                        if timers_instance is not None:
+                        if _has_timers:
                             timers_instance.step(4 * _steps)
                         if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
                             break
                     continue
                 func(registers, cpsr); ic += 1
-                if timers_instance is not None:
+                if _has_timers:
                     timers_instance.step(4)
                 _cur_w = registers[_watch_reg_idx] if _watch_reg_idx is not None else None
                 if pc_trace and trace_file and (_watch_reg_idx is None or _cur_w != _watch_reg_prev):
@@ -541,7 +577,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             ppu_instance.step_scanline()
             _deliver_irq()
             ppu_instance.recapture_window_snapshot()
-            if timers_instance is not None:
+            if _has_timers:
                 timers_instance.step(960)
             ppu_instance.fire_hblank_irq()
             _deliver_irq()
@@ -595,6 +631,7 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
         trace_file.close()
         print(f"PC trace written to: {pc_trace} ({ic} instructions)")
     
+    _save_sram()
     return fc
 
 if __name__ == "__main__":

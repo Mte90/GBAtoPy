@@ -5,7 +5,6 @@ mod cmds;
 mod codegen;
 mod helpers;
 mod pipeline_cmd;
-pub mod ppu;
 mod verify;
 
 use clap::{Parser, Subcommand};

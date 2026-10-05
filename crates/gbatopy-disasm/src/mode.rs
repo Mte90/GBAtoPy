@@ -39,16 +39,7 @@ impl ModeTracker {
         }
     }
 
-    pub fn get_switches(&self) -> &[(u32, ArmMode)] {
-        &self.mode_switches
-    }
 
-    pub fn instruction_width(&self) -> u8 {
-        match self.current_mode {
-            ArmMode::Arm => 4,
-            ArmMode::Thumb => 2,
-        }
-    }
 }
 
 impl Default for ModeTracker {

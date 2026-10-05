@@ -36,6 +36,29 @@ This is a **transpiler**, not an emulator with approximate behavior. The generat
 - Background modes: 0-5 (text, affine, bitmap)
 - Frame = 228 scanlines (160 visible + 68 VBlank); VCount wraps at 228
 
+## Sound Registers
+
+| Address   | Name         | R/W | Width | Description                              |
+|-----------|--------------|-----|-------|------------------------------------------|
+| 0x04000060 | SOUND1CNT_L  | R/W | 16    | Channel 1 sweep                          |
+| 0x04000062 | SOUND1CNT_H  | R/W | 16    | Channel 1 duty/length/envelope           |
+| 0x04000064 | SOUND1CNT_X  | R/W | 16    | Channel 1 frequency/control              |
+| 0x04000068 | SOUND2CNT_L  | R/W | 16    | Channel 2 duty/length/envelope           |
+| 0x0400006C | SOUND2CNT_H  | R/W | 16    | Channel 2 frequency/control              |
+| 0x04000070 | SOUND3CNT_L  | R/W | 16    | Channel 3 stop/wave select               |
+| 0x04000072 | SOUND3CNT_H  | R/W | 16    | Channel 3 length/volume                  |
+| 0x04000074 | SOUND3CNT_X  | R/W | 16    | Channel 3 frequency/control              |
+| 0x04000078 | SOUND4CNT_L  | R/W | 16    | Channel 4 length/envelope                |
+| 0x0400007C | SOUND4CNT_H  | R/W | 16    | Channel 4 frequency/control              |
+| 0x04000080 | SOUNDCNT_L   | R/W | 16    | Master volume + ch1-4 output enables (bits 8-15) |
+| 0x04000082 | SOUNDCNT_H   | R/W | 16    | FIFO A/B enables (bits 8/12), output ratio (bits 0-1) |
+| 0x04000084 | SOUNDCNT_X   | R/W | 16    | Master enable (bit 7), ch1-4 active status (bits 0-3, read-only) |
+| 0x04000088 | SOUNDBIAS    | R/W | 16    | Sound bias / volume control              |
+| 0x0400008A | SOUNDSTEP    | R/W | 16    | PWM step (undocumented)                  |
+| 0x04000090 | WAVE_RAM     | R/W | 2x32  | Wave pattern RAM (8 entries)             |
+| 0x040000A0 | FIFO_A       | W   | 32    | Channel A FIFO                           |
+| 0x040000A4 | FIFO_B       | W   | 32    | Channel B FIFO                           |
+
 ## PPU Rendering Modes
 
 - Mode 0: 4BPP text tiles — VERIFIED (shades, hello, helloWorld, hello_world)

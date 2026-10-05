@@ -90,8 +90,10 @@
 | 0x04000078 | SOUND4CNT_L  | R/W | 16    | Channel 4 length/envelope     |
 | 0x0400007C | SOUND4CNT_H  | R/W | 16    | Channel 4 frequency/control   |
 | 0x04000080 | SOUNDCNT_L   | R/W | 16    | Stereo/volume/enable          |
-| 0x04000082 | SOUNDCNT_H   | R/W | 16    | Mixing/DMA control            |
-| 0x04000084 | SOUNDCNT_X   | R/W | 16    | Sound master on/off           |
+| 0x04000082 | SOUNDCNT_H   | R/W | 16    | Mixing/DMA control          |
+| 0x04000084 | SOUNDCNT_X   | R/W | 16    | Sound master on/off         |
+| 0x04000088 | SOUNDBIAS    | R/W | 16    | Sound bias / volume control |
+| 0x0400008A | SOUNDSTEP    | R/W | 16    | PWM step (undocumented)     |
 | 0x04000090 | WAVE_RAM     | R/W | 2x32  | Wave pattern RAM (8 entries)  |
 | 0x040000A0 | FIFO_A       | W   | 32    | Channel A FIFO                |
 | 0x040000A4 | FIFO_B       | W   | 32    | Channel B FIFO                |

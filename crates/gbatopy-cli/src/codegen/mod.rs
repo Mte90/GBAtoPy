@@ -221,8 +221,8 @@ pub fn generate_python_code(
 
     code.push_str("registers[15] = 0x08000000\n");
     code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
-    code.push_str("_user_sys_bank = {'sp': 0x03007F00, 'lr': 0}\n");
-    code.push_str("banked_sp_lr = {0x10: {'sp': 0x03007FA0, 'lr': 0}, 0x1F: _user_sys_bank, 0x11: {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0x03007FE0, 'lr': 0}, 0x13: {'sp': 0x03007FE0, 'lr': 0}, 0x17: {'sp': 0x03007FE0, 'lr': 0}, 0x1B: {'sp': 0x03007F00, 'lr': 0}}\n");
+    code.push_str("_user_sys_bank = {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}\n");
+    code.push_str("banked_sp_lr = {0x10: {'sp': 0x03007FA0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x1F: _user_sys_bank, 0x11: {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0x03007FE0, 'lr': 0}, 0x13: {'sp': 0x03007FE0, 'lr': 0}, 0x17: {'sp': 0x03007FE0, 'lr': 0}, 0x1B: {'sp': 0x03007F00, 'lr': 0}}\n");
     code.push_str("\ndef _switch_mode(new_mode):\n");
     code.push_str("    old_mode = cpsr.get('mode', 0x1F)\n");
     code.push_str("    if new_mode == old_mode:\n");
@@ -232,10 +232,14 @@ pub fn generate_python_code(
     code.push_str("        _b['sp'] = registers[13]; _b['lr'] = registers[14]\n");
     code.push_str("        if old_mode == 0x11:\n");
     code.push_str("            _b['r8'] = registers[8]; _b['r9'] = registers[9]; _b['r10'] = registers[10]; _b['r11'] = registers[11]; _b['r12'] = registers[12]\n");
+    code.push_str("        elif old_mode in (0x10, 0x1F):\n");
+    code.push_str("            _b['r8'] = registers[8]; _b['r9'] = registers[9]; _b['r10'] = registers[10]; _b['r11'] = registers[11]; _b['r12'] = registers[12]\n");
     code.push_str("    if new_mode in banked_sp_lr:\n");
     code.push_str("        _b = banked_sp_lr[new_mode]\n");
     code.push_str("        registers[13] = _b['sp']; registers[14] = _b['lr']\n");
     code.push_str("        if new_mode == 0x11:\n");
+    code.push_str("            registers[8] = _b['r8']; registers[9] = _b['r9']; registers[10] = _b['r10']; registers[11] = _b['r11']; registers[12] = _b['r12']\n");
+    code.push_str("        elif new_mode in (0x10, 0x1F):\n");
     code.push_str("            registers[8] = _b['r8']; registers[9] = _b['r9']; registers[10] = _b['r10']; registers[11] = _b['r11']; registers[12] = _b['r12']\n");
     code.push_str("    cpsr['mode'] = new_mode\n");
     code.push_str("\ndef _spsr_for_mode(mode):\n");
@@ -249,6 +253,33 @@ pub fn generate_python_code(
         "\n_MODE_TO_SPSR_IDX = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1B: 4, 0x11: 5, 0x12: 6}\n",
     );
     code.push_str("_MODES_WITH_SPSR = frozenset({0x11, 0x12, 0x13, 0x17, 0x1B})\n");
+    code.push_str("\ndef _read_user_reg(i):\n");
+    code.push_str("    if i < 8:\n");
+    code.push_str("        return registers[i]\n");
+    code.push_str("    if i < 13:\n");
+    code.push_str("        if cpsr.get('mode', 0x1F) == 0x11:\n");
+    code.push_str("            return banked_sp_lr[0x10].get('r' + str(i), 0)\n");
+    code.push_str("        return registers[i]\n");
+    code.push_str("    if i == 13:\n");
+    code.push_str("        return banked_sp_lr[0x10]['sp']\n");
+    code.push_str("    if i == 14:\n");
+    code.push_str("        return banked_sp_lr[0x10]['lr']\n");
+    code.push_str("    return registers[15]\n");
+    code.push_str("\ndef _write_user_reg(i, val):\n");
+    code.push_str("    val &= 0xFFFFFFFF\n");
+    code.push_str("    if i < 8:\n");
+    code.push_str("        registers[i] = val\n");
+    code.push_str("        return\n");
+    code.push_str("    if i < 13:\n");
+    code.push_str("        if cpsr.get('mode', 0x1F) == 0x11:\n");
+    code.push_str("            banked_sp_lr[0x10]['r' + str(i)] = val\n");
+    code.push_str("        else:\n");
+    code.push_str("            registers[i] = val\n");
+    code.push_str("        return\n");
+    code.push_str("    if i == 13:\n");
+    code.push_str("        banked_sp_lr[0x10]['sp'] = val\n");
+    code.push_str("    elif i == 14:\n");
+    code.push_str("        banked_sp_lr[0x10]['lr'] = val\n");
     code.push_str("\ndef cpsr_check(cond):\n");
     code.push_str("    n = cpsr['n']\n");
     code.push_str("    z = cpsr['z']\n");
@@ -375,15 +406,20 @@ pub fn generate_python_code(
 
     // Helper function to generate Python from ARM instruction
 
-    // Embed ROM data inline as base64 so the generated .py is fully standalone
-    // (per AGENTS.md: "Standalone — zero external imports except pygame").
-    // base64 keeps the source ~1.33x the ROM size, vs ~5x for a bytearray literal.
+    // Embed ROM data inline as zlib-compressed base64 so the generated .py is fully standalone.
+    // Both zlib and base64 are Python stdlib — no external dependencies needed.
     use base64::Engine;
-    let rom_b64 = base64::engine::general_purpose::STANDARD.encode(rom);
-    code.push_str("# ROM data (base64-encoded; decoded at runtime via stdlib base64)\n");
-    code.push_str("import base64 as _b64\n");
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+    encoder.write_all(rom).expect("compress ROM data");
+    let rom_compressed = encoder.finish().expect("finalize ROM compression");
+    let rom_b64 = base64::engine::general_purpose::STANDARD.encode(&rom_compressed);
+    code.push_str("# ROM data (zlib-compressed, base64-encoded; decoded at runtime via stdlib)\n");
+    code.push_str("import base64 as _b64\nimport zlib as _zlib\n");
     code.push_str(&format!(
-        "ROM_DATA = bytearray(_b64.b64decode({:?}))\n",
+        "ROM_DATA = bytearray(_zlib.decompress(_b64.b64decode({:?})))\n",
         rom_b64
     ));
     code.push_str("memory.load_rom_data(ROM_DATA)\n\n");
@@ -523,6 +559,8 @@ pub fn generate_python_code(
     );
 
     let mut non_nop_addrs: Vec<(u64, ArmMode)> = Vec::new();
+    let mut thumb_optimized_addrs: std::collections::HashSet<(u64, ArmMode)> =
+        std::collections::HashSet::new();
     let mut block_function_code = String::new();
     let mut address_list: Vec<(u64, ArmMode)> = func_groups.keys().copied().collect();
     address_list.sort();
@@ -662,6 +700,7 @@ pub fn generate_python_code(
                                         block_function_code.push_str(&func_code);
                                         current_line_count += lines_to_add;
                                         non_nop_addrs.push((func_start, func_mode_key));
+                                        thumb_optimized_addrs.insert((func_start, func_mode_key));
 
                                         // Skip to next block - the 2nd and 3rd blocks will be skipped
                                         continue;
@@ -741,6 +780,11 @@ pub fn generate_python_code(
                 }
             }
         }
+        // Track peephole-optimized Thumb functions for the dispatch table
+        if memset_optimized.is_some() && func_mode_key == ArmMode::Thumb {
+            thumb_optimized_addrs.insert((func_start, func_mode_key));
+        }
+
         // End of block: always advance PC for dispatch loop (unless memset optimization was applied)
         if memset_optimized.is_none() {
             let last_inst = func_instructions.last().unwrap();
@@ -887,11 +931,26 @@ pub fn generate_python_code(
     }
     code.push_str("}\n\n");
 
-    // Thumb codegen is not yet implemented (instruction_codegen/mod.rs short-circuits
-    // all Thumb instructions to `pass`). Registering these stubs in the dispatch table
-    // shadows the fallback interpreter, which has full Thumb coverage. Empty the table
-    // so the main loop falls through to the fallback interpreter for all Thumb code.
-    code.push_str("dispatch_table_thumb = {}\n\n");
+    // Only register peephole-optimized Thumb functions (memset loops) in the dispatch
+    // table. Other Thumb functions use ARM-style codegen handlers that may produce
+    // incorrect PC-relative addressing (data_processing.rs uses ARM_PC_OFFSET=8, not
+    // Thumb's +4). Peephole-optimized functions are mode-independent memset loops —
+    // guaranteed correct. All other Thumb code falls through to the fallback interpreter.
+    code.push_str("dispatch_table_thumb = {\n");
+    for &(addr, mode) in &non_nop_addrs {
+        if mode != ArmMode::Thumb {
+            continue;
+        }
+        if !thumb_optimized_addrs.contains(&(addr, mode)) {
+            continue;
+        }
+        let idx = (addr - base_addr) >> 1;
+        if idx >= 0x200000 {
+            continue;
+        }
+        code.push_str(&format!("    0x{:07X}: func_{:08X}_t,\n", idx, addr));
+    }
+    code.push_str("}\n\n");
 
     // Add game loop (from generate_game_loop in pipeline.rs)
     code.push_str(&generate_game_loop());

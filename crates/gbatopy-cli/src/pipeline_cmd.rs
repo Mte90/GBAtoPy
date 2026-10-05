@@ -1,7 +1,6 @@
 use crate::asset_extractor::extract_assets;
 
-#[allow(unused_imports)]
-use crate::ppu::generate_ppu_code;
+
 use gbatopy_disasm::{
     operand::AddressingMode, operand::Operand, CfgBuilder, Disassembler,
 };

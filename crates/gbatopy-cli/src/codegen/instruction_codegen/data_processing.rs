@@ -82,6 +82,55 @@ fn shifted_reg_expr(reg: u8, shift: &ShiftType, amount: &ShiftAmount) -> String 
     }
 }
 
+/// Check if operand is RRX (ROR #0 with immediate shift amount).
+fn is_rrx(op: &Operand) -> bool {
+    matches!(op, Operand::ShiftedRegister { shift: ShiftType::Ror, amount: ShiftAmount::Immediate(0), .. })
+}
+
+/// Extract the source register from a ShiftedRegister operand.
+fn shift_reg(op: &Operand) -> Option<u8> {
+    match op {
+        Operand::ShiftedRegister { reg, .. } => Some(*reg),
+        _ => None,
+    }
+}
+
+/// Return Python code to update cpsr['c'] with the shifter carry-out.
+/// Returns None when carry is unchanged (LSL #0, bare register, immediate,
+/// register-specified shift). RRX (ROR #0) also returns None because it
+/// requires special handling: the old carry must be saved before updating.
+fn shifter_carry_code(op: &Operand) -> Option<String> {
+    match op {
+        Operand::ShiftedRegister { reg, shift, amount } => {
+            let r = format!("registers[{}]", reg);
+            match amount {
+                ShiftAmount::Immediate(amt) => {
+                    let amt = *amt as u32;
+                    match (shift, amt) {
+                        (ShiftType::Lsl, 0) => None,
+                        (ShiftType::Lsl, n) => Some(format!("cpsr['c'] = (({} >> (32 - {})) & 1)", r, n)),
+                        (ShiftType::Lsr, 0) => Some(format!("cpsr['c'] = (({} >> 31) & 1)", r)),
+                        (ShiftType::Lsr, n) => Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n)),
+                        (ShiftType::Asr, 0) => Some(format!("cpsr['c'] = (({} >> 31) & 1)", r)),
+                        (ShiftType::Asr, n) => Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n)),
+                        (ShiftType::Ror, 0) => None,
+                        (ShiftType::Ror, n) => Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n)),
+                    }
+                }
+                ShiftAmount::Register(_) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Generate Python expression for an RRX-shifted value using _old_c
+/// instead of cpsr['c']. Used when sets_flags=true to avoid reading
+/// the already-updated carry.
+fn rrx_value_expr(reg: u8) -> String {
+    format!("((registers[{}] >> 1) | (_old_c << 31)) & 0xFFFFFFFF", reg)
+}
+
 /// Resolve an operand to a Python expression string.
 fn operand_to_expr(op: &Operand) -> String {
     match op {
@@ -194,6 +243,23 @@ fn generate_mov(ops: &[Operand], sets_flags: bool) -> Option<String> {
                 "0".to_string()
             };
             if sets_flags {
+                if ops.len() >= 2 {
+                    if let Some(rm) = shift_reg(&ops[1]) {
+                        if is_rrx(&ops[1]) {
+                            return Some(format!(
+                                "_old_c = cpsr.get('c', 0)\ncpsr['c'] = registers[{}] & 1\nregisters[{}] = {}\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                                rm, rd, rrx_value_expr(rm), rd
+                            ));
+                        }
+                    }
+                    let carry_line = shifter_carry_code(&ops[1])
+                        .map(|c| format!("{}\n", c))
+                        .unwrap_or_default();
+                    return Some(format!(
+                        "{}registers[{}] = {}\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                        carry_line, rd, src, rd
+                    ));
+                }
                 return Some(format!(
                     "registers[{}] = {}\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
                     rd, src, rd
@@ -214,12 +280,29 @@ fn generate_mvn(ops: &[Operand], sets_flags: bool) -> Option<String> {
                 "0".to_string()
             };
             if sets_flags {
+                if ops.len() >= 2 {
+                    if let Some(rm) = shift_reg(&ops[1]) {
+                        if is_rrx(&ops[1]) {
+                            return Some(format!(
+                                "_old_c = cpsr.get('c', 0)\ncpsr['c'] = registers[{}] & 1\nregisters[{}] = ({} ^ 0xFFFFFFFF) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                                rm, rd, rrx_value_expr(rm), rd
+                            ));
+                        }
+                    }
+                    let carry_line = shifter_carry_code(&ops[1])
+                        .map(|c| format!("{}\n", c))
+                        .unwrap_or_default();
+                    return Some(format!(
+                        "{}registers[{}] = ({} ^ 0xFFFFFFFF) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                        carry_line, rd, src, rd
+                    ));
+                }
                 return Some(format!(
-                    "registers[{}] = {} ^ 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    "registers[{}] = ({} ^ 0xFFFFFFFF) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
                     rd, src, rd
                 ));
             }
-            return Some(format!("registers[{}] = {} ^ 0xFFFFFFFF", rd, src));
+            return Some(format!("registers[{}] = ({} ^ 0xFFFFFFFF) & 0xFFFFFFFF", rd, src));
         }
     }
     None
@@ -414,9 +497,20 @@ fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                     _ => "&",
                 };
                 if sets_flags {
+                    if let Some(rm) = shift_reg(&ops[1]) {
+                        if is_rrx(&ops[1]) {
+                            return Some(format!(
+                                "_old_c = cpsr.get('c', 0)\ncpsr['c'] = registers[{}] & 1\nregisters[{}] = (registers[{}] {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                                rm, rd, rd, py_op, rrx_value_expr(rm), rd
+                            ));
+                        }
+                    }
+                    let carry_line = shifter_carry_code(&ops[1])
+                        .map(|c| format!("{}\n", c))
+                        .unwrap_or_default();
                     return Some(format!(
-                        "registers[{}] = (registers[{}] {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
-                        rd, rd, py_op, src, rd
+                        "{}registers[{}] = (registers[{}] {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                        carry_line, rd, rd, py_op, src, rd
                     ));
                 }
                 return Some(format!(
@@ -436,9 +530,20 @@ fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                     _ => "&",
                 };
                 if sets_flags {
+                    if let Some(rm) = shift_reg(&ops[2]) {
+                        if is_rrx(&ops[2]) {
+                            return Some(format!(
+                                "_old_c = cpsr.get('c', 0)\ncpsr['c'] = registers[{}] & 1\nregisters[{}] = ({} {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                                rm, rd, rn, py_op, rrx_value_expr(rm), rd
+                            ));
+                        }
+                    }
+                    let carry_line = shifter_carry_code(&ops[2])
+                        .map(|c| format!("{}\n", c))
+                        .unwrap_or_default();
                     return Some(format!(
-                        "registers[{}] = ({} {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
-                        rd, rn, py_op, op2, rd
+                        "{}registers[{}] = ({} {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                        carry_line, rd, rn, py_op, op2, rd
                     ));
                 }
                 return Some(format!(
@@ -541,14 +646,21 @@ else:
 fn generate_tst(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 2 {
         let rn = operand_to_expr(&ops[0]);
+        if let Some(rm) = shift_reg(&ops[1]) {
+            if is_rrx(&ops[1]) {
+                return Some(format!(
+                    "_old_c = cpsr.get('c', 0)\ncpsr['c'] = registers[{}] & 1\nresult_tst = {rn} & {}\ncpsr['n'] = (result_tst >> 31) & 1\ncpsr['z'] = 1 if result_tst == 0 else 0",
+                    rm, rrx_value_expr(rm)
+                ));
+            }
+        }
+        let carry_line = shifter_carry_code(&ops[1])
+            .map(|c| format!("{}\n", c))
+            .unwrap_or_default();
         let rm = operand_to_expr(&ops[1]);
-
         return Some(format!(
-            r#"result_tst = {rn} & {rm}
-cpsr['n'] = (result_tst >> 31) & 1
-cpsr['z'] = 1 if result_tst == 0 else 0
-cpsr['c'] = 0
-cpsr['v'] = 0"#
+            "{}result_tst = {rn} & {rm}\ncpsr['n'] = (result_tst >> 31) & 1\ncpsr['z'] = 1 if result_tst == 0 else 0",
+            carry_line
         ));
     }
     None
@@ -557,14 +669,21 @@ cpsr['v'] = 0"#
 fn generate_teq(ops: &[Operand]) -> Option<String> {
     if ops.len() >= 2 {
         let rn = operand_to_expr(&ops[0]);
+        if let Some(rm) = shift_reg(&ops[1]) {
+            if is_rrx(&ops[1]) {
+                return Some(format!(
+                    "_old_c = cpsr.get('c', 0)\ncpsr['c'] = registers[{}] & 1\nresult_teq = {rn} ^ {}\ncpsr['n'] = (result_teq >> 31) & 1\ncpsr['z'] = 1 if result_teq == 0 else 0",
+                    rm, rrx_value_expr(rm)
+                ));
+            }
+        }
+        let carry_line = shifter_carry_code(&ops[1])
+            .map(|c| format!("{}\n", c))
+            .unwrap_or_default();
         let rm = operand_to_expr(&ops[1]);
-
         return Some(format!(
-            r#"result_teq = {rn} ^ {rm}
-cpsr['n'] = (result_teq >> 31) & 1
-cpsr['z'] = 1 if result_teq == 0 else 0
-cpsr['c'] = 0
-cpsr['v'] = 0"#
+            "{}result_teq = {rn} ^ {rm}\ncpsr['n'] = (result_teq >> 31) & 1\ncpsr['z'] = 1 if result_teq == 0 else 0",
+            carry_line
         ));
     }
     None

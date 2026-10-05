@@ -10,8 +10,6 @@ scripts/
 ├── verify_batch.sh            ← Batch verify: generate golden + transpile + run + compare
 ├── run_tests.py               ← Unified 3-level test runner (syntax → execution → visual)
 ├── generate_goldens.py        ← Batch golden screenshot generator via mGBA (all ROMs, multi-frame, Python)
-# Environment:
-#   Automatically sets LD_LIBRARY_PATH, SDL_AUDIODRIVER=dummy, SDL_VIDEODRIVER=offscreen
 │   └── capture_golden.sh      ← Capture golden audio via mGBA SDL disk driver
 ├── screenshot/
 │   ├── screenshot.lua         ← Parameterized mGBA Lua screenshot capture (env-var driven)
@@ -27,6 +25,8 @@ scripts/
 │   ├── compare_audio.py       ← Golden audio comparison (WAV diff)
 │   ├── coverage_tracker.py    ← Track test coverage across ROMs
 │   └── ewram_dump_verify.py   ← Verify EWRAM dump binary format
+├── ci/
+│   └── visual_tests.sh        ← CI visual test script for ci-fixtures ROMs (L3 comparison)
 └── check/
     ├── preflight.sh           ← Run all enforcement checks at once (pre-commit ready)
     ├── no-skip.sh             ← Enforce AGENTS.md rule #26: zero SKIP ROMs
@@ -400,6 +400,47 @@ GBATOPY_TRACE_MAX_FRAMES=500 \
 
 ---
 
+## CI Scripts
+
+### `ci/visual_tests.sh` — CI Visual Test Script
+
+**Purpose:** Run Level 3 visual comparison tests for the 12 ci-fixtures ROMs. Used by GitHub Actions CI pipeline.
+
+**What it DOES:**
+- ✅ Transpile each ROM from `ci-fixtures/roms/` using the Rust CLI
+- ✅ Run generated Python scripts headless with screenshot capture at frame 60
+- ✅ Compare screenshots against goldens in `ci-fixtures/goldens/`
+- ✅ Report PASS/FAIL for each ROM
+- ✅ Exit non-zero on any failure
+
+**What it does NOT do:**
+- ❌ Run on full ROM suite (only ci-fixtures subset)
+- ❌ Generate new goldens (uses existing ci-fixtures goldens)
+
+**Usage:**
+```bash
+# Run all 12 ci-fixtures ROMs
+bash scripts/ci/visual_tests.sh
+
+# Individual ROM test (manual)
+cargo run --release -- transpile ci-fixtures/roms/stripes.gba -o /tmp/stripes.py
+python3 /tmp/stripes.py --headless --frames=60 --screenshot=/tmp/stripes_test.png
+python3 scripts/verify/compare_screenshots.py -s ci-fixtures/goldens/stripes_f60.png /tmp/stripes_test.png
+```
+
+**Environment Setup:**
+The script automatically sets:
+- `SDL_VIDEODRIVER=offscreen` for headless rendering
+- `SDL_AUDIODRIVER=dummy` for headless audio
+- `LD_LIBRARY_PATH` for mGBA shared libraries
+
+**Output:** Per-ROM status + summary (PASS count, FAIL count). Exits 0 if all pass, 1 if any fail.
+
+**CI Integration:**
+Wired into `.github/workflows/ci.yml` as the `visual-tests` job. Runs after `test-rust` and `test-python` complete.
+
+---
+
 ## Setup
 
 ### `setup/download_roms.sh` — Download Test ROMs
@@ -460,7 +501,7 @@ python3 scripts/verify/compare_screenshots.py -s /tmp/stripes_golden.png /tmp/st
 
 ### `backfill_pass_status.py` — Backfill pass_status Field
 
-**Purpose:** Add `pass_status` field to all 76 ROM entries in `test-roms-config.toml` based on ground truth from `docs/reference/test-roms.md`.
+**Purpose:** Add `pass_status` field to all 91 ROM entries in `test-roms-config.toml` based on ground truth from `docs/reference/test-roms.md`.
 
 **What it does:**
 - Reads `test-roms-config.toml` preserving all formatting, comments, and blank lines

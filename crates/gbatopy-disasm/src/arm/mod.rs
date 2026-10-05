@@ -728,8 +728,17 @@ impl ArmDecoder {
             writeback: w_bit,
         };
 
+        // Condition suffix must follow the writeback "!" so that
+        // trim_end_matches(|c| c.is_ascii_lowercase()) in wrap_conditional
+        // extracts the lowercase condition chars from the end of the opcode.
+        let cond_bits = ((word >> 28) & 0xF) as u8;
+        let cond_suffix = match decode_condition(cond_bits) {
+            Some(Condition::Al) | Some(Condition::Nv) | None => "",
+            Some(c) => c.name(),
+        };
+
         (
-            format!("{}{}{}", prefix, suffix_mode, writeback_suffix),
+            format!("{}{}{}{}", prefix, suffix_mode, writeback_suffix, cond_suffix),
             vec![op],
             s_bit,
         )

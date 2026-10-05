@@ -250,6 +250,68 @@ fn looks_like_data_soft(
     !valid_run
 }
 
+/// Detects tile/graphics data that decodes as valid ARM instructions with a
+/// uniform rare condition code. 4BPP tile data (e.g., repeated 0x21/0x22 bytes)
+/// produces words whose top nibble is consistently 0x2 (CS condition), which
+/// decodes as valid TST/CMP/CMN instructions. Real code rarely has 8+
+/// consecutive ARM instructions with the same rare condition code.
+///
+/// Excludes EQ (0x0), NE (0x1), AL (0xE), and NV (0xF) — the most common
+/// condition codes in real code (if-else then/else branches, unconditional code,
+/// and the reserved/unconditional prefix) — to avoid false positives. A
+/// previous attempt checking all condition codes produced 3533 false positives,
+/// mostly EQ blocks.
+fn has_uniform_rare_condition_code(rom: &[u8], addr: u32) -> bool {
+    const CHECK_COUNT: usize = 8;
+    const EXCLUDED: [u8; 4] = [0x0, 0x1, 0xE, 0xF];
+
+    let rom_offset = (addr - 0x08000000) as usize;
+    if rom_offset + CHECK_COUNT * 4 > rom.len() {
+        return false;
+    }
+
+    let first_cond = {
+        let b = &rom[rom_offset..rom_offset + 4];
+        let word = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let cond = ((word >> 28) & 0xF) as u8;
+        if EXCLUDED.contains(&cond) {
+            return false;
+        }
+        cond
+    };
+
+    for i in 1..CHECK_COUNT {
+        let offset = rom_offset + i * 4;
+        let b = &rom[offset..offset + 4];
+        let word = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let cond = ((word >> 28) & 0xF) as u8;
+        if cond != first_cond {
+            return false;
+        }
+    }
+    true
+}
+
+/// Conservative data filter: uses only zero-run and repeated-pattern detection.
+/// Unlike `looks_like_data_soft`, it does NOT require a 32-instruction valid decode run,
+/// so it won't falsely classify short functions as data. Safe to apply on ARM mode,
+/// fall-through paths, and post-decode filters where `looks_like_data_soft` causes false positives.
+fn looks_like_data_safe(
+    rom: &[u8],
+    addr: u32,
+    _mode: ArmMode,
+    _arm_decoder: &ArmDecoder,
+    _thumb_decoder: &ThumbDecoder,
+) -> bool {
+    if has_long_zero_run(rom, addr, 16) {
+        return true;
+    }
+    if has_repeated_pattern(rom, addr) {
+        return true;
+    }
+    false
+}
+
 /// Tracks constant values in registers for indirect jump resolution.
 /// Only tracks simple cases: MOV rN, #imm and LDR rN, =imm
 #[derive(Debug, Default)]
@@ -277,10 +339,6 @@ impl RegisterTracker {
         self.values.remove(&rn);
     }
 
-    /// Invalidate all registers (e.g., after a function call)
-    pub fn invalidate_all(&mut self) {
-        self.values.clear();
-    }
 }
 
 #[derive(Debug, Default)]
@@ -481,21 +539,7 @@ impl CfgBuilder {
             // LDR-literal targets are already call-confirmed: one valid decode
             // suffices because the code explicitly loaded this address.
             if !decode_is_valid_code(rom, taddr, tmode, &arm_decoder, &thumb_decoder) {
-                eprintln!(
-                    "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-                    data_addresses.contains(&0x080000C8)
-                );
-                eprintln!("AFTER_SCAN: data_addresses size={}", data_addresses.len());
                 continue;
-            }
-            // TEMP DEBUG: check data_addresses for 0x080000C8
-            eprintln!(
-                "DATA_DEBUG: total data_addresses={} contains_C8={}",
-                data_addresses.len(),
-                data_addresses.contains(&0x080000C8)
-            );
-            if data_addresses.contains(&0x080000C8) {
-                eprintln!("DATA_DEBUG: 0x080000C8 IS in data_addresses!");
             }
 
             if !visited.contains(&(taddr, tmode)) && self.branch_targets.insert(taddr) {
@@ -758,11 +802,12 @@ impl CfgBuilder {
                         ]);
 
                         // Hardware addresses are typically in:
-                        // - 0x04000000-0x040003FF (MMIO)
+                        // - 0x040000B0-0x040000DF (DMA0-3 source/dest/count registers)
+                        // - 0x04000100-0x0400010F (TM0-3CNT registers)
                         // - 0x05000000-0x050003FF (Palette RAM)
                         // - 0x06000000-0x06017FFF (VRAM)
                         // - 0x07000000-0x070003FF (OAM)
-                        let is_hw_addr = (0x04000000..=0x040003FF).contains(&loaded_val)
+                        let is_hw_addr = (0x040000B0..=0x0400010F).contains(&loaded_val)
                             || (0x05000000..=0x050003FF).contains(&loaded_val)
                             || (0x06000000..=0x06017FFF).contains(&loaded_val)
                             || (0x07000000..=0x070003FF).contains(&loaded_val);
@@ -1861,16 +1906,7 @@ impl CfgBuilder {
         &self.instruction_addresses
     }
 
-    pub fn is_reachable(&self, addr: u32) -> bool {
-        self.instruction_addresses.contains(&addr)
-    }
 
-    pub fn get_mode(&self, addr: u32) -> Option<ArmMode> {
-        self.mode_map
-            .binary_search_by_key(&addr, |(a, _)| *a)
-            .ok()
-            .map(|i| self.mode_map[i].1)
-    }
 
     /// Runs a single BFS pass over reachable code.
     ///
@@ -1918,10 +1954,10 @@ impl CfgBuilder {
             if own_visited.contains(&(addr, opposite_mode)) {
                 continue;
             }
-            // Skip if in data_addresses (soft hint: re-validate as code)
-            // Skip looks_like_data_soft for ARM mode - it causes false positives
-            // for valid ARM code that has data sections later (e.g., 0x08000144 = 0x00000000).
-            // The data_addresses set already captures known data locations.
+            // ARM mode uses looks_like_data_safe (zero-run + pattern only) —
+            // looks_like_data_soft's 32-instruction valid-run check causes false
+            // positives on short ARM functions. Thumb mode now also uses
+            // looks_like_data_safe to match the F140 ARM fix pattern.
             if is_data_address(
                 addr,
                 current_mode,
@@ -1930,7 +1966,9 @@ impl CfgBuilder {
                 arm_decoder,
                 thumb_decoder,
             ) || (matches!(current_mode, ArmMode::Thumb)
-                && looks_like_data_soft(rom, addr, current_mode, arm_decoder, thumb_decoder))
+                && looks_like_data_safe(rom, addr, current_mode, arm_decoder, thumb_decoder))
+                || (matches!(current_mode, ArmMode::Arm)
+                    && looks_like_data_safe(rom, addr, current_mode, arm_decoder, thumb_decoder))
             {
                 continue;
             }
@@ -2075,11 +2113,16 @@ impl CfgBuilder {
                 data_addresses.insert(pool_addr);
             }
 
-            // Filter out data regions (audio/graphics) that decode as valid instructions
-            // This prevents CFG explosion from misclassifying data as code
-            // Skip looks_like_data_soft for both ARM and Thumb modes - it causes false positives
-            // for valid code that has data sections later. The data_addresses set already
-            // captures known data locations.
+            // Filter out data regions (audio/graphics) that decode as valid instructions.
+            // Use looks_like_data_safe (zero-run + pattern only) to avoid false positives
+            // on short functions that the full looks_like_data_soft heuristic would reject.
+            //
+            // Additionally check for uniform rare condition codes (ARM mode only). 4BPP tile
+            // data with repeated bytes produces valid ARM instructions all with the same rare
+            // condition code (e.g., CS). This check is ONLY applied here at the post-decode
+            // filter — NOT at fall-through or BFS queueing — because false positives here only
+            // route instructions to the fallback interpreter (safe), while false positives at
+            // fall-through cause BFS to explore alternative paths and INCREASE output size.
             let is_data = is_data_address(
                 addr,
                 current_mode,
@@ -2087,12 +2130,18 @@ impl CfgBuilder {
                 rom,
                 arm_decoder,
                 thumb_decoder,
-            );
+            ) || looks_like_data_safe(
+                rom,
+                addr,
+                current_mode,
+                arm_decoder,
+                thumb_decoder,
+            ) || (current_mode == ArmMode::Arm
+                && has_uniform_rare_condition_code(rom, addr));
             if !is_data {
                 self.instruction_addresses.push(addr);
                 self.mode_map.push((addr, current_mode));
             }
-
             let targets =
                 self.extract_branch_targets(&opcode_str, &operands, addr, instr_width.into());
             self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
@@ -2115,14 +2164,17 @@ impl CfgBuilder {
             if !is_uncond_branch && consecutive_non_branch < MAX_CONSECUTIVE_NON_BRANCH {
                 let next_addr = addr + instr_width as u32;
                 let next_rom_offset = (next_addr - 0x08000000) as usize;
-                // Skip looks_like_data_soft for both ARM and Thumb modes - it causes false positives
-                // for valid code that has data sections later. The data_addresses set already
-                // captures known data locations.
                 let next_is_data = is_data_address(
                     next_addr,
                     current_mode,
                     data_addresses,
                     rom,
+                    arm_decoder,
+                    thumb_decoder,
+                ) || looks_like_data_safe(
+                    rom,
+                    next_addr,
+                    current_mode,
                     arm_decoder,
                     thumb_decoder,
                 );

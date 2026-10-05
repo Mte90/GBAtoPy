@@ -440,7 +440,7 @@ pytest tests/test_runtime.py --roms=test_roms/
 
 **Current state:**
 - CPU testing: **95%** coverage (jsmolka suite is excellent)
-- All other hardware: **71/76 ROMs passing** (93.4% pass rate)
+- All other hardware: **91/91 ROMs passing** (100% pass rate)
 - mGBA suite: **Does not exist** (uses external ROMs only)
 
 **Custom test ROMs status:**

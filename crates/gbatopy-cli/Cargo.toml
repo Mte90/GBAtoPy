@@ -22,3 +22,4 @@ gbatopy-disasm = { path = "../gbatopy-disasm" }
 gbatopy-ir = { path = "../gbatopy-ir" }
 unarm = "2.1"
 base64 = "0.22"
+flate2 = "1.0"

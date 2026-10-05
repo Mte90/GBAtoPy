@@ -69,7 +69,7 @@ class SaveState:
                 json.dump(state, f, indent=2)
             
             return True
-        except Exception as e:
+        except (OSError, IOError, ValueError, TypeError) as e:
             print(f"Error saving state: {e}", file=sys.stderr)
             return False
     
@@ -111,7 +111,7 @@ class SaveState:
                 return False
             
             return True
-        except Exception as e:
+        except (OSError, IOError, json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
             print(f"Error loading state: {e}", file=sys.stderr)
             return False
     
@@ -148,7 +148,7 @@ class SaveState:
             self.cpu.running = state.get("running", True)
             self.cpu.cycles = state.get("cycles", 0)
             return True
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"Error loading CPU state: {e}", file=sys.stderr)
             return False
     
@@ -207,7 +207,7 @@ class SaveState:
                 self.memory.sram = list(sram)
             
             return True
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"Error loading memory state: {e}", file=sys.stderr)
             return False
     
@@ -323,7 +323,7 @@ class SaveState:
                     self.ppu.framebuffer = list(fb_data)
             
             return True
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"Error loading PPU state: {e}", file=sys.stderr)
             return False
     
@@ -421,7 +421,7 @@ class SaveState:
                 self.apu.master_volume = state["master_volume"]
             
             return True
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"Error loading APU state: {e}", file=sys.stderr)
             return False
     
@@ -474,7 +474,7 @@ class SaveState:
                             channel.enabled = ch_state.get("enabled", False)
             
             return True
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"Error loading DMA state: {e}", file=sys.stderr)
             return False
     
@@ -524,7 +524,7 @@ class SaveState:
                             timer.reload = timer_state.get("reload", 0)
             
             return True
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"Error loading timer state: {e}", file=sys.stderr)
             return False
     
@@ -573,7 +573,7 @@ class SaveState:
                 self.interrupts.pending = state["pending"]
             
             return True
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"Error loading interrupt state: {e}", file=sys.stderr)
             return False
     
@@ -618,7 +618,7 @@ class SaveState:
                 self.input_state.key_cnt = state["key_cnt"]
             
             return True
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, IndexError) as e:
             print(f"Error loading input state: {e}", file=sys.stderr)
             return False
 

@@ -599,11 +599,10 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                 let is_pre_index = *pre_index;
                 let has_s_bit = *s_bit;
 
-                // TODO: S bit handling (bit 22)
-                // - If base NOT in list: S=1 means load/store user bank registers (R13/R14 from/user stack)
-                // - If base IS in list (LDM only): S=1 means restore CPSR from SPSR after loading PC
-                // Current implementation only handles the second case (lines 424-430 for LDM with PC)
-                // Full S bit support requires user bank register access
+                // S-bit (bit 22) handling:
+                // - LDM with PC in list + S=1: exception return — load PC, restore CPSR from SPSR.
+                // - LDM without PC + S=1: load into user-bank registers via _write_user_reg().
+                // - STM + S=1: store from user-bank registers via _read_user_reg().
 
                 let mut code = String::new();
                 let num_regs = reg_list.len();
@@ -647,11 +646,17 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                             code.push_str("_old_mode = cpsr['mode']\n");
                             code.push_str("_cpsr_from_int(cpsr, _new_cpsr)\n");
                             code.push_str("_switch_mode(cpsr['mode'])\n");
+                        } else if has_s_bit {
+                            code.push_str(&format!("_write_user_reg({}, memory.read_u32(addr))\n", reg));
                         } else {
                             code.push_str(&format!("registers[{}] = memory.read_u32(addr)\n", reg));
                         }
                     } else {
-                        code.push_str(&format!("memory.write_u32(addr, registers[{}])\n", reg));
+                        if has_s_bit {
+                            code.push_str(&format!("memory.write_u32(addr, _read_user_reg({}))\n", reg));
+                        } else {
+                            code.push_str(&format!("memory.write_u32(addr, registers[{}])\n", reg));
+                        }
                     }
                     if i < num_regs - 1 {
                         code.push_str("addr += 4\n");

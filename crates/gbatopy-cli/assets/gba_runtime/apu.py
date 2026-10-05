@@ -322,6 +322,7 @@ class APU:
         self.ch4_enabled = False
         self.fifo_a_enabled = False
         self.fifo_b_enabled = False
+        self.master_enable = False  # SOUNDCNT_X bit 7 — audio off until ROM writes 0x80 to 0x04000084
         
         # Continuous audio playback with thread-safe queue
         self._audio_channel = None
@@ -351,8 +352,7 @@ class APU:
             except queue_module.Full:
                 # Queue is full, skip this buffer
                 continue
-            except Exception:
-                # Ignore errors in audio generation
+            except (pygame.error, ValueError, OverflowError):
                 continue
 
     def stop(self):
@@ -437,30 +437,50 @@ class APU:
             if value & 0x8000:
                 self.ch4.trigger()
         elif addr == 0x04000080:
-            self.master_volume_right = (value >> 4) & 0x07
-            self.master_volume_left = value & 0x07
+            # SOUNDCNT_L: master volume (bits 0-2 right, 4-6 left) + channel output enables (bits 8-15)
+            self.master_volume_right = value & 0x07
+            self.master_volume_left = (value >> 4) & 0x07
+            # Channel output enables: bit 8=ch1-R, 9=ch1-L, 10=ch2-R, 11=ch2-L, 12=ch3-R, 13=ch3-L, 14=ch4-R, 15=ch4-L
+            # Enable channel if EITHER left or right output is enabled
+            self.ch1_enabled = bool(value & 0x0180)  # bits 8-9
+            self.ch2_enabled = bool(value & 0x0C00)  # bits 10-11
+            self.ch3_enabled = bool(value & 0x3000)  # bits 12-13
+            self.ch4_enabled = bool(value & 0xC000)  # bits 14-15
         elif addr == 0x04000082:
-            self.fifo_a.volume_right = (value >> 4) & 0x0F
-            self.fifo_a.volume_left = value & 0x0F
-            self.fifo_a.enabled = bool(value & 0x0200)
-            self.ch1_enabled = bool(value & 0x0001)
-            self.ch2_enabled = bool(value & 0x0002)
+            # SOUNDCNT_H: FIFO A/B control
+            # bits 0-1: ch1/2 output ratio (ignored, we mix directly)
+            # bits 2-3: FIFO A/B ratio (ignored, we mix directly)
+            # bits 8,9: FIFO A pan (left, right), bits 10: FIFO A timer select, bit 11: FIFO A reset
+            # bits 12,13: FIFO B pan (left, right), bits 14: FIFO B timer select, bit 15: FIFO B reset
+            self.fifo_a_enabled = bool(value & 0x0100)  # bit 8 (also serves as enable)
+            self.fifo_b_enabled = bool(value & 0x1000)  # bit 12 (also serves as enable)
+            # Also set FIFO object enabled for internal FIFO state tracking
+            self.fifo_a.enabled = self.fifo_a_enabled
+            self.fifo_b.enabled = self.fifo_b_enabled
+            # FIFO pan: bits 9 (A right), 13 (B right) - left is always enabled when bit 8/12 is set
+            # For now, set max volume for both channels (pan is ignored)
+            if self.fifo_a_enabled:
+                self.fifo_a.volume_left = 7
+                self.fifo_a.volume_right = 7
+            if self.fifo_b_enabled:
+                self.fifo_b.volume_left = 7
+                self.fifo_b.volume_right = 7
         elif addr == 0x04000084:
-            self.fifo_b.volume_right = (value >> 4) & 0x0F
-            self.fifo_b.volume_left = value & 0x0F
-            self.fifo_b.enabled = bool(value & 0x0200)
-            self.ch3_enabled = bool(value & 0x0004)
-            self.ch4_enabled = bool(value & 0x0008)
+            # SOUNDCNT_X: master enable (bit 7) + channel active status (bits 0-3, read-only)
+            self.master_enable = bool(value & 0x80)
         elif 0x040000A0 <= addr <= 0x040000A3:
             self.fifo_a.write(value & 0xFF)
         elif 0x040000A4 <= addr <= 0x040000A7:
             self.fifo_b.write(value & 0xFF)
-        elif 0x04000090 <= addr <= 0x040000AF:
+        elif 0x04000090 <= addr <= 0x0400009F:
             offset = addr - 0x04000090
             self.wave_ram[self.wave_bank][offset % 32] = value & 0xFF
 
     def get_sample(self) -> tuple:
         """Return mixed stereo sample (left, right)"""
+        # Master enable gate — hardware accurate: audio off until ROM writes 0x80 to SOUNDCNT_X
+        if not self.master_enable:
+            return (0, 0)
         # Mix channels
         left = 0
         right = 0
@@ -523,8 +543,7 @@ class APU:
             except queue_module.Full:
                 # Queue is full, skip this buffer
                 continue
-            except Exception:
-                # Ignore errors in audio generation
+            except (pygame.error, ValueError, OverflowError):
                 continue
 
     def update(self):

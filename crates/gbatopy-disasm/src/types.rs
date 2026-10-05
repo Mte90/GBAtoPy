@@ -12,15 +12,6 @@ pub struct Function {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DisassemblyOutput {
-    pub rom_path: String,
-    pub base_address: u32,
-    pub instructions: Vec<DecodedInstruction>,
-    pub functions: Vec<Function>,
-    pub mode_switches: Vec<(u32, ArmMode)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecodedInstruction {
     pub address: u32,
     pub opcode: String,

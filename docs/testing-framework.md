@@ -252,16 +252,15 @@ def parse_assertion(screenshot):
 
 ## ROM Classification
 
-| Strategy | ROMs | Count |
-|----------|------|-------|
-| screenshot_golden | greenswap, bgx, bgpd, sprite-hmosaic, dispcnt-latch | 5 |
-| mgba_oracle | stripes, shades, hello, helloWorld, hello_world | 5 |
-| pass_fail | arm, thumb, bios, memory, unsafe, armwrestler, cond_invalid, retAddr, dma_priority, isr, if_ack, irq_delay, joypad, line_timing, lyc_midline, window_midframe | 16 |
-| ewram_dump | ARM_Any, ARM_DataProcessing, THUMB_Any, THUMB_DataProcessing, FuzzARM | 5 |
-| assertion_text | status-irq-dma, vram-mirror, burst-into-tears, force-nseq-access, latch, start-stop, reload, 128kb-boundary, haltcnt, timer_change | 10 |
-| smoke | nes, enhancedcontrolchecker, redline, rtc-demo, helloAudio, test, song, rates, pcmxx, basic-timing, exact-timing, start-delay, sram, flash64, flash128, none, mode2, mode3, mode4, ram-access-timing, cancel-irq-ie, cancel-irq-if, cancel-irq-ime | 23 |
+| Strategy | Count | Description |
+|----------|-------|-------------|
+| ScreenshotGolden | 4 | Transpiled screenshot compared to golden PNG |
+| ScreenshotMgba | 12 | Transpiled screenshot compared to mGBA screenshot |
+| PassFailScreen | 7 | Pass/fail assertion via screen output |
+| EwramDump | 5 | EWRAM memory dump comparison |
+| Smoke | 63 | Syntax check and basic run (32 Rust-agb ROMs in config but not downloaded) |
 
-**Total**: 76 ROMs
+**Total**: 91 ROMs on disk (123 in config, 32 undownloaded)
 
 ---
 

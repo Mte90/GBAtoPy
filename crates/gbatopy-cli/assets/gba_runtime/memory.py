@@ -153,7 +153,7 @@ class Memory:
             self._handle_window_write(addr, value)
         if 0x04000020 <= addr <= 0x0400002E:
             self._handle_affine_bg_write(addr, value)
-        if 0x04000060 <= addr <= 0x0400007F:
+        if 0x04000060 <= addr <= 0x0400008F:
             self._handle_sound_write(addr, value)
         if 0x04000090 <= addr <= 0x040000A7:
             if self._apu:
@@ -433,26 +433,10 @@ class Memory:
     def read_u8(self, addr: int) -> int:
         addr &= 0xFFFFFFFF
         addr = self._map_address(addr)
+        page = addr >> 24
 
-        if MemoryMap.BIOS_START <= addr <= MemoryMap.BIOS_END:
-            offset = addr - MemoryMap.BIOS_START
-            value = self.bios[offset]
-            self.open_bus = value
-            return value
-
-        if MemoryMap.EWRAM_START <= addr <= MemoryMap.EWRAM_END:
-            offset = addr - MemoryMap.EWRAM_START
-            value = self.ewram[offset]
-            self.open_bus = value
-            return value
-
-        if MemoryMap.IWRAM_START <= addr <= MemoryMap.IWRAM_END:
-            offset = addr - MemoryMap.IWRAM_START
-            value = self.iwram[offset]
-            self.open_bus = value
-            return value
-
-        if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
+        # Page-table dispatch - order by data-read frequency
+        if page == 0x04:  # IO (hottest - VBlank/VCOUNT polling loops)
             offset = addr - MemoryMap.IO_START
             result = self._dispatch_mmio_read(addr)
             if result is not None:
@@ -462,60 +446,90 @@ class Memory:
             self.open_bus = value
             return value
 
-        if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
-            offset = addr - MemoryMap.PALETTE_START
-            value = self.palette[offset]
-            self.open_bus = value
-            return value
-
-        if MemoryMap.VRAM_START <= addr <= MemoryMap.VRAM_END:
-            offset = addr - MemoryMap.VRAM_START
-            value = self.vram[offset]
-            self.open_bus = value
-            return value
-
-        if MemoryMap.OAM_START <= addr <= MemoryMap.OAM_END:
-            offset = addr - MemoryMap.OAM_START
-            value = self.oam[offset]
-            self.open_bus = value
-            return value
-
-        if MemoryMap.ROM_START <= addr <= 0x0EFFFFFF:
+        if 0x08 <= page <= 0x0D:  # ROM (lookup tables, tile data)
             rom_addr = self._get_rom_addr(addr)
             if rom_addr >= 0 and self.rom:
                 value = self.rom[rom_addr]
                 self.open_bus = value
                 return value
 
-        if MemoryMap.SRAM_START <= addr <= MemoryMap.SRAM_END:
-            offset = addr - MemoryMap.SRAM_START
-            if offset < len(self.sram):
-                value = self.sram[offset]
+        if page == 0x03:  # IWRAM (stack variables)
+            offset = addr - MemoryMap.IWRAM_START
+            value = self.iwram[offset]
+            self.open_bus = value
+            return value
+
+        if page == 0x02:  # EWRAM (heap data)
+            offset = addr - MemoryMap.EWRAM_START
+            value = self.ewram[offset]
+            self.open_bus = value
+            return value
+
+        if page == 0x06:  # VRAM
+            offset = addr - MemoryMap.VRAM_START
+            value = self.vram[offset]
+            self.open_bus = value
+            return value
+
+        if page == 0x05:  # Palette
+            offset = addr - MemoryMap.PALETTE_START
+            value = self.palette[offset]
+            self.open_bus = value
+            return value
+
+        if page == 0x07:  # OAM
+            offset = addr - MemoryMap.OAM_START
+            value = self.oam[offset]
+            self.open_bus = value
+            return value
+
+        if page == 0x00:  # BIOS
+            offset = addr - MemoryMap.BIOS_START
+            value = self.bios[offset]
+            self.open_bus = value
+            return value
+
+        if page == 0x0E:  # SRAM or ROM mirror
+            if MemoryMap.SRAM_START <= addr <= MemoryMap.SRAM_END:
+                offset = addr - MemoryMap.SRAM_START
+                if offset < len(self.sram):
+                    value = self.sram[offset]
+                    self.open_bus = value
+                    return value
+            # Fall through to ROM mirror
+            rom_addr = self._get_rom_addr(addr)
+            if rom_addr >= 0 and self.rom:
+                value = self.rom[rom_addr]
                 self.open_bus = value
                 return value
 
         return self.open_bus & 0xFF
 
-    def _buffer_for_addr(self, addr: int) -> tuple[bytearray, int]:
-        addr = self._map_address(addr)
-        if MemoryMap.ROM_START <= addr <= 0x0EFFFFFF:
+    def _buffer_for_addr(self, addr: int, _mapped: bool = False) -> tuple[bytearray, int]:
+        if not _mapped:
+            addr = self._map_address(addr)
+        page = addr >> 24
+
+        # Page-table dispatch - order by instruction-fetch frequency
+        if 0x08 <= page <= 0x0D:  # ROM (hottest - instruction fetches)
             rom_addr = self._get_rom_addr(addr)
             if 0 <= rom_addr < self.rom_size:
                 return self.rom, rom_addr
-        if MemoryMap.EWRAM_START <= addr <= MemoryMap.EWRAM_END:
-            return self.ewram, addr - MemoryMap.EWRAM_START
-        if MemoryMap.IWRAM_START <= addr <= MemoryMap.IWRAM_END:
+        if page == 0x03:  # IWRAM
             return self.iwram, addr - MemoryMap.IWRAM_START
-        if MemoryMap.IO_START <= addr <= MemoryMap.IO_END:
+        if page == 0x02:  # EWRAM
+            return self.ewram, addr - MemoryMap.EWRAM_START
+        if page == 0x04:  # IO
             return self.io, addr - MemoryMap.IO_START
-        if MemoryMap.PALETTE_START <= addr <= MemoryMap.PALETTE_END:
+        if page == 0x05:  # Palette
             return self.palette, addr - MemoryMap.PALETTE_START
-        if MemoryMap.VRAM_START <= addr <= MemoryMap.VRAM_END:
+        if page == 0x06:  # VRAM
             return self.vram, addr - MemoryMap.VRAM_START
-        if MemoryMap.OAM_START <= addr <= MemoryMap.OAM_END:
+        if page == 0x07:  # OAM
             return self.oam, addr - MemoryMap.OAM_START
-        if MemoryMap.SRAM_START <= addr <= MemoryMap.SRAM_END:
-            return self.sram, addr - MemoryMap.SRAM_START
+        if page == 0x0E:  # SRAM
+            if MemoryMap.SRAM_START <= addr <= MemoryMap.SRAM_END:
+                return self.sram, addr - MemoryMap.SRAM_START
         return None, 0
 
     def read_bytes(self, addr: int, length: int) -> bytes:
@@ -543,29 +557,11 @@ class Memory:
             lo = self.read_u8(mapped)
             hi = self.read_u8(mapped + 1)
             return lo | (hi << 8)
-        buf, start = self._buffer_for_addr(addr)
+        buf, start = self._buffer_for_addr(mapped, _mapped=True)
         if buf:
             return int.from_bytes(buf[start:start + 2], 'little')
         return int.from_bytes(self.rom[addr - 0x08000000:(addr - 0x08000000) + 2], 'little')
     
-    def read_32(self, addr: int) -> int:
-        """Read 32-bit unsigned value"""
-        addr &= 0xFFFFFFFF
-        mapped = self._map_address(addr)
-        if MemoryMap.IO_START <= mapped <= MemoryMap.IO_END:
-            b0 = self.read_u8(mapped)
-            b1 = self.read_u8(mapped + 1)
-            b2 = self.read_u8(mapped + 2)
-            b3 = self.read_u8(mapped + 3)
-            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-        buf, off = self._buffer_for_addr(mapped)
-        if buf is not None and off + 4 <= len(buf):
-            return int.from_bytes(buf[off:off + 4], 'little')
-        b0 = self.read_u8(mapped)
-        b1 = self.read_u8(mapped + 1)
-        b2 = self.read_u8(mapped + 2)
-        b3 = self.read_u8(mapped + 3)
-        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
     def read_u32(self, addr: int) -> int:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
@@ -576,7 +572,7 @@ class Memory:
             b2 = self.read_u8(mapped + 2)
             b3 = self.read_u8(mapped + 3)
             return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
-        buf, off = self._buffer_for_addr(mapped)
+        buf, off = self._buffer_for_addr(mapped, _mapped=True)
         if buf is not None and off + 4 <= len(buf):
             return int.from_bytes(buf[off:off + 4], 'little')
         b0 = self.read_u8(mapped)
@@ -635,14 +631,15 @@ class Memory:
             self.open_bus = value
             return
 
-        if MemoryMap.ROM_START <= addr <= 0x0EFFFFFF:
-            return
-
         if MemoryMap.SRAM_START <= addr <= MemoryMap.SRAM_END:
             offset = addr - MemoryMap.SRAM_START
             if offset < len(self.sram):
                 self.sram[offset] = value
                 self.open_bus = value
+                return
+
+        if MemoryMap.ROM_START <= addr <= 0x0EFFFFFF:
+            return
 
     def write_u16(self, addr: int, value: int):
         addr &= 0xFFFFFFFF

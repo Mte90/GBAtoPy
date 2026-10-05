@@ -41,6 +41,7 @@ class Timers:
         self._overflow_flags = [False] * 4
         self._interrupts = None
         self._cycle_subcount = [0] * 4
+        self._active_count = 0
 
     def attach_interrupts(self, interrupts):
         """Attach interrupt controller for timer IRQ callbacks"""
@@ -75,9 +76,12 @@ class Timers:
         ch = self._channels[channel]
         was_enabled = bool(ch.control & 0x80)
         ch.control = control & 0xFF
-        if not was_enabled and ch.enabled:
+        new_enabled = bool(ch.control & 0x80)
+        if not was_enabled and new_enabled:
             ch.count = ch.reload
             self._cycle_subcount[channel] = 0
+        if was_enabled != new_enabled:
+            self._active_count += 1 if new_enabled else -1
 
     def set_reload(self, channel: int, reload: int) -> None:
         """Set reload value for timer channel"""
@@ -115,36 +119,48 @@ class Timers:
         Args:
             cycles: Number of CPU cycles to advance timers
         """
-        # Check cascade flags BEFORE reset, then clear
-        cascade_flags = [self._overflow_flags[i] for i in range(4)]
-        self._overflow_flags = [False] * 4
+        if self._active_count == 0:
+            self._overflow_flags[0] = False
+            self._overflow_flags[1] = False
+            self._overflow_flags[2] = False
+            self._overflow_flags[3] = False
+            return
 
-        # Process each timer
+        cascade = (self._overflow_flags[0], self._overflow_flags[1],
+                   self._overflow_flags[2], self._overflow_flags[3])
+        self._overflow_flags[0] = False
+        self._overflow_flags[1] = False
+        self._overflow_flags[2] = False
+        self._overflow_flags[3] = False
+
+        prescalers = self.PRESCALER_VALUES
+        subcounts = self._cycle_subcount
+        channels = self._channels
+        overflow = self._overflow_flags
+        interrupts = self._interrupts
+
         for i in range(4):
-            channel = self._channels[i]
+            channel = channels[i]
+            ctrl = channel.control
 
-            # Skip disabled timers
-            if not channel.enabled:
+            if not (ctrl & 0x80):
                 continue
 
-            # Cascade mode: increment only when previous timer overflows
-            if channel.cascade:
-                if i == 0:
-                    continue
-                if not cascade_flags[i - 1]:
+            if ctrl & 0x04:
+                if i == 0 or not cascade[i - 1]:
                     continue
                 increment = 1
             else:
-                prescaler = channel.prescaler_value
-                total = self._cycle_subcount[i] + cycles
+                prescaler = prescalers[ctrl & 0x03]
+                total = subcounts[i] + cycles
                 increment = total // prescaler
-                self._cycle_subcount[i] = total % prescaler
+                subcounts[i] = total % prescaler
 
             if increment > 0:
                 new_count = channel.count + increment
                 if new_count > 0xFFFF:
-                    self._overflow_flags[i] = True
+                    overflow[i] = True
                     new_count = (new_count - 0x10000) + channel.reload
-                    if channel.irq_enable and self._interrupts:
-                        self._interrupts.timer_irq(i)
+                    if (ctrl & 0x40) and interrupts:
+                        interrupts.timer_irq(i)
                 channel.count = new_count & 0xFFFF

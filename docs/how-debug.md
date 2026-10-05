@@ -490,10 +490,9 @@ Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets
 ### Issue 3: Loop Not Executing (Stall Detection)
 
 **Symptom**: Only first loop completes, VRAM/tiles not written, frame renders too early
-**Root Cause**: `max_inner_stalls = 10` breaks loops after 10 iterations
+**Root Cause**: Fixed `max_inner_stalls = 10` breaks loops after 10 iterations
 **Check**: Execution trace shows `Stalled at PC=...` after few iterations
-**Fix**: Increase `max_inner_stalls` in generated Python (e.g., to 10000)
-**Permanent Fix**: Update game loop template in Rust codegen
+**Permanent Fix**: Changed from fixed value 10 to dynamic `max(50, instr_per_scanline // 2)` ≈ 616 in game_loop.py:337
 **Verification**: Trace shows loop completing all iterations (e.g., 32 iterations for tile loop)
 
 ### Issue 4: Frame Rendering Too Early

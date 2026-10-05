@@ -121,9 +121,9 @@ Audit of unimplemented or partially implemented GBA features in the runtime (`cr
 
 ## Additional Findings
 
-- `REG_BLDWIN = 0x04000056` is defined twice (`ppu.py:660-661`) and never used by any blend logic. 0x04000056 is not a standard GBA register.
-- `REG_MOSAIC_EXT = 0x040000F4` (`ppu.py:667`) is a non-standard alias with no GBATEK basis.
-- Lines 706-707 (`self.win1_enable = False`, `self.obj_window_enable = False`) are set in `__init__` after the BGxCNT read loop — benign only if `_read_registers()` is always called before the first render.
+- `REG_BLDWIN = 0x04000056` is defined in `ppu.py:485-486` (duplicate definition) and also aliased as `REG_DISPSTAT2` at line 489. Address 0x04000056 is not a standard GBA register per GBATEK — the correct brightness register is `REG_BLDY` at 0x04000054, and blend control is `REG_BLDCNT` at 0x04000050. This constant is unused by any blend logic and should be removed.
+- `REG_MOSAIC_EXT = 0x040000F4` (`ppu.py:492`) is a non-standard alias with no GBATEK basis. The address 0x040000F4 is outside the 1KB MMIO range (0x04000000-0x040003FF). Mosaic is configured solely via `REG_MOSAIC` at 0x0400004C. This constant is referenced in `_write_register` and `_read_register` handlers but should be removed.
+- Initialization order: `_read_registers()` (ppu.py:1320-1396) reads registers in the following sequence: DISPCNT → DISPSTAT → BGxCNT/BGxHOFS/BGxVOFS → WIN0H/WIN1H/WIN0V/WIN1V/WININ/WINOUT → MOSAIC → BLDCNT/BLDALPHA/BLDY. This order is correct and matches hardware expectations: display mode must be established before rendering, window geometry must be read before window hit-tests, and affine parameters are captured per-scanline in `step_scanline()` before DMA fires.
 
 ---
 

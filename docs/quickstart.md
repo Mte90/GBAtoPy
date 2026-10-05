@@ -30,7 +30,8 @@ This compiles the workspace. The main crate is `gbatopy-cli` which contains the 
 
 ```bash
 cd mgba
-git checkout extend-lua
+# Apply custom patches (adds --script flag + Lua scripting hooks)
+patch -p1 < ../mgba-custom-patches.diff
 mkdir -p build && cd build
 cmake .. -DBUILD_SDL=ON -DENABLE_LUA=ON
 make -j$(nproc)
@@ -135,9 +136,9 @@ GBAtoPy/
 │   ├── setup/                    # Download scripts
 │   └── verify/                   # Coverage tracker + visual test
 ├── test_roms/
-│   ├── roms/                     # Test .gba files (76 ROMs, downloaded)
+│   ├── roms/                     # Test .gba files (91 ROMs, downloaded)
 │   └── sources/                  # Source code per suite
-├── mgba/                         # mGBA fork (extend-lua branch)
+├── mgba/                         # mGBA 0.11 with custom patches (mgba-custom-patches.diff)
 └── docs/                         # Documentation
 ```
 

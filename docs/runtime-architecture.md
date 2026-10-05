@@ -346,7 +346,7 @@ grep -n "0x000003E" rom.py  # Should find func_080000F8
 | Range | Purpose | Key Registers |
 |-------|---------|---------------|
 | 0x04000000-0x0400005F | PPU | DISPCNT, BG0CNT, BG1CNT, BG2CNT, BG3CNT |
-| 0x04000060-0x0400008F | APU | SOUNDCNT_L, SOUNDCNT_H, SOUNDCNT_X |
+| 0x04000060-0x040000A5 | APU | SOUNDCNT_L, SOUNDCNT_H, SOUNDCNT_X, SOUNDBIAS, SOUNDSTEP, FIFO_A/B |
 | 0x040000B0-0x040000BF | DMA | DMA0SAD, DMA0DAD, DMA0CNT_L, etc. |
 | 0x040000B0-0x040000CF | DMA | DMA1-3 registers |
 | 0x04000100-0x0400010F | Timers | TM0CNT_L, TM0CNT_H, TM1CNT_L, etc. |
@@ -372,8 +372,8 @@ def _dispatch_hal_write(self, addr: int, value: int):
     if 0x04000080 <= addr <= 0x0400008E:
         self._handle_affine_bg_write(addr, value)
     
-    # Sound registers (0x04000060-0x0400008F)
-    if 0x04000060 <= addr <= 0x0400008F:
+    # Sound registers (0x04000060-0x040000A5)
+    if 0x04000060 <= addr <= 0x040000A5:
         self._handle_sound_write(addr, value)
     
     # APU registers (0x04000090-0x040000AF)

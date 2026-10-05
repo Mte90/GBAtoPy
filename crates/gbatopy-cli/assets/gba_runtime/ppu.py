@@ -11,7 +11,7 @@ def _get_vram_bytes(memory, start: int, size: int) -> bytes:
     for i in range(size):
         try:
             data[i] = memory.read_u8(start + i)
-        except:
+        except (IndexError, KeyError, ValueError):
             data[i] = 0
     return bytes(data)
 
@@ -22,7 +22,7 @@ def _get_palette_bytes(memory, start: int = 0x05000000, size: int = 512) -> byte
     for i in range(size):
         try:
             data[i] = memory.read_u8(start + i)
-        except:
+        except (IndexError, KeyError, ValueError):
             data[i] = 0
     return bytes(data)
 
@@ -336,7 +336,7 @@ class PPU:
             pb = self._read_oam_fixed16_8(matrix_base + 2)
             pc = self._read_oam_fixed16_8(matrix_base + 4)
             pd = self._read_oam_fixed16_8(matrix_base + 6)
-        except:
+        except (IndexError, KeyError, ValueError):
             # Default to identity if read fails
             pa, pb, pc, pd = 1.0, 0.0, 0.0, 1.0
         
@@ -412,7 +412,7 @@ class PPU:
                     self.second_target_layer[screen_y][screen_x] = self.layer_origin[screen_y][screen_x]
                     self.framebuffer[screen_y][screen_x] = (r, g, b)
                     self.layer_origin[screen_y][screen_x] = 4
-                except Exception:
+                except (IndexError, KeyError, ValueError):
                     continue
 
     def _read_oam_fixed16_8(self, addr: int) -> float:
@@ -570,7 +570,7 @@ class PPU:
                 self.bg_mosaic[bg] = bool(bg_cnt & 0x0040)
                 self.bg256[bg] = bool(bg_cnt & 0x0080)  # 8BPP if set
                 self.bg_screen_block[bg] = (bg_cnt >> 8) & 0x1F
-                self.bg_affine[bg] = bool(bg_cnt & 0x0100)  # Affine if bit 8 is set (for BG2/BG3)
+                self.bg_affine[bg] = bool((bg_cnt >> 13) & 1)  # Area Overflow bit (bit 13, affine BG2/BG3 only)
                 self.bg_size[bg] = (bg_cnt >> 14) & 0x03
 
         # BG scroll offsets
@@ -701,7 +701,7 @@ class PPU:
             g = (color_val >> 5) & 0x1F
             b = (color_val >> 10) & 0x1F
             backdrop = (_c5to8(r), _c5to8(g), _c5to8(b))
-        except Exception:
+        except (IndexError, KeyError, ValueError):
             pass
         self.framebuffer = [
             [backdrop for _ in range(self.screen_width)] for _ in range(self.screen_height)
@@ -726,7 +726,7 @@ class PPU:
             raw = bytearray(self.memory.read_range(vram_start, vram_size))
             raw.extend(raw[:pad_size])
             return bytes(raw)
-        except:
+        except (IndexError, KeyError, ValueError):
             return b'\x00' * (vram_size + pad_size)
 
     def _get_palette_data(self) -> bytes:
@@ -735,7 +735,7 @@ class PPU:
         palette_end = 0x05000400
         try:
             return bytes(self.memory.read_range(palette_start, palette_end - palette_start))
-        except:
+        except (IndexError, KeyError, ValueError):
             return b'\x00' * (palette_end - palette_start)
 
     def write_register(self, addr: int, value: int):
@@ -1117,7 +1117,7 @@ class PPU:
                         color_idx = (byte_val >> 4) & 0x0F
 
                     palette_indices.append(color_idx)
-                except:
+                except (IndexError, KeyError, ValueError):
                     palette_indices.append(0)
 
         return palette_indices
@@ -1157,7 +1157,7 @@ class PPU:
                 try:
                     color_idx = self.memory.read_u8(byte_addr)
                     palette_indices.append(color_idx)
-                except:
+                except (IndexError, KeyError, ValueError):
                     palette_indices.append(0)
 
         return palette_indices
@@ -1183,7 +1183,7 @@ class PPU:
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
-        except:
+        except (IndexError, KeyError, ValueError):
             return (0, 0, 0)
 
     def _apply_affine_transform(
@@ -1403,7 +1403,7 @@ class PPU:
                 try:
                     attr0 = self.memory.read_u16(sprite_addr)
                     attr1 = self.memory.read_u16(sprite_addr + 2)
-                except Exception:
+                except (IndexError, KeyError, ValueError):
                     continue
                 if ((attr0 >> 10) & 3) != 3:
                     continue
@@ -1505,7 +1505,7 @@ class PPU:
         if 0 <= self.vcount < self.screen_height:
             try:
                 self._bg2_affine_snapshots[self.vcount] = self._read_affine_bg2_params()
-            except Exception:
+            except (IndexError, KeyError, ValueError):
                 self._bg2_affine_snapshots[self.vcount] = None
 
             # Snapshot OBJ mosaic params for the CURRENT scanline BEFORE HBlank-DMA
@@ -1965,25 +1965,24 @@ class PPU:
                     # Handle wrap-around or out-of-bounds
                     if overflow:
                         bg_size = self.bg_size[2]
-                        if bg_size == 0:  # 256x256
+                        if bg_size == 0:  # 128x128 (affine)
+                            tx &= 127
+                            ty &= 127
+                        elif bg_size == 1:  # 256x256 (affine)
                             tx &= 255
                             ty &= 255
-                        elif bg_size == 1:  # 512x256
-                            tx &= 511
-                            ty &= 255
-                        elif bg_size == 2:  # 256x512
-                            tx &= 255
-                            ty &= 511
-                        else:  # 512x512
+                        elif bg_size == 2:  # 512x512 (affine)
                             tx &= 511
                             ty &= 511
+                        else:  # 1024x1024 (affine)
+                            tx &= 1023
+                            ty &= 1023
                     elif tx < 0 or ty < 0:
                         continue
                     
-                    # Get BG2 size for bounds checking
                     bg_size = self.bg_size[2]
-                    bg_width = 256 if bg_size in [0, 2] else 512
-                    bg_height = 256 if bg_size in [0, 1] else 512
+                    affine_bg_sizes = {0: (128, 128), 1: (256, 256), 2: (512, 512), 3: (1024, 1024)}
+                    bg_width, bg_height = affine_bg_sizes[bg_size]
                     
                     if tx >= bg_width or ty >= bg_height:
                         continue
@@ -1994,17 +1993,18 @@ class PPU:
                     tilemap_x = tx // 8
                     tilemap_y = ty // 8
                     
-                    # Handle screen size > 256x256 (tilemap is larger)
-                    tilemap_width = 32 if bg_size in [0, 2] else 64
+                    # Affine BG: 8-bit tilemap entries, 1-byte stride
+                    affine_tilemap_widths = {0: 16, 1: 32, 2: 64, 3: 128}
+                    tilemap_width = affine_tilemap_widths[bg_size]
                     tilemap_index = tilemap_y * tilemap_width + tilemap_x
-                    tilemap_addr = tilemap_base + (tilemap_index * 2)
+                    tilemap_addr = tilemap_base + tilemap_index
                     
                     try:
-                        tilemap_entry = self.memory.read_u16(tilemap_addr)
-                    except:
+                        tilemap_entry = self.memory.read_u8(tilemap_addr)
+                    except (IndexError, KeyError, ValueError):
                         continue
 
-                    tile_index = tilemap_entry & 0x03FF
+                    tile_index = tilemap_entry & 0xFF
                     pixel_x = int(tx) % 8
                     pixel_y = int(ty) % 8
                     pixel_index = pixel_y * 8 + pixel_x
@@ -2022,11 +2022,8 @@ class PPU:
                             self.second_target_framebuffer[y][x] = best_color
                             self.second_target_layer[y][x] = best_bg
                         best_priority = bg_priority[2]
-                        if bg_bpp8[2]:
-                            best_color = palette_colors[color_idx]
-                        else:
-                            palette_num = (tilemap_entry >> 12) & 0x0F
-                            best_color = palette_colors[palette_num * 16 + color_idx]
+                        # Affine BGs use palette 0 for 4BPP, direct index for 8BPP
+                        best_color = palette_colors[color_idx]
                         best_bg = 2
 
                 if best_color is not None:
@@ -2124,7 +2121,7 @@ class PPU:
                 
                 overflow = self.bg_affine[3]
                 return dx, dmx, dy, dmy, refx, refy, overflow
-            except:
+            except (IndexError, KeyError, ValueError):
                 return 256, 0, 0, 256, 0, 0, False
 
         # Frame-start reference positions
@@ -2175,28 +2172,28 @@ class PPU:
                     tx = int(source_x) >> 8
                     ty = int(source_y) >> 8
                     
-                    # Handle wrap-around based on BG2 size
+                    # Handle wrap-around based on BG2 size (affine sizes)
                     if overflow_bg2:
                         size = bg_size[2]
-                        if size == 0:  # 256x256
+                        if size == 0:  # 128x128 (affine)
+                            tx &= 127
+                            ty &= 127
+                        elif size == 1:  # 256x256 (affine)
                             tx &= 255
                             ty &= 255
-                        elif size == 1:  # 512x256
-                            tx &= 511
-                            ty &= 255
-                        elif size == 2:  # 256x512
-                            tx &= 255
-                            ty &= 511
-                        else:  # 512x512
+                        elif size == 2:  # 512x512 (affine)
                             tx &= 511
                             ty &= 511
+                        else:  # 1024x1024 (affine)
+                            tx &= 1023
+                            ty &= 1023
                     elif tx < 0 or ty < 0:
                         # Out of bounds (negative), skip this pixel
                         tx = -1
                     else:
-                        # Check bounds
-                        bg_width = 256 if bg_size[2] in [0, 2] else 512
-                        bg_height = 256 if bg_size[2] in [0, 1] else 512
+                        # Check bounds (affine sizes)
+                        affine_bg_sizes = {0: (128, 128), 1: (256, 256), 2: (512, 512), 3: (1024, 1024)}
+                        bg_width, bg_height = affine_bg_sizes[bg_size[2]]
                         if tx >= bg_width or ty >= bg_height:
                             tx = -1  # Mark as invalid
 
@@ -2206,13 +2203,18 @@ class PPU:
                         tilemap_x = tx // 8
                         tilemap_y = ty // 8
                         
-                        tilemap_width = 32 if bg_size[2] in [0, 2] else 64
+                        # Affine BG: 8-bit tilemap entries, 1-byte stride
+                        affine_tilemap_widths = {0: 16, 1: 32, 2: 64, 3: 128}
+                        tilemap_width = affine_tilemap_widths[bg_size[2]]
                         tilemap_index = tilemap_y * tilemap_width + tilemap_x
-                        tilemap_addr = tilemap_base + (tilemap_index * 2)
+                        tilemap_addr = tilemap_base + tilemap_index
                         
                         try:
-                            tilemap_entry = self.memory.read_u16(tilemap_addr)
-                            tile_index = tilemap_entry & 0x03FF
+                            tilemap_entry = self.memory.read_u8(tilemap_addr)
+                        except (IndexError, KeyError, ValueError):
+                            pass
+                        else:
+                            tile_index = tilemap_entry & 0xFF
                             pixel_x = int(tx) % 8
                             pixel_y = int(ty) % 8
                             pixel_index = pixel_y * 8 + pixel_x
@@ -2222,14 +2224,8 @@ class PPU:
                                 color_idx = palette_indices[pixel_index]
                                 if color_idx > 0 and bg_priority[2] < best_priority:
                                     best_priority = bg_priority[2]
-                                    if bg_bpp8[2]:
-                                        best_color = palette_colors[color_idx]
-                                    else:
-                                        palette_num = (tilemap_entry >> 12) & 0x0F
-                                        best_color = palette_colors[palette_num * 16 + color_idx]
+                                    best_color = palette_colors[color_idx]
                                     best_bg = 2
-                        except (IndexError, KeyError, ValueError):
-                            pass
 
                 # Render affine BG3
                 if bg_enabled[3] and (layer_enable & 0x08):
@@ -2243,27 +2239,27 @@ class PPU:
                     tx = int(source_x) >> 8
                     ty = int(source_y) >> 8
                     
-                    # Handle wrap-around based on BG3 size
+                    # Handle wrap-around based on BG3 size (affine sizes)
                     if overflow_bg3:
                         size = bg_size[3]
-                        if size == 0:  # 256x256
+                        if size == 0:  # 128x128 (affine)
+                            tx &= 127
+                            ty &= 127
+                        elif size == 1:  # 256x256 (affine)
                             tx &= 255
                             ty &= 255
-                        elif size == 1:  # 512x256
-                            tx &= 511
-                            ty &= 255
-                        elif size == 2:  # 256x512
-                            tx &= 255
-                            ty &= 511
-                        else:  # 512x512
+                        elif size == 2:  # 512x512 (affine)
                             tx &= 511
                             ty &= 511
+                        else:  # 1024x1024 (affine)
+                            tx &= 1023
+                            ty &= 1023
                     elif tx < 0 or ty < 0:
                         # Out of bounds (negative), skip this pixel
                         tx = -1
                     else:
-                        bg_width = 256 if bg_size[3] in [0, 2] else 512
-                        bg_height = 256 if bg_size[3] in [0, 1] else 512
+                        affine_bg_sizes = {0: (128, 128), 1: (256, 256), 2: (512, 512), 3: (1024, 1024)}
+                        bg_width, bg_height = affine_bg_sizes[bg_size[3]]
                         if tx >= bg_width or ty >= bg_height:
                             tx = -1
 
@@ -2273,13 +2269,18 @@ class PPU:
                         tilemap_x = tx // 8
                         tilemap_y = ty // 8
                         
-                        tilemap_width = 32 if bg_size[3] in [0, 2] else 64
+                        # Affine BG: 8-bit tilemap entries, 1-byte stride
+                        affine_tilemap_widths = {0: 16, 1: 32, 2: 64, 3: 128}
+                        tilemap_width = affine_tilemap_widths[bg_size[3]]
                         tilemap_index = tilemap_y * tilemap_width + tilemap_x
-                        tilemap_addr = tilemap_base + (tilemap_index * 2)
+                        tilemap_addr = tilemap_base + tilemap_index
                         
                         try:
-                            tilemap_entry = self.memory.read_u16(tilemap_addr)
-                            tile_index = tilemap_entry & 0x03FF
+                            tilemap_entry = self.memory.read_u8(tilemap_addr)
+                        except (IndexError, KeyError, ValueError):
+                            pass
+                        else:
+                            tile_index = tilemap_entry & 0xFF
                             pixel_x = int(tx) % 8
                             pixel_y = int(ty) % 8
                             pixel_index = pixel_y * 8 + pixel_x
@@ -2289,14 +2290,8 @@ class PPU:
                                 color_idx = palette_indices[pixel_index]
                                 if color_idx > 0 and bg_priority[3] < best_priority:
                                     best_priority = bg_priority[3]
-                                    if bg_bpp8[3]:
-                                        best_color = palette_colors[color_idx]
-                                    else:
-                                        palette_num = (tilemap_entry >> 12) & 0x0F
-                                        best_color = palette_colors[palette_num * 16 + color_idx]
+                                    best_color = palette_colors[color_idx]
                                     best_bg = 3
-                        except (IndexError, KeyError, ValueError):
-                            pass
 
                 if best_color is not None:
                     row_fb[x] = best_color
@@ -2342,12 +2337,16 @@ class PPU:
         matrix per scanline. Per-scanline snapshots captured by step_scanline()
         before HBlank DMA provide the correct dx/dy/dmx/dmy values.
         """
+        if not self.bg2_enable:
+            if self.obj_enable:
+                self._render_sprites(0x3F)
+            return
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
         try:
             vram_arr, vram_off = self.memory._buffer_for_addr(vram_base)
             vram_bytes = bytes(vram_arr[vram_off:vram_off + self.screen_height * self.screen_width * 2])
-        except Exception:
+        except (IndexError, KeyError, ValueError):
             vram_bytes = bytes(self.screen_height * self.screen_width * 2)
 
         try:
@@ -2357,7 +2356,7 @@ class PPU:
                 _c5to8((bdv >> 5) & 0x1F),
                 _c5to8((bdv >> 10) & 0x1F),
             )
-        except Exception:
+        except (IndexError, KeyError, ValueError):
             backdrop_rgb = (0, 0, 0)
 
         snaps = self._bg2_affine_snapshots
@@ -2388,44 +2387,9 @@ class PPU:
             row_lo = lo[y]
             x = sx - dx
             y_coord = sy - dy
-            for px in range(sw):
-                x += dx
-                y_coord += dy
-                
-                # Apply window masking
-                if win_active:
-                    layer_enable = self._get_window_layer_enable(px, y)
-                    if not (layer_enable & 0x04):  # BG2 bit is 2
-                        row_fb[px] = backdrop_rgb
-                        row_lo[px] = 0
-                        continue
-                
-                if self.bg_mosaic[2]:
-                    mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
-                    tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
-                    ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
-                else:
-                    tx = x >> 8
-                    ty = y_coord >> 8
-                if overflow:
-                    tx %= sw
-                    ty %= sh
-                elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
-                    row_fb[px] = backdrop_rgb
-                    row_lo[px] = 0
-                    continue
-                offset = (tx + ty * sw) * 2
-                if offset + 1 < vlen:
-                    color_val = vram_bytes[offset] | (vram_bytes[offset + 1] << 8)
-                    row_fb[px] = (
-                        _c5to8((color_val >> 0) & 0x1F),
-                        _c5to8((color_val >> 5) & 0x1F),
-                        _c5to8((color_val >> 10) & 0x1F),
-                    )
-                    row_lo[px] = 2
-                else:
-                    row_fb[px] = backdrop_rgb
-                    row_lo[px] = 0
+            self._render_bitmap_affine_bg2(row_fb, row_lo, dx, dy, dmx, dmy, x, y_coord,
+                                           win_active, sw, sh, vlen, vram_bytes, backdrop_rgb,
+                                           overflow)
             sx += dmx
             sy += dmy
 
@@ -2437,18 +2401,22 @@ class PPU:
 
         Same affine pipeline as Mode 3, but pixels are palette-indexed (1 byte each).
         """
+        if not self.bg2_enable:
+            if self.obj_enable:
+                self._render_sprites(0x3F)
+            return
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
 
         try:
             vram_arr, vram_off = self.memory._buffer_for_addr(vram_base)
             vram_bytes = bytes(vram_arr[vram_off:vram_off + self.screen_height * self.screen_width])
-        except Exception:
+        except (IndexError, KeyError, ValueError):
             vram_bytes = bytes(self.screen_height * self.screen_width)
         try:
             pal_arr, pal_off = self.memory._buffer_for_addr(0x05000000)
             palette_bytes = bytes(pal_arr[pal_off:pal_off + 512])
-        except Exception:
+        except (IndexError, KeyError, ValueError):
             palette_bytes = bytes(512)
         palette_rgb = []
         for i in range(256):
@@ -2525,8 +2493,68 @@ class PPU:
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
-        except:
+        except (IndexError, KeyError, ValueError):
             return (0, 0, 0)
+
+    def _render_bitmap_affine_bg2(self, fb, lo, dx, dy, dmx, dmy, x, y_coord,
+                                   win_active, fb_w, bm_h, vlen, vram_bytes, backdrop_rgb,
+                                   overflow, bm_w=None):
+        """Render affine BG2 bitmap into framebuffer row.
+
+        Args:
+            fb: framebuffer row
+            lo: layer origin row
+            dx, dy, dmx, dmy: affine transformation parameters
+            x, y_coord: current source coordinates
+            win_active: whether windows are active
+            fb_w: framebuffer width (sw for both modes)
+            bm_h: bitmap height for overflow wrap (sh for Mode 3, bh for Mode 5)
+            vlen: length of VRAM bytes
+            vram_bytes: VRAM data
+            backdrop_rgb: backdrop color
+            overflow: overflow flag from snapshot
+            bm_w: bitmap width for overflow wrap (sw for Mode 3, bw for Mode 5); defaults to fb_w
+        """
+        if bm_w is None:
+            bm_w = fb_w
+        
+        for px in range(fb_w):
+            x += dx
+            y_coord += dy
+            
+            if win_active:
+                layer_enable = self._get_window_layer_enable(px, y)
+                if not (layer_enable & 0x04):
+                    fb[px] = backdrop_rgb
+                    lo[px] = 0
+                    continue
+            
+            if self.bg_mosaic[2]:
+                mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
+                tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
+                ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
+            else:
+                tx = x >> 8
+                ty = y_coord >> 8
+            if overflow:
+                tx %= bm_w
+                ty %= bm_h
+            elif tx < 0 or ty < 0 or tx >= bm_w or ty >= bm_h:
+                fb[px] = backdrop_rgb
+                lo[px] = 0
+                continue
+            offset = (tx + ty * bm_w) * 2
+            if offset + 1 < vlen:
+                color_val = vram_bytes[offset] | (vram_bytes[offset + 1] << 8)
+                fb[px] = (
+                    _c5to8((color_val >> 0) & 0x1F),
+                    _c5to8((color_val >> 5) & 0x1F),
+                    _c5to8((color_val >> 10) & 0x1F),
+                )
+                lo[px] = 2
+            else:
+                fb[px] = backdrop_rgb
+                lo[px] = 0
 
     def _render_mode5(self):
         """Render Mode 5: 160x128 16-bit bitmap via affine BG2 transformation.
@@ -2534,12 +2562,16 @@ class PPU:
         Bitmap is 160x128 but screen is 240x160. Pixels outside the 160x128
         bitmap region are filled with the backdrop color (palette[0]).
         """
+        if not self.bg2_enable:
+            if self.obj_enable:
+                self._render_sprites(0x3F)
+            return
         page = self.display_frame_select
         vram_base = 0x06000000 if page == 0 else 0x0600A000
         try:
             vram_arr, vram_off = self.memory._buffer_for_addr(vram_base)
             vram_bytes = bytes(vram_arr[vram_off:vram_off + 128 * 160 * 2])
-        except Exception:
+        except (IndexError, KeyError, ValueError):
             vram_bytes = bytes(128 * 160 * 2)
 
         try:
@@ -2549,7 +2581,7 @@ class PPU:
                 _c5to8((bdv >> 5) & 0x1F),
                 _c5to8((bdv >> 10) & 0x1F),
             )
-        except Exception:
+        except (IndexError, KeyError, ValueError):
             backdrop_rgb = (0, 0, 0)
 
         snaps = self._bg2_affine_snapshots
@@ -2581,43 +2613,9 @@ class PPU:
             row_lo = lo[y]
             x = sx - dx
             y_coord = sy - dy
-            for px in range(sw):
-                x += dx
-                y_coord += dy
-
-                if win_active:
-                    layer_enable = self._get_window_layer_enable(px, y)
-                    if not (layer_enable & 0x04):
-                        row_fb[px] = backdrop_rgb
-                        row_lo[px] = 0
-                        continue
-
-                if self.bg_mosaic[2]:
-                    mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
-                    tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
-                    ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
-                else:
-                    tx = x >> 8
-                    ty = y_coord >> 8
-                if overflow:
-                    tx %= bw
-                    ty %= bh
-                elif tx < 0 or ty < 0 or tx >= bw or ty >= bh:
-                    row_fb[px] = backdrop_rgb
-                    row_lo[px] = 0
-                    continue
-                offset = (tx + ty * bw) * 2
-                if offset + 1 < vlen:
-                    color_val = vram_bytes[offset] | (vram_bytes[offset + 1] << 8)
-                    row_fb[px] = (
-                        _c5to8((color_val >> 0) & 0x1F),
-                        _c5to8((color_val >> 5) & 0x1F),
-                        _c5to8((color_val >> 10) & 0x1F),
-                    )
-                    row_lo[px] = 2
-                else:
-                    row_fb[px] = backdrop_rgb
-                    row_lo[px] = 0
+            self._render_bitmap_affine_bg2(row_fb, row_lo, dx, dy, dmx, dmy, x, y_coord,
+                                           win_active, sw, bh, vlen, vram_bytes, backdrop_rgb,
+                                           overflow, bw)
             sx += dmx
             sy += dmy
 
@@ -2645,7 +2643,7 @@ class PPU:
                     bg_backdrop_r = _c5to8((backdrop_color_val >> 0) & 0x1F)
                     bg_backdrop_g = _c5to8((backdrop_color_val >> 5) & 0x1F)
                     bg_backdrop_b = _c5to8((backdrop_color_val >> 10) & 0x1F)
-                except Exception:
+                except (IndexError, KeyError, ValueError):
                     bg_backdrop_r, bg_backdrop_g, bg_backdrop_b = 0, 0, 0
                 if second_target_mask & (1 << 5):  # BD is 2nd target
                     pass  # backdrop already read above
@@ -2799,7 +2797,7 @@ class PPU:
                             colors.append((r, g, b))
                         else:
                             colors.append(None)
-                    except:
+                    except (IndexError, KeyError, ValueError):
                         colors.append(None)
                 else:
                     colors.append(None)
@@ -2832,7 +2830,7 @@ class PPU:
                         colors.append((r, g, b))
                     else:
                         colors.append(None)
-                except:
+                except (IndexError, KeyError, ValueError):
                     colors.append(None)
 
         return colors

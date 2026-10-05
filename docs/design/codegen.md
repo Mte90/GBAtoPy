@@ -439,7 +439,7 @@ impl CodeGenerator {
 ## 5.14 Acceptance Criteria (Updated 2026-04-17)
 
 ### Implemented ✅
-- [x] Generated Python is syntactically valid for all test ROMs (76 ROMs tested)
+- [x] Generated Python is syntactically valid for all test ROMs (91 ROMs tested)
 - [x] Generated Python runs without runtime errors (exit code 0)
 - [x] No Rust dependency at runtime (pure Python only)
 - [x] `cargo build` passes with 6 crates, 0 errors

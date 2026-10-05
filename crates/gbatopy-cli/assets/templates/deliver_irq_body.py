@@ -38,9 +38,6 @@
             cpsr['z'] = (_saved >> 30) & 1
             cpsr['c'] = (_saved >> 29) & 1
             cpsr['v'] = (_saved >> 28) & 1
-            # Clear pending bits
-            _irq.if_reg &= ~_pending_irq_bits
-            _pending_irq_bits = 0
             registers[0] = _irq_saved_r0
             registers[1] = _irq_saved_r1
             registers[2] = _irq_saved_r2

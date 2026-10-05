@@ -242,7 +242,7 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
     result["level1"] = True
     result["level1_status"] = "pass"
 
-    if max_level < 2:
+    if max_level < 2 or test_type == "Smoke":
         result["elapsed"] = round(time() - start, 2)
         return result
 

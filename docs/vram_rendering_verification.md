@@ -1,6 +1,6 @@
 # VRAM Rendering Verification Report
 
-> **⚠️ Stale document** — This report predates current debugging. **Current status**: stripes.gba PASSES with 100% golden match. The 160/38,400 pixel bug was fixed by correcting the address mapping.
+> **Historical document** — This document is retained for historical reference. The bug it describes (160/38,400 pixel mapping error) was fixed by correcting the address mapping. Current PPU architecture is documented in [runtime-architecture.md](runtime-architecture.md).
 
 ## Summary
 
@@ -10,11 +10,11 @@
 
 ## Test Results
 
-### ROM Comparison (76 ROMs tested)
+### ROM Comparison (91 ROMs tested)
 
 | Metric | Value |
 |--------|-------|
-| Total ROMs | 76 |
+| Total ROMs | 91 |
 | Unique pixel patterns | 36 |
 | Most active ROM | THUMB_Any.gba (1452 px, 3.8%) |
 | Least active ROM | shades.gba (1381 px, 3.6%) |

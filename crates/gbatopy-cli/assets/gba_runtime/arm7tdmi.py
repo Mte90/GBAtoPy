@@ -87,7 +87,7 @@ class ARM7TDMI:
 
         # Banked SP/LR per mode (FIQ also banks r8-r12)
         # User (0x10) and System (0x1F) share the same register bank
-        _user_sys_bank = {'sp': 0, 'lr': 0}
+        _user_sys_bank = {'sp': 0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}
         self.banked_sp_lr = {
             0x10: _user_sys_bank,  # User
             0x1F: _user_sys_bank,  # System
@@ -112,7 +112,7 @@ class ARM7TDMI:
             bank = self.banked_sp_lr[old_mode]
             bank['sp'] = self.registers[13]
             bank['lr'] = self.registers[14]
-            if old_mode == 0x11:  # FIQ banks r8-r12
+            if old_mode in (0x10, 0x1F, 0x11):  # User/System/FIQ bank r8-r12
                 bank['r8'] = self.registers[8]
                 bank['r9'] = self.registers[9]
                 bank['r10'] = self.registers[10]
@@ -124,7 +124,7 @@ class ARM7TDMI:
             bank = self.banked_sp_lr[new_mode]
             self.registers[13] = bank['sp']
             self.registers[14] = bank['lr']
-            if new_mode == 0x11:  # FIQ banks r8-r12
+            if new_mode in (0x10, 0x1F, 0x11):  # User/System/FIQ bank r8-r12
                 self.registers[8] = bank['r8']
                 self.registers[9] = bank['r9']
                 self.registers[10] = bank['r10']
@@ -132,6 +132,37 @@ class ARM7TDMI:
                 self.registers[12] = bank['r12']
 
         self.mode = new_mode
+
+    def _read_user_reg(self, i: int) -> int:
+        """Read register i from user bank (for S-bit LDM/STM)."""
+        if i < 8:
+            return self.registers[i]
+        if i < 13:
+            if self.mode == 0x11:
+                return self.banked_sp_lr[0x10].get('r' + str(i), 0)
+            return self.registers[i]
+        if i == 13:
+            return self.banked_sp_lr[0x10]['sp']
+        if i == 14:
+            return self.banked_sp_lr[0x10]['lr']
+        return self.registers[15]
+
+    def _write_user_reg(self, i: int, val: int):
+        """Write register i to user bank (for S-bit LDM/STM)."""
+        val &= 0xFFFFFFFF
+        if i < 8:
+            self.registers[i] = val
+            return
+        if i < 13:
+            if self.mode == 0x11:
+                self.banked_sp_lr[0x10]['r' + str(i)] = val
+            else:
+                self.registers[i] = val
+            return
+        if i == 13:
+            self.banked_sp_lr[0x10]['sp'] = val
+        elif i == 14:
+            self.banked_sp_lr[0x10]['lr'] = val
 
     @property
     def r(self):
@@ -209,8 +240,10 @@ class ARM7TDMI:
         return self.cpsr
 
     def check_condition(self, cond: int) -> bool:
-        if cond == 0xE or cond == 0xF:
+        if cond == 0xE:  # AL - Always
             return True
+        if cond == 0xF:  # NV - Never
+            return False
         n, z, c, v = self.nzcv
         if cond == 0x0:
             return z
@@ -828,11 +861,10 @@ class ARM7TDMI:
         rn = (instr >> 16) & 0xF
         reg_list = instr & 0xFFFF
 
-        # TODO: S bit handling (bit 22)
-        # - If base NOT in list: S=1 means load/store user bank registers (R13/R14 from/user stack)
-        # - If base IS in list (LDM only): S=1 means restore CPSR from SPSR after loading PC
-        # Current implementation only handles the second case (lines 880-893)
-        # Full S bit support requires user bank register access
+        # S-bit (bit 22) handling:
+        # - LDM with PC in list + S=1: exception return — load PC, restore CPSR from SPSR.
+        # - LDM without PC + S=1: load into user-bank registers via _write_user_reg().
+        # - STM + S=1: store from user-bank registers via _read_user_reg().
         if reg_list == 0:
             return 2
 
@@ -861,18 +893,20 @@ class ARM7TDMI:
             base_in_list = (reg_list & (1 << rn)) != 0
             if w_bit and base_in_list:
                 _orig_base = base
+            _has_pc = bool(reg_list & (1 << 15))
             for i in range(16):
                 if reg_list & (1 << i):
                     val = self.memory.read_u32(addr)
-                    self.write_register(i, val)
+                    if s_bit and not _has_pc:
+                        self._write_user_reg(i, val)
+                    else:
+                        self.write_register(i, val)
                     addr += 4
         else:
             for i in range(16):
                 if reg_list & (1 << i):
-                    if s_bit and i == 13:
-                        val = self.banked_sp_lr[0x10]['sp']
-                    elif s_bit and i == 14:
-                        val = self.banked_sp_lr[0x10]['lr']
+                    if s_bit:
+                        val = self._read_user_reg(i)
                     else:
                         val = self._operand(i)
                     self.memory.write_u32(addr, val & 0xFFFFFFFF)
@@ -1035,9 +1069,11 @@ class ARM7TDMI:
             self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
             self._halted = True
             self._halt_reason = 'any'
-        elif num == 0x03:  # Stop
-            if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_stop(self.registers[0])
+        elif num == 0x03:  # Stop — halt CPU until interrupt (over-approximation of hardware behavior)
+            self._swi_lr = self.registers[14]
+            self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
+            self._halted = True
+            self._halt_reason = 'any'
         elif num == 0x04:  # IntrWait — check IF first, then halt
             self._swi_lr = self.registers[14]
             self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
@@ -1053,13 +1089,16 @@ class ARM7TDMI:
                     return
             self._halted = True
             self._halt_reason = 'any'
+        elif num == 0x02:  # Halt
+            self._halted = True
+            self._halt_reason = 'any'
         elif num == 0x05:  # VBlankIntrWait — wake on VBlank IRQ only
             self._swi_lr = self.registers[14]
-            self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
-            # Per GBATEK: set IME=1, IE.0=1, clear IF.0, then halt until VBlank
             if hasattr(self, 'memory') and hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
                 ic = self.memory._interrupts
                 ic.ime_reg |= 0x0001
+                self.memory.io[0x208] = ic.ime_reg & 0xFF
+                self.memory.io[0x209] = (ic.ime_reg >> 8) & 0xFF
                 ic.ie_reg |= 0x0001
                 ic.if_reg &= ~0x0001
                 ic._enabled_mask = ic.ie_reg
@@ -1847,10 +1886,7 @@ class ISRHandler:
         while irq_bit < 14:
             if pending & (1 << irq_bit):
                 if irq_bit in self._handlers:
-                    try:
-                        self._handlers[irq_bit]()
-                    except Exception as e:
-                        print(f"  WARNING: ISR handler {irq_bit} raised exception: {e}")
+                    self._handlers[irq_bit]()
                 self.interrupts.if_reg &= ~(1 << irq_bit)
                 
                 if 8 <= irq_bit <= 11:
@@ -1863,35 +1899,6 @@ class ISRHandler:
                 break
             irq_bit += 1
     
-    def handle_vblank(self):
-        if InterruptController.IRQ_VBLANK in self._handlers:
-            self._handlers[InterruptController.IRQ_VBLANK]()
-    
-    def handle_hblank(self):
-        if InterruptController.IRQ_HBLANK in self._handlers:
-            self._handlers[InterruptController.IRQ_HBLANK]()
-    
-    def handle_vcounter(self):
-        if InterruptController.IRQ_VCOUNTER in self._handlers:
-            self._handlers[InterruptController.IRQ_VCOUNTER]()
-    
-    def handle_timer(self, channel: int):
-        irq_id = InterruptController.IRQ_TIMER0 + channel
-        if irq_id in self._handlers:
-            self._handlers[irq_id]()
-    
-    def handle_dma(self, channel: int):
-        irq_id = InterruptController.IRQ_DMA0 + channel
-        if irq_id in self._handlers:
-            self._handlers[irq_id]()
-    
-    def handle_keypad(self):
-        if InterruptController.IRQ_KEYPAD in self._handlers:
-            self._handlers[InterruptController.IRQ_KEYPAD]()
-    
-    def handle_gamepak(self):
-        if InterruptController.IRQ_GAMEPAK in self._handlers:
-            self._handlers[InterruptController.IRQ_GAMEPAK]()
 
 
 
