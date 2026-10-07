@@ -131,14 +131,14 @@ class HookManager:
         Returns:
             True if execution should pause (breakpoint hit), None otherwise
         """
+        # Check instruction hooks FIRST (before breakpoint check)
+        if event_type == 'instruction' and pc in self._instruction_hooks:
+            self._instruction_hooks[pc](pc)
+        
         # Check for breakpoint
         if pc in self._breakpoints:
             print(f"\n[BREAKPOINT] PC=0x{pc:08X}")
             return True
-        
-        # Check instruction hooks
-        if event_type == 'instruction' and pc in self._instruction_hooks:
-            self._instruction_hooks[pc](pc)
         
         # Step mode - pause after every instruction
         if self._step_mode:

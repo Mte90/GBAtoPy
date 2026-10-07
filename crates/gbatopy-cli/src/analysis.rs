@@ -97,6 +97,7 @@ pub(crate) fn writes_r15(inst: &DecodedInstruction) -> bool {
     if !is_store {
         for operand in &inst.operands {
             if let Operand::MemoryAddress { offset, .. } = operand {
+                // Not collapsible: outer if let destructures offset, inner checks AddressingMode
                 #[allow(clippy::collapsible_match)]
                 if let AddressingMode::Multi { registers, .. } = offset {
                     if registers.contains(&15) {
@@ -398,6 +399,640 @@ pub(crate) fn extract_bl_targets(
     targets
 }
 
+
 // ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gbatopy_disasm::{operand::ShiftAmount, operand::ShiftType, ArmMode, Condition, DecodedInstruction, Operand};
+
+    fn make_inst(
+        opcode: &str,
+        operands: Vec<Operand>,
+        sets_flags: bool,
+        mode: ArmMode,
+        addr: u32,
+    ) -> DecodedInstruction {
+        DecodedInstruction {
+            address: addr,
+            opcode: opcode.to_string(),
+            operands,
+            condition: Some(Condition::Al),
+            mode,
+            raw: 0,
+            sets_flags,
+            width: if mode == ArmMode::Arm { 4 } else { 2 },
+            is_data: false,
+        }
+    }
+
+    // === is_conditional_branch tests ===
+    #[test]
+    fn test_is_conditional_branch_eq() {
+        assert!(is_conditional_branch("BEQ"));
+    }
+
+    #[test]
+    fn test_is_conditional_branch_ne() {
+        assert!(is_conditional_branch("BNE"));
+    }
+
+    #[test]
+    fn test_is_conditional_branch_all_variants() {
+        // All conditional branch variants
+        assert!(is_conditional_branch("BCS"));
+        assert!(is_conditional_branch("BCC"));
+        assert!(is_conditional_branch("BMI"));
+        assert!(is_conditional_branch("BPL"));
+        assert!(is_conditional_branch("BVS"));
+        assert!(is_conditional_branch("BVC"));
+        assert!(is_conditional_branch("BHI"));
+        assert!(is_conditional_branch("BLS"));
+        assert!(is_conditional_branch("BGE"));
+        assert!(is_conditional_branch("BLT"));
+        assert!(is_conditional_branch("BGT"));
+        assert!(is_conditional_branch("BLE"));
+        assert!(is_conditional_branch("BAL"));
+        assert!(is_conditional_branch("BNV"));
+    }
+
+    #[test]
+    fn test_is_conditional_branch_not_branch() {
+        // BIC is NOT a branch (bit-clear instruction)
+        assert!(!is_conditional_branch("BIC"));
+        // BL is unconditional
+        assert!(!is_conditional_branch("BL"));
+        // BX is unconditional
+        assert!(!is_conditional_branch("BX"));
+        // Data processing
+        assert!(!is_conditional_branch("ADDeq"));
+        assert!(!is_conditional_branch("MOVs"));
+    }
+
+    // === is_conditional_non_branch tests ===
+    #[test]
+    fn test_is_conditional_non_branch_ldreq() {
+        let inst = make_inst(
+            "LDReq",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(is_conditional_non_branch(&inst));
+    }
+
+    #[test]
+    fn test_is_conditional_non_branch_addne() {
+        let inst = make_inst(
+            "ADDne",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(5)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(is_conditional_non_branch(&inst));
+    }
+
+    #[test]
+    fn test_is_conditional_non_branch_unconditional() {
+        // No condition code
+        let inst = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(!is_conditional_non_branch(&inst));
+    }
+
+    #[test]
+    fn test_is_conditional_non_branch_al() {
+        // AL (always) is not conditional
+        let inst = make_inst(
+            "ADDal",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(!is_conditional_non_branch(&inst));
+    }
+
+    #[test]
+    fn test_is_conditional_non_branch_branch() {
+        // Branches are NOT conditional non-branches
+        let inst = make_inst(
+            "BNE",
+            vec![Operand::Immediate(0x100)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(!is_conditional_non_branch(&inst));
+    }
+
+    // === writes_r15 tests ===
+    #[test]
+    fn test_writes_r15_branch() {
+        let inst = make_inst(
+            "B",
+            vec![Operand::Immediate(0x100)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_bl() {
+        let inst = make_inst(
+            "BL",
+            vec![Operand::Immediate(0x100)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_bx() {
+        let inst = make_inst(
+            "BX",
+            vec![Operand::Register(14)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_beq() {
+        let inst = make_inst(
+            "BEQ",
+            vec![Operand::Immediate(0x100)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_mov_pc() {
+        let inst = make_inst(
+            "MOV",
+            vec![Operand::Register(15), Operand::Register(14)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_ldm_pc() {
+        let inst = make_inst(
+            "LDMIA",
+            vec![Operand::Register(13), Operand::MemoryAddress {
+                base: 13,
+                offset: gbatopy_disasm::operand::AddressingMode::Multi {
+                    base: 13,
+                    registers: vec![0, 1, 15],
+                    increment: true,
+                    pre_index: true,
+                    writeback: false,
+                    s_bit: false,
+                },
+                writeback: false,
+            }],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_pop_pc() {
+        let inst = make_inst(
+            "POP",
+            vec![Operand::Register(15)],
+            false,
+            ArmMode::Thumb,
+            0x08000000,
+        );
+        assert!(writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_not_r15() {
+        let inst = make_inst(
+            "MOV",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(!writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_cmp() {
+        // CMP doesn't write any register
+        let inst = make_inst(
+            "CMP",
+            vec![Operand::Register(0), Operand::Immediate(5)],
+            true,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(!writes_r15(&inst));
+    }
+
+    #[test]
+    fn test_writes_r15_str() {
+        // STR doesn't write registers
+        let inst = make_inst(
+            "STR",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(!writes_r15(&inst));
+    }
+
+    // === reads_r15 tests ===
+    #[test]
+    fn test_reads_r15_branch() {
+        let inst = make_inst(
+            "B",
+            vec![Operand::Immediate(0x100)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(reads_r15(&inst));
+    }
+
+    #[test]
+    fn test_reads_r15_blx_register() {
+        let inst = make_inst(
+            "BLX",
+            vec![Operand::Register(14)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(reads_r15(&inst));
+    }
+
+    #[test]
+    fn test_reads_r15_mov_r15_source() {
+        let inst = make_inst(
+            "MOV",
+            vec![Operand::Register(0), Operand::Register(15)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(reads_r15(&inst));
+    }
+
+    #[test]
+    fn test_reads_r15_shifted_r15() {
+        let inst = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::ShiftedRegister {
+                reg: 15,
+                shift: ShiftType::Lsl,
+                amount: ShiftAmount::Immediate(2),
+            }],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(reads_r15(&inst));
+    }
+
+    #[test]
+    fn test_reads_r15_memory_r15_base() {
+        let inst = make_inst(
+            "LDR",
+            vec![Operand::Register(0), Operand::MemoryAddress {
+                base: 15,
+                offset: gbatopy_disasm::operand::AddressingMode::ImmediateOffset(4),
+                writeback: false,
+            }],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(reads_r15(&inst));
+    }
+
+    #[test]
+    fn test_reads_r15_not_r15() {
+        let inst = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        assert!(!reads_r15(&inst));
+    }
+
+    // === detect_memset_loop_pattern tests ===
+    #[test]
+    fn test_detect_memset_loop_pattern_match() {
+        let inst0 = make_inst(
+            "STMIA",
+            vec![Operand::Register(0), Operand::Register(2)],
+            false,
+            ArmMode::Thumb,
+            0x08000100,
+        );
+        let inst1 = make_inst(
+            "SUB",
+            vec![Operand::Register(3), Operand::Immediate(4)],
+            true,
+            ArmMode::Thumb,
+            0x08000102,
+        );
+        let inst2 = make_inst(
+            "BNE",
+            vec![Operand::Immediate(0x08000100)],
+            false,
+            ArmMode::Thumb,
+            0x08000104,
+        );
+
+        let insts = vec![&inst0, &inst1, &inst2];
+        let result = detect_memset_loop_pattern(&insts);
+
+        assert!(result.is_some());
+        let (rb, rs, rc, fallthrough) = result.unwrap();
+        assert_eq!(rb, 0);
+        assert_eq!(rs, 2);
+        assert_eq!(rc, 3);
+        assert_eq!(fallthrough, 0x08000106); // After BNE
+    }
+
+    #[test]
+    fn test_detect_memset_loop_pattern_wrong_instructions() {
+        // Wrong first instruction
+        let inst0 = make_inst(
+            "STR",
+            vec![Operand::Register(0), Operand::Register(2)],
+            false,
+            ArmMode::Thumb,
+            0x08000100,
+        );
+        let inst1 = make_inst(
+            "SUB",
+            vec![Operand::Register(3), Operand::Immediate(4)],
+            true,
+            ArmMode::Thumb,
+            0x08000102,
+        );
+        let inst2 = make_inst(
+            "BNE",
+            vec![Operand::Immediate(0x08000100)],
+            false,
+            ArmMode::Thumb,
+            0x08000104,
+        );
+
+        let insts = vec![&inst0, &inst1, &inst2];
+        assert!(detect_memset_loop_pattern(&insts).is_none());
+    }
+
+    #[test]
+    fn test_detect_memset_loop_pattern_wrong_sub() {
+        let inst0 = make_inst(
+            "STMIA",
+            vec![Operand::Register(0), Operand::Register(2)],
+            false,
+            ArmMode::Thumb,
+            0x08000100,
+        );
+        // Wrong immediate value
+        let inst1 = make_inst(
+            "SUB",
+            vec![Operand::Register(3), Operand::Immediate(8)],
+            true,
+            ArmMode::Thumb,
+            0x08000102,
+        );
+        let inst2 = make_inst(
+            "BNE",
+            vec![Operand::Immediate(0x08000100)],
+            false,
+            ArmMode::Thumb,
+            0x08000104,
+        );
+
+        let insts = vec![&inst0, &inst1, &inst2];
+        assert!(detect_memset_loop_pattern(&insts).is_none());
+    }
+
+    #[test]
+    fn test_detect_memset_loop_pattern_wrong_branch_target() {
+        let inst0 = make_inst(
+            "STMIA",
+            vec![Operand::Register(0), Operand::Register(2)],
+            false,
+            ArmMode::Thumb,
+            0x08000100,
+        );
+        let inst1 = make_inst(
+            "SUB",
+            vec![Operand::Register(3), Operand::Immediate(4)],
+            true,
+            ArmMode::Thumb,
+            0x08000102,
+        );
+        // Wrong branch target
+        let inst2 = make_inst(
+            "BNE",
+            vec![Operand::Immediate(0x08000200)],
+            false,
+            ArmMode::Thumb,
+            0x08000104,
+        );
+
+        let insts = vec![&inst0, &inst1, &inst2];
+        assert!(detect_memset_loop_pattern(&insts).is_none());
+    }
+
+    #[test]
+    fn test_detect_memset_loop_pattern_not_sets_flags() {
+        let inst0 = make_inst(
+            "STMIA",
+            vec![Operand::Register(0), Operand::Register(2)],
+            false,
+            ArmMode::Thumb,
+            0x08000100,
+        );
+        // SUB doesn't set flags
+        let inst1 = make_inst(
+            "SUB",
+            vec![Operand::Register(3), Operand::Immediate(4)],
+            false,
+            ArmMode::Thumb,
+            0x08000102,
+        );
+        let inst2 = make_inst(
+            "BNE",
+            vec![Operand::Immediate(0x08000100)],
+            false,
+            ArmMode::Thumb,
+            0x08000104,
+        );
+
+        let insts = vec![&inst0, &inst1, &inst2];
+        assert!(detect_memset_loop_pattern(&insts).is_none());
+    }
+
+    #[test]
+    fn test_detect_memset_loop_pattern_wrong_length() {
+        // Too few instructions
+        let inst0 = make_inst(
+            "STMIA",
+            vec![Operand::Register(0), Operand::Register(2)],
+            false,
+            ArmMode::Thumb,
+            0x08000100,
+        );
+        let inst1 = make_inst(
+            "SUB",
+            vec![Operand::Register(3), Operand::Immediate(4)],
+            true,
+            ArmMode::Thumb,
+            0x08000102,
+        );
+
+        let insts = vec![&inst0, &inst1];
+        assert!(detect_memset_loop_pattern(&insts).is_none());
+    }
+
+    // === extract_bl_targets tests ===
+    #[test]
+    fn test_extract_bl_targets_bl() {
+        let inst0 = make_inst(
+            "BL",
+            vec![Operand::Immediate(0x08000500)],
+            false,
+            ArmMode::Arm,
+            0x08000100,
+        );
+
+        let insts = vec![&inst0];
+        let targets = extract_bl_targets(&insts);
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, 0x08000500);
+        assert_eq!(targets[0].1, ArmMode::Arm);
+    }
+
+    #[test]
+    fn test_extract_bl_targets_blx() {
+        let inst0 = make_inst(
+            "BLX",
+            vec![Operand::Immediate(0x08000600)],
+            false,
+            ArmMode::Arm,
+            0x08000100,
+        );
+
+        let insts = vec![&inst0];
+        let targets = extract_bl_targets(&insts);
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, 0x08000600);
+        assert_eq!(targets[0].1, ArmMode::Thumb); // BLX switches mode
+    }
+
+    #[test]
+    fn test_extract_bl_targets_bl_suffix() {
+        let inst0 = make_inst(
+            "BL_PREFIX",
+            vec![Operand::Immediate(0x08000000)],
+            false,
+            ArmMode::Thumb,
+            0x08000100,
+        );
+        let inst1 = make_inst(
+            "BL_SUFFIX",
+            vec![Operand::Immediate(0x100)],
+            false,
+            ArmMode::Thumb,
+            0x08000102,
+        );
+
+        let insts = vec![&inst0, &inst1];
+        let targets = extract_bl_targets(&insts);
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, 0x08000100); // 0x08000000 + 0x100
+        assert_eq!(targets[0].1, ArmMode::Thumb);
+    }
+
+    #[test]
+    fn test_extract_bl_targets_invalid_address() {
+        // Address outside ROM range
+        let inst0 = make_inst(
+            "BL",
+            vec![Operand::Immediate(0x02000000)], // EWRAM, not ROM
+            false,
+            ArmMode::Arm,
+            0x08000100,
+        );
+
+        let insts = vec![&inst0];
+        let targets = extract_bl_targets(&insts);
+
+        assert_eq!(targets.len(), 0);
+    }
+
+    #[test]
+    fn test_extract_bl_targets_empty() {
+        let insts: Vec<&DecodedInstruction> = vec![];
+        let targets = extract_bl_targets(&insts);
+        assert_eq!(targets.len(), 0);
+    }
+
+    #[test]
+    fn test_extract_bl_targets_no_bl_instructions() {
+        let inst0 = make_inst(
+            "MOV",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000100,
+        );
+        let inst1 = make_inst(
+            "ADD",
+            vec![Operand::Register(2), Operand::Register(3)],
+            false,
+            ArmMode::Arm,
+            0x08000104,
+        );
+
+        let insts = vec![&inst0, &inst1];
+        let targets = extract_bl_targets(&insts);
+
+        assert_eq!(targets.len(), 0);
+    }
+}
 // End of Extracted Helper Functions
 // ============================================================================

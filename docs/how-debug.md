@@ -345,9 +345,10 @@ This affects `MOV Rd, R15`, `LDR Rd, [PC, #imm]`, `ADD Rd, PC, #imm`, and any op
 
 Before deep debugging, verify these common failure modes. They have caused the majority of spin/hang bugs in this project.
 
-### Class 1: Dispatch routing (opcode → wrong handler)
+### Class 1: Dispatch routing (opcode → wrong handler) ✅ FIXED
 
 **Symptom**: PC stuck at one address, infinite spin.
+**Status**: All known instances resolved. SWI dispatch unified (F230), Thumb load/store bit-fields corrected.
 **Root cause**: An instruction's opcode class bits match a broader branch in the dispatch chain before the specific handler is checked.
 **Known instances**:
 - MSR CPSR routed to `exec_data_processing` (treated as TEQ) → PC never advanced.
@@ -355,90 +356,105 @@ Before deep debugging, verify these common failure modes. They have caused the m
 **Check**: `arm7tdmi.py` `execute_arm` / `execute_thumb` dispatch order. Specific handlers (MSR/MRS, extra load/store) must be checked **before** generic branches.
 **Test**: `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py`
 
-### Class 2: Condition codes dropped
+### Class 2: Condition codes dropped ✅ FIXED
 
 **Symptom**: Conditional branch executes unconditionally, causing infinite loops (e.g., copy loop never exits).
+**Status**: Codegen now uses `inst.condition` field directly, no string parsing.
 **Root cause**: The codegen reads `inst.opcode` (which is "BX" without suffix) and parses for a condition suffix that isn't there, defaulting to unconditional AL.
 **Known instances**: BXEQ emitted as unconditional BX → copy loop never terminates.
 **Check**: `crates/gbatopy-cli/src/codegen/instruction_codegen/branch.rs` — must use `inst.condition` field, not string parsing.
 **Test**: `test_dispatch_audit.py::TestARMDispatchAudit::test_bxeq_preserves_condition`
 
-### Class 3: PC-relative offset missing
+### Class 3: PC-relative offset missing ✅ FIXED
 
 **Symptom**: Return addresses, branch targets, or PC-relative loads are off by 8 (ARM) or 4 (Thumb).
+**Status**: All R15 reads apply pipeline offset.
 **Root cause**: R15 reads don't apply the pipeline offset.
 **Known instances**: `MOV R14, R15` wrote PC without +8 → wrong return address; LDR PC-relative ignored immediate offset.
 **Check**: Any codegen path that reads `registers[15]` must add the pipeline offset before use.
 
-### Class 4: Thumb bit-field masks wrong width
+### Class 4: Thumb bit-field masks wrong width ✅ FIXED
 
 **Symptom**: Branch targets truncated, immediate values wrong magnitude.
+**Status**: All Thumb format handlers verified against GBATEK.
 **Root cause**: Thumb instruction formats use specific bit widths that are easy to mask incorrectly.
 **Known instances**: Thumb B (format 18) offset masked with `0x3FF` (10-bit) instead of `0x7FF` (11-bit).
 **Check**: `crates/gbatopy-disasm/src/thumb/` against GBATEK format tables.
 **Test**: `test_dispatch_audit.py::TestThumbDispatchAudit::test_branch_offset_uses_11bit_mask`
 
-### Class 5: Banked registers on MSR mode switch
+### Class 5: Banked registers on MSR mode switch ✅ FIXED
 
 **Symptom**: Registers corrupted after mode switch, subtle state errors.
+**Status**: MSR handler updates `self.mode` and swaps banked registers.
 **Root cause**: MSR changes processor mode (USR/SVC/IRQ/FIQ/etc.), which banks R13/R14 and SPSR. If the runtime doesn't switch register banks, subsequent reads/writes hit the wrong physical registers.
 **Check**: `arm7tdmi.py` MSR handler must update `self.mode` and swap banked registers.
 **Test**: `test_dispatch_audit.py::TestARMDispatchAudit::test_msr_cpsr_routes_to_status_transfer`
 
 ## New Bug Classes
 
-### Bug Class: SWI Dispatch Table Truncation
+### Bug Class: SWI Dispatch Table Truncation ✅ FIXED (F230)
 - **Symptom:** ROM hangs or produces all-black output. IWRAM stays zeroed.
 - **Root cause:** Fast-path CPU (`cpu.py:_arm_swi`) has only a subset of SWI handlers. CpuSet (SWI 0x0B) and CpuFastSet (SWI 0x0C) silently return without doing anything.
-- **Detection:** Grep for `_arm_swi` or `swi_handler` — if there are two implementations, the smaller one is the truncation.
-- **Fix:** Delete the fast-path SWI dispatcher. Make the fast-path CPU delegate to the canonical `arm7tdmi.py:swi_handler` which has all 24+ handlers.
+- **Status:** Single-source SWI dispatch implemented. All 24+ handlers in canonical `arm7tdmi.py:swi_handler`.
 
-### Bug Class: Memory Region Non-Zero Initialization
+### Bug Class: Memory Region Non-Zero Initialization ✅ FIXED (invariant #6)
 - **Symptom:** Tile-based ROMs render garbage or all-black. Bitmap modes may work.
-- **Root cause:** A debug fill pattern (e.g., `[(i%256) for i in range(SIZE)]`) was left in memory.py instead of `[0] * SIZE`.
-- **Detection:** Grep for `i%256` or `i % 256` or `range(.*SIZE)` in memory.py. All memory region constructors should use `[0] * SIZE`.
-- **Fix:** Replace any non-zero fill with `[0] * SIZE`.
+- **Status:** All memory regions zero-initialized with `[0] * SIZE`.
 
-### Bug Class: IRQ Vector Not Implemented in Fast-Path CPU
+### Bug Class: IRQ Vector Not Implemented in Fast-Path CPU ✅ FIXED
 - **Symptom:** ROMs that use IRQ-driven rendering (HBlank, VBlank) produce wrong output. CPU never jumps to the IRQ handler.
-- **Root cause:** Fast-path CPU (`cpu.py`) doesn't implement IRQ vector dispatch. When an IRQ fires, the CPU should jump to the address stored at the IRQ vector table (0x03007FFC for the default vector, or the BIOS IRQ table at 0x00000000).
-- **Detection:** Grep for `irq\|IRQ\|0x03007FFC` in cpu.py. If missing, IRQs are being silently dropped.
-- **Fix:** Implement IRQ entry in the fast-path CPU: save PC/CPSR to SPSR_svc, switch to IRQ mode, jump to the vector address.
+- **Status:** Fast-path CPU delivers IRQs to registered vector.
 
-### SWI dispatch table truncation
+### SWI dispatch table truncation ✅ FIXED (F230)
 The fast-path CPU's `_arm_swi` in cpu.py had only 4 SWI handlers (0x00-0x03), while the fallback interpreter's `swi_handler` in arm7tdmi.py had 24. CpuSet (SWI 0x0B) and CpuFastSet (SWI 0x0C) were silently dropped by the fast-path → IWRAM stayed zeroed → NOP slide → hang. Fix: single-source SWI dispatch.
 
-### Memory region non-zero initialization
+### Memory region non-zero initialization ✅ FIXED (invariant #6)
 `memory.py` VRAM was initialized with `[(i%256) for i in range(VRAM_SIZE)]` (debug pattern). Uninitialized tiles decoded to palette indices >0 → black screen. Fix: `[0] * VRAM_SIZE` for all memory regions.
 
-### IRQ vector not implemented in fast-path CPU
+### IRQ vector not implemented in fast-path CPU ✅ FIXED
 The fast-path CPU in cpu.py did not implement IRQ vector delivery. ROMs that rely on IRQ handlers (registered at 0x03007FFC) for rendering (HBlank palette changes, VBlank frame swaps) produced blank screens. Fix: fast-path CPU must deliver IRQs to the registered vector.
 
-### Bug Class: Forced-blank field drift (global white-screen regression)
+### Bug Class: Forced-blank field drift (global white-screen regression) ✅ FIXED (invariant #8)
 - **Symptom:** ALL ROMs render white/blank. No crash, no hang.
-- **Root cause:** `ppu.py` checks `self.dispcnt & 0x0080` for forced-blank, but `self.dispcnt` is initialized to 0x0480 (bit 7 set) and never updated from MMIO writes. The authoritative `self.forced_blank` field exists but is unused.
-- **Detection:** Grep for `dispcnt & 0x0080` or `dispcnt.*0x80` in ppu.py. If found and `self.forced_blank` exists, the check is stale.
-- **Fix:** Replace all `self.dispcnt & 0x0080` with `self.forced_blank`.
-- **Files:** `crates/gbatopy-cli/assets/gba_runtime/ppu.py`
+- **Status:** All forced-blank checks read `self.forced_blank` field.
 
-### Bug Class: Thumb load/store rd/rn bit-field swap (critical, systemic)
+### Bug Class: Thumb load/store rd/rn bit-field swap (critical, systemic) ✅ FIXED
 - **Symptom:** ROMs with heavy Thumb LDR/STR immediate-offset code produce garbage or blank output. ~6600 instructions affected in a single ROM (start-delay).
-- **Root cause:** Thumb disassembler handlers for format_9_imm_offset_word, format_9_imm_offset_byte, and format_10_halfword swap rd (destination/source) and rn (base) bit fields. Every `LDR Rd, [Rn, #imm]` loads into Rn instead of Rd; every `STR Rd, [Rn, #imm]` stores from Rn instead of Rd.
-- **Detection:** Disassemble a Thumb LDR/STR imm instruction. If rd and rn are swapped vs the GBATEK format table, this is the bug.
-- **Fix:** Swap rd/rn extraction in the three format handlers in `crates/gbatopy-disasm/src/thumb/mod.rs`.
+- **Status:** rd/rn bit-field extraction corrected in all three format handlers.
 
-### Bug Class: Peephole optimizer ARM-width assumption in Thumb loops
+### Bug Class: Peephole optimizer ARM-width assumption in Thumb loops ✅ FIXED
 - **Symptom:** ROM passes, then regresses to 100% blank after a peephole optimization fix is applied to a different ROM.
-- **Root cause:** Peephole optimizer hardcodes `+ 4` (ARM instruction width) when computing loop offsets, even for Thumb loops where instruction width is 2. This misaligns dispatch table keys for Thumb basic blocks.
-- **Detection:** Grep for `+ 4` in peephole optimizer code in `pipeline_cmd.rs`. If the +4 is not guarded by an ARM/Thumb mode check, it's the bug.
-- **Fix:** Use instruction width based on the block's mode (2 for Thumb, 4 for ARM).
+- **Status:** Instruction width now based on block mode (2 for Thumb, 4 for ARM).
 
-### Bug Class: Window register read ordering (memory.py)
+### Bug Class: Window register read ordering (memory.py) ✅ FIXED
 - **Symptom:** Window-enabled ROMs render backdrop everywhere (window ignored). window_midframe at 43-87% diff.
-- **Root cause:** `_dispatch_hal_read` in memory.py checks the generic PPU range (0x04000000-0x0400005F) BEFORE the window-specific range (0x04000048-0x0400004F). WINOUT reads return 0 instead of the written value → all layers disabled outside window → backdrop everywhere.
-- **Detection:** Read memory.py `_dispatch_hal_read`. If the generic PPU range check comes before window-specific checks, reads are shadowed.
-- **Fix:** Move window register check before the generic PPU range check.
-- **Files:** `crates/gbatopy-cli/assets/gba_runtime/memory.py`
+- **Status:** Window register check moved before generic PPU range check.
+
+## Additional Fixed Bug Classes
+
+### F215: ASR sign-extension / ROR dead code ✅ FIXED (commits 3002-3008)
+- **Symptom:** ASR with immediate shift produced wrong sign bit; ROR instructions were no-ops.
+- **Status:** ASR sign-extension corrected; ROR handlers implemented.
+
+### F259: SBC borrow inversion / RSC missing handler ✅ FIXED (commit 1bf02f1)
+- **Symptom:** SBC instruction computed wrong result due to inverted borrow logic.
+- **Status:** SBC borrow logic fixed; RSC handler added.
+
+### F198: PPU exception boundary guard ✅ FIXED (commit a8433ae)
+- **Symptom:** Broad exception handlers masked programming bugs in affine rendering.
+- **Status:** Narrowed to guard read_u8 only; programming bugs now crash visibly.
+
+### F202: 8BPP rendering ✅ FIXED (commit cb8e93e)
+- **Symptom:** 8BPP tile decoding used wrong bit field (bit 7 interpreted incorrectly).
+- **Status:** BGCNT bit 7 correctly interpreted as 8BPP mode.
+
+### F183: CFG function discovery ✅ FIXED (commit bf36085)
+- **Symptom:** CFG treated MMIO region as code, creating fake interrupt handlers.
+- **Status:** MMIO range narrowed; `looks_like_data_safe` heuristic added.
+
+### F133: Audio SOUNDCNT routing ✅ FIXED (commit c4eb42e)
+- **Symptom:** SOUNDCNT MMIO writes not routed to APU; audio silent.
+- **Status:** SOUNDCNT range extended; channel/FIFO enables decoded from correct bits.
 
 ## Known Runtime Bug Classes
 

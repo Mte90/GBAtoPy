@@ -58,9 +58,9 @@ Generated Python includes an inlined runtime that emulates GBA hardware. The run
 
 | Module | Hardware | Role | Status |
 |--------|----------|------|--------|
-| `ppu.py` | Picture Processing Unit | Background tiles, sprites, scanline rendering | ⚠️ Mode 0 verified on shades.gba, Mode 3 verified on stripes.gba; Mode 4 partial; Mode 1/2 affine, windows, blend, mosaic = stubs |
+| `ppu.py` | Picture Processing Unit | Background tiles, sprites, scanline rendering | ⚠️ Mode 0 verified on shades.gba, Mode 3 verified on stripes.gba; Mode 4 partial; Mode 1 verified (F252), windows verified (window_midframe PASS), alpha blending working, mosaic implemented (sprite-hmosaic PASS) |
 | `memory.py` | Bus | Memory-mapped I/O with HAL side effects | ✅ Working |
-| `bios.py` | BIOS ROM | Software interrupt handlers (SWI) | ✅ 54 handlers implemented |
+| `bios.py` | BIOS ROM | Software interrupt handlers (SWI) | ✅ 13 live BIOS SWI handlers (F181 removed 40 dead handlers, commit 0cdca1f) |
 | `dma.py` | DMA Controller | Background memory transfers | ✅ All 4 channels operational |
 | `timers.py` | Timer | Timer 0-3 with prescaler | ✅ Working |
 | `interrupts.py` | IRQ | VBlank/HBlank/VCount interrupt dispatch | ✅ Working |
@@ -120,7 +120,7 @@ The output is a single `.py` file with all runtime code inlined. The only extern
 | PPU Mode 1 | Implemented | Affine backgrounds, code exists |
 | PPU Mode 2 | ✅ Verified | mode2.gba PASS |
 | Sprite rendering | ✅ Verified | OAM parsing + tile fetch implemented, sprite-hmosaic PASSES |
-| BIOS handlers | ✅ Working | 54 SWI handlers implemented |
+| BIOS handlers | ✅ Working | 13 live BIOS SWI handlers (F181 removed 40 dead handlers, commit 0cdca1f) |
 | DMA controller | ✅ Working | All 4 channels operational |
 | Timers | ✅ Working | 4 timers with cascade mode |
 | IRQ system | ✅ Working | ISR dispatch, VBlank/HBlank |

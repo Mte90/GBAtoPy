@@ -126,6 +126,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     if base_opcode == "NOP" {
         return Some("pass  # NOP".to_string());
     }
+    // Not collapsed: MUL/MLA with nested if-let patterns for operand extraction
     #[allow(clippy::collapsible_if)]
     if base_opcode == "MUL" || base_opcode == "MLA" {
         if ops.len() >= 3 {
@@ -156,6 +157,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
             }
         }
     }
+    // Not collapsed: UMULL/SMULL with nested if-let patterns for operand extraction
     #[allow(clippy::collapsible_if)]
     if base_opcode == "UMULL" || base_opcode == "SMULL" {
         if ops.len() >= 4 {
@@ -180,4 +182,331 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gbatopy_disasm::{Condition, DecodedInstruction, Operand};
+
+    fn make_inst(opcode: &str, operands: Vec<Operand>) -> DecodedInstruction {
+        DecodedInstruction {
+            address: 0x08000000,
+            opcode: opcode.to_string(),
+            operands,
+            condition: Some(Condition::Al),
+            mode: gbatopy_disasm::ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        }
+    }
+
+    // === wrap_conditional tests ===
+    #[test]
+    fn test_wrap_conditional_no_condition() {
+        let code = String::from("registers[0] = 42");
+        let result = wrap_conditional(code, "MOV");
+        assert_eq!(result, "registers[0] = 42");
+    }
+
+    #[test]
+    fn test_wrap_conditional_eq_suffix() {
+        // Condition codes are lowercase suffixes (e.g., "MOVeq" not "moveq" or "MOVEQ")
+        let code = String::from("registers[0] = 42");
+        let result = wrap_conditional(code, "MOVeq");
+        assert_eq!(result, "if cpsr_check('EQ'):\n    registers[0] = 42");
+    }
+
+    #[test]
+    fn test_wrap_conditional_ne_suffix() {
+        // Condition codes are lowercase suffixes (e.g., "ADDne")
+        let code = String::from("registers[0] = 42");
+        let result = wrap_conditional(code, "ADDne");
+        assert_eq!(result, "if cpsr_check('NE'):\n    registers[0] = 42");
+    }
+
+    #[test]
+    fn test_wrap_conditional_al_no_wrap() {
+        // 'al' (always) condition should NOT wrap
+        let code = String::from("registers[0] = 42");
+        let result = wrap_conditional(code, "MOVal");
+        assert_eq!(result, "registers[0] = 42");
+    }
+
+    #[test]
+    fn test_wrap_conditional_multiline() {
+        let code = String::from("line1\nline2\nline3");
+        let result = wrap_conditional(code, "ADDne");
+        assert_eq!(result, "if cpsr_check('NE'):\n    line1\n    line2\n    line3");
+    }
+
+    #[test]
+    fn test_wrap_conditional_empty_lines() {
+        let code = String::from("line1\n\nline2");
+        let result = wrap_conditional(code, "ADDne");
+        assert_eq!(result, "if cpsr_check('NE'):\n    line1\n\n    line2");
+    }
+
+    // === generate() tests for coprocessor instructions ===
+    #[test]
+    fn test_generate_copro_always_fallback() {
+        let inst = make_inst("COPROCESSOR", vec![]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("_interp_fallback"));
+    }
+
+    #[test]
+    fn test_generate_copro_conditional_fallback() {
+        // Use mixed case: uppercase opcode + lowercase condition (e.g., "COPROCESSORge")
+        let inst = make_inst("COPROCESSORge", vec![]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("_interp_fallback"));
+        assert!(code.contains("if cpsr_check('GE')"));
+    }
+
+    #[test]
+    fn test_generate_mrc_fallback() {
+        let inst = make_inst("MRC", vec![Operand::Immediate(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("_interp_fallback"));
+    }
+
+    #[test]
+    fn test_generate_mcr_fallback() {
+        let inst = make_inst("MCR", vec![Operand::Immediate(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("_interp_fallback"));
+    }
+
+    #[test]
+    fn test_generate_ldc_fallback() {
+        let inst = make_inst("LDC", vec![Operand::Immediate(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("_interp_fallback"));
+    }
+
+    #[test]
+    fn test_generate_stc_fallback() {
+        let inst = make_inst("STC", vec![Operand::Immediate(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("_interp_fallback"));
+    }
+
+    #[test]
+    fn test_generate_cdp_fallback() {
+        let inst = make_inst("CDP", vec![Operand::Immediate(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("_interp_fallback"));
+    }
+
+    // === SWI/SVC tests ===
+    #[test]
+    fn test_generate_swi_with_immediate() {
+        // SWI immediate format: bits [23:16] = SWI number
+        // Operand::Immediate(0x123456) -> (0x123456 >> 16) & 0xFF = 0x12
+        let inst = make_inst("SWI", vec![Operand::Immediate(0x123456)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("swi_handler(0x12)"));
+        assert!(code.contains("if _cpu_halted"));
+    }
+
+    #[test]
+    fn test_generate_svc_with_immediate() {
+        // SVC immediate format: bits [23:16] = SVC number
+        // Operand::Immediate(0xABCD00) -> (0xABCD00 >> 16) & 0xFF = 0xAB
+        let inst = make_inst("SVC", vec![Operand::Immediate(0xABCD00)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("swi_handler(0xAB)"));
+    }
+
+    #[test]
+    fn test_generate_swi_no_immediate() {
+        let inst = make_inst("SWI", vec![Operand::Register(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("swi_handler(0x0)"));
+    }
+
+    // === MSR tests ===
+    #[test]
+    fn test_generate_msr_no_fields() {
+        let inst = make_inst("MSR", vec![Operand::Immediate(0), Operand::Register(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "pass  # MSR with no fields");
+    }
+
+    #[test]
+    fn test_generate_msr_flags_only() {
+        let inst = make_inst("MSR", vec![Operand::Immediate(0x8), Operand::Register(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("cpsr['n']"));
+        assert!(code.contains("cpsr['z']"));
+        assert!(code.contains("cpsr['c']"));
+        assert!(code.contains("cpsr['v']"));
+        assert!(!code.contains("_new_mode"));
+    }
+
+    #[test]
+    fn test_generate_msr_control_only() {
+        let inst = make_inst("MSR", vec![Operand::Immediate(0x1), Operand::Register(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("_new_mode"));
+        assert!(code.contains("_switch_mode"));
+        assert!(code.contains("cpsr['mode']"));
+        assert!(code.contains("cpsr['t']"));
+        assert!(code.contains("cpsr['i']"));
+        assert!(!code.contains("cpsr['n']"));
+    }
+
+    #[test]
+    fn test_generate_msr_flags_and_control() {
+        let inst = make_inst("MSR", vec![Operand::Immediate(0x9), Operand::Register(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("_new_mode"));
+        assert!(code.contains("cpsr['n']"));
+        assert!(code.contains("cpsr['z']"));
+        assert!(code.contains("cpsr['c']"));
+        assert!(code.contains("cpsr['v']"));
+    }
+
+    #[test]
+    fn test_generate_msr_immediate_source() {
+        let inst = make_inst("MSR", vec![Operand::Immediate(0x8), Operand::Immediate(0x20000000)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("cpsr['n'] = (0x20000000 >> 31) & 1"));
+    }
+
+    #[test]
+    fn test_generate_msr_fallback() {
+        let inst = make_inst("MSR", vec![Operand::Register(0), Operand::Register(1)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("_interp_fallback"));
+    }
+
+    // === MRS tests ===
+    #[test]
+    fn test_generate_mrs_register() {
+        let inst = make_inst("MRS", vec![Operand::Register(5)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("registers[5] ="));
+        assert!(code.contains("cpsr['n'] << 31"));
+        assert!(code.contains("cpsr['z'] << 30"));
+        assert!(code.contains("cpsr['c'] << 29"));
+        assert!(code.contains("cpsr['v'] << 28"));
+    }
+
+    #[test]
+    fn test_generate_mrs_fallback() {
+        let inst = make_inst("MRS", vec![Operand::Immediate(0)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("_interp_fallback"));
+    }
+
+    // === NOP tests ===
+    #[test]
+    fn test_generate_nop() {
+        let inst = make_inst("NOP", vec![]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "pass  # NOP");
+    }
+
+    // === MUL/MLA tests ===
+    #[test]
+    fn test_generate_mul() {
+        let inst = make_inst("MUL", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("registers[0] ="));
+        assert!(code.contains("registers[1] * registers[2]"));
+        assert!(code.contains("& 0xFFFFFFFF"));
+    }
+
+    #[test]
+    fn test_generate_mla() {
+        let inst = make_inst("MLA", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2), Operand::Register(3)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("registers[0] ="));
+        // The actual format uses semicolons and explicit parentheses
+        assert!(code.contains("registers[1] * registers[2]"));
+        assert!(code.contains("+ registers[3]"));
+    }
+
+    #[test]
+    fn test_generate_mla_without_accumulator() {
+        let inst = make_inst("MLA", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("registers[0] ="));
+        assert!(code.contains("registers[1] * registers[2]"));
+        assert!(!code.contains(" + "));
+    }
+
+    // === UMULL/SMULL tests ===
+    #[test]
+    fn test_generate_umull() {
+        let inst = make_inst("UMULL", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2), Operand::Register(3)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("registers[0] = result & 0xFFFFFFFF"));
+        assert!(code.contains("registers[1] = (result >> 32) & 0xFFFFFFFF"));
+    }
+
+    #[test]
+    fn test_generate_smull() {
+        let inst = make_inst("SMULL", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2), Operand::Register(3)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        assert!(code.contains("result = registers[2] * registers[3]"));
+    }
+
+    // === Edge cases ===
+    #[test]
+    fn test_generate_unknown_opcode() {
+        let inst = make_inst("UNKNOWN", vec![]);
+        let result = generate(&inst);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_generate_muls_flag_setting() {
+        let inst = make_inst("MULS", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)]);
+        let result = generate(&inst);
+        // MULS is not explicitly handled, so it returns None
+        assert!(result.is_none());
+    }
 }

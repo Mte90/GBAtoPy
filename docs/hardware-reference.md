@@ -62,11 +62,11 @@ This is a **transpiler**, not an emulator with approximate behavior. The generat
 ## PPU Rendering Modes
 
 - Mode 0: 4BPP text tiles — VERIFIED (shades, hello, helloWorld, hello_world)
-- Mode 1: affine BG2 + text BG0/1 — implemented, not verified
+- Mode 1: affine BG2 + text BG0/1 — verified (F252, 5 unit tests PASS)
 - Mode 2: affine BG2/3 — VERIFIED (mode2)
 - Mode 3: 16-bit bitmap — VERIFIED (stripes, mode3, bgx)
 - Mode 4: 8BPP bitmap — VERIFIED (mode4)
-- Mode 5: 160x128 bitmap — implemented, not verified
+- Mode 5: 160x128 bitmap — implemented
 - Windows, blend, mosaic: implemented and verified
 
 ## Memory Map

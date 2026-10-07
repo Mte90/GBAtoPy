@@ -471,6 +471,7 @@ fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                     a = a, py_op = py_op, b = b
                 ));
             }
+            // Not collapsed: nested R15 handling with specific operand checks
             #[allow(clippy::collapsible_if)]
             if rd == 15 {
                 if ops.len() == 3 {
@@ -568,20 +569,26 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                 Operand::Register(r) => format!("registers[{}]", r),
                 _ => "0".to_string(),
             };
-            let py_op = match op {
-                "LSL" => "<<",
-                "LSR" => ">>",
-                "ASR" => ">>",
-                "ROR" => "|",
-                _ => "<<",
+            let expr = match op {
+                "LSL" => format!("({} << {})", rn, shift),
+                "LSR" => format!("({} >> {})", rn, shift),
+                "ASR" => format!(
+                    "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
+                    rn, rn, rn, shift
+                ),
+                "ROR" => format!(
+                    "(({} >> ({} & 31)) | ({} << (32 - ({} & 31))))",
+                    rn, shift, rn, shift
+                ),
+                _ => return None,
             };
             if sets_flags {
                 return Some(format!(
-                    "registers[{}] = ({} {} {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
-                    rd, rn, py_op, shift, rd
+                    "registers[{}] = ({}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    rd, expr, rd
                 ));
             }
-            return Some(format!("registers[{}] = ({} {} {})", rd, rn, py_op, shift));
+            return Some(format!("registers[{}] = ({}) & 0xFFFFFFFF", rd, expr));
         }
     }
     None
@@ -716,4 +723,692 @@ registers[{}] = acc_hi & 0xFFFFFFFF"#,
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gbatopy_disasm::{operand::ShiftAmount, operand::ShiftType, ArmMode, Condition, DecodedInstruction, Operand};
+
+    fn make_inst(
+        opcode: &str,
+        operands: Vec<Operand>,
+        sets_flags: bool,
+        mode: ArmMode,
+        addr: u32,
+    ) -> DecodedInstruction {
+        DecodedInstruction {
+            address: addr,
+            opcode: opcode.to_string(),
+            operands,
+            condition: Some(Condition::Al),
+            mode,
+            raw: 0,
+            sets_flags,
+            width: if mode == ArmMode::Arm { 4 } else { 2 },
+            is_data: false,
+        }
+    }
+
+    // === MOV tests ===
+    #[test]
+    fn test_generate_mov_register() {
+        let inst = make_inst(
+            "MOV",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(code, "registers[0] = registers[1]");
+    }
+
+    #[test]
+    fn test_generate_mov_immediate() {
+        let inst = make_inst(
+            "MOV",
+            vec![Operand::Register(0), Operand::Immediate(42)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(code, "registers[0] = 42");
+    }
+
+    #[test]
+    fn test_generate_mov_pc_immediate() {
+        let inst = make_inst(
+            "MOV",
+            vec![Operand::Register(15), Operand::Immediate(0x08000100)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(code, "registers[15] = 0x08000100");
+    }
+
+    #[test]
+    fn test_generate_mov_sets_flags() {
+        let inst = make_inst(
+            "MOV",  // Use "MOV" not "MOVS" - the S suffix is handled via sets_flags field
+            vec![Operand::Register(0), Operand::Immediate(42)],
+            true,  // sets_flags = true
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[0] = 42"));
+        assert!(code.contains("cpsr['n']"));
+        assert!(code.contains("cpsr['z']"));
+    }
+
+    #[test]
+    fn test_generate_mov_pc_register() {
+        let inst = make_inst(
+            "MOV",
+            vec![Operand::Register(15), Operand::Register(14)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[15] = registers[14] & 0xFFFFFFFC"));
+    }
+
+    // === MVN tests ===
+    #[test]
+    fn test_generate_mvn_immediate() {
+        let inst = make_inst(
+            "MVN",
+            vec![Operand::Register(0), Operand::Immediate(0)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(code, "registers[0] = (0 ^ 0xFFFFFFFF) & 0xFFFFFFFF");
+    }
+
+    #[test]
+    fn test_generate_mvn_register() {
+        let inst = make_inst(
+            "MVN",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(code, "registers[0] = (registers[1] ^ 0xFFFFFFFF) & 0xFFFFFFFF");
+    }
+
+    // === ADD tests ===
+    #[test]
+    fn test_generate_add_register_register() {
+        let inst = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = (registers[1] + registers[2]) & 0xFFFFFFFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_add_register_immediate() {
+        let inst = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(5)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = (registers[1] + 5) & 0xFFFFFFFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_add_sets_flags() {
+        let inst = make_inst(
+            "ADD",  // Use "ADD" not "ADDS" - the S suffix is handled via sets_flags field
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(100)],
+            true,  // sets_flags = true
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("_rn_val = registers[1]"));
+        assert!(code.contains("_op2_val = 100"));
+        assert!(code.contains("cpsr['n']"));
+        assert!(code.contains("cpsr['z']"));
+        assert!(code.contains("cpsr['c']"));
+        assert!(code.contains("cpsr['v']"));
+    }
+
+    #[test]
+    fn test_generate_adc() {
+        let inst = make_inst(
+            "ADC",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("+ (1 if cpsr['c'] else 0)"));
+    }
+
+    // === SUB tests ===
+    #[test]
+    fn test_generate_sub_register_register() {
+        let inst = make_inst(
+            "SUB",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = (registers[1] - registers[2]) & 0xFFFFFFFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_sub_register_immediate() {
+        let inst = make_inst(
+            "SUB",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(10)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = (registers[1] - 10) & 0xFFFFFFFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_rsb() {
+        let inst = make_inst(
+            "RSB",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[0] = (registers[2] - registers[1])"));
+    }
+
+    #[test]
+    fn test_generate_sbc() {
+        let inst = make_inst(
+            "SBC",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("- (0 if cpsr.get('c', 0) else 1)"));
+    }
+
+    // === Logic operations tests ===
+    #[test]
+    fn test_generate_and() {
+        let inst = make_inst(
+            "AND",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = (registers[1] & registers[2]) & 0xFFFFFFFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_eor() {
+        let inst = make_inst(
+            "EOR",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = (registers[1] ^ registers[2]) & 0xFFFFFFFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_orr() {
+        let inst = make_inst(
+            "ORR",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = (registers[1] | registers[2]) & 0xFFFFFFFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_bic() {
+        let inst = make_inst(
+            "BIC",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("& ~"));
+    }
+
+    // === Shift operations tests ===
+    #[test]
+    fn test_generate_lsl() {
+        let inst = make_inst(
+            "LSL",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(5)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[1] << 5"));
+        assert!(code.contains("& 0xFFFFFFFF"));
+    }
+
+    #[test]
+    fn test_generate_lsr() {
+        let inst = make_inst(
+            "LSR",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(10)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[1] >> 10"));
+        assert!(code.contains("& 0xFFFFFFFF"));
+    }
+
+    #[test]
+    fn test_generate_asr() {
+        let inst = make_inst(
+            "ASR",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(3)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("0x80000000"));
+        assert!(code.contains("0x100000000"));
+        assert!(code.contains("& 0xFFFFFFFF"));
+    }
+
+    #[test]
+    fn test_generate_ror() {
+        let inst = make_inst(
+            "ROR",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(7)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("32 - (7 & 31)"));
+        assert!(!code.contains("registers[1] | 7"));
+        assert!(code.contains("& 0xFFFFFFFF"));
+    }
+
+    // === Comparison tests ===
+    #[test]
+    fn test_generate_cmp() {
+        let inst = make_inst(
+            "CMP",
+            vec![Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("result_cmp = (registers[1] - registers[2])"));
+        assert!(code.contains("cpsr['n']"));
+        assert!(code.contains("cpsr['z']"));
+        assert!(code.contains("cpsr['c']"));
+        assert!(code.contains("cpsr['v']"));
+    }
+
+    #[test]
+    fn test_generate_cmn() {
+        let inst = make_inst(
+            "CMN",
+            vec![Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("result_cmn = (registers[1] + registers[2])"));
+        assert!(code.contains("cpsr['n']"));
+        assert!(code.contains("cpsr['z']"));
+    }
+
+    #[test]
+    fn test_generate_tst() {
+        let inst = make_inst(
+            "TST",
+            vec![Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("result_tst = registers[1] & registers[2]"));
+        assert!(code.contains("cpsr['n']"));
+        assert!(code.contains("cpsr['z']"));
+    }
+
+    #[test]
+    fn test_generate_teq() {
+        let inst = make_inst(
+            "TEQ",
+            vec![Operand::Register(1), Operand::Register(2)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("result_teq = registers[1] ^ registers[2]"));
+        assert!(code.contains("cpsr['n']"));
+        assert!(code.contains("cpsr['z']"));
+    }
+
+    // === CLZ test ===
+    #[test]
+    fn test_generate_clz() {
+        let inst = make_inst(
+            "CLZ",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[0] = 32 - len(bin"));
+        assert!(code.contains("registers[1]"));
+    }
+
+    // === UMLAL test ===
+    #[test]
+    fn test_generate_umlal() {
+        let inst = make_inst(
+            "UMLAL",
+            vec![
+                Operand::Register(0),  // RdLo
+                Operand::Register(1),  // RdHi
+                Operand::Register(2),  // Rm
+                Operand::Register(3),  // Rs
+            ],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("rm_val = registers[2]"));
+        assert!(code.contains("rs_val = registers[3]"));
+        assert!(code.contains("product = rm_val * rs_val"));
+        assert!(code.contains("registers[0] = acc_lo & 0xFFFFFFFF"));
+        assert!(code.contains("registers[1] = acc_hi & 0xFFFFFFFF"));
+    }
+
+    // === Shifted register tests ===
+    #[test]
+    fn test_generate_mov_shifted_register_lsl() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MOV".to_string(),
+            operands: vec![
+                Operand::Register(0),
+                Operand::ShiftedRegister {
+                    reg: 1,
+                    shift: ShiftType::Lsl,
+                    amount: ShiftAmount::Immediate(4),
+                },
+            ],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("(registers[1] << 4) & 0xFFFFFFFF"));
+    }
+
+    #[test]
+    fn test_generate_mov_shifted_register_lsr() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MOV".to_string(),
+            operands: vec![
+                Operand::Register(0),
+                Operand::ShiftedRegister {
+                    reg: 1,
+                    shift: ShiftType::Lsr,
+                    amount: ShiftAmount::Immediate(0),
+                },
+            ],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let code = generate(&inst).unwrap();
+        // LSR #0 is shift by 32
+        assert!(code.contains("registers[1] >> 32"));
+    }
+
+    #[test]
+    fn test_generate_mov_shifted_register_ror_rrx() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MOV".to_string(),
+            operands: vec![
+                Operand::Register(0),
+                Operand::ShiftedRegister {
+                    reg: 1,
+                    shift: ShiftType::Ror,
+                    amount: ShiftAmount::Immediate(0),
+                },
+            ],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let code = generate(&inst).unwrap();
+        // RRX uses cpsr.get('c', 0)
+        assert!(code.contains("cpsr.get('c', 0)"));
+    }
+
+    // === PC resolution tests ===
+    #[test]
+    fn test_generate_add_pc_source() {
+        let inst = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(15)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        // PC should be resolved to address + 8 = 0x08000008 = 134217736 (decimal)
+        // The operand_to_expr function formats immediates as decimal
+        assert!(code.contains("134217736"), "Expected PC value 134217736 (0x08000008) in: {}", code);
+    }
+
+    // === Conditional execution tests ===
+    #[test]
+    fn test_generate_mov_conditional_eq() {
+        let inst = make_inst(
+            "MOVeq",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(code, "if cpsr_check('EQ'):\n    registers[0] = registers[1]");
+    }
+
+    #[test]
+    fn test_generate_add_conditional_ne() {
+        let inst = make_inst(
+            "ADDne",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(42)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(code, "if cpsr_check('NE'):\n    registers[0] = (registers[1] + 42) & 0xFFFFFFFF");
+    }
+
+    // === Exception return tests ===
+    #[test]
+    fn test_generate_movs_pc_lr_exception_return() {
+        let inst = make_inst(
+            "MOV",  // Use "MOV" not "MOVS" - the S suffix is handled via sets_flags field
+            vec![Operand::Register(15), Operand::Register(14)],
+            true,  // sets_flags = true
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("_new_cpsr = _spsr_for_mode(cpsr['mode'])"));
+        assert!(code.contains("registers[15] = (registers[14]) & 0xFFFFFFFE"));
+        assert!(code.contains("_cpsr_from_int"));
+        assert!(code.contains("_switch_mode"));
+    }
+
+    #[test]
+    fn test_generate_subs_pc_lr_exception_return() {
+        let inst = make_inst(
+            "SUB",  // Use "SUB" not "SUBS" - the S suffix is handled via sets_flags field
+            vec![Operand::Register(15), Operand::Register(14), Operand::Immediate(0)],
+            true,  // sets_flags = true
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("_new_cpsr = _spsr_for_mode(cpsr['mode'])"));
+        assert!(code.contains("registers[15] = _full & 0xFFFFFFFE"));
+    }
+
+    // === Edge cases ===
+    #[test]
+    fn test_generate_add_two_operands_immediate() {
+        let inst = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::Immediate(100)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[0] = (registers[0] + 100)"));
+    }
+
+    #[test]
+    fn test_generate_sub_two_operands_register() {
+        let inst = make_inst(
+            "SUB",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[0] = (registers[0] - registers[1])"));
+    }
+
+    // === Register-specified shift tests ===
+    #[test]
+    fn test_generate_mov_register_specified_shift_lsl() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MOV".to_string(),
+            operands: vec![
+                Operand::Register(0),
+                Operand::ShiftedRegister {
+                    reg: 1,
+                    shift: ShiftType::Lsl,
+                    amount: ShiftAmount::Register(2),
+                },
+            ],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[2] & 0xFF"));
+        assert!(code.contains("0 if"));
+        assert!(code.contains(">= 32"));
+    }
+
+    // === SMLAL test ===
+    #[test]
+    fn test_generate_smlal_signed() {
+        let inst = make_inst(
+            "SMLAL",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+                Operand::Register(3),
+            ],
+            false,
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("int(rm_val) * int(rs_val)"));
+    }
 }

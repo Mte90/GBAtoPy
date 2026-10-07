@@ -288,91 +288,140 @@ class BIOS:
         self.swi_obj_affine_set(param_addr, angle, scale_x, scale_y)
 
     def swi_bit_unpack(self, src_addr: int, dst_addr: int, params_addr: int) -> int:
-        """Bit unpack (SWI 0x10/0x16)"""
-        src = self.memory.read_bytes(src_addr, 102400)
+        """BitUnPack BIOS function (SWI 0x10).
+        
+        Decompresses bit-packed data from source to destination.
+        
+        Header structure at params_addr (8 bytes total):
+            +0    u16   sourceLen    - source length in bytes
+            +2    u8    sourceWidth  - source bit depth (1, 2, 4, or 8)
+            +3    u8    destWidth    - destination bit depth (1, 2, 4, 8, 16, or 32)
+            +4    u32   bias         - bit 31: add base to zero-values too
+                                      bits 0-30: base offset added to non-zero values
+        
+        Args:
+            src_addr: Source address (points to packed data, not header)
+            dst_addr: Destination address
+            params_addr: Address of 8-byte header
+        
+        Returns:
+            Number of bytes written to destination, or 0 on error
+        """
+        # Read the 8-byte header
+        source_len = self.memory.read_u16(params_addr)
+        source_width = self.memory.read_u8(params_addr + 2)
+        dest_width = self.memory.read_u8(params_addr + 3)
+        bias = self.memory.read_u32(params_addr + 4)
+        
+        # Validate source width (must be 1, 2, 4, or 8)
+        if source_width not in (1, 2, 4, 8):
+            raise ValueError(f"Invalid BitUnPack sourceWidth: {source_width} (must be 1, 2, 4, or 8)")
+        
+        # Validate destination width (must be 1, 2, 4, 8, 16, or 32)
+        if dest_width not in (1, 2, 4, 8, 16, 32):
+            raise ValueError(f"Invalid BitUnPack destWidth: {dest_width} (must be 1, 2, 4, 8, 16, or 32)")
+        
+        # Read source data
+        src_data = self.memory.read_bytes(src_addr, source_len)
+        if len(src_data) < source_len:
+            raise ValueError(f"BitUnPack source data too short: got {len(src_data)}, need {source_len}")
+        
+        # Extract bias base value and flag
+        bias_base = bias & 0x7FFFFFFF
+        bias_add_zero = bool(bias & 0x80000000)
+        
+        # Source bit buffer (for reading source bits)
+        src_buffer = 0
+        src_bits_remaining = 0
+        src_pos = 0
 
-        if len(src) < 8:
-            return 0
+        # Destination bit buffer (for packing output bits)
+        dst_buffer = 0
+        dst_bits_accumulated = 0
+        dst_pos = 0
 
-        source_length = struct.unpack("<I", src[0:4])[0]
-        dest_length = struct.unpack("<I", src[4:8])[0]
-
-        data_length_bits = self.memory.read_u16(params_addr)
-        unk = self.memory.read_u16(params_addr + 2)
-        data_length_bytes = self.memory.read_u32(params_addr + 4)
-        rev_zero = self.memory.read_u32(params_addr + 8)
-        zero_length = self.memory.read_u32(params_addr + 12)
-        repeat_width = self.memory.read_u32(params_addr + 16)
-
-        if data_length_bits == 4 and data_length_bytes == 1 and zero_length == 0 and repeat_width == 0 and unk == 0:
-            output = bytearray()
-            bit_buffer = 0
-            bits_in_buffer = 0
-            src_pos = 8
-
-            while len(output) < dest_length and src_pos < 8 + source_length:
-                if bits_in_buffer == 0:
-                    bit_buffer = self.memory.read_u8(src_addr + src_pos)
-                    src_pos += 1
-                    bits_in_buffer = 8
-
-                value = 0
-                for _ in range(data_length_bits):
-                    if bits_in_buffer == 0:
-                        break
-                    value = (value << 1) | ((bit_buffer >> (bits_in_buffer - 1)) & 1)
-                    bits_in_buffer -= 1
-
-                output.append(value)
-
-            for i, byte in enumerate(output):
-                if i >= dest_length:
+        while source_len > 0 or src_bits_remaining >= source_width:
+            if src_bits_remaining < source_width:
+                if source_len == 0:
                     break
-                self.memory.write_u8(dst_addr + i, byte)
-
-            return len(output)
-        else:
-            return 0
-
-    def swi_diff_uncomp_filter(self, src_addr: int, dst_addr: int) -> int:
-        """Difference decompression with filter (SWI 0x18). Header: [0x81][size:u24]."""
-        src = self.memory.read_bytes(src_addr, 102400)
-
-        if len(src) < 4 or src[0] != 0x81:
-            return 0
-
-        expanded_size = src[1] | (src[2] << 8) | (src[3] << 16)
-        src_pos = 4
-        temp = bytearray()
-
-        while len(temp) < expanded_size and src_pos < len(src):
-            flags = src[src_pos]
-            src_pos += 1
-
-            count = (flags & 0x7F) + 1
-
-            if flags & 0x80:
-                if src_pos >= len(src):
-                    break
-                byte_val = src[src_pos]
+                src_buffer = src_data[src_pos]
                 src_pos += 1
-                for _ in range(count):
-                    if len(temp) >= expanded_size:
-                        break
-                    temp.append(byte_val)
+                source_len -= 1
+                src_bits_remaining = 8
+
+            value = src_buffer & ((1 << source_width) - 1)
+            src_buffer >>= source_width
+            src_bits_remaining -= source_width
+
+            if value != 0 or bias_add_zero:
+                value += bias_base
+
+            dst_buffer = (dst_buffer << dest_width) | value
+            dst_bits_accumulated += dest_width
+
+            while dst_bits_accumulated >= 8:
+                dst_bits_accumulated -= 8
+                byte = (dst_buffer >> dst_bits_accumulated) & 0xFF
+                self.memory.write_u8(dst_addr + dst_pos, byte)
+                dst_pos += 1
+            dst_buffer &= (1 << dst_bits_accumulated) - 1 if dst_bits_accumulated > 0 else 0
+
+        if dst_bits_accumulated > 0:
+            byte = (dst_buffer << (8 - dst_bits_accumulated)) & 0xFF
+            self.memory.write_u8(dst_addr + dst_pos, byte)
+            dst_pos += 1
+
+        return dst_pos
+
+    def swi_diff_unfilter(self, src_addr: int, dst_addr: int, is_16bit: bool = False) -> int:
+        """Diff8bitUnFilter / Diff16bitUnFilter BIOS function (SWI 0x16/0x17/0x18).
+        
+        Reconstructs data from difference-encoded input.
+        
+        Header structure at src_addr (4 bytes):
+            +0    u32   header    - bits 31-8: remaining byte count, bits 7-0: type signature
+        
+        Args:
+            src_addr: Source address (points to header + encoded data)
+            dst_addr: Destination address
+            is_16bit: If True, process as 16-bit input (Diff16bitUnFilter)
+                     If False, process as 8-bit input (Diff8bitUnFilter)
+        
+        Returns:
+            Number of bytes written to destination
+        """
+        # Read header
+        header = self.memory.read_u32(src_addr)
+        remaining = header >> 8
+        src_pos = src_addr + 4
+        dst_pos = dst_addr
+        bytes_written = 0
+        
+        old_value = 0
+        
+        while remaining > 0:
+            # Read new value (8-bit or 16-bit)
+            if is_16bit:
+                new_value = self.memory.read_u16(src_pos)
+                src_pos += 2
             else:
-                for _ in range(count):
-                    if src_pos >= len(src) or len(temp) >= expanded_size:
-                        break
-                    temp.append(src[src_pos])
-                    src_pos += 1
-
-        prev = 0
-        for i, raw_byte in enumerate(temp):
-            if i >= expanded_size:
-                break
-            value = (prev + raw_byte) & 0xFF
-            self.memory.write_u8(dst_addr + i, value)
-            prev = value
-
-        return len(temp)
+                new_value = self.memory.read_u8(src_pos)
+                src_pos += 1
+            
+            # Add previous value (reconstruct difference encoding)
+            new_value += old_value
+            
+            # Write to destination based on width
+            if is_16bit:
+                self.memory.write_u16(dst_pos, new_value)
+                dst_pos += 2
+                remaining -= 2
+            else:
+                self.memory.write_u8(dst_pos, new_value)
+                dst_pos += 1
+                remaining -= 1
+            
+            old_value = new_value
+            bytes_written += (2 if is_16bit else 1)
+        
+        return bytes_written

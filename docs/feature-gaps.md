@@ -12,7 +12,7 @@ Audit of unimplemented or partially implemented GBA features in the runtime (`cr
 | Alpha Blending (BLDCNT mode 1) | ✅ Working | None verified | M | Medium |
 | Mosaic (BG + OBJ) | Implemented (per-BG + OBJ) | `sprite-hmosaic` passes | M | High |
 | Brightness (BLDCNT mode 2/3) | ✅ Working — first-target gating implemented | None verified | S | Medium |
-| Mode 1 rendering | FUNCTIONAL, unverified | None verified | S | Low |
+| Mode 1 rendering | ✅ Verified (F252) | None verified | S | Low |
 | Mode 5 rendering | ✅ Implemented correctly (affine scaling + backdrop) | None verified | M | Low |
 
 ---
@@ -49,7 +49,7 @@ Audit of unimplemented or partially implemented GBA features in the runtime (`cr
 
 **Affected ROMs:** None verified. No test ROM in the current suite exercises BLDCNT mode 1.
 
-**Effort to fix:** M (medium). Remove brightness leak from mode==1 branch, populate `second_target_framebuffer` during mode render, move blend call after sprite render.
+**Effort:** DONE — implementation complete.
 
 ---
 
@@ -79,7 +79,7 @@ Audit of unimplemented or partially implemented GBA features in the runtime (`cr
 
 **Affected ROMs:** None verified. No test ROM exercises BLDCNT mode 2/3.
 
-**Effort to fix:** S (small). Gate brightness on 1st-target mask (BLDCNT bits 0-5), remove leak from `blend_mode == 1` branch.
+**Effort:** DONE — implementation complete.
 
 ---
 
@@ -121,20 +121,21 @@ Audit of unimplemented or partially implemented GBA features in the runtime (`cr
 
 ## Additional Findings
 
-- `REG_BLDWIN = 0x04000056` is defined in `ppu.py:485-486` (duplicate definition) and also aliased as `REG_DISPSTAT2` at line 489. Address 0x04000056 is not a standard GBA register per GBATEK — the correct brightness register is `REG_BLDY` at 0x04000054, and blend control is `REG_BLDCNT` at 0x04000050. This constant is unused by any blend logic and should be removed.
-- `REG_MOSAIC_EXT = 0x040000F4` (`ppu.py:492`) is a non-standard alias with no GBATEK basis. The address 0x040000F4 is outside the 1KB MMIO range (0x04000000-0x040003FF). Mosaic is configured solely via `REG_MOSAIC` at 0x0400004C. This constant is referenced in `_write_register` and `_read_register` handlers but should be removed.
+- `REG_BLDWIN = 0x04000056` was defined in `ppu.py:485-486` (duplicate definition) and also aliased as `REG_DISPSTAT2` at line 489. Address 0x04000056 is not a standard GBA register per GBATEK — the correct brightness register is `REG_BLDY` at 0x04000054, and blend control is `REG_BLDCNT` at 0x04000050. This constant was unused by any blend logic. **Status: ✅ REMOVED (F260, commit 7ca05ab).**
+- `REG_MOSAIC_EXT = 0x040000F4` (`ppu.py:492`) was a non-standard alias with no GBATEK basis. The address 0x040000F4 is outside the 1KB MMIO range (0x04000000-0x040003FF). Mosaic is configured solely via `REG_MOSAIC` at 0x0400004C. This constant was referenced in `_write_register` and `_read_register` handlers. **Status: ✅ REMOVED (F260, commit 7ca05ab).**
 - Initialization order: `_read_registers()` (ppu.py:1320-1396) reads registers in the following sequence: DISPCNT → DISPSTAT → BGxCNT/BGxHOFS/BGxVOFS → WIN0H/WIN1H/WIN0V/WIN1V/WININ/WINOUT → MOSAIC → BLDCNT/BLDALPHA/BLDY. This order is correct and matches hardware expectations: display mode must be established before rendering, window geometry must be read before window hit-tests, and affine parameters are captured per-scanline in `step_scanline()` before DMA fires.
 
 ---
 
 ## Priority Order for Implementation
 
-| Priority | Feature | Effort | Affects |
-|----------|---------|--------|---------|
-| P1 | Fix brightness leak in alpha-blend branch (§2, §4) | S | None verified |
-| P2 | Populate `second_target_framebuffer` (§2) | M | None verified |
-| P2 | Move blend call after sprite render (§2) | S | None verified |
-| P2 | Fix per-BG mosaic flag (§3) | S | None verified |
-| P2 | Fix vertical mosaic Y-snap (§3) | S | None verified |
-| P3 | Verify Mode 1 with golden screenshot (§6) | S | None verified |
-| P3 | Remove `try/except: continue` in Mode 1 BG2 path (§6) | S | None verified |
+| Priority | Feature | Effort | Status |
+|----------|---------|--------|--------|
+| P1 | Fix brightness leak in alpha-blend branch (§2, §4) | S | ✅ DONE |
+| P2 | Populate `second_target_framebuffer` (§2) | M | ✅ DONE |
+| P2 | Move blend call after sprite render (§2) | S | ✅ DONE |
+| P2 | Fix per-BG mosaic flag (§3) | S | ✅ DONE |
+| P2 | Fix vertical mosaic Y-snap (§3) | S | ✅ DONE |
+| P3 | Verify Mode 1 with golden screenshot (§6) | S | ✅ Verified (F252 added 5 unit tests, all PASS) |
+| P3 | Remove `try/except: continue` in Mode 1 BG2 path (§6) | S | ✅ DONE (F191 fixed Mode 1 BG2 mosaic, commit f086ef6) |
+| P4 | Remove REG_BLDWIN and REG_MOSAIC_EXT dead code | S | ✅ DONE (F260, commit 7ca05ab) |

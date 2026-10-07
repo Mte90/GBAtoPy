@@ -1,6 +1,5 @@
 pub mod instruction_codegen;
 
-#[allow(unused_imports)]
 pub use instruction_codegen::generate_instruction_python;
 use crate::analysis::{detect_memset_loop_pattern, detect_memset_loop_pattern_across_blocks, extract_bl_targets, is_conditional_non_branch, reads_r15, writes_r15};
 use crate::asset_extractor::ExtractedAssets;
@@ -37,6 +36,7 @@ fn strip_inline_comment(line: &str) -> String {
 
 /// Phase 3: Python Code Generation
 /// Extracts the Python code generation logic from the pipeline
+// Legitimate: codegen dispatch needs many instruction fields
 #[allow(clippy::too_many_arguments)]
 pub fn generate_python_code(
     instructions: Vec<DecodedInstruction>,
@@ -787,7 +787,9 @@ pub fn generate_python_code(
 
         // End of block: always advance PC for dispatch loop (unless memset optimization was applied)
         if memset_optimized.is_none() {
-            let last_inst = func_instructions.last().unwrap();
+            let last_inst = func_instructions.last().ok_or_else(|| {
+                format!("Empty function body at address 0x{:08X} — codegen bug: function has no instructions", func_start)
+            })?;
             let last_addr = last_inst.address as u64;
             if !writes_r15(last_inst) {
                 let end_addr = last_addr + instr_size;
@@ -869,28 +871,33 @@ pub fn generate_python_code(
                     current_run.push(inst);
                 } else {
                     if !current_run.is_empty() {
-                        data_sections.push((run_start.unwrap(), std::mem::take(&mut current_run)));
-                    }
+                    let start = run_start.ok_or_else(|| "Data section detected but run_start is None — codegen logic error".to_string())?;
+                    data_sections.push((start, std::mem::take(&mut current_run)));
+                }
                     run_start = Some(addr);
                     current_run.push(inst);
                 }
                 prev_data_end = Some(end);
             } else {
                 if !current_run.is_empty() {
-                    data_sections.push((run_start.unwrap(), std::mem::take(&mut current_run)));
+                    let start = run_start.ok_or_else(|| "Data section detected but run_start is None — codegen logic error".to_string())?;
+                    data_sections.push((start, std::mem::take(&mut current_run)));
                     run_start = None;
                 }
                 prev_data_end = None;
             }
         }
         if !current_run.is_empty() {
-            data_sections.push((run_start.unwrap(), current_run));
+            let start = run_start.ok_or_else(|| "Final data section detected but run_start is None — codegen logic error".to_string())?;
+            data_sections.push((start, current_run));
         }
 
         if !data_sections.is_empty() {
             code.push_str("\n# === Data sections (readable hex tables) ===\n");
             for (start, run) in &data_sections {
-                let last = run.last().unwrap();
+                let last = run.last().ok_or_else(|| {
+                    format!("Data section at 0x{:08X} is empty — codegen bug: section created with no instructions", start)
+                })?;
                 let end = last.address as u64 + last.width as u64;
                 let size = end - start;
                 code.push_str(&format!(
@@ -1072,4 +1079,236 @@ fn generate_game_loop() -> String {
     include_str!("../../assets/templates/game_loop.py")
         .replace("__DELIVER_IRQ_BODY__", DELIVER_IRQ_BODY)
         .to_string()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gbatopy_disasm::{Condition, DecodedInstruction, Operand, ArmMode};
+
+    #[test]
+    fn test_strip_inline_comment_basic() {
+        let result = strip_inline_comment("x = 1  # comment");
+        assert_eq!(result, "x = 1  ");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_hash_in_string() {
+        let result = strip_inline_comment("s = 'hello # world'");
+        assert_eq!(result, "s = 'hello # world'");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_no_comment() {
+        let result = strip_inline_comment("x = 42");
+        assert_eq!(result, "x = 42");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_empty_string() {
+        let result = strip_inline_comment("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_just_comment() {
+        let result = strip_inline_comment("# only comment");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_double_quotes() {
+        let result = strip_inline_comment("s = \"test # value\"  # comment");
+        assert_eq!(result, "s = \"test # value\"  ");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_multiple_hashes() {
+        let result = strip_inline_comment("x = 1  # first # second");
+        assert_eq!(result, "x = 1  ");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_no_space_before_hash() {
+        let result = strip_inline_comment("x=1#comment");
+        assert_eq!(result, "x=1");
+    }
+
+    #[test]
+    fn test_strip_inline_comment_trailing_space() {
+        let result = strip_inline_comment("x = 1  # comment");
+        assert_eq!(result, "x = 1  ");
+    }
+
+    #[test]
+    fn test_generate_instruction_python_mov() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MOV".to_string(),
+            operands: vec![Operand::Register(0), Operand::Register(1)],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("registers[0]"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_with_immediate() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MOV".to_string(),
+            operands: vec![Operand::Register(0), Operand::Immediate(42)],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("42"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_conditional() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "ADDne".to_string(),
+            operands: vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(10)],
+            condition: Some(Condition::Ne),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("cpsr_check"));
+        assert!(result.contains("NE"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_branch() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "B".to_string(),
+            operands: vec![Operand::Immediate(0x08000100)],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("registers[15]"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_nop() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "NOP".to_string(),
+            operands: vec![],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("pass"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_swi() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "SWI".to_string(),
+            operands: vec![Operand::Immediate(0x123456)],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("swi_handler"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_mrs() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MRS".to_string(),
+            operands: vec![Operand::Register(5)],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("cpsr"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_msr() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MSR".to_string(),
+            operands: vec![Operand::Immediate(0x8), Operand::Register(0)],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("cpsr"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_mul() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "MUL".to_string(),
+            operands: vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        assert!(result.contains("*"));
+    }
+
+    #[test]
+    fn test_generate_instruction_python_unknown() {
+        let inst = DecodedInstruction {
+            address: 0x08000000,
+            opcode: "UNKNOWN".to_string(),
+            operands: vec![],
+            condition: Some(Condition::Al),
+            mode: ArmMode::Arm,
+            raw: 0,
+            sets_flags: false,
+            width: 4,
+            is_data: false,
+        };
+        let result = generate_instruction_python(&inst);
+        // Unhandled instructions emit stderr warning + pass
+        assert!(result.contains("sys.stderr.write"));
+        assert!(result.contains("pass"));
+    }
 }

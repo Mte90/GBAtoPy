@@ -445,7 +445,7 @@ mod tests {
             assert!(matches!(target, IrExpr::Value(_)));
             assert!(matches!(value, IrExpr::Op(IrOp::Add, _)));
         } else {
-            panic!("Expected Assign statement");
+            unreachable!("Expected Assign statement");
         }
     }
 
@@ -475,7 +475,7 @@ mod tests {
         if let IrStatement::Assign { target: _, value } = &statements[0] {
             assert!(matches!(value, IrExpr::Value(IrValue::Constant(42))));
         } else {
-            panic!("Expected Assign statement");
+            unreachable!("Expected Assign statement");
         }
     }
 
@@ -506,7 +506,7 @@ mod tests {
         if let IrStatement::Assign { value, .. } = &statements[0] {
             assert!(matches!(value, IrExpr::Op(IrOp::And, _)));
         } else {
-            panic!("Expected Assign statement");
+            unreachable!("Expected Assign statement");
         }
     }
 }

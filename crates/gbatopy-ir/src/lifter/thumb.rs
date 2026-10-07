@@ -367,7 +367,7 @@ mod tests {
             // r0 = 42
             assert!(matches!(value, IrExpr::Value(crate::IrValue::Constant(42))));
         } else {
-            panic!("Expected Assign statement");
+            unreachable!("Expected Assign statement");
         }
     }
 

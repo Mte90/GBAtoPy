@@ -99,7 +99,7 @@ class RTC:
         self.memory.register_mmio_write(self.REG_RTC_CS - 0x04000000, self._write_cs)
     
     def _read_si(self, addr: int) -> int:
-        """Read from SI register."""
+        """SI is write-only (GBA writes commands to RTC); reads return 0."""
         return 0
     
     def _read_so(self, addr: int) -> int:
@@ -110,11 +110,11 @@ class RTC:
         return 0
     
     def _read_sck(self, addr: int) -> int:
-        """Read from SCK register."""
+        """SCK is write-only (GBA drives clock pin); reads return 0."""
         return 0
     
     def _read_cs(self, addr: int) -> int:
-        """Read from CS register."""
+        """CS is write-only (GBA drives chip select); reads return 0."""
         return 0
     
     def _write_si(self, addr: int, value: int):
@@ -218,30 +218,30 @@ class RTC:
             self._reset_transfer()
     
     def _pack_time(self) -> int:
-        """Pack time data into byte (seconds | minutes | hours in BCD)."""
+        """Pack time data into 3 bytes (seconds | minutes | hours in BCD)."""
         sec_bcd = self._int_to_bcd(self.seconds)
         min_bcd = self._int_to_bcd(self.minutes)
         hour_bcd = self._int_to_bcd(self.hours)
-        return ((hour_bcd & 0x3F) << 8) | ((min_bcd & 0x7F) << 4) | (sec_bcd & 0x7F)
+        return ((hour_bcd & 0x3F) << 16) | ((min_bcd & 0x7F) << 8) | (sec_bcd & 0x7F)
     
     def _pack_date(self) -> int:
-        """Pack date data into byte (day | month | year in BCD)."""
+        """Pack date data into 3 bytes (day | month | year in BCD)."""
         day_bcd = self._int_to_bcd(self.day)
         month_bcd = self._int_to_bcd(self.month)
         year_bcd = self._int_to_bcd(self.year)
-        return ((year_bcd & 0xFF) << 8) | ((month_bcd & 0x1F) << 4) | (day_bcd & 0x3F)
+        return ((year_bcd & 0xFF) << 16) | ((month_bcd & 0x1F) << 8) | (day_bcd & 0x3F)
     
     def _unpack_time(self, data: int):
-        """Unpack time data from byte."""
+        """Unpack time data from 3 bytes."""
         self.seconds = self._bcd_to_int(data & 0x7F)
-        self.minutes = self._bcd_to_int((data >> 4) & 0x7F)
-        self.hours = self._bcd_to_int((data >> 8) & 0x3F)
+        self.minutes = self._bcd_to_int((data >> 8) & 0x7F)
+        self.hours = self._bcd_to_int((data >> 16) & 0x3F)
     
     def _unpack_date(self, data: int):
-        """Unpack date data from byte."""
+        """Unpack date data from 3 bytes."""
         self.day = self._bcd_to_int(data & 0x3F)
-        self.month = self._bcd_to_int((data >> 4) & 0x1F)
-        self.year = self._bcd_to_int((data >> 8) & 0xFF)
+        self.month = self._bcd_to_int((data >> 8) & 0x1F)
+        self.year = self._bcd_to_int((data >> 16) & 0xFF)
     
     def _int_to_bcd(self, value: int) -> int:
         """Convert integer to BCD format."""
@@ -443,7 +443,7 @@ def detect_rtc(rom_data: bytes) -> bool:
     Checks for known RTC game identifiers in ROM header or game code.
     Common RTC games: Pokemon Gold/Silver, Mario Artist, Boktai, etc.
     """
-    if rom_data is None or len(rom_data) < 0x100:
+    if rom_data is None or len(rom_data) < 512:
         return False
     
     # Check for known RTC game identifiers

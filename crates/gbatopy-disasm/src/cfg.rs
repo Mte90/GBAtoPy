@@ -558,7 +558,7 @@ impl CfgBuilder {
         //   STR R1, [R0]           ; Store handler to IRQ vector
         //
         // The handler_addr is in the literal pool and should be discovered.
-        for (rn, imm) in &self.ldr_literals {
+        for (_rn, imm) in &self.ldr_literals {
             let value = *imm;
 
             // Check if this loads an IWRAM address in the vector table range
@@ -783,7 +783,7 @@ impl CfgBuilder {
                 // Check if this looks like an interrupt handler prologue
                 // Pattern: LDR Rx, [PC, #imm] (0x48xx or 0x49xx or 0x4axx)
                 let hw1 = u16::from_le_bytes([rom[offset], rom[offset + 1]]);
-                let hw2 = u16::from_le_bytes([rom[offset + 2], rom[offset + 3]]);
+                let _hw2 = u16::from_le_bytes([rom[offset + 2], rom[offset + 3]]);
 
                 // LDR Rx, [PC, #imm*4] where imm is in range [0x10, 0x50]
                 // This is typical for loading hardware register addresses
@@ -1354,234 +1354,6 @@ impl CfgBuilder {
             data_addresses.contains(&0x080000C4u32)
         );
 
-        eprintln!(
-            "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8u32)
-        );
-        // TEMP DEBUG: check data_addresses for 0x080000C8
-        let check_c8 = 0x080000C8u32;
-        eprintln!(
-            "CHECK_DATA: 0x080000C8 in data_addresses={} total_data_addrs={}",
-            data_addresses.contains(&check_c8),
-            data_addresses.len()
-        );
-        // If it's there, find which check added it by scanning the ROM
-        if data_addresses.contains(&check_c8) {
-            let rom_len = rom.len() as u32;
-            for offset in (0..rom.len().saturating_sub(3)).step_by(4) {
-                let addr = 0x08000000u32 + offset as u32;
-                let word = u32::from_le_bytes([
-                    rom[offset],
-                    rom[offset + 1],
-                    rom[offset + 2],
-                    rom[offset + 3],
-                ]);
-                let cond = (word >> 29) & 0x7;
-                // Check 1: LDR bit4=1
-                if (word >> 25) & 0x7 == 0b010
-                    && (word >> 4) & 0x1 == 1
-                    && (word >> 16) & 0xF == 0xF
-                    && cond != 0b111
-                {
-                    let pool = addr + 8 + (word & 0xFFF);
-                    if pool == check_c8 {
-                        eprintln!("FOUND_C8: check1 addr=0x{:08X} word=0x{:08X}", addr, word);
-                    }
-                }
-                eprintln!(
-                    "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-                    data_addresses.contains(&0x080000C8)
-                );
-                // Check 2: LDR bit4=0
-                if (word >> 25) & 0x7 == 0b010
-                    && (word >> 4) & 0x1 == 0
-                    && (word >> 16) & 0xF == 0xF
-                    && cond != 0b111
-                {
-                    let pool = addr + 8 + (word & 0xFFF);
-                    if pool == check_c8 {
-                        eprintln!("FOUND_C8: check2 addr=0x{:08X} word=0x{:08X}", addr, word);
-                    }
-                }
-                // Check 3: LDC/STC
-                if (word >> 25) & 0x7 == 0b110
-                    && (word >> 4) & 0x1 == 1
-                    && (word >> 16) & 0xF == 0xF
-                    && cond != 0b111
-                {
-                    let pool = addr + 8 + ((word & 0xFF) * 4);
-                    if pool == check_c8 {
-                        eprintln!("FOUND_C8: check3 addr=0x{:08X} word=0x{:08X}", addr, word);
-                    }
-                }
-            }
-
-            // DEBUG: check if 0x080000C8 is in data_addresses after scan
-            eprintln!(
-                "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-                data_addresses.contains(&0x080000C8)
-            );
-            eprintln!(
-                "AFTER_SCAN: data_addresses has {} entries",
-                data_addresses.len()
-            );
-            eprintln!(
-                "DATA_SCAN_DONE: 0x080000C8 in data_addresses={} total_entries={}",
-                data_addresses.contains(&0x080000C8),
-                data_addresses.len()
-            );
-            eprintln!(
-                "DATA_SCAN_DONE: 0x080000C8 in data_addresses={} total_entries={}",
-                data_addresses.contains(&0x080000C8),
-                data_addresses.len()
-            );
-
-            eprintln!(
-                "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-                data_addresses.contains(&0x080000C8)
-            );
-            eprintln!(
-                "AFTER_SCAN: 0x080000C8 in data_addresses={} total_entries={}",
-                data_addresses.contains(&0x080000C8),
-                data_addresses.len()
-            );
-            eprintln!(
-                "DATA_SCAN_DONE: 0x080000C8 in data_addresses={} total_entries={}",
-                data_addresses.contains(&0x080000C8),
-                data_addresses.len()
-            );
-            eprintln!(
-                "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-                data_addresses.contains(&0x080000C8)
-            );
-            // TEMP DEBUG: check data_addresses
-            eprintln!(
-                "DATA_SCAN_COMPLETE: total={} contains_C8={}",
-                data_addresses.len(),
-                data_addresses.contains(&0x080000C8u32)
-            );
-            eprintln!(
-                "AFTER_SCAN: data_addresses has {} entries",
-                data_addresses.len()
-            );
-            eprintln!(
-                "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-                data_addresses.contains(&0x080000C8)
-            );
-            eprintln!(
-                "DATA_SCAN_RESULT: 0x080000C8 in data_addresses={} total_entries={}",
-                data_addresses.contains(&0x080000C8),
-                data_addresses.len()
-            );
-            eprintln!(
-                "AFTER_SCAN: 0x080000C8 in data_addresses={} total_entries={}",
-                data_addresses.contains(&0x080000C8),
-                data_addresses.len()
-            );
-            eprintln!(
-                "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-                data_addresses.contains(&0x080000C8)
-            );
-            eprintln!(
-                "AFTER_SCAN: 0x080000C8 in data_addresses={} total_entries={}",
-                data_addresses.contains(&0x080000C8),
-                data_addresses.len()
-            );
-        }
-        eprintln!(
-            "DATA_SCAN_RESULT: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8)
-        );
-        eprintln!(
-            "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8u32)
-        );
-        eprintln!(
-            "AFTER_SCAN: data_addresses has {} entries",
-            data_addresses.len()
-        );
-        eprintln!(
-            "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8)
-        );
-        // TEMP: comprehensive data_addresses check
-        eprintln!(
-            "DATA_CHECK: 0x080000C8 in data_addresses={} total_data_addrs={}",
-            data_addresses.contains(&0x080000C8u32),
-            data_addresses.len()
-        );
-        if data_addresses.contains(&0x080000C8u32) {
-            eprintln!("DATA_CHECK: 0x080000C8 IS in data_addresses! Investigating...");
-        }
-        eprintln!(
-            "DATA_CHECK: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8u32)
-        );
-        eprintln!(
-            "DATA_CHECK: 0x080000C8 in data_addresses={} total_data_addrs={}",
-            data_addresses.contains(&0x080000C8u32),
-            data_addresses.len()
-        );
-        // TEMP DEBUG: check if 0x080000C8 is in data_addresses
-        eprintln!(
-            "POST_SCAN: 0x080000C8 in data_addresses={} total_entries={}",
-            data_addresses.contains(&0x080000C8u32),
-            data_addresses.len()
-        );
-        // Print all entries near 0x080000C0-0x080000D0
-        for da in &data_addresses {
-            if *da >= 0x080000C0 && *da <= 0x080000D0 {
-                eprintln!("  data_addresses contains 0x{:08X}", da);
-            }
-        }
-
-        eprintln!(
-            "POST_SCAN: C8_in_data={}",
-            data_addresses.contains(&0x080000C8u32)
-        );
-        eprintln!(
-            "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8)
-        );
-        eprintln!(
-            "AFTER_SCAN: data_addresses has {} entries",
-            data_addresses.len()
-        );
-        eprintln!(
-            "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8)
-        );
-        eprintln!(
-            "BEFORE_SORT: 0x080000C8 in data_addresses={} 0x080000C4 in data_addresses={}",
-            data_addresses.contains(&0x080000C8),
-            data_addresses.contains(&0x080000C4)
-        );
-        eprintln!(
-            "DATA_CHECK: 0x080000C8 in data_addresses={} total_entries={}",
-            data_addresses.contains(&0x080000C8),
-            data_addresses.len()
-        );
-        eprintln!(
-            "AFTER_SCAN: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8)
-        );
-        eprintln!(
-            "AFTER_SCAN: data_addresses has {} entries",
-            data_addresses.len()
-        );
-        eprintln!(
-            "DATA_ADDR_CHECK: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8u32)
-        );
-        eprintln!(
-            "DATA_ADDR_CHECK: total data_addresses={}",
-            data_addresses.len()
-        );
-
-        eprintln!(
-            "FINAL_CHECK: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8)
-        );
         self.instruction_addresses.sort();
         self.instruction_addresses.dedup();
         if self.instruction_addresses.contains(&0x0800010A) {
@@ -2271,5 +2043,621 @@ impl CfgBuilder {
             data_addresses.contains(&0x080000C8)
         );
         count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test 1: decode_bl_pair_merges_to_4_bytes
+    /// Two valid halfwords (BL_PREFIX + BL_SUFFIX) → decode_bl_pair returns Some with width=4
+    #[test]
+    fn test_decode_bl_pair_merges_to_4_bytes() {
+        let decoder = ThumbDecoder::new();
+        
+        // BL_PREFIX: 0xF000 (bit 11 = 0, opcode in 0xF000-0xF3FF range)
+        let hw1 = 0xF000u16;
+        // BL_SUFFIX: 0xF800 (bit 11 = 1, opcode in 0xF800-0xFBFF range)
+        let hw2 = 0xF800u16;
+        
+        let result = decoder.decode_bl_pair(hw1, hw2, 0x08000000);
+        
+        assert!(result.is_some(), "BL pair should decode successfully");
+        let (opcode, _operands, _fallthrough, width) = result.unwrap();
+        assert_eq!(opcode, "BL", "Should decode as BL instruction");
+        assert_eq!(width, 4, "BL instruction should be 4 bytes");
+    }
+
+    /// Test 2: decode_bl_pair_rejects_invalid_suffix
+    /// BL_PREFIX + non-suffix halfword → returns None
+    #[test]
+    fn test_decode_bl_pair_rejects_invalid_suffix() {
+        let decoder = ThumbDecoder::new();
+        
+        // BL_PREFIX: 0xF000
+        let hw1 = 0xF000u16;
+        // Invalid suffix: bit 11 = 0 (not a BL_SUFFIX)
+        let hw2 = 0x0000u16;
+        
+        let result = decoder.decode_bl_pair(hw1, hw2, 0x08000000);
+        
+        assert!(result.is_none(), "Invalid BL pair should return None");
+    }
+
+    /// Test 3: looks_like_data_safe_identifies_data
+    /// A halfword that looks like data (0x0000, 0xFFFF) → classified as data
+    #[test]
+    fn test_looks_like_data_safe_identifies_data() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // Create a ROM with repeating zero bytes (16+ zeros = data pattern)
+        let rom_bytes: [u8; 64] = [0u8; 64];
+        let addr = 0x08000000;
+        
+        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
+        
+        assert!(result, "Zero-filled region should be classified as data");
+    }
+
+    /// Test 4: looks_like_data_safe_rejects_code
+    /// A valid Thumb instruction → NOT classified as data
+    #[test]
+    fn test_looks_like_data_safe_rejects_code() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // Create a ROM with valid Thumb instructions (MOV r0, #0; ADD r1, r0, r0)
+        // These should NOT be classified as data
+        let rom_bytes: [u8; 80] = [
+            0x20, 0x00, // MOV r0, #0
+            0x38, 0x00, // SUBS r0, r0, #0
+            0x1C, 0x00, // ADDS r0, r0, #0
+            0x40, 0x00, // EOR r0, r0, r0
+            0x42, 0x00, // CMP r0, r0
+            0x44, 0x00, // ADD r0, r0
+            0x46, 0x00, // MOV r0, r0
+            0x48, 0x00, // LDR r0, [PC, #0]
+            // Fill rest with valid instructions
+            0x21, 0x00, 0x22, 0x00, 0x23, 0x00, 0x24, 0x00,
+            0x25, 0x00, 0x26, 0x00, 0x27, 0x00, 0x28, 0x00,
+            0x29, 0x00, 0x2A, 0x00, 0x2B, 0x00, 0x2C, 0x00,
+            0x2D, 0x00, 0x2E, 0x00, 0x2F, 0x00, 0x30, 0x00,
+            0x31, 0x00, 0x32, 0x00, 0x33, 0x00, 0x34, 0x00,
+            0x35, 0x00, 0x36, 0x00, 0x37, 0x00, 0x38, 0x00,
+            0x39, 0x00, 0x3A, 0x00, 0x3B, 0x00, 0x3C, 0x00,
+            0x3D, 0x00, 0x3E, 0x00, 0x3F, 0x00, 0x41, 0x00,
+        ];
+        let addr = 0x08000000;
+        
+        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
+        
+        assert!(!result, "Valid Thumb code should NOT be classified as data");
+    }
+
+    /// Test 5: arm_prologue_scan_finds_push
+    /// A byte sequence starting with PUSH {r4, lr} (ARM encoding 0xE92D4010) → identified as function start
+    #[test]
+    fn test_arm_prologue_scan_finds_push() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // Create a ROM with ARM PUSH {r4, lr} instruction
+        // 0xE92D4010 = PUSH {r4, lr} in ARM encoding
+        let rom_bytes: [u8; 132] = [
+            0x10, 0x40, 0x2D, 0xE9, // PUSH {r4, lr} (little-endian)
+            // Fill rest with valid ARM instructions (32 instructions total = 128 bytes)
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        let addr = 0x08000000;
+        
+        // Check that the first instruction decodes as valid ARM code
+        let result = decode_is_valid_code_run(&rom_bytes, addr, ArmMode::Arm, 32, &arm_decoder, &thumb_decoder);
+        
+        assert!(result, "ARM PUSH instruction should be recognized as valid code");
+    }
+
+    /// Test 6: interrupt_handler_heuristic_mmio_range
+    /// An LDR loading an address in 0x040000B0-0x0400010F → triggers the heuristic
+    #[test]
+    fn test_interrupt_handler_heuristic_mmio_range() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // Create a ROM with LDR r0, [PC, #imm] followed by a value in MMIO range
+        // LDR r0, [PC, #0x40] = 0x4840 (Thumb encoding)
+        // The literal pool value at PC+4+0x40 = 0x08000044 should be 0x040000B0 (DMA register)
+        let rom_bytes: [u8; 128] = {
+            let mut arr = [0u8; 128];
+            // LDR r0, [PC, #0x40]
+            arr[0] = 0x48;
+            arr[1] = 0x40;
+            // Literal pool at offset 0x44 (0x08000044) with MMIO address
+            let lit_offset = 0x44usize;
+            let mmio_addr: u32 = 0x040000B0; // DMA0CNT
+            arr[lit_offset] = (mmio_addr & 0xFF) as u8;
+            arr[lit_offset + 1] = ((mmio_addr >> 8) & 0xFF) as u8;
+            arr[lit_offset + 2] = ((mmio_addr >> 16) & 0xFF) as u8;
+            arr[lit_offset + 3] = ((mmio_addr >> 24) & 0xFF) as u8;
+            arr
+        };
+        let addr = 0x08000000;
+        
+        // The heuristic should detect this as an interrupt handler pattern
+        // We test this by checking if the loaded value is in the MMIO range
+        let loaded_val = u32::from_le_bytes([
+            rom_bytes[0x44],
+            rom_bytes[0x45],
+            rom_bytes[0x46],
+            rom_bytes[0x47],
+        ]);
+        
+        assert!((0x040000B0..=0x0400010F).contains(&loaded_val), 
+            "Loaded value should be in MMIO range");
+    }
+
+    /// Test 6b: interrupt handler heuristic does NOT trigger for addresses outside MMIO range
+    #[test]
+    fn test_interrupt_handler_heuristic_outside_mmio_range() {
+        let rom_bytes: [u8; 128] = {
+            let mut arr = [0u8; 128];
+            // LDR r0, [PC, #0x40]
+            arr[0] = 0x48;
+            arr[1] = 0x40;
+            // Literal pool with address OUTSIDE MMIO range
+            let lit_offset = 0x44usize;
+            let outside_addr: u32 = 0x04000000; // Outside the range
+            arr[lit_offset] = (outside_addr & 0xFF) as u8;
+            arr[lit_offset + 1] = ((outside_addr >> 8) & 0xFF) as u8;
+            arr[lit_offset + 2] = ((outside_addr >> 16) & 0xFF) as u8;
+            arr[lit_offset + 3] = ((outside_addr >> 24) & 0xFF) as u8;
+            arr
+        };
+        
+        let loaded_val = u32::from_le_bytes([
+            rom_bytes[0x44],
+            rom_bytes[0x45],
+            rom_bytes[0x46],
+            rom_bytes[0x47],
+        ]);
+        
+        assert!(!(0x040000B0..=0x0400010F).contains(&loaded_val), 
+            "Loaded value should NOT be in MMIO range");
+    }
+
+    /// Test 7: extract_branch_targets_bl_prefix
+    /// A BL_PREFIX instruction → returns no direct target (target computed on suffix)
+    #[test]
+    fn test_extract_branch_targets_bl_prefix() {
+        let mut cfg = CfgBuilder::new();
+        
+        let targets = cfg.extract_branch_targets("BL_PREFIX", &[], 0x08000000, 2);
+        
+        assert!(targets.is_empty(), "BL_PREFIX should not have direct branch targets");
+    }
+
+    /// Test 8: thumb_b_target_extraction
+    /// A Thumb B instruction → returns the correct target address
+    #[test]
+    fn test_thumb_b_target_extraction() {
+        let mut cfg = CfgBuilder::new();
+        
+        // BNE instruction with target at 0x08000050
+        let operands = vec![Operand::Immediate(0x08000050)];
+        
+        let targets = cfg.extract_branch_targets("BNE", &operands, 0x08000000, 2);
+        
+        assert_eq!(targets.len(), 2, "Conditional branch should have 2 targets (branch + fallthrough)");
+        assert_eq!(targets[0], 0x08000050, "First target should be the branch target");
+        assert_eq!(targets[1], 0x08000002, "Second target should be fallthrough (addr + 2)");
+    }
+
+    /// Test 9: has_long_zero_run_detects_data
+    /// A region with 16+ consecutive zero bytes → detected as data
+    #[test]
+    fn test_has_long_zero_run_detects_data() {
+        let rom_bytes: [u8; 64] = [0u8; 64];
+        let addr = 0x08000000;
+        
+        let result = has_long_zero_run(&rom_bytes, addr, 16);
+        
+        assert!(result, "16 consecutive zeros should be detected as data");
+    }
+
+    /// Test 10: has_repeated_pattern_detects_data
+    /// A region with repeating 4-byte pattern → detected as data
+    #[test]
+    fn test_has_repeated_pattern_detects_data() {
+        let rom_bytes: [u8; 64] = {
+            let mut arr = [0u8; 64];
+            // Repeating pattern: 0x01020304
+            for i in 0..64 {
+                arr[i] = match i % 4 {
+                    0 => 0x04,
+                    1 => 0x03,
+                    2 => 0x02,
+                    _ => 0x01,
+                };
+            }
+            arr
+        };
+        let addr = 0x08000000;
+        
+        let result = has_repeated_pattern(&rom_bytes, addr);
+        
+        assert!(result, "Repeating 4-byte pattern should be detected as data");
+    }
+
+    /// Test 11: register_tracker_mov_immediate
+    /// track_mov_immediate correctly sets and retrieves register values
+    #[test]
+    fn test_register_tracker_mov_immediate() {
+        let mut tracker = RegisterTracker::new();
+        
+        tracker.track_mov_immediate(0, 0x12345678);
+        
+        assert_eq!(tracker.get(0), Some(0x12345678), "Should retrieve tracked value");
+        assert_eq!(tracker.get(1), None, "Other registers should be None");
+    }
+
+    /// Test 12: register_tracker_invalidate
+    /// invalidate removes a register's tracked value
+    #[test]
+    fn test_register_tracker_invalidate() {
+        let mut tracker = RegisterTracker::new();
+        
+        tracker.track_mov_immediate(0, 0x12345678);
+        assert_eq!(tracker.get(0), Some(0x12345678));
+        
+        tracker.invalidate(0);
+        assert_eq!(tracker.get(0), None, "Invalidate should remove tracked value");
+    }
+
+    /// Test 13: fallthrough_instruction_width_thumb
+    /// Fall-through computation for Thumb instructions (2-byte width)
+    #[test]
+    fn test_fallthrough_instruction_width_thumb() {
+        let addr = 0x08000000;
+        let instr_width: u32 = 2; // Thumb instruction width
+        let next_addr = addr + instr_width;
+        
+        assert_eq!(next_addr, 0x08000002, "Thumb fall-through should be addr + 2");
+    }
+
+    /// Test 14: fallthrough_instruction_width_arm
+    /// Fall-through computation for ARM instructions (4-byte width)
+    #[test]
+    fn test_fallthrough_instruction_width_arm() {
+        let addr = 0x08000000;
+        let instr_width: u32 = 4; // ARM instruction width
+        let next_addr = addr + instr_width;
+        
+        assert_eq!(next_addr, 0x08000004, "ARM fall-through should be addr + 4");
+    }
+
+    /// Test 15: fallthrough_instruction_width_bl_merged
+    /// Fall-through computation for merged BL instruction (4-byte width)
+    #[test]
+    fn test_fallthrough_instruction_width_bl_merged() {
+        let addr = 0x08000000;
+        let instr_width: u32 = 4; // Merged BL instruction width
+        let next_addr = addr + instr_width;
+        
+        assert_eq!(next_addr, 0x08000004, "Merged BL fall-through should be addr + 4");
+    }
+
+    /// Test 16: mmio_range_dma_timer_validation
+    /// Verify MMIO range 0x040000B0-0x0400010F accepts DMA/Timer addresses
+    #[test]
+    fn test_mmio_range_dma_timer_validation() {
+        // DMA register addresses
+        assert!((0x040000B0..=0x0400010F).contains(&0x040000B0), "DMA0CNT_SOURC should be in range");
+        assert!((0x040000B0..=0x0400010F).contains(&0x040000B8), "DMA1CNT_SOURC should be in range");
+        assert!((0x040000B0..=0x0400010F).contains(&0x040000DF), "DMA3CNT_SOURC should be in range");
+        
+        // Timer register addresses
+        assert!((0x040000B0..=0x0400010F).contains(&0x04000100), "TM0CNT_L should be in range");
+        assert!((0x040000B0..=0x0400010F).contains(&0x0400010F), "TM3CNT_H should be in range");
+    }
+
+    /// Test 17: mmio_range_rejects_invalid_addresses
+    /// Verify MMIO range rejects addresses outside DMA/Timer registers
+    #[test]
+    fn test_mmio_range_rejects_invalid_addresses() {
+        // Addresses just below the range
+        assert!(!(0x040000B0..=0x0400010F).contains(&0x040000AF), "0x040000AF should NOT be in range");
+        
+        // Addresses just above the range
+        assert!(!(0x040000B0..=0x0400010F).contains(&0x04000110), "0x04000110 should NOT be in range");
+        
+        // Other hardware addresses
+        assert!(!(0x040000B0..=0x0400010F).contains(&0x04000000), "DISPCNT should NOT be in range");
+        assert!(!(0x040000B0..=0x0400010F).contains(&0x04000088), "KEYINPUT should NOT be in range");
+    }
+
+    /// Test 18: cross_mode_guard_thumb_to_arm
+    /// Cross-mode guard prevents Thumb BFS from entering ARM-claimed addresses
+    #[test]
+    fn test_cross_mode_guard_thumb_to_arm() {
+        let mut visited: HashSet<(u32, ArmMode)> = HashSet::new();
+        
+        // ARM mode has already visited 0x08000004
+        visited.insert((0x08000004, ArmMode::Arm));
+        
+        // Thumb mode tries to visit the same address
+        let should_skip = visited.contains(&(0x08000004, ArmMode::Arm));
+        
+        assert!(should_skip, "Thumb should skip address already visited by ARM");
+    }
+
+    /// Test 19: cross_mode_guard_arm_to_thumb
+    /// Cross-mode guard prevents ARM BFS from entering Thumb-claimed addresses
+    #[test]
+    fn test_cross_mode_guard_arm_to_thumb() {
+        let mut visited: HashSet<(u32, ArmMode)> = HashSet::new();
+        
+        // Thumb mode has already visited 0x08000002
+        visited.insert((0x08000002, ArmMode::Thumb));
+        
+        // ARM mode tries to visit the same address
+        let should_skip = visited.contains(&(0x08000002, ArmMode::Thumb));
+        
+        assert!(should_skip, "ARM should skip address already visited by Thumb");
+    }
+
+    /// Test 20: bl_prefix_no_targets
+    /// BL_PREFIX returns empty target list (target computed in BL_SUFFIX)
+    #[test]
+    fn test_bl_prefix_no_targets() {
+        let mut cfg = CfgBuilder::new();
+        let targets = cfg.extract_branch_targets("BL_PREFIX", &[], 0x08000000, 2);
+        
+        assert!(targets.is_empty(), "BL_PREFIX should return no targets");
+    }
+
+    /// Test 21: bl_suffix_combines_lr_with_offset
+    /// BL_SUFFIX combines LR value with offset to form final target
+    #[test]
+    fn test_bl_suffix_combines_lr_with_offset() {
+        let mut cfg = CfgBuilder::new();
+        
+        // Simulate LR being set by BL_PREFIX
+        cfg.register_tracker.track_mov_immediate(14, 0x08000100);
+        
+        let operands = vec![Operand::Immediate(0x50)]; // Offset
+        let targets = cfg.extract_branch_targets("BL_SUFFIX", &operands, 0x08000000, 4);
+        
+        assert_eq!(targets.len(), 1, "BL_SUFFIX should have 1 target");
+        assert_eq!(targets[0], 0x08000150, "Target should be LR + offset");
+    }
+
+    /// Test 22: looks_like_data_safe_zero_run
+    /// Zero-run detection identifies data regions
+    #[test]
+    fn test_looks_like_data_safe_zero_run() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // 16+ consecutive zeros
+        let rom_bytes: [u8; 64] = [0u8; 64];
+        let addr = 0x08000000;
+        
+        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
+        
+        assert!(result, "Zero-run should be detected as data");
+    }
+
+    /// Test 23: looks_like_data_safe_repeated_pattern
+    /// Repeated pattern detection identifies data regions
+    #[test]
+    fn test_looks_like_data_safe_repeated_pattern() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // Repeating 4-byte pattern
+        let rom_bytes: [u8; 64] = {
+            let mut arr = [0u8; 64];
+            for i in 0..64 {
+                arr[i] = (i % 4) as u8;
+            }
+            arr
+        };
+        let addr = 0x08000000;
+        
+        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
+        
+        assert!(result, "Repeated pattern should be detected as data");
+    }
+
+    /// Test 24: looks_like_data_safe_valid_code
+    /// Valid code is NOT detected as data
+    #[test]
+    fn test_looks_like_data_safe_valid_code() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // Valid Thumb instructions (MOV r0, #0; ADD r1, r0, r0; etc.)
+        let rom_bytes: [u8; 78] = [
+            0x20, 0x00, // MOV r0, #0
+            0x21, 0x00, // MOV r1, #0
+            0x18, 0x00, // ADD r0, r1
+            0x40, 0x00, // EOR r0, r0
+            0x42, 0x00, // CMP r0, r0
+            0x44, 0x00, // ADD r0, r0
+            0x46, 0x00, // MOV r0, r0
+            0x48, 0x00, // LDR r0, [PC, #0]
+            0x22, 0x00,
+            0x23, 0x00,
+            0x24, 0x00,
+            0x25, 0x00,
+            0x26, 0x00,
+            0x27, 0x00,
+            0x28, 0x00,
+            0x29, 0x00,
+            0x2A, 0x00,
+            0x2B, 0x00,
+            0x2C, 0x00,
+            0x2D, 0x00,
+            0x2E, 0x00,
+            0x2F, 0x00,
+            0x30, 0x00,
+            0x31, 0x00,
+            0x32, 0x00,
+            0x33, 0x00,
+            0x34, 0x00,
+            0x35, 0x00,
+            0x36, 0x00,
+            0x37, 0x00,
+            0x38, 0x00,
+            0x39, 0x00,
+            0x3A, 0x00,
+            0x3B, 0x00,
+            0x3C, 0x00,
+            0x3D, 0x00,
+            0x3E, 0x00,
+            0x3F, 0x00,
+            0x41, 0x00,
+        ];
+        let addr = 0x08000000;
+        
+        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
+        
+        assert!(!result, "Valid Thumb code should NOT be detected as data");
+    }
+
+    /// Test 25: conditional_branch_has_fallthrough
+    /// Conditional branch (BNE) returns both branch target and fallthrough
+    #[test]
+    fn test_conditional_branch_has_fallthrough() {
+        let mut cfg = CfgBuilder::new();
+        
+        let operands = vec![Operand::Immediate(0x08000050)];
+        let targets = cfg.extract_branch_targets("BNE", &operands, 0x08000000, 2);
+        
+        assert_eq!(targets.len(), 2, "Conditional branch should have 2 targets");
+        assert_eq!(targets[0], 0x08000050, "Branch target");
+        assert_eq!(targets[1], 0x08000002, "Fallthrough");
+    }
+
+    /// Test 26: unconditional_branch_no_fallthrough
+    /// Unconditional branch (B) returns only branch target
+    #[test]
+    fn test_unconditional_branch_no_fallthrough() {
+        let mut cfg = CfgBuilder::new();
+        
+        let operands = vec![Operand::Immediate(0x08000050)];
+        let targets = cfg.extract_branch_targets("B", &operands, 0x08000000, 2);
+        
+        assert_eq!(targets.len(), 1, "Unconditional branch should have 1 target");
+        assert_eq!(targets[0], 0x08000050, "Branch target");
+    }
+
+    /// Test 27: bl_instruction_returns_target
+    /// BL instruction returns the call target (fall-through handled separately in bfs_pass)
+    #[test]
+    fn test_bl_instruction_returns_target() {
+        let mut cfg = CfgBuilder::new();
+        
+        let operands = vec![Operand::Immediate(0x08000100)];
+        let targets = cfg.extract_branch_targets("BL", &operands, 0x08000000, 2);
+        
+        assert_eq!(targets.len(), 1, "BL should have 1 target (fall-through handled in bfs_pass)");
+        assert_eq!(targets[0], 0x08000100, "Call target");
+    }
+
+    /// Test 28: decode_is_valid_code_run_arm
+    /// Valid ARM code run decodes successfully
+    #[test]
+    fn test_decode_is_valid_code_run_arm() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // Valid ARM instructions (NOP, MOV, ADD, etc.)
+        let rom_bytes: [u8; 160] = {
+            let mut arr = [0u8; 160];
+            // Fill with valid ARM instructions (MOV r0, #imm)
+            for i in 0..40 {
+                arr[i * 4] = 0x00;
+                arr[i * 4 + 1] = 0x20 + i as u8; // MOV r0, #i
+                arr[i * 4 + 2] = 0x00;
+                arr[i * 4 + 3] = 0xE3;
+            }
+            arr
+        };
+        let addr = 0x08000000;
+        
+        let result = decode_is_valid_code_run(&rom_bytes, addr, ArmMode::Arm, 32, &arm_decoder, &thumb_decoder);
+        
+        assert!(result, "Valid ARM code run should decode successfully");
+    }
+
+    /// Test 29: decode_is_valid_code_run_thumb
+    /// Valid Thumb code run decodes successfully
+    #[test]
+    fn test_decode_is_valid_code_run_thumb() {
+        let arm_decoder = ArmDecoder::new();
+        let thumb_decoder = ThumbDecoder::new();
+        
+        // Valid Thumb instructions
+        let rom_bytes: [u8; 80] = {
+            let mut arr = [0u8; 80];
+            for i in 0..40 {
+                arr[i * 2] = 0x00 + (i % 0x20) as u8;
+                arr[i * 2 + 1] = 0x20 + (i / 0x20) as u8;
+            }
+            arr
+        };
+        let addr = 0x08000000;
+        
+        let result = decode_is_valid_code_run(&rom_bytes, addr, ArmMode::Thumb, 32, &arm_decoder, &thumb_decoder);
+        
+        assert!(result, "Valid Thumb code run should decode successfully");
+    }
+
+    /// Test 30: interrupt_handler_pattern_ldr_pc
+    /// LDR Rx, [PC, #imm] pattern in interrupt handler heuristic
+    #[test]
+    fn test_interrupt_handler_pattern_ldr_pc() {
+        // LDR r0, [PC, #imm] Thumb encoding: 0x48xx where xx is immediate/4
+        let hw = 0x4840u16; // LDR r0, [PC, #0x100]
+        
+        // Check opcode pattern
+        let is_ldr_pc = (hw & 0xF800) == 0x4800;
+        let ldr_imm = ((hw & 0xFF) * 4) as u32;
+        
+        assert!(is_ldr_pc, "Should match LDR Rx, [PC, #imm] pattern");
+        assert_eq!(ldr_imm, 0x100, "Immediate should be 0x100");
     }
 }

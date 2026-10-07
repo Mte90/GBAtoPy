@@ -1175,12 +1175,15 @@ class ARM7TDMI:
         elif num == 0x15:  # RLUnCompVram
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_rl_uncomp(self.registers[0], self.registers[1])
-        elif num == 0x16:  # BitUnPackVram
+        elif num == 0x16:  # Diff8bitUnFilterWram
             if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_bit_unpack(self.registers[0], self.registers[1], self.registers[2])
-        elif num == 0x18:  # DiffUnCompFilterWrite
+                self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=False)
+        elif num == 0x17:  # Diff8bitUnFilterVram
             if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_diff_uncomp_filter(self.registers[0], self.registers[1])
+                self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=False)
+        elif num == 0x18:  # Diff16bitUnFilter
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=True)
 
     def _swi_exception_entry(self):
         """Model ARM SWI exception entry.

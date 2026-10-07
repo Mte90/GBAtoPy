@@ -4,6 +4,18 @@ import struct
 import os
 from typing import Optional, List, Tuple
 
+# Numpy vectorization for affine bitmap rendering
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+
+
+def _c5to8_arr(arr):
+    """Vectorized 5-bit to 8-bit color channel expansion."""
+    return ((arr << 3) | (arr >> 2)).astype(np.uint8)
+
 
 def _get_vram_bytes(memory, start: int, size: int) -> bytes:
     """Extract VRAM bytes for JIT functions."""
@@ -482,14 +494,9 @@ class PPU:
     REG_BLDCNT = 0x04000050
     REG_BLDALPHA = 0x04000052
     REG_BLDY = 0x04000054
-    REG_BLDWIN = 0x04000056
-    REG_BLDWIN = 0x04000056  # Window blend settings (bits 0-3=win0_alpha, 4-7=win0_y, 8-11=win1_alpha, 12-15=win1_y)
 
     # Sprite/OBJ registers
     REG_DISPSTAT2 = 0x04000056
-
-    # Additional MMIO for mosaic (correct address)
-    REG_MOSAIC_EXT = 0x040000F4
 
     def __init__(self, memory):
         self.memory = memory
@@ -828,7 +835,7 @@ class PPU:
             self.winout_obj_enable = bool((value >> 4) & 1)
 
         # Mosaic register
-        elif addr == self.REG_MOSAIC or addr == self.REG_MOSAIC_EXT:
+        elif addr == self.REG_MOSAIC:
             self.bg_mosaic_h = ((value >> 0) & 0xF) + 1
             self.bg_mosaic_v = ((value >> 4) & 0xF) + 1
             self.obj_mosaic_h = ((value >> 8) & 0xF) + 1
@@ -946,7 +953,7 @@ class PPU:
         elif addr == self.REG_WINOUT:
             return self.win0_out_enable | ((1 if self.winout_obj_enable else 0) << 4) | (self.win1_out_enable << 8)
         # Mosaic register
-        elif addr == self.REG_MOSAIC or addr == self.REG_MOSAIC_EXT:
+        elif addr == self.REG_MOSAIC:
             mosaic = 0
             mosaic |= ((self.bg_mosaic_h - 1) & 0xF) << 0
             mosaic |= ((self.bg_mosaic_v - 1) & 0xF) << 4
@@ -1949,9 +1956,12 @@ class PPU:
 
                 # Render affine BG2
                 if bg_enabled[2] and (layer_enable & 0x04):
+                    # Apply mosaic transformation
+                    mx, my = self._apply_mosaic(x, y, is_obj=False, bg=2)
+                    
                     # Apply affine transformation for BG2
-                    x_float = float(x)
-                    y_float = float(y)
+                    x_float = float(mx)
+                    y_float = float(my)
                     
                     # source_x = refx + (x * dx) + (y * dmx)
                     # source_y = refy + (x * dy) + (y * dmy)
@@ -2389,7 +2399,7 @@ class PPU:
             y_coord = sy - dy
             self._render_bitmap_affine_bg2(row_fb, row_lo, dx, dy, dmx, dmy, x, y_coord,
                                            win_active, sw, sh, vlen, vram_bytes, backdrop_rgb,
-                                           overflow)
+                                           overflow, y=y)
             sx += dmx
             sy += dmy
 
@@ -2426,6 +2436,16 @@ class PPU:
                 _c5to8((cv >> 5) & 0x1F),
                 _c5to8((cv >> 10) & 0x1F),
             ))
+        
+        # Backdrop is palette index 0 in Mode 4
+        backdrop_rgb = palette_rgb[0]
+        
+        # Convert to numpy arrays for vectorized operations
+        palette_np = None
+        vram_np = None
+        if _HAS_NUMPY:
+            palette_np = np.array(palette_rgb, dtype=np.uint8)  # (256, 3)
+            vram_np = np.frombuffer(vram_bytes, dtype=np.uint8)
 
         # Per-scanline affine snapshots captured by step_scanline() before HBlank-DMA.
         snaps = self._bg2_affine_snapshots
@@ -2441,6 +2461,9 @@ class PPU:
         sh = self.screen_height
         vlen = len(vram_bytes)
         n_snaps = len(snaps)
+        
+        # Pre-convert backdrop to numpy array
+        backdrop_rgb_arr = np.array(backdrop_rgb, dtype=np.uint8) if _HAS_NUMPY else backdrop_rgb
 
         for y in range(sh):
             if y < n_snaps and snaps[y] is not None:
@@ -2449,32 +2472,66 @@ class PPU:
                 dx, dmx, dy, dmy, _, _, overflow = self._read_affine_bg2_params()
             row_fb = fb[y]
             row_lo = lo[y]
-            x = sx - dx
-            y_coord = sy - dy
-            for px in range(sw):
-                x += dx
-                y_coord += dy
-                if self.bg_mosaic[2]:
-                    mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
-                    tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
-                    ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
-                else:
-                    tx = x >> 8
-                    ty = y_coord >> 8
+            
+            if _HAS_NUMPY and not self.bg_mosaic[2]:
+                # Vectorized fast path (no mosaic, no window check in mode 4)
+                xs = sx + np.arange(sw, dtype=np.int64) * dx
+                ys = sy + np.arange(sw, dtype=np.int64) * dy
+                txs = (xs >> 8).astype(np.int64)
+                tys = (ys >> 8).astype(np.int64)
+                
                 if overflow:
-                    tx %= sw
-                    ty %= sh
-                elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
-                    row_fb[px] = backdrop_rgb
-                    row_lo[px] = 0
-                    continue
-                offset = tx + ty * sw
-                if offset < vlen:
-                    row_fb[px] = palette_rgb[vram_bytes[offset]]
-                    row_lo[px] = 2
+                    txs = txs % sw
+                    tys = tys % sh
+                    oob = np.zeros(sw, dtype=bool)
                 else:
-                    row_fb[px] = backdrop_rgb
-                    row_lo[px] = 0
+                    oob = (txs < 0) | (tys < 0) | (txs >= sw) | (tys >= sh)
+                    txs = np.clip(txs, 0, sw - 1)
+                    tys = np.clip(tys, 0, sh - 1)
+                
+                # Gather palette colors
+                offsets = txs + tys * sw
+                valid = (offsets >= 0) & (offsets < vlen)
+                safe_offsets = np.where(valid, offsets, 0)
+                palette_indices = vram_np[safe_offsets]
+                colors = palette_np[palette_indices]
+                
+                # Apply backdrop for invalid/OOB pixels
+                colors = colors.copy()
+                colors[oob | ~valid] = backdrop_rgb_arr
+                
+                # Write back to framebuffer
+                row_fb[:] = [tuple(c) for c in colors]
+                row_lo[:] = np.where(oob | ~valid, 0, 2).tolist()
+            else:
+                # Original per-pixel loop (mosaic path or no numpy)
+                x = sx - dx
+                y_coord = sy - dy
+                for px in range(sw):
+                    x += dx
+                    y_coord += dy
+                    if self.bg_mosaic[2]:
+                        mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
+                        tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
+                        ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
+                    else:
+                        tx = x >> 8
+                        ty = y_coord >> 8
+                    if overflow:
+                        tx %= sw
+                        ty %= sh
+                    elif tx < 0 or ty < 0 or tx >= sw or ty >= sh:
+                        row_fb[px] = backdrop_rgb
+                        row_lo[px] = 0
+                        continue
+                    offset = tx + ty * sw
+                    if offset < vlen:
+                        row_fb[px] = palette_rgb[vram_bytes[offset]]
+                        row_lo[px] = 2
+                    else:
+                        row_fb[px] = backdrop_rgb
+                        row_lo[px] = 0
+            
             sx += dmx
             sy += dmy
 
@@ -2498,7 +2555,7 @@ class PPU:
 
     def _render_bitmap_affine_bg2(self, fb, lo, dx, dy, dmx, dmy, x, y_coord,
                                    win_active, fb_w, bm_h, vlen, vram_bytes, backdrop_rgb,
-                                   overflow, bm_w=None):
+                                   overflow, bm_w=None, y=None):
         """Render affine BG2 bitmap into framebuffer row.
 
         Args:
@@ -2514,47 +2571,90 @@ class PPU:
             backdrop_rgb: backdrop color
             overflow: overflow flag from snapshot
             bm_w: bitmap width for overflow wrap (sw for Mode 3, bw for Mode 5); defaults to fb_w
+            y: current scanline y (needed for window checks)
         """
         if bm_w is None:
             bm_w = fb_w
         
-        for px in range(fb_w):
-            x += dx
-            y_coord += dy
+        # Vectorized fast path (no mosaic, no window)
+        if _HAS_NUMPY and not win_active and not self.bg_mosaic[2]:
+            # Compute source coordinates for all pixels
+            xs = (x + dx) + np.arange(fb_w, dtype=np.int64) * dx
+            ys = (y_coord + dy) + np.arange(fb_w, dtype=np.int64) * dy
+            txs = (xs >> 8).astype(np.int64)
+            tys = (ys >> 8).astype(np.int64)
             
-            if win_active:
-                layer_enable = self._get_window_layer_enable(px, y)
-                if not (layer_enable & 0x04):
+            if overflow:
+                txs = txs % bm_w
+                tys = tys % bm_h
+                oob = np.zeros(fb_w, dtype=bool)
+            else:
+                oob = (txs < 0) | (tys < 0) | (txs >= bm_w) | (tys >= bm_h)
+                txs = np.clip(txs, 0, bm_w - 1)
+                tys = np.clip(tys, 0, bm_h - 1)
+            
+            # For 16-bit RGB555 pixels (Mode 3/5)
+            offsets = (txs + tys * bm_w) * 2
+            valid = (offsets + 1) < vlen
+            safe_offsets = np.where(valid, offsets, 0)
+            
+            # Read 16-bit color values
+            vram_np = np.frombuffer(vram_bytes, dtype=np.uint8)
+            color_vals = vram_np[safe_offsets].astype(np.uint16) | (vram_np[safe_offsets + 1].astype(np.uint16) << 8)
+            
+            # Extract and expand RGB channels
+            r = _c5to8_arr(color_vals & 0x1F)
+            g = _c5to8_arr((color_vals >> 5) & 0x1F)
+            b = _c5to8_arr((color_vals >> 10) & 0x1F)
+            colors = np.stack([r, g, b], axis=-1)
+            
+            # Apply backdrop for invalid/OOB pixels
+            backdrop_arr = np.array(backdrop_rgb, dtype=np.uint8)
+            colors = colors.copy()
+            colors[oob | ~valid] = backdrop_arr
+            
+            # Write back to framebuffer
+            fb[:] = [tuple(c) for c in colors]
+            lo[:] = np.where(oob | ~valid, 0, 2).tolist()
+        else:
+            # Original per-pixel loop (mosaic/window path or no numpy)
+            for px in range(fb_w):
+                x += dx
+                y_coord += dy
+                
+                if win_active:
+                    layer_enable = self._get_window_layer_enable(px, y)
+                    if not (layer_enable & 0x04):
+                        fb[px] = backdrop_rgb
+                        lo[px] = 0
+                        continue
+                
+                if self.bg_mosaic[2]:
+                    mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
+                    tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
+                    ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
+                else:
+                    tx = x >> 8
+                    ty = y_coord >> 8
+                if overflow:
+                    tx %= bm_w
+                    ty %= bm_h
+                elif tx < 0 or ty < 0 or tx >= bm_w or ty >= bm_h:
                     fb[px] = backdrop_rgb
                     lo[px] = 0
                     continue
-            
-            if self.bg_mosaic[2]:
-                mx, my = self._apply_mosaic(px, y, is_obj=False, bg=2)
-                tx = (x + (mx - px) * dx + (my - y) * dmx) >> 8
-                ty = (y_coord + (mx - px) * dy + (my - y) * dmy) >> 8
-            else:
-                tx = x >> 8
-                ty = y_coord >> 8
-            if overflow:
-                tx %= bm_w
-                ty %= bm_h
-            elif tx < 0 or ty < 0 or tx >= bm_w or ty >= bm_h:
-                fb[px] = backdrop_rgb
-                lo[px] = 0
-                continue
-            offset = (tx + ty * bm_w) * 2
-            if offset + 1 < vlen:
-                color_val = vram_bytes[offset] | (vram_bytes[offset + 1] << 8)
-                fb[px] = (
-                    _c5to8((color_val >> 0) & 0x1F),
-                    _c5to8((color_val >> 5) & 0x1F),
-                    _c5to8((color_val >> 10) & 0x1F),
-                )
-                lo[px] = 2
-            else:
-                fb[px] = backdrop_rgb
-                lo[px] = 0
+                offset = (tx + ty * bm_w) * 2
+                if offset + 1 < vlen:
+                    color_val = vram_bytes[offset] | (vram_bytes[offset + 1] << 8)
+                    fb[px] = (
+                        _c5to8((color_val >> 0) & 0x1F),
+                        _c5to8((color_val >> 5) & 0x1F),
+                        _c5to8((color_val >> 10) & 0x1F),
+                    )
+                    lo[px] = 2
+                else:
+                    fb[px] = backdrop_rgb
+                    lo[px] = 0
 
     def _render_mode5(self):
         """Render Mode 5: 160x128 16-bit bitmap via affine BG2 transformation.
@@ -2615,7 +2715,7 @@ class PPU:
             y_coord = sy - dy
             self._render_bitmap_affine_bg2(row_fb, row_lo, dx, dy, dmx, dmy, x, y_coord,
                                            win_active, sw, bh, vlen, vram_bytes, backdrop_rgb,
-                                           overflow, bw)
+                                           overflow, bw, y)
             sx += dmx
             sy += dmy
 

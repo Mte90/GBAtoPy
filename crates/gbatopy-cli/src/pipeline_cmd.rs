@@ -73,6 +73,7 @@ impl FeatureFlags {
                         }
                     }
                     // Also check memory addresses (base register + offset)
+                    // Not collapsible: match arm contains if let, cannot merge into single pattern
                     #[allow(clippy::collapsible_match)]
                     Operand::MemoryAddress {
                         base: _, offset, ..

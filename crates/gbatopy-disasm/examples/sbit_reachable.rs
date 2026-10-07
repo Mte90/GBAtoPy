@@ -4,7 +4,7 @@
 //
 // S-bit (bit 22) on LDM/STM:
 //   - LDM with PC (R15) in list AND S=1  -> exception return (restore CPSR from SPSR). HANDLED by codegen.
-//   - everything else with S=1            -> user-bank register access. UNIMPLEMENTED (load_store.rs:602).
+//   - everything else with S=1            -> user-bank register access. HANDLED by codegen (load_store.rs:601).
 //
 // Usage: cargo run --release --example sbit_reachable -- <rom.gba | dir>
 use gbatopy_disasm::{
@@ -152,7 +152,7 @@ fn main() {
     println!("ROMs with USER-BANK variant (S=1, not LDM+PC):  {}", roms_ub);
     println!("Total S-bit LDM/STM (reachable):                 {}", grand_total);
     println!("  exception_return (LDM^ with PC, HANDLED):      {}", grand_exc);
-    println!("  user_bank (STM^, LDM^ w/o PC, UNIMPLEMENTED):  {}", grand_ub);
+    println!("  user_bank (STM^, LDM^ w/o PC):  {}", grand_ub);
     println!("    of which base NOT in list (task framing):       {}", grand_ub_bnil);
     println!("    of which base IN list (still user-bank!):       {}", grand_ub_bil);
 

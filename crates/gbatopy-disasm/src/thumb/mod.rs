@@ -203,14 +203,12 @@ impl ThumbDecoder {
         }
     }
 
-    fn format_6_pc_rel_load(&self, hw: u16, address: u32) -> (String, Vec<crate::Operand>, bool) {
+    fn format_6_pc_rel_load(&self, hw: u16, _address: u32) -> (String, Vec<crate::Operand>, bool) {
         let rd = ((hw >> 8) & 0x7) as u8;
         let imm8 = (hw & 0xFF) as u32;
-        let pc_aligned = (address + 4) & !3;
-        let target = pc_aligned + (imm8 << 2);
         (
             "LDR".to_string(),
-            vec![self.reg(rd), self.imm(target)],
+            vec![self.reg(rd), crate::Operand::MemoryAddress { base: 15, offset: crate::operand::AddressingMode::ImmediateOffset((imm8 << 2) as i32), writeback: false }],
             false,
         )
     }
@@ -233,7 +231,7 @@ impl ThumbDecoder {
         };
         (
             name.to_string(),
-            vec![self.reg(rd), self.reg(rb), self.reg(ro)],
+            vec![self.reg(rd), crate::Operand::MemoryAddress { base: rb, offset: crate::operand::AddressingMode::RegisterOffset(ro), writeback: false }],
             false,
         )
     }
@@ -247,7 +245,7 @@ impl ThumbDecoder {
         let name = if l_bit != 0 { "LDR" } else { "STR" };
         (
             name.to_string(),
-            vec![self.reg(rd), self.reg(rn), self.imm(offset)],
+            vec![self.reg(rd), crate::Operand::MemoryAddress { base: rn, offset: crate::operand::AddressingMode::ImmediateOffset(offset as i32), writeback: false }],
             false,
         )
     }
@@ -260,7 +258,7 @@ impl ThumbDecoder {
         let name = if l_bit != 0 { "LDRB" } else { "STRB" };
         (
             name.to_string(),
-            vec![self.reg(rd), self.reg(rn), self.imm(imm5)],
+            vec![self.reg(rd), crate::Operand::MemoryAddress { base: rn, offset: crate::operand::AddressingMode::ImmediateOffset(imm5 as i32), writeback: false }],
             false,
         )
     }
@@ -274,7 +272,7 @@ impl ThumbDecoder {
         let name = if l_bit != 0 { "LDRH" } else { "STRH" };
         (
             name.to_string(),
-            vec![self.reg(rd), self.reg(rn), self.imm(offset)],
+            vec![self.reg(rd), crate::Operand::MemoryAddress { base: rn, offset: crate::operand::AddressingMode::ImmediateOffset(offset as i32), writeback: false }],
             false,
         )
     }
@@ -286,7 +284,7 @@ impl ThumbDecoder {
         let name = if l_bit != 0 { "LDR" } else { "STR" };
         (
             name.to_string(),
-            vec![self.reg(rd), self.reg(13), self.imm(imm8)],
+            vec![self.reg(rd), crate::Operand::MemoryAddress { base: 13, offset: crate::operand::AddressingMode::ImmediateOffset(imm8 as i32), writeback: false }],
             false,
         )
     }
@@ -571,5 +569,185 @@ impl ThumbDecoder {
 impl Default for ThumbDecoder {
     fn default() -> Self {
         Self::new()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_thumb_format1_lsl() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x0000, 0x08000000);
+        assert_eq!(mnem, "LSL");
+        assert_eq!(ops.len(), 3);
+    }
+
+    #[test]
+    fn test_thumb_format2_add() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x1800, 0x08000000);
+        assert_eq!(mnem, "ADD");
+        assert_eq!(ops.len(), 3);
+    }
+
+    #[test]
+    fn test_thumb_format3_mov() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x2000, 0x08000000);
+        assert_eq!(mnem, "MOV");
+        assert_eq!(ops.len(), 2);
+    }
+
+    #[test]
+    fn test_thumb_format4_and() {
+        let dec = ThumbDecoder::new();
+        let (mnem, _ops, flags) = dec.decode(0x4000, 0x08000000);
+        assert_eq!(mnem, "AND");
+        assert!(!flags);
+    }
+
+    #[test]
+    fn test_thumb_format5_add_hi() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x4400, 0x08000000);
+        assert_eq!(mnem, "ADD");
+        assert_eq!(ops.len(), 3);
+    }
+
+    #[test]
+    fn test_thumb_format6_ldr_pc() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x4800, 0x08000000);
+        assert_eq!(mnem, "LDR");
+        assert_eq!(ops.len(), 2);
+    }
+
+    #[test]
+    fn test_thumb_format7_ldr_reg() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x5800, 0x08000000);
+        assert_eq!(mnem, "LDR");
+        assert_eq!(ops.len(), 2); // Register + MemoryAddress
+    }
+
+    #[test]
+    fn test_thumb_format9_ldr_imm() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x6000, 0x08000000);
+        assert_eq!(mnem, "STR");
+        assert_eq!(ops.len(), 2); // Register + MemoryAddress
+    }
+
+    #[test]
+    fn test_thumb_format10_ldrh() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x8800, 0x08000000);
+        assert_eq!(mnem, "LDRH");
+        assert_eq!(ops.len(), 2); // Register + MemoryAddress
+    }
+
+    #[test]
+    fn test_thumb_format11_ldr_sp() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0x9800, 0x08000000);
+        assert_eq!(mnem, "LDR");
+        assert_eq!(ops.len(), 2); // Register + MemoryAddress
+    }
+
+    #[test]
+    fn test_thumb_format12_add_pc() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xA000, 0x08000000);
+        assert_eq!(mnem, "ADD");
+        assert_eq!(ops.len(), 3);
+    }
+
+    #[test]
+    fn test_thumb_format13_add_sp() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xB000, 0x08000000);
+        assert_eq!(mnem, "ADD");
+        assert_eq!(ops.len(), 3);
+    }
+
+    #[test]
+    fn test_thumb_format14_push() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xB5F0, 0x08000000);
+        assert_eq!(mnem, "PUSH");
+        assert_eq!(ops.len(), 5);
+    }
+
+    #[test]
+    fn test_thumb_format15_stmia() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xC003, 0x08000000);
+        assert_eq!(mnem, "STMIA");
+        assert_eq!(ops.len(), 3);
+    }
+
+    #[test]
+    fn test_thumb_format16_beq() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xD000, 0x08000000);
+        assert_eq!(mnem, "BEQ");
+        assert_eq!(ops.len(), 1);
+    }
+
+    #[test]
+    fn test_thumb_format17_swi() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xDF00, 0x08000000);
+        assert_eq!(mnem, "SWI");
+        assert_eq!(ops.len(), 1);
+    }
+
+    #[test]
+    fn test_thumb_format18_b() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xE000, 0x08000000);
+        assert_eq!(mnem, "B");
+        assert_eq!(ops.len(), 1);
+    }
+
+    #[test]
+    fn test_thumb_format19_bl_prefix() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xF000, 0x08000000);
+        assert_eq!(mnem, "BL_PREFIX");
+        assert_eq!(ops.len(), 1);
+    }
+
+    #[test]
+    fn test_thumb_format19_bl_suffix() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xF800, 0x08000000);
+        assert_eq!(mnem, "BL_SUFFIX");
+        assert_eq!(ops.len(), 1);
+    }
+
+    #[test]
+    fn test_thumb_misc_nop() {
+        let dec = ThumbDecoder::new();
+        let (mnem, ops, _flags) = dec.decode(0xBF00, 0x08000000);
+        assert_eq!(mnem, "NOP");
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn test_all_cond_branches() {
+        let dec = ThumbDecoder::new();
+        let conditions = vec![
+            (0xD000, "BEQ"), (0xD100, "BNE"), (0xD200, "BCS"),
+            (0xD300, "BCC"), (0xD400, "BMI"), (0xD500, "BPL"),
+            (0xD600, "BVS"), (0xD700, "BVC"), (0xD800, "BHI"),
+            (0xD900, "BLS"), (0xDA00, "BGE"), (0xDB00, "BLT"),
+            (0xDC00, "BGT"), (0xDD00, "BLE"),
+        ];
+        for (hw, expected) in conditions {
+            let (mnem, _ops, _flags) = dec.decode(hw, 0x08000000);
+            assert_eq!(mnem, expected, "Failed for 0x{:04X}", hw);
+        }
     }
 }

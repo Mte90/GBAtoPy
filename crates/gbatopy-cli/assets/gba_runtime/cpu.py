@@ -481,7 +481,11 @@ class CPU:
             self.registers[rd] = result
         elif op == 6:  # SBC
             c = 1 if self.flag_c else 0
-            result = (operand1 - operand2 - c + 0x100000000) & 0xFFFFFFFF
+            result = (operand1 - operand2 - (1 - c) + 0x100000000) & 0xFFFFFFFF
+            self.registers[rd] = result
+        elif op == 7:  # RSC
+            c = 1 if self.flag_c else 0
+            result = (operand2 - operand1 - (1 - c) + 0x100000000) & 0xFFFFFFFF
             self.registers[rd] = result
         elif op == 8:  # TST
             result = operand1 & operand2
@@ -802,12 +806,15 @@ class CPU:
         elif num == 0x15:  # RLUnCompVram
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_rl_uncomp(self.registers[0], self.registers[1])
-        elif num == 0x16:  # BitUnPackVram
+        elif num == 0x16:  # Diff8bitUnFilterWram
             if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_bit_unpack(self.registers[0], self.registers[1], self.registers[2])
-        elif num == 0x18:  # DiffUnCompFilterWrite
+                self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=False)
+        elif num == 0x17:  # Diff8bitUnFilterVram
             if hasattr(self, 'bios') and self.bios is not None:
-                self.bios.swi_diff_uncomp_filter(self.registers[0], self.registers[1])
+                self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=False)
+        elif num == 0x18:  # Diff16bitUnFilter
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=True)
         # Unknown SWI: no-op (graceful handling)
 
     def _arm_halfword_transfer(self, opcode: int) -> bool:

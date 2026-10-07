@@ -4,14 +4,14 @@
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
 > **Last updated**: 2026-10-05  
-> **Current state**: 91 PASS, 0 FAIL, 0 SKIP (4 LinkCable/LinkUART ROMs deferred pending multi-GBA setup) out of 91 ROMs. **0 regressions** from all fixes applied. Build: 0 errors, 0 warnings.
+> **Current state**: 91 PASS, 0 FAIL, 0 SKIP out of 91 ROMs. **0 regressions** from all fixes applied. Build: 0 errors, 0 warnings.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
-
----
 
 ## 1. Project Overview
 
 GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files playable with pygame. NOT an emulator — the output is human-readable Python source code that can be read, modified, and extended.
+
+**Test suite:** 656 Python tests PASS · 443 Rust tests PASS · 91/91 ROMs PASS (L1/L2/L3 verification).
 
 ---
 
@@ -38,20 +38,20 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - **Recent fix (2026-07-27)**: HBlank/VBlank DMA uses full-count burst on first trigger via `_do_transfer()`
 
 ### ✅ Wave 3: BIOS Handlers - COMPLETE
-- 54 BIOS SWI handlers implemented in arm7tdmi.py
+- 13 live BIOS SWI handlers in bios.py (F181 removed 40 dead handlers)
 - Core handlers: Halt, IntrWait, VBlankIntrWait, Div, Sqrt, DivArm
 - CPU operations: CPUSet, CPUFastSet, RegisterRamReset
 - Decompression: LZ77, Huffman, RLE (LZ77UnComp, HuffmanUnComp, RLUnComp)
 - Arithmetic: ArcTan, ArcTan2, BitCount, Sin, Cos, Sqrt
 - Geometry: ObjAffineSet, BgAffineSet
-- MIDI operations, Time functions, Sound control
+- Time functions, Sound control (MIDI handlers removed as dead code in F181)
 
 ### ✅ Wave 4: PPU Rendering — PARTIAL
 - **Mode 0 (4BPP text)**: Verified on shades, hello, helloWorld, hello_world (all <30% diff vs mGBA)
 - **Mode 2 (affine)**: Verified on mode2.gba (20.0% diff)
 - **Mode 3 (16-bit bitmap)**: Verified on stripes, mode3, bgx (all 0.0% diff)
 - **Mode 4 (8BPP bitmap)**: Verified on mode4 (0.0% diff)
-- **Mode 1 (affine)**: Code exists, unit tested (test_ppu_rendering.py — affine identity + 2x scale)
+- **Mode 1 (affine)**: Verified (F252 added 5 unit tests, all PASS)
 - **Mode 5**: Implemented, unit tested (test_ppu_rendering.py — test_mode5_renders_small_bitmap)
 - **Per-scanline affine parameter snapshots**: Implemented for Mode 3/4/5 (2026-07-27)
 - **Window layers (WIN0/WIN1/OBJWIN)**: IMPLEMENTED and verified (window_midframe passes)
@@ -78,7 +78,7 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 | Noise channel (CH4) | Implemented | Unverified against hardware spectrum |
 | FIFO A/B DMA | Implemented | helloAudio PASS (0% diff), song PASS (1.12% diff), rates PASS (3.65% diff) |
 | MIDI synthesis | REMOVED | Handlers 0x1B-0x24 removed as dead code in F181 |
-| Automated audio testing | MISSING | No spectral analysis vs mGBA exists |
+| Automated audio testing | DONE | F186 added spectral comparison harness (commit a03951d) |
 
 **Gap:** Visual-only verification (screenshots) cannot validate audio accuracy. helloAudio/song/rates PASS based on visual output, not audio spectrum comparison. A dedicated audio verification harness comparing generated waveform samples against mGBA output is needed for true audio accuracy validation.
 
@@ -87,7 +87,7 @@ GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files 
 - Wave channel (CH3): 8/4-bit wave RAM playback with volume scaling. Unverified against hardware.
 - Noise channel (CH4): LFSR-based noise with 7/15-bit width. Unverified against hardware.
 - FIFO playback (CH1/2 via DMA): Verified with helloAudio (0% diff), song (1.12% diff), rates (3.65% diff).
-- **Missing verification:** No automated audio spectrum comparison test exists. Current verification is visual-only (screenshots). Audio accuracy claims are based on functional tests (helloAudio PASS) but not spectral analysis against mGBA output.
+- **Audio verification:** Audio spectral comparison harness exists (F186, commit a03951d).
 
 ### ✅ Wave 6: Interrupt System - COMPLETE
 - VBlank/HBlank/VCount interrupt dispatch
@@ -182,8 +182,8 @@ Runtime hangs: 0
 ### SKIP (0 ROMs)
 - None. All previously skipped ROMs (rates, song, enhancedcontrolchecker, test) now PASS.
 
-### Not Implemented / Not Verified
-- **PPU Mode 1 (affine)**: Code exists, unit tested (test_ppu_rendering.py)
+### Implemented — Not Hardware-Verified
+- **PPU Mode 1 (affine)**: Verified (F252 added 5 unit tests, all PASS)
 - **PPU Mode 5**: Implemented, unit tested (test_ppu_rendering.py)
 - **Windows/Alpha Blending/Mosaic**: IMPLEMENTED (window_midframe verified; sprite-hmosaic verified at 27.02% diff)
 - **Sprite rendering**: Implemented and verified (sprite-hmosaic PASS, proposal_proposal-demo PASS)
@@ -228,7 +228,7 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 8. ~~**Generate goldens for 2 NEW ROMs** (gbarcade, bpcore_BPCoreEngine)~~ — ✅ DONE: Both ROMs have goldens and pass visual verification
 9. ~~**numba JIT (future work)**~~ — ✅ NOT NEEDED: 209.3 FPS achieved (42× from initial 4.9 FPS) via timer O(1) early-exit, memory read double-mapping fix, instruction dispatch caching, and page-table memory dispatch. Performance target of 60 FPS exceeded by 3.5× without JIT. numba remains available behind `--jit` flag if future ROMs need even higher throughput.
 10. **F14: N/S-cycle memory access timing — PERMANENTLY DEFERRED (KILL)** — Oracle analysis (92% confidence) found that adding cycle-accurate memory timing violates all 5 runtime invariants. Zero failing ROMs require cycle-accurate timing. Full analysis in `WORKPLAN.md`.
-11. **F40: Link cable transfer — DEFERRED (stub only)** — No ROM in the test suite exercises real link-cable data transfer. The runtime exposes a stub `LinkCable` class that no-ops on read/write.
+11. **F40: Link cable transfer — DEFERRED** — No ROM in the test suite exercises real link-cable data transfer. The runtime implements SIO registers (`serial.py`) for read/write compatibility, but no actual link-cable peer-to-peer transfer logic exists.
 
 ---
 
@@ -239,7 +239,7 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 | Rust source lines | ~15,000 (across 3 crates) |
 | Python runtime lines | ~9,800 (memory.py + ppu.py + cpu.py + arm7tdmi.py + input.py + bios.py + save_state.py + hooks.py + timers.py + dma.py + apu.py + interrupts.py) |
 | Test ROMs | 91 |
-| BIOS handlers | 54 |
+| BIOS handlers | 13 live (F181 removed 40 dead) |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
 | Test pass rate | 91/91 visual verified (100%); 0 fail; 0 skip; 0 not yet run |

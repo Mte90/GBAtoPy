@@ -8,7 +8,6 @@ name = "gbatopy-test"
 path = "src/main.rs"
 
 [dependencies]
-gbatopy-cli = { path = "../gbatopy-cli" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = "0.8"
@@ -22,3 +21,6 @@ clap = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

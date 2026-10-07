@@ -229,6 +229,52 @@ The script automatically exports:
 
 ---
 
+### `audio/capture_transpiled.py` — Transpiled Audio Capture
+
+**Purpose:** Capture audio from a transpiled GBA ROM Python file and write to a 16-bit stereo WAV file at 44100Hz.
+
+**What it does:**
+- ✅ Import a transpiled ROM module (standalone Python file)
+- ✅ Access the global `apu` instance from the module
+- ✅ Call `apu._generate_samples()` in a loop for N frames
+- ✅ Convert 8-bit unsigned samples to 16-bit signed
+- ✅ Write to WAV file with proper RIFF header
+
+**Requirements:**
+- The transpiled ROM must expose a global `apu` instance from `gba_runtime.apu`
+- The APU must have a `_generate_samples(count)` method that returns raw audio bytes
+
+**Usage:**
+```bash
+# Capture 300 frames (~5 seconds) - default
+python3 scripts/audio/capture_transpiled.py /tmp/stripes.py /tmp/stripes_audio.wav
+
+# Custom frame count (e.g., 60 frames = ~1 second)
+python3 scripts/audio/capture_transpiled.py /tmp/hello.py /tmp/hello.wav --frames 60
+
+# Longer capture (600 frames = ~10 seconds)
+python3 scripts/audio/capture_transpiled.py /tmp/mode3.py /tmp/mode3.wav --frames 600
+```
+
+**Output:** 16-bit stereo WAV file at 44100Hz
+
+**Example workflow:**
+```bash
+# 1. Transpile ROM
+cargo run -p gbatopy-cli -- pipeline --rom test_roms/roms/stripes.gba --output /tmp/stripes.py
+
+# 2. Capture golden audio from mGBA
+./scripts/audio/capture_golden.sh --rom test_roms/roms/stripes.gba --frame 300 --output /tmp/stripes_golden.wav
+
+# 3. Capture audio from transpiled ROM
+python3 scripts/audio/capture_transpiled.py /tmp/stripes.py /tmp/stripes_transpiled.wav --frames 300
+
+# 4. Compare audio
+python3 scripts/verify/compare_audio.py /tmp/stripes_golden.wav /tmp/stripes_transpiled.wav
+```
+
+---
+
 ## Setup Scripts
 
 ### `setup/download_roms.sh` — Download Test ROMs
@@ -305,24 +351,64 @@ python3 scripts/verify/compare_screenshots.py -s golden.png transpiled.png \
 
 ### `compare_audio.py` — Golden Audio Comparison
 
-**Purpose:** Compare mGBA golden audio with transpiled ROM audio. Detects audio differences using RMS and sample-by-sample analysis.
+**Purpose:** Compare mGBA golden audio with transpiled ROM audio using time-domain and optional FFT-based spectral analysis.
+
+**What it does:**
+- ✅ Load both 8-bit and 16-bit WAV files (auto-detects format)
+- ✅ Normalize samples to float64 in range [-1.0, 1.0]
+- ✅ Compute time-domain metrics: mean diff, RMS diff, correlation
+- ✅ Detect silent files (both below noise floor) → reports SKIP (not PASS)
+- ✅ Optional FFT-based spectral comparison (`--spectral` flag)
+- ✅ Report content percentage for both files
+
+**Format Support:**
+- 8-bit unsigned WAV (converts from [0, 255] to [-1.0, 1.0])
+- 16-bit signed WAV (converts from [-32768, 32767] to [-1.0, 1.0])
+- Mono and stereo files (stereo mixed to mono for comparison)
 
 **Usage:**
 ```bash
-# Compare single pair
+# Basic comparison (time-domain only)
 python3 scripts/verify/compare_audio.py golden.wav transpiled.wav
 
-# With custom threshold (default: 0.01)
-python3 scripts/verify/compare_audio.py golden.wav transpiled.wav --threshold 0.05
+# With FFT-based spectral comparison
+python3 scripts/verify/compare_audio.py golden.wav transpiled.wav --spectral
 
-# Generate comparison report
-python3 scripts/verify/compare_audio.py golden.wav transpiled.wav --output-report /tmp/audio_report.json
+# Custom threshold (default: 30.0%)
+python3 scripts/verify/compare_audio.py golden.wav transpiled.wav --threshold 20.0
+
+# Include frame count in report
+python3 scripts/verify/compare_audio.py golden.wav transpiled.wav --frame 300
 ```
 
+**Exit codes:**
+- `0` — PASS or SKIP (both silent)
+- `1` — FAIL or error
+
 **Statuses:**
-- `PASS` — audio difference below threshold
-- `FAIL` — audio difference at or above threshold
-- `INCONCLUSIVE` — one or both files are empty
+- `PASS` — difference below threshold AND both files have content
+- `FAIL` — difference at or above threshold
+- `SKIP` — both files silent (below 0.1% content threshold)
+
+**Metrics reported:**
+- **Time-domain:** mean_diff, rms_diff, correlation, diff_percentage
+- **Content:** golden_content%, transpiled_content% (percentage of samples above noise floor)
+- **Spectral (with --spectral):** spectral_correlation, spectral_diff, num_fft_bins
+
+**Example workflow:**
+```bash
+# Capture golden audio
+./scripts/audio/capture_golden.sh --rom test_roms/roms/stripes.gba --frame 300 --output /tmp/stripes_golden.wav
+
+# Capture transpiled audio
+python3 scripts/audio/capture_transpiled.py /tmp/stripes.py /tmp/stripes_transpiled.wav --frames 300
+
+# Compare with time-domain only
+python3 scripts/verify/compare_audio.py /tmp/stripes_golden.wav /tmp/stripes_transpiled.wav
+
+# Compare with spectral analysis
+python3 scripts/verify/compare_audio.py /tmp/stripes_golden.wav /tmp/stripes_transpiled.wav --spectral
+```
 
 ---
 
@@ -349,6 +435,24 @@ python3 scripts/verify/ewram_dump_verify.py /tmp/ewram_dump.bin
 ```bash
 python3 scripts/verify/coverage_tracker.py --report
 ```
+
+---
+
+### `regress_all.sh` — Full Regression Suite
+
+**Purpose:** Run the complete 76-ROM regression suite at Level 3 (syntax + execution + visual comparison). Wrapper around `run_tests.py --level 3`.
+
+**What it does:**
+- ✅ Transpile all 76 test ROMs
+- ✅ Run Level 3 verification on each ROM
+- ✅ Report PASS/FAIL for the entire suite
+
+**Usage:**
+```bash
+./scripts/verify/regress_all.sh
+```
+
+**Output:** Full test results in console + JSON reports in `test-reports/`. May take 10-15 minutes to complete.
 
 ---
 
@@ -609,6 +713,22 @@ Runs: `no-skip.sh`, `no-debug-probes.sh`, `doc-sync.sh` (if files provided), `st
 ```bash
 for c in scripts/check/*.sh; do bash "$c" || exit 1; done
 ```
+
+---
+
+## Ghidra Oracle Scripts
+
+### `ghidra/` — Static Analysis Oracle
+
+**Purpose:** Ghidra-based cross-validation scripts for debugging transpiler static analysis bugs (function discovery, basic-block boundaries, instruction decode).
+
+**Scripts:**
+- `ghidra_functions.sh <rom>` — Import ROM and compare Ghidra's symbol table vs transpiler's dispatch table
+- `ghidra_decode.sh <rom> <addr>` — Disassemble at a specific address
+- `ghidra_blocks.sh <rom>` — Analyze basic block boundaries
+- `ghidra_decompile.sh <rom> <addr>` — Decompile a function at a given address
+
+**Usage:** See `scripts/ghidra/README.md` for detailed documentation and cross-validation workflow.
 
 ---
 

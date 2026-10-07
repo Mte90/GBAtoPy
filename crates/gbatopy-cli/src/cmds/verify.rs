@@ -20,7 +20,10 @@ pub fn verify_all(
             let rom_path = path.to_str().unwrap_or("");
             println!(
                 "\n--- Testing: {} ---",
-                path.file_name().unwrap().to_str().unwrap()
+                path.file_name()
+                    .ok_or_else(|| format!("ROM path has no file name: {:?}", path))?
+                    .to_str()
+                    .ok_or_else(|| format!("ROM path contains non-UTF8 characters: {:?}", path))?
             );
 
             match verify_single_rom(rom_path, output_dir, frames) {
@@ -55,7 +58,11 @@ fn verify_single_rom(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("  Generating Python from ROM...");
 
-    let rom_name = Path::new(rom_path).file_stem().unwrap().to_str().unwrap();
+    let rom_name = Path::new(rom_path)
+        .file_stem()
+        .ok_or_else(|| format!("ROM path has no file stem: {:?}", rom_path))?
+        .to_str()
+        .ok_or_else(|| format!("ROM path contains non-UTF8 characters: {:?}", rom_path))?;
     let py_path = format!("{}/{}_test.py", output_dir, rom_name);
 
     let status = Command::new("cargo")

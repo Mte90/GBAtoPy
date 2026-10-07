@@ -6,7 +6,11 @@ fn generate_python_if_missing(
     rom_path: &str,
     output_dir: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let rom_name = Path::new(rom_path).file_stem().unwrap().to_str().unwrap();
+    let rom_name = Path::new(rom_path)
+        .file_stem()
+        .ok_or_else(|| format!("ROM path has no file stem: {:?}", rom_path))?
+        .to_str()
+        .ok_or_else(|| format!("ROM path contains non-UTF8 characters: {:?}", rom_path))?;
     let py_path = format!("{}/{}_test.py", output_dir, rom_name);
 
     if Path::new(&py_path).exists() {
@@ -122,7 +126,11 @@ pub fn verify_screenshot(
     println!("Comparing screenshot for {}...", rom_path);
 
     let py_path = generate_python_if_missing(rom_path, output_dir)?;
-    let rom_name = Path::new(rom_path).file_stem().unwrap().to_str().unwrap();
+    let rom_name = Path::new(rom_path)
+        .file_stem()
+        .ok_or_else(|| format!("ROM path has no file stem: {:?}", rom_path))?
+        .to_str()
+        .ok_or_else(|| format!("ROM path contains non-UTF8 characters: {:?}", rom_path))?;
     let screenshot_path = format!("{}/{}_screenshot.png", output_dir, rom_name);
     let reference_path = format!("{}/{}_reference.png", reference_dir, rom_name);
 
@@ -236,4 +244,124 @@ pub fn verify_regression(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === Path construction tests ===
+    #[test]
+    fn test_rom_path_has_file_stem_valid() {
+        // Valid ROM path with file stem
+        let result = Path::new("/path/to/rom.gba").file_stem();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "rom");
+    }
+
+    #[test]
+    fn test_rom_path_has_file_stem_with_dir() {
+        // ROM path with directory components
+        let result = Path::new("test_roms/roms/hello.gba").file_stem();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_rom_path_has_no_file_stem_root() {
+        // Root path has no file stem
+        let result = Path::new("/").file_stem();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_rom_path_has_no_file_stem_empty() {
+        // Empty path has no file stem
+        let result = Path::new("").file_stem();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_py_path_construction() {
+        // Test Python output path construction
+        let rom_path = "test.gba";
+        let output_dir = "/tmp/output";
+        let rom_name = Path::new(rom_path).file_stem().unwrap().to_str().unwrap();
+        let py_path = format!("{}/{}_test.py", output_dir, rom_name);
+        assert_eq!(py_path, "/tmp/output/test_test.py");
+    }
+
+    #[test]
+    fn test_screenshot_path_construction() {
+        // Test screenshot path construction
+        let rom_path = "pong.gba";
+        let output_dir = "/tmp/screenshots";
+        let rom_name = Path::new(rom_path).file_stem().unwrap().to_str().unwrap();
+        let screenshot_path = format!("{}/{}_screenshot.png", output_dir, rom_name);
+        assert_eq!(screenshot_path, "/tmp/screenshots/pong_screenshot.png");
+    }
+
+    #[test]
+    fn test_reference_path_construction() {
+        // Test reference path construction
+        let rom_path = "combo.gba";
+        let reference_dir = "/tmp/references";
+        let rom_name = Path::new(rom_path).file_stem().unwrap().to_str().unwrap();
+        let reference_path = format!("{}/{}_reference.png", reference_dir, rom_name);
+        assert_eq!(reference_path, "/tmp/references/combo_reference.png");
+    }
+
+    // === Error handling tests ===
+    #[test]
+    fn test_error_conversion_from_string() {
+        // Test that String can be converted to Box<dyn Error>
+        let err: Box<dyn std::error::Error> = "test error".to_string().into();
+        assert_eq!(err.to_string(), "test error");
+    }
+
+    #[test]
+    fn test_error_conversion_from_format() {
+        // Test formatted error conversion
+        let msg = "Pipeline failed: some error";
+        let err: Box<dyn std::error::Error> = format!("{}", msg).into();
+        assert_eq!(err.to_string(), msg);
+    }
+
+    // === Path validation edge cases ===
+    #[test]
+    fn test_path_with_extension() {
+        // Path with .gba extension
+        let stem = Path::new("game.gba").file_stem().unwrap().to_str().unwrap();
+        assert_eq!(stem, "game");
+    }
+
+    #[test]
+    fn test_path_with_multiple_dots() {
+        // Path with multiple dots in filename
+        let stem = Path::new("game.v1.0.gba").file_stem().unwrap().to_str().unwrap();
+        assert_eq!(stem, "game.v1.0");
+    }
+
+    #[test]
+    fn test_path_without_extension() {
+        // Path without extension
+        let stem = Path::new("game").file_stem().unwrap().to_str().unwrap();
+        assert_eq!(stem, "game");
+    }
+
+    #[test]
+    fn test_nested_path() {
+        // Deeply nested path
+        let stem = Path::new("a/b/c/d/e/rom.gba").file_stem().unwrap().to_str().unwrap();
+        assert_eq!(stem, "rom");
+    }
+
+    #[test]
+    fn test_absolute_vs_relative_paths() {
+        // Both absolute and relative paths should extract stem correctly
+        let abs_stem = Path::new("/absolute/path/rom.gba").file_stem().unwrap().to_str().unwrap();
+        let rel_stem = Path::new("relative/path/rom.gba").file_stem().unwrap().to_str().unwrap();
+        assert_eq!(abs_stem, rel_stem);
+        assert_eq!(abs_stem, "rom");
+    }
 }

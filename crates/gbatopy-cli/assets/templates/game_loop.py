@@ -1,6 +1,7 @@
 
 import os
 import time
+import array
 
 def calibrate_gba_timing(measure_cycles=100000):
     """Calibrate Python execution speed to match GBA 16.79 MHz."""
@@ -27,7 +28,7 @@ def _load_sram():
         with open(_save_file_path(), 'rb') as f:
             data = f.read()
         if data and len(data) <= len(memory.sram):
-            memory.sram[:len(data)] = data
+            memory.sram[:len(data)] = array.array('B', data)
     except (FileNotFoundError, OSError):
         pass
 
@@ -36,7 +37,7 @@ def _save_sram():
         return
     try:
         with open(_save_file_path(), 'wb') as f:
-            f.write(memory.sram)
+            f.write(memory.sram.tobytes())
     except OSError as e:
         print(f"Warning: Failed to save SRAM: {e}", file=sys.stderr)
 
@@ -194,10 +195,12 @@ def swi_handler(swi_field):
         arm7tdmi_instance.bios.swi_rl_uncomp(registers[0], registers[1])
     elif swi_num == 0x15:  # RLUnCompVram
         arm7tdmi_instance.bios.swi_rl_uncomp(registers[0], registers[1])
-    elif swi_num == 0x16:  # BitUnPackVram
-        arm7tdmi_instance.bios.swi_bit_unpack(registers[0], registers[1], registers[2])
-    elif swi_num == 0x18:  # DiffUnCompFilterWrite
-        arm7tdmi_instance.bios.swi_diff_uncomp_filter(registers[0], registers[1])
+    elif swi_num == 0x16:  # Diff8bitUnFilterWram
+        arm7tdmi_instance.bios.swi_diff_unfilter(registers[0], registers[1], is_16bit=False)
+    elif swi_num == 0x17:  # Diff8bitUnFilterVram
+        arm7tdmi_instance.bios.swi_diff_unfilter(registers[0], registers[1], is_16bit=False)
+    elif swi_num == 0x18:  # Diff16bitUnFilter
+        arm7tdmi_instance.bios.swi_diff_unfilter(registers[0], registers[1], is_16bit=True)
 def _sync_state_to_cpu(registers, cpsr):
     global _interp_cpu
     if _interp_cpu is None:

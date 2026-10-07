@@ -490,6 +490,215 @@ def test_mode3_bg2_disabled_renders_backdrop():
     print("✓ test_mode3_bg2_disabled_renders_backdrop passed")
 
 
+def test_mode1_text_bg0_renders():
+    """Mode 1: BG0 text mode with 4BPP tile, BG2 disabled."""
+    ppu, memory = make_ppu()
+    
+    # Set DISPCNT to mode 1 + BG0 enable (0x0100 | 0x0001 = 0x0101)
+    # Mode 1 = bits 0-2 = 001, BG0 enable = bit 8 = 0x0100
+    memory.write_u16(0x04000000, 0x0101)
+    
+    # Set BG0CNT: priority=0, char base=0, 4BPP (bit 7=0), screen base=1, size=0
+    # Value = 0x0100 (screen base block 1) = 0x0100
+    memory.write_u16(0x04000008, 0x0100)
+    
+    # Write tile data: tile 0 is 32 bytes (4BPP), fill with palette index 1
+    tile_addr = 0x06000000
+    for i in range(32):
+        memory.write_u8(tile_addr + i, 0x01)  # Each byte = 2 pixels (4BPP)
+    
+    # Write tilemap: entry (0,0) = tile 0
+    # Screen base block 1 = 0x06000800
+    memory.write_u16(0x06000800, 0x0000)  # tile 0 at map entry (0,0)
+    
+    # Set palette[1] = red
+    memory.write_u16(0x05000002, 0x001F)
+    
+    step_frame(ppu)
+    
+    # Verify red pixel from BG0 text tile
+    assert ppu.framebuffer[0][0] == (255, 0, 0), f"Expected red from BG0 text, got {ppu.framebuffer[0][0]}"
+    
+    print("✓ test_mode1_text_bg0_renders passed")
+
+
+def test_mode1_affine_bg2_renders():
+    """Mode 1: BG2 affine with identity matrix, 8BPP tile data."""
+    memory = Memory()
+    memory._interrupts = MockInterrupts()
+    memory._dma = MockDMA()
+    
+    # Set DISPCNT to mode 1 + BG2 enable BEFORE creating PPU (PPU reads config at init)
+    # Mode 1 = bits 0-2 = 001, BG2 enable = bit 10 = 0x0400
+    # Value = 0x0400 | 0x0001 = 0x0401
+    memory.write_u16(0x04000000, 0x0401)
+    
+    # Set BG2CNT: priority=0, char base=0, 8BPP, screen base=1, size=1 (256x256)
+    # Value = 0x0000 (priority 0) | 0x0000 (char base 0) | 0x0080 (8BPP) | 0x0100 (screen base 1) | 0x4000 (size 1) = 0x4180
+    memory.write_u16(0x0400000C, 0x4180)
+    
+    ppu = PPU(memory)
+    
+    # Set identity affine params: PA=256, PD=256 (1.0 in 16.8 fixed point)
+    memory.write_u16(0x04000020, 256)  # BG2PA
+    memory.write_u16(0x04000022, 0)    # BG2PB
+    memory.write_u16(0x04000024, 0)    # BG2PC
+    memory.write_u16(0x04000026, 256)  # BG2PD
+    memory.write_u32(0x04000028, 0)    # BG2X (lower 16 bits)
+    memory.write_u32(0x0400002C, 0)    # BG2X (upper 16 bits) + BG2Y
+    memory.write_u32(0x04000030, 0)    # BG2Y (upper 16 bits) + reserved
+    
+    # Write tile data: tile 0 is 64 bytes (8BPP), fill with palette index 1
+    tile_addr = 0x06000000
+    for i in range(64):
+        memory.write_u8(tile_addr + i, 1)  # 8BPP = 1 byte per pixel
+    
+    # Write affine tilemap: screen base 1 = 0x06000800, 32x32 map for 256x256 BG
+    # Each entry is 1 byte (8-bit tilemap for affine)
+    # Fill first 8x8 tiles with tile index 0
+    for i in range(64):
+        memory.write_u8(0x06000800 + i, 0)  # tile 0 at each map entry
+    
+    # Set palette[1] = red
+    memory.write_u16(0x05000002, 0x001F)
+    
+    step_frame(ppu)
+    
+    # Identity transform = direct passthrough
+    assert ppu.framebuffer[0][0] == (255, 0, 0), f"Expected red, got {ppu.framebuffer[0][0]}"
+    
+    print("✓ test_mode1_affine_bg2_renders passed")
+
+
+def test_mode1_text_plus_affine_composite():
+    """Mode 1: BG0 text + BG2 affine both visible, verify priority ordering."""
+    memory = Memory()
+    memory._interrupts = MockInterrupts()
+    memory._dma = MockDMA()
+    
+    # Set DISPCNT to mode 1 + BG0 + BG2 enable BEFORE creating PPU
+    # Mode 1 = bits 0-2 = 001, BG0 enable = bit 8 = 0x0100, BG2 enable = bit 10 = 0x0400
+    # Value = 0x0400 | 0x0100 | 0x0001 = 0x0501
+    memory.write_u16(0x04000000, 0x0501)
+    
+    # Set BG0CNT: priority=1, char base=0, 4BPP, screen base=2 (avoid overlap with BG2)
+    memory.write_u16(0x04000008, 0x0200 | 0x0002)  # priority=1, screen base=2
+    
+    # Set BG2CNT: priority=0 (higher than BG0), char base=1, 8BPP, screen base=1, size=1 (256x256)
+    # Value = 0x0000 (priority 0) | 0x0004 (char base 1) | 0x0080 (8BPP) | 0x0100 (screen base 1) | 0x4000 (size 1) = 0x4184
+    memory.write_u16(0x0400000C, 0x4184)
+    
+    ppu = PPU(memory)
+    
+    # Set identity affine params for BG2
+    memory.write_u16(0x04000020, 256)  # BG2PA
+    memory.write_u16(0x04000022, 0)    # BG2PB
+    memory.write_u16(0x04000024, 0)    # BG2PC
+    memory.write_u16(0x04000026, 256)  # BG2PD
+    memory.write_u32(0x04000028, 0)    # BG2X
+    memory.write_u32(0x0400002C, 0)    # BG2X/Y
+    memory.write_u32(0x04000030, 0)    # BG2Y
+    
+    # Write BG0 tile data: tile 0 with palette index 1 (red)
+    tile_addr_bg0 = 0x06000000
+    for i in range(32):
+        memory.write_u8(tile_addr_bg0 + i, 0x01)
+    
+    # Write BG0 tilemap: entry (0,0) = tile 0 at screen base block 2
+    # screen base 2 = 0x06000000 + (2 * 0x0800) = 0x06001000
+    memory.write_u16(0x06001000, 0x0000)
+    
+    # Write BG2 tile data: tile 0 at char base 1 (0x06004000) with palette index 2 (green)
+    tile_addr_bg2 = 0x06004000
+    for i in range(64):
+        memory.write_u8(tile_addr_bg2 + i, 0x02)
+    
+    # Write BG2 affine tilemap: screen base 1 = 0x06000800, 8-bit entries
+    for i in range(64):
+        memory.write_u8(0x06000800 + i, 0)  # tile 0 at each map entry
+    
+    # Set palette: index 1 = red, index 2 = green
+    memory.write_u16(0x05000002, 0x001F)  # palette[1] = red
+    memory.write_u16(0x05000004, 0x03E0)  # palette[2] = green
+    
+    step_frame(ppu)
+    
+    # BG2 has priority 0, BG0 has priority 1, so BG2 should be on top
+    assert ppu.framebuffer[0][0] == (0, 255, 0), f"Expected green (BG2 on top), got {ppu.framebuffer[0][0]}"
+    
+    print("✓ test_mode1_text_plus_affine_composite passed")
+
+
+def test_mode1_bg_priority_ordering():
+    """Mode 1: BG0 and BG1 with different priority bits, verify correct z-order."""
+    memory = Memory()
+    memory._interrupts = MockInterrupts()
+    memory._dma = MockDMA()
+    
+    # Set DISPCNT to mode 1 + BG0 + BG1 enable BEFORE creating PPU
+    # Mode 1 = bits 0-2 = 001, BG0 enable = bit 8 = 0x0100, BG1 enable = bit 9 = 0x0200
+    # Value = 0x0300 | 0x0001 = 0x0301
+    memory.write_u16(0x04000000, 0x0301)
+    
+    # Set BG0CNT: priority=1, char base=0, 4BPP, screen base=1
+    memory.write_u16(0x04000008, 0x0100 | 0x0001)  # priority = 1
+    
+    # Set BG1CNT: priority=0 (higher than BG0), char base=0, 4BPP, screen base=2
+    # Value = 0x0000 (priority 0) | 0x0200 (screen base 2) = 0x0200
+    memory.write_u16(0x0400000A, 0x0200)
+    
+    ppu = PPU(memory)
+    
+    # Write BG0 tile data: tile 0 with palette index 1 (red)
+    tile_addr_bg0 = 0x06000000
+    for i in range(32):
+        memory.write_u8(tile_addr_bg0 + i, 0x01)
+    
+    # Write BG0 tilemap: entry (0,0) = tile 0 at screen base block 1
+    memory.write_u16(0x06000800, 0x0000)
+    
+    # Write BG1 tile data: tile 0 with palette index 2 (blue)
+    tile_addr_bg1 = 0x06000000 + 32  # Share char block, offset tile
+    for i in range(32):
+        memory.write_u8(tile_addr_bg1 + i, 0x02)
+    
+    # Write BG1 tilemap: entry (0,0) = tile 1 at screen base block 2
+    # screen base 2 = 0x06000000 + (2 * 0x0800) = 0x06001000
+    memory.write_u16(0x06001000, 0x0001)  # tile 1
+    
+    # Set palette: index 1 = red, index 2 = blue
+    memory.write_u16(0x05000002, 0x001F)  # palette[1] = red
+    memory.write_u16(0x05000004, 0x7C00)  # palette[2] = blue
+    
+    step_frame(ppu)
+    
+    # BG1 has priority 0, BG0 has priority 1, so BG1 should be on top
+    assert ppu.framebuffer[0][0] == (0, 0, 255), f"Expected blue (BG1 on top), got {ppu.framebuffer[0][0]}"
+    
+    print("✓ test_mode1_bg_priority_ordering passed")
+
+
+def test_mode1_empty():
+    """Mode 1 with no tiles/data, verify backdrop color fills screen."""
+    ppu, memory = make_ppu()
+    
+    # Set DISPCNT to mode 1, no BGs enabled
+    # Mode 1 = bits 0-2 = 001 = 0x0001
+    memory.write_u16(0x04000000, 0x0001)
+    
+    # Set palette entry 0 to green (backdrop color)
+    memory.write_u16(0x05000000, 0x03E0)
+    
+    step_frame(ppu)
+    
+    # All pixels should be backdrop (green)
+    for y in range(160):
+        for x in range(240):
+            assert ppu.framebuffer[y][x] == (0, 255, 0), f"Expected green backdrop at ({x},{y}), got {ppu.framebuffer[y][x]}"
+    
+    print("✓ test_mode1_empty passed")
+
+
 if __name__ == "__main__":
     test_mode3_renders_bitmap()
     test_mode4_renders_indexed_bitmap()
@@ -507,4 +716,9 @@ if __name__ == "__main__":
     test_8bpp_max_tile_index()
     test_backdrop_color_no_bg_enabled()
     test_mode3_bg2_disabled_renders_backdrop()
-    print("\nAll 16 PPU rendering tests passed!")
+    test_mode1_text_bg0_renders()
+    test_mode1_affine_bg2_renders()
+    test_mode1_text_plus_affine_composite()
+    test_mode1_bg_priority_ordering()
+    test_mode1_empty()
+    print("\nAll 21 PPU rendering tests passed!")

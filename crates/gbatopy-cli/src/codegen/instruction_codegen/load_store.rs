@@ -581,6 +581,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
             writeback,
         } = &ops[0]
         {
+            // Not collapsible: outer if let destructures ops[0], inner destructures offset
             #[allow(clippy::collapsible_match)]
             if let gbatopy_disasm::operand::AddressingMode::Multi {
                 registers,
@@ -742,6 +743,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     }
 
     // SWP/SWPB: swap register with memory
+    // Not collapsed: 5-level nesting with specific guard conditions at each level
     #[allow(clippy::collapsible_if)]
     if base_opcode == "SWP" || base_opcode == "SWPB" {
         if ops.len() >= 3 {
@@ -771,4 +773,739 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gbatopy_disasm::{operand::AddressingMode, ArmMode, Condition, DecodedInstruction, Operand};
+
+    fn make_inst(
+        opcode: &str,
+        operands: Vec<Operand>,
+        mode: ArmMode,
+        addr: u32,
+    ) -> DecodedInstruction {
+        DecodedInstruction {
+            address: addr,
+            opcode: opcode.to_string(),
+            operands,
+            condition: Some(Condition::Al),
+            mode,
+            raw: 0,
+            sets_flags: false,
+            width: if mode == ArmMode::Arm { 4 } else { 2 },
+            is_data: false,
+        }
+    }
+
+    // === LDR tests ===
+    #[test]
+    fn test_generate_ldr_immediate_offset_positive() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(16),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = memory.read_u32(registers[1] + 16)"
+        );
+    }
+
+    #[test]
+    fn test_generate_ldr_immediate_offset_negative() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(-8),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = memory.read_u32(registers[1] - 8)"
+        );
+    }
+
+    #[test]
+    fn test_generate_ldr_pc_relative() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 15,
+                    offset: AddressingMode::ImmediateOffset(20),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        // PC = address + 8 = 0x08000008
+        assert!(code.contains("0x08000008"));
+        assert!(code.contains(" + 20"));
+        assert!(code.contains("registers[0] = memory.read_u32"));
+    }
+
+    #[test]
+    fn test_generate_ldr_register_offset() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::RegisterOffset(2),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = memory.read_u32(registers[1] + registers[2])"
+        );
+    }
+
+    #[test]
+    fn test_generate_ldr_scaled_register_offset_lsl() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ScaledRegisterOffset {
+                        reg: 2,
+                        shift: gbatopy_disasm::operand::ShiftType::Lsl,
+                        amount: 2,
+                    },
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[1]"));
+        assert!(code.contains("(registers[2] << 2)"));
+        assert!(code.contains("memory.read_u32"));
+    }
+
+    #[test]
+    fn test_generate_ldr_with_writeback() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(16),
+                    writeback: true,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[0] = memory.read_u32(registers[1] + 16)"));
+        assert!(code.contains("registers[1] = (registers[1] + 4) & 0xFFFFFFFF"));
+    }
+
+    // === STR tests ===
+    #[test]
+    fn test_generate_str_immediate_offset() {
+        let inst = make_inst(
+            "STR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(24),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "memory.write_u32(registers[1] + 24, registers[0])"
+        );
+    }
+
+    #[test]
+    fn test_generate_str_with_writeback() {
+        let inst = make_inst(
+            "STR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(8),
+                    writeback: true,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("memory.write_u32(registers[1] + 8, registers[0])"));
+        assert!(code.contains("registers[1] = (registers[1] + 4) & 0xFFFFFFFF"));
+    }
+
+    // === LDRB tests ===
+    #[test]
+    fn test_generate_ldrb_immediate_offset() {
+        let inst = make_inst(
+            "LDRB",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(12),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = memory.read_u8(registers[1] + 12) & 0xFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_ldrb_with_writeback() {
+        let inst = make_inst(
+            "LDRB",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(4),
+                    writeback: true,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[0] = memory.read_u8(registers[1] + 4) & 0xFF"));
+        assert!(code.contains("registers[1] = (registers[1] + 1) & 0xFFFFFFFF"));
+    }
+
+    // === STRB tests ===
+    #[test]
+    fn test_generate_strb_immediate_offset() {
+        let inst = make_inst(
+            "STRB",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(8),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "memory.write_u8(registers[1] + 8, registers[0] & 0xFF)"
+        );
+    }
+
+    // === LDRH tests ===
+    #[test]
+    fn test_generate_ldrh_immediate_offset() {
+        let inst = make_inst(
+            "LDRH",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(22),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = memory.read_u16(registers[1] + 22) & 0xFFFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_ldrh_with_writeback() {
+        let inst = make_inst(
+            "LDRH",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(10),
+                    writeback: true,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[0] = memory.read_u16(registers[1] + 10) & 0xFFFF"));
+        assert!(code.contains("registers[1] = (registers[1] + 2) & 0xFFFFFFFF"));
+    }
+
+    // === STRH tests ===
+    #[test]
+    fn test_generate_strh_immediate_offset() {
+        let inst = make_inst(
+            "STRH",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(30),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "memory.write_u16(registers[1] + 30, registers[0] & 0xFFFF)"
+        );
+    }
+
+    #[test]
+    fn test_generate_strh_with_writeback() {
+        let inst = make_inst(
+            "STRH",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(6),
+                    writeback: true,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("memory.write_u16(registers[1] + 6, registers[0] & 0xFFFF)"));
+        assert!(code.contains("registers[1] = (registers[1] + 2) & 0xFFFFFFFF"));
+    }
+
+    // === LDM tests ===
+    #[test]
+    fn test_generate_ldmfd_increasing_addresses() {
+        let inst = make_inst(
+            "LDMFD",
+            vec![Operand::MemoryAddress {
+                base: 13,
+                offset: AddressingMode::Multi {
+                    base: 13,
+                    registers: vec![4, 5, 6],
+                    increment: true,
+                    pre_index: false,
+                    writeback: true,
+                    s_bit: false,
+                },
+                writeback: true,
+            }],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("addr = registers[13]"));
+        assert!(code.contains("addr += 4"));
+        assert!(code.contains("registers[4] = memory.read_u32(addr)"));
+        assert!(code.contains("registers[5] = memory.read_u32(addr)"));
+        assert!(code.contains("registers[6] = memory.read_u32(addr)"));
+        assert!(code.contains("registers[13] = registers[13] + 12"));
+    }
+
+    #[test]
+    fn test_generate_ldm_with_pc_in_list() {
+        let inst = make_inst(
+            "LDMFD",
+            vec![Operand::MemoryAddress {
+                base: 13,
+                offset: AddressingMode::Multi {
+                    base: 13,
+                    registers: vec![4, 15],
+                    increment: true,
+                    pre_index: false,
+                    writeback: false,
+                    s_bit: false,
+                },
+                writeback: false,
+            }],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[4] = memory.read_u32(addr)"));
+        assert!(code.contains("registers[15] = memory.read_u32(addr)"));
+    }
+
+    // === STM tests ===
+    #[test]
+    fn test_generate_stmfd_decreasing_addresses() {
+        let inst = make_inst(
+            "STMFD",
+            vec![Operand::MemoryAddress {
+                base: 13,
+                offset: AddressingMode::Multi {
+                    base: 13,
+                    registers: vec![4, 5, 14],
+                    increment: false,
+                    pre_index: true,
+                    writeback: true,
+                    s_bit: false,
+                },
+                writeback: true,
+            }],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("addr = registers[13] - 12"));
+        assert!(code.contains("addr += 4"));
+        assert!(code.contains("memory.write_u32(addr, registers[4])"));
+        assert!(code.contains("memory.write_u32(addr, registers[5])"));
+        assert!(code.contains("memory.write_u32(addr, registers[14])"));
+        assert!(code.contains("registers[13] = registers[13] - 12"));
+    }
+
+    #[test]
+    fn test_generate_stmia_increasing_addresses() {
+        let inst = make_inst(
+            "STMIA",
+            vec![Operand::MemoryAddress {
+                base: 13,
+                offset: AddressingMode::Multi {
+                    base: 13,
+                    registers: vec![4, 5, 6],
+                    increment: true,
+                    pre_index: false,
+                    writeback: true,
+                    s_bit: false,
+                },
+                writeback: true,
+            }],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("addr = registers[13]"));
+        assert!(code.contains("addr += 4"));
+        assert!(code.contains("memory.write_u32(addr, registers[4])"));
+        assert!(code.contains("registers[13] = registers[13] + 12"));
+    }
+
+    // === LDRSH tests ===
+    #[test]
+    fn test_generate_ldrsh_immediate_offset() {
+        let inst = make_inst(
+            "LDRSH",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(8),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("temp = memory.read_u16(registers[1] + 8)"));
+        assert!(code.contains("registers[0] = (temp << 16) >> 16"));
+    }
+
+    // === LDRSB tests ===
+    #[test]
+    fn test_generate_ldrsb_immediate_offset() {
+        let inst = make_inst(
+            "LDRSB",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(4),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("temp = memory.read_u8(registers[1] + 4)"));
+        assert!(code.contains("registers[0] = (temp << 24) >> 24"));
+    }
+
+    // === SWP tests ===
+    #[test]
+    fn test_generate_swp_word_swap() {
+        let inst = make_inst(
+            "SWP",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("temp = memory.read_u32(registers[2])"));
+        assert!(code.contains("registers[0] = temp"));
+        assert!(code.contains("memory.write_u32(registers[2], registers[1])"));
+    }
+
+    #[test]
+    fn test_generate_swpb_byte_swap() {
+        let inst = make_inst(
+            "SWPB",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("temp = memory.read_u8(registers[2])"));
+        assert!(code.contains("registers[0] = temp"));
+        assert!(code.contains("memory.write_u8(registers[2], registers[1] & 0xFF)"));
+    }
+
+    // === Conditional execution tests ===
+    #[test]
+    fn test_generate_ldr_conditional_eq() {
+        let inst = make_inst(
+            "LDRge",
+            vec![Operand::Register(0), Operand::MemoryAddress { base: 1, offset: AddressingMode::ImmediateOffset(4), writeback: false }],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("if cpsr_check('GE'):"));
+        assert!(code.contains("registers[0] = memory.read_u32(registers[1] + 4)"));
+    }
+
+    #[test]
+    fn test_generate_str_conditional_ne() {
+        let inst = make_inst(
+            "STRne",
+            vec![Operand::Register(0), Operand::MemoryAddress { base: 1, offset: AddressingMode::ImmediateOffset(4), writeback: false }],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("if cpsr_check('NE'):"));
+        assert!(code.contains("memory.write_u32(registers[1] + 4, registers[0])"));
+    }
+
+    // === Register offset tests ===
+    #[test]
+    fn test_generate_ldr_scaled_register_offset_lsr() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ScaledRegisterOffset {
+                        reg: 2,
+                        shift: gbatopy_disasm::operand::ShiftType::Lsr,
+                        amount: 4,
+                    },
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[1]"));
+        assert!(code.contains("registers[2] >> 4"));
+        assert!(code.contains("memory.read_u32"));
+    }
+
+    #[test]
+    fn test_generate_ldr_scaled_register_offset_asr() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ScaledRegisterOffset {
+                        reg: 2,
+                        shift: gbatopy_disasm::operand::ShiftType::Asr,
+                        amount: 3,
+                    },
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("registers[1]"));
+        assert!(code.contains("registers[2] >> 3"));
+        assert!(code.contains("memory.read_u32"));
+    }
+
+    // === Edge cases ===
+    #[test]
+    fn test_generate_ldr_zero_offset() {
+        let inst = make_inst(
+            "LDR",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(0),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = memory.read_u32(registers[1] + 0)"
+        );
+    }
+
+    #[test]
+    fn test_generate_ldrb_with_register_offset() {
+        let inst = make_inst(
+            "LDRB",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::RegisterOffset(3),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "registers[0] = memory.read_u8(registers[1] + registers[3]) & 0xFF"
+        );
+    }
+
+    #[test]
+    fn test_generate_strb_with_register_offset() {
+        let inst = make_inst(
+            "STRB",
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::RegisterOffset(3),
+                    writeback: false,
+                },
+            ],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert_eq!(
+            code,
+            "memory.write_u8(registers[1] + registers[3], registers[0] & 0xFF)"
+        );
+    }
+
+    // === LDM writeback tests ===
+    #[test]
+    fn test_generate_ldmfd_writeback_base_in_list() {
+        let inst = make_inst(
+            "LDMFD",
+            vec![Operand::MemoryAddress {
+                base: 13,
+                offset: AddressingMode::Multi {
+                    base: 13,
+                    registers: vec![13, 14, 15],
+                    increment: true,
+                    pre_index: false,
+                    writeback: true,
+                    s_bit: false,
+                },
+                writeback: true,
+            }],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("_orig_base = registers[13]"));
+        assert!(code.contains("registers[13] = _orig_base + 12"));
+    }
+
+    #[test]
+    fn test_generate_stmia_writeback_base_not_in_list() {
+        let inst = make_inst(
+            "STMIA",
+            vec![Operand::MemoryAddress {
+                base: 13,
+                offset: AddressingMode::Multi {
+                    base: 13,
+                    registers: vec![4, 5, 6],
+                    increment: true,
+                    pre_index: false,
+                    writeback: true,
+                    s_bit: false,
+                },
+                writeback: true,
+            }],
+            ArmMode::Arm,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(!code.contains("_orig_base"));
+        assert!(code.contains("registers[13] = registers[13] + 12"));
+    }
 }

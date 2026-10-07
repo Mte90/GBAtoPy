@@ -201,9 +201,267 @@ impl Default for TypeInferencer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blocks::IrFunction;
+    use crate::values::IrExpr;
+    use crate::ArmMode;
+    use crate::IrGlobal;
+
 
     #[test]
     fn test_type_inferencer_creation() {
-        let _ = TypeInferencer::new();
+        let inferencer = TypeInferencer::new();
+        
+        // SP, LR, PC should be pointers by default
+        assert_eq!(inferencer.reg_types[13], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[14], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[15], GbaType::Ptr);
+        
+        // Other registers should be unknown
+        for i in 0..13 {
+            assert_eq!(inferencer.reg_types[i], GbaType::Unknown);
+        }
+    }
+
+    #[test]
+    fn test_infer_small_values() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // Small values (<= 0xFF) should be inferred as U8
+        let regs = [0x00, 0x42, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::U8);
+        assert_eq!(inferencer.reg_types[1], GbaType::U8);
+        assert_eq!(inferencer.reg_types[2], GbaType::U8);
+    }
+
+    #[test]
+    fn test_infer_medium_values() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // Values > 0xFF but <= 0xFFFF should be U16
+        let regs = [0x100, 0x1234, 0xFFFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::U16);
+        assert_eq!(inferencer.reg_types[1], GbaType::U16);
+        assert_eq!(inferencer.reg_types[2], GbaType::U16);
+    }
+
+    #[test]
+    fn test_infer_large_values() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // Values > 0xFFFF should be U32
+        let regs = [0x10000, 0x12345678, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::U32);
+        assert_eq!(inferencer.reg_types[1], GbaType::U32);
+        assert_eq!(inferencer.reg_types[2], GbaType::U32);
+    }
+
+    #[test]
+    fn test_infer_mmio_pointers() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // MMIO addresses should be inferred as Ptr
+        let regs = [0x04000000, 0x04000100, 0x040003FF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[1], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[2], GbaType::Ptr);
+    }
+
+    #[test]
+    fn test_infer_vram_pointers() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // VRAM addresses should be inferred as Ptr
+        let regs = [0x06000000, 0x06008000, 0x06017FFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[1], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[2], GbaType::Ptr);
+    }
+
+    #[test]
+    fn test_infer_oam_pointers() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // OAM addresses should be inferred as Ptr
+        let regs = [0x07000000, 0x07000200, 0x070003FF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[1], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[2], GbaType::Ptr);
+    }
+
+    #[test]
+    fn test_infer_palette_pointers() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // Palette addresses should be inferred as Ptr
+        let regs = [0x05000000, 0x05000200, 0x050003FF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[1], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[2], GbaType::Ptr);
+    }
+
+    #[test]
+    fn test_infer_rom_pointers() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // ROM addresses should be inferred as Ptr
+        let regs = [0x08000000, 0x08001234, 0x08010000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[1], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[2], GbaType::Ptr);
+    }
+
+    #[test]
+    fn test_infer_ram_pointers() {
+        let mut inferencer = TypeInferencer::new();
+        
+        // RAM addresses should be inferred as Ptr
+        let regs = [0x02000000, 0x02001234, 0x02FFFFFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        inferencer.infer_from_trace(&regs);
+        
+        assert_eq!(inferencer.reg_types[0], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[1], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[2], GbaType::Ptr);
+    }
+
+    #[test]
+    fn test_observations_constant_values() {
+        let mut inferencer = TypeInferencer::new();
+        let mut obs = RegisterObservations::default();
+        
+        // All R0 values are the same constant
+        obs.r0 = vec![42, 42, 42, 42];
+        
+        inferencer.add_observations(&obs);
+        assert_eq!(inferencer.reg_types[0], GbaType::U8);
+    }
+
+    #[test]
+    fn test_observations_variable_values() {
+        let mut inferencer = TypeInferencer::new();
+        let mut obs = RegisterObservations::default();
+        
+        // R0 has varying values, max is 0x1000
+        obs.r0 = vec![0, 100, 500, 0x1000];
+        
+        inferencer.add_observations(&obs);
+        assert_eq!(inferencer.reg_types[0], GbaType::U16);
+    }
+
+    #[test]
+    fn test_observations_empty() {
+        let mut inferencer = TypeInferencer::new();
+        let obs = RegisterObservations::default();
+        
+        // Empty observations should not change types
+        inferencer.add_observations(&obs);
+        
+        // SP, LR, PC should still be pointers
+        assert_eq!(inferencer.reg_types[13], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[14], GbaType::Ptr);
+        assert_eq!(inferencer.reg_types[15], GbaType::Ptr);
+    }
+
+    #[test]
+    fn test_type_annotation_ptr() {
+        let mut inferencer = TypeInferencer::new();
+        inferencer.reg_types[0] = GbaType::Ptr;
+        
+        assert_eq!(inferencer.type_annotation(0), "# Ptr");
+    }
+
+    #[test]
+    fn test_type_annotation_u8() {
+        let mut inferencer = TypeInferencer::new();
+        inferencer.reg_types[1] = GbaType::U8;
+        
+        assert_eq!(inferencer.type_annotation(1), "# U8");
+    }
+
+    #[test]
+    fn test_type_annotation_u16() {
+        let mut inferencer = TypeInferencer::new();
+        inferencer.reg_types[2] = GbaType::U16;
+        
+        assert_eq!(inferencer.type_annotation(2), "# U16");
+    }
+
+    #[test]
+    fn test_type_annotation_u32() {
+        let mut inferencer = TypeInferencer::new();
+        inferencer.reg_types[3] = GbaType::U32;
+        
+        assert_eq!(inferencer.type_annotation(3), "# U32");
+    }
+
+    #[test]
+    fn test_type_annotation_unknown() {
+        let inferencer = TypeInferencer::new();
+        
+        // Unknown type should return empty string
+        assert_eq!(inferencer.type_annotation(0), "");
+    }
+
+    #[test]
+    fn test_type_annotation_invalid_reg() {
+        let inferencer = TypeInferencer::new();
+        
+        // Invalid register index should return empty string
+        assert_eq!(inferencer.type_annotation(16), "");
+        assert_eq!(inferencer.type_annotation(20), "");
+    }
+
+    #[test]
+    fn test_infer_module_annotations() {
+        let mut inferencer = TypeInferencer::new();
+        let mut module = IrModule::new();
+        
+        // Add a function with return type
+        let func = IrFunction {
+            name: "test_func".to_string(),
+            address: 0x08000000,
+            params: vec![IrExpr::register(0), IrExpr::register(1)],
+            blocks: vec![],
+            return_type: Some(GbaType::U32),
+            mode: ArmMode::Arm,
+            mode_switches: vec![],
+        };
+        module.add_function(func);
+        
+        // Add a global
+        module.add_global(IrGlobal {
+            name: "test_global".to_string(),
+            address: 0x03000000,
+            ty: GbaType::U16,
+            initial_value: Some(100),
+        });
+        
+        let result = inferencer.infer_module(&mut module);
+        
+        match result {
+            InferenceResult::Success { types, confidence } => {
+                assert_eq!(confidence, 0.8);
+                assert!(types.contains_key("test_func_param0"));
+                assert!(types.contains_key("test_func_param1"));
+                assert!(types.contains_key("test_func_ret"));
+                assert!(types.contains_key("test_global"));
+            }
+            _ => unreachable!("Expected InferenceResult::Success"),
+        }
     }
 }
