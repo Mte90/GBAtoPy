@@ -25,9 +25,9 @@ pub fn generate_instruction_python(inst: &DecodedInstruction) -> String {
         return code;
     }
 
-    // Unhandled ARM instruction - emit stderr diagnostic (survives minification) + pass
+    // Unhandled instruction — route to interpreter instead of silent no-op
     format!(
-        "sys.stderr.write('unhandled ARM at {:#010x}: {}\\n')\npass",
+        "sys.stderr.write('unhandled at {:#010x}: {}\\n')\n_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)",
         inst.address, opcode
     )
 }

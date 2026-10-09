@@ -190,6 +190,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         "CMN" => generate_cmn(&ops),
         "TST" => generate_tst(&ops),
         "TEQ" => generate_teq(&ops),
+        "NEG" => generate_neg(&ops, inst.sets_flags),
+        "MUL" => generate_mul(&ops, inst.sets_flags),
+        "SXTH" | "SXTB" | "UXTH" | "UXTB" => generate_extend(&ops, base_opcode),
         "UMLAL" | "SMLAL" => generate_umlal(&ops, base_opcode),
         _ => None,
     }?;
@@ -589,6 +592,97 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                 ));
             }
             return Some(format!("registers[{}] = ({}) & 0xFFFFFFFF", rd, expr));
+        }
+    } else if ops.len() == 2 {
+        if let Operand::Register(rd) = ops[0] {
+            let rn = format!("registers[{}]", rd);
+            let shift = match &ops[1] {
+                Operand::Immediate(i) => format!("{}", i),
+                Operand::Register(r) => format!("registers[{}]", r),
+                _ => "0".to_string(),
+            };
+            let expr = match op {
+                "LSL" => format!("({} << {})", rn, shift),
+                "LSR" => format!("({} >> {})", rn, shift),
+                "ASR" => format!(
+                    "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
+                    rn, rn, rn, shift
+                ),
+                "ROR" => format!(
+                    "(({} >> ({} & 31)) | ({} << (32 - ({} & 31))))",
+                    rn, shift, rn, shift
+                ),
+                _ => return None,
+            };
+            if sets_flags {
+                return Some(format!(
+                    "registers[{}] = ({}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    rd, expr, rd
+                ));
+            }
+            return Some(format!("registers[{}] = ({}) & 0xFFFFFFFF", rd, expr));
+        }
+    }
+    None
+}
+
+fn generate_neg(ops: &[Operand], sets_flags: bool) -> Option<String> {
+    if ops.len() >= 2 {
+        if let Operand::Register(rd) = ops[0] {
+            let rs = operand_to_expr(&ops[1]);
+            if sets_flags {
+                return Some(format!(
+                    "_a_val = 0\n_b_val = {}\n_full = _a_val - _b_val\nregisters[{}] = _full & 0xFFFFFFFF\n_result = _full & 0xFFFFFFFF\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0\ncpsr['c'] = 1 if _a_val >= _b_val else 0\n_a_s = 0\n_b_s = _b_val if _b_val < 0x80000000 else _b_val - 0x100000000\n_result_s = _result if _result < 0x80000000 else _result - 0x100000000\ncpsr['v'] = 1 if (_a_s >= 0 and _b_s < 0 and _result_s < 0) or (_a_s < 0 and _b_s >= 0 and _result_s >= 0) else 0",
+                    rs, rd
+                ));
+            }
+            return Some(format!("registers[{}] = (0 - {}) & 0xFFFFFFFF", rd, rs));
+        }
+    }
+    None
+}
+
+fn generate_mul(ops: &[Operand], sets_flags: bool) -> Option<String> {
+    if ops.len() >= 2 {
+        if let Operand::Register(rd) = ops[0] {
+            let rm = format!("registers[{}]", rd);
+            let rs = match &ops[1] {
+                Operand::Register(r) => format!("registers[{}]", r),
+                _ => return None,
+            };
+            if sets_flags {
+                return Some(format!(
+                    "registers[{}] = ({} * {}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    rd, rm, rs, rd
+                ));
+            }
+            return Some(format!("registers[{}] = ({} * {}) & 0xFFFFFFFF", rd, rm, rs));
+        }
+    }
+    None
+}
+
+fn generate_extend(ops: &[Operand], op: &str) -> Option<String> {
+    if ops.len() >= 2 {
+        if let Operand::Register(rd) = ops[0] {
+            let rm = match &ops[1] {
+                Operand::Register(r) => format!("registers[{}]", r),
+                _ => return None,
+            };
+            let code = match op {
+                "SXTH" => format!(
+                    "_v = {rm} & 0xFFFF
+registers[{rd}] = _v | (0xFFFF0000 if _v & 0x8000 else 0)"
+                ),
+                "SXTB" => format!(
+                    "_v = {rm} & 0xFF
+registers[{rd}] = _v | (0xFFFFFF00 if _v & 0x80 else 0)"
+                ),
+                "UXTH" => format!("registers[{rd}] = {rm} & 0xFFFF"),
+                "UXTB" => format!("registers[{rd}] = {rm} & 0xFF"),
+                _ => return None,
+            };
+            return Some(code);
         }
     }
     None
@@ -1188,6 +1282,65 @@ mod tests {
         assert!(code.contains("product = rm_val * rs_val"));
         assert!(code.contains("registers[0] = acc_lo & 0xFFFFFFFF"));
         assert!(code.contains("registers[1] = acc_hi & 0xFFFFFFFF"));
+    }
+
+    // === Extend tests ===
+    #[test]
+    fn test_generate_sxth() {
+        let inst = make_inst(
+            "SXTH",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Thumb,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("0xFFFF"));
+        assert!(code.contains("0x8000"));
+        assert!(code.contains("registers[0]"));
+    }
+
+    #[test]
+    fn test_generate_sxtb() {
+        let inst = make_inst(
+            "SXTB",
+            vec![Operand::Register(2), Operand::Register(3)],
+            false,
+            ArmMode::Thumb,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("0xFF"));
+        assert!(code.contains("0x80"));
+        assert!(code.contains("registers[2]"));
+    }
+
+    #[test]
+    fn test_generate_uxth() {
+        let inst = make_inst(
+            "UXTH",
+            vec![Operand::Register(0), Operand::Register(1)],
+            false,
+            ArmMode::Thumb,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("& 0xFFFF"));
+        assert!(!code.contains("0x8000"));
+    }
+
+    #[test]
+    fn test_generate_uxtb() {
+        let inst = make_inst(
+            "UXTB",
+            vec![Operand::Register(4), Operand::Register(5)],
+            false,
+            ArmMode::Thumb,
+            0x08000000,
+        );
+        let code = generate(&inst).unwrap();
+        assert!(code.contains("& 0xFF"));
+        assert!(!code.contains("0x80"));
     }
 
     // === Shifted register tests ===

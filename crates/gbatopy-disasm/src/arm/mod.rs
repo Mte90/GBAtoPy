@@ -119,7 +119,7 @@ impl ArmDecoder {
                 match bits_27_25 {
                     0b110 => ("COPROCESSOR".to_string(), vec![], false),
                     0b111 => {
-                        let swi_num = word & 0xFFFFFF;
+                        let swi_num = (word >> 16) & 0xFF;
                         ("SWI".to_string(), vec![Operand::Immediate(swi_num)], false)
                     }
                     _ => ("UNKNOWN".to_string(), vec![], false),
@@ -387,7 +387,7 @@ impl ArmDecoder {
             )
         } else if bits_27_24 == 0xF {
             // SWI: bits[27:24]=1111
-            let swi_num = word & 0xFFFFFF;
+            let swi_num = (word >> 16) & 0xFF;
             ("SWI".to_string(), vec![Operand::Immediate(swi_num)], false)
         } else if ((word >> 26) & 0x3) == 0b01 && (word & (1 << 25)) == 0 {
             // Load/Store with register offset: bits[27-26]=01, I-bit=0

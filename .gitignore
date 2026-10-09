@@ -1,72 +1,42 @@
-# Rust build
-/target/
-Cargo.lock
-*.rs.bk
-.migba/
-# Temporary build artifacts
-build/
-*.o
-*.a
-*.so
-# Compiled binaries
-*.bin
+# Rust build artifacts
+target/
 
-# Python
+# ROM files (not in repo — downloaded via scripts)
+test_roms/
+
+# mGBA build
+mgba/build/
+
+# Test reports / screenshots (regenerated)
+test-reports/
+scripts/screenshot/golden/
+
+# Python cache
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-*.egg-info/
-dist/
-*.egg
-.venv/
-venv/
-.env/
-*.bin
-*.gba
-uv.lock
 
-# Generated output (transpiled Python - too large for git)
-output_python/
-*.py  # Generated Python files are large, exclude all
-/test_*.py
-/test_arm*.py
-/test_thumb*.py
-
-# IDE
+# Editor / OS files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS files
 .DS_Store
-Thumbs.db
-desktop.ini
 
 # Temporary files
-/tmp/*
-temp/
-tmp/
-*.tmp
-*.bak
-
-# Documentation drafts (not for public upload)
-docs/v3/
-
-# mGBA build (binary, not source)
-mgba/build/
-
-# Logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
-# Environment files
-.env
-.env.*
-!/.env.example
+# Tool-specific directories
+.cortexkit/
+.config/tarpaulin.toml
 
-test_roms/
-AGENTS.md
+# Large external dependencies (source + build)
+mgba/
+
+# ROM files at root level
+*.gba
+
+# CI fixtures exception (unignore ci-fixtures)
+!ci-fixtures/
+!ci-fixtures/**

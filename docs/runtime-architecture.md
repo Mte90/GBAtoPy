@@ -204,6 +204,136 @@ HBlank and VBlank DMA transfers follow full-count burst-on-trigger semantics:
 
 ---
 
+## SWI Handler Architecture
+
+### Two Dispatch Paths
+
+The GBAtoPy runtime has **two SWI dispatch paths** that must produce identical results:
+
+1. **Codegen `swi_handler`** (in `game_loop.py` template) — the authoritative implementation
+2. **ARM7TDMI `swi_handler`** (in `arm7tdmi.py`) — fallback interpreter handler
+
+### Invariant: Identical Register Outputs
+
+Both handlers must produce **identical register outputs** for all SWI numbers (0x00-0x1F). Violating this invariant causes behavioral differences when functions execute via `_interp_fallback` instead of the ARM fast path (`dispatch_table_arm`).
+
+### Known Mismatches and Fixes
+
+| SWI | Codegen Behavior | ARM7TDMI Behavior | Fix Status |
+|-----|------------------|-------------------|------------|
+| 0x00 (SoftReset) | Zeroes R0 + R14 | Zeroes R0-R12, not R14 | F302 |
+| 0x06 (Div) | Truncated division + sets R3=abs(sd) | Python floored `%` + doesn't set R3 | F301 |
+| 0x07 (DivArm) | Sets R0, R1, R3 | Only sets R0 | F301 |
+| IRQ return | Breaks inner loop on IRQ return PC | Doesn't break, may miss register restore | F303 |
+
+### Audit Requirement
+
+All remaining SWI handlers (0x00-0x1F) must be audited for mismatches. See WORKPLAN.md F304.
+
+---
+
+## Runtime Invariants
+
+This section documents critical runtime invariants that must be preserved to ensure correct GBA emulation behavior. Violating any of these invariants introduces subtle bugs that manifest as timing errors, incorrect graphics, or silent IRQ failures.
+
+### Invariant #1: Fallback interpreter is pure CPU executor
+
+**Statement**: The fallback interpreter (`_interp_fallback` in `pipeline_cmd.rs`) executes CPU instructions only — NEVER calls `step_scanline()`.
+
+**Rationale**: PPU timing is owned exclusively by the main loop. Calling `step_scanline()` from the fallback interpreter causes DMA double-stepping, where DMA transfers fire twice per scanline.
+
+**Violation consequence**: DMA timing errors, corrupted graphics, IRQ delivery failures.
+
+### Invariant #2: Main loop is instruction-counted
+
+**Statement**: PPU advances one scanline per `instr_per_scanline` CPU instructions, calculated as `(gba_hz / 60) // 228`.
+
+**Rationale**: This ensures accurate synchronization between CPU execution and PPU timing. The calculation matches the GBA's hardware behavior where 228 clock cycles occur per scanline at 60Hz refresh.
+
+**Violation consequence**: Timing divergence, IRQ wake failures, frame timing errors (e.g., 7-frame drift in cascade7).
+
+### Invariant #3: No step_scanline in memory reads
+
+**Statement**: `read_u16`/`read_u32`/`read_u64` must NEVER call `step_scanline()`.
+
+**Rationale**: Memory accesses during HBlank/VBlank must not interfere with PPU timing. Scanline advancement is owned exclusively by the main loop.
+
+**Violation consequence**: PPU timing corruption, DMA fires at wrong scanlines, rendering artifacts.
+
+### Invariant #4: HBlank/VBlank DMA = full-count burst on first trigger
+
+**Statement**: `hblank_fire()` and `vblank_fire()` call `_do_transfer()`, NOT `_do_transfer_single()`.
+
+**Rationale**: The GBA transfers the entire DMA count in one burst on each trigger. The old per-unit-per-trigger model caused bgpd's gradient to render with a ~128-scanline period instead of the correct ~52-scanline period.
+
+**Violation consequence**: DMA timing errors, gradient shifts (~50 scanlines in bgpd), incorrect DMA behavior.
+
+### Invariant #5: Per-scanline affine snapshots
+
+**Statement**: `step_scanline(capture_snapshot=True)` captures BG2PA/PB/PC/PD/X/Y BEFORE DMA fires. The main loop passes `capture_snapshot=True`; the fallback interpreter passes `False`.
+
+**Rationale**: HBlank DMA can update affine parameters during the HBlank period. By capturing snapshots BEFORE DMA fires, we ensure that the correct parameter set is used for rendering each scanline.
+
+**Violation consequence**: Affine background rendering errors, wrong transformation matrices per scanline.
+
+### Invariant #6: All memory regions must be zero-initialized at construction
+
+**Statement**: `memory.py` must use `[0] * SIZE` for VRAM, Palette RAM, OAM, IWRAM, EWRAM.
+
+**Rationale**: Debug patterns like `[(i%256) for i in range(SIZE)]` left in production cause uninitialized tiles to decode to non-zero palette indices → black screens.
+
+**Violation consequence**: Black screens, garbage graphics from uninitialized memory.
+
+### Invariant #7: All instruction/SWI dispatch tables must be single-source
+
+**Statement**: There must be ONE dispatch table for SWI instructions, shared by both the fast-path and fallback interpreters.
+
+**Rationale**: Two SWI dispatchers existed (cpu.py:_arm_swi with 4 handlers, arm7tdmi.py:swi_handler with 24). The fast-path CPU silently dropped CpuSet/CpuFastSet. Having a single source ensures all SWI handlers are available to both execution paths.
+
+**Violation consequence**: SWI handlers missing in fast path, wrong register outputs, behavioral regressions.
+
+### Invariant #8: PPU `forced_blank` must track DISPCNT bit 7 live
+
+**Statement**: `ppu.py` maintains `self.forced_blank` as the authoritative field; all forced-blank checks must read `self.forced_blank`, not `self.dispcnt & 0x0080`.
+
+**Rationale**: Code that reads `self.dispcnt & 0x0080` uses a stale cached value (initialized to 0x0480 at line 519, never updated). This caused a GLOBAL white-screen regression — every ROM rendered blank.
+
+**Violation consequence**: Global white-screen regression, all ROMs render blank.
+
+### Invariant #9: CFG builder must reject BL_SUFFIX addresses
+
+**Statement**: CFG builder must reject BL_SUFFIX addresses as BFS exploration targets — they are always the second half of a 33-bit BL instruction, never function entry points.
+
+**Rationale**: BL_SUFFIX addresses (second halfword of 32-bit Thumb BL instruction) treated as valid code entry points by BFS causes exponential CFG growth from data-as-code. Since Thumb instructions decode as valid for all 256 values of `(halfword >> 8)`, data regions explode exponentially in the CFG.
+
+**Violation consequence**: Exponential CFG growth, transpiler OOM or timeout, thousands of unreachable `func_XXXXXX()` entries.
+
+### Invariant #10: Cross-mode BFS guard must allow ARM override
+
+**Statement**: Cross-mode BFS guard must allow ARM BFS to override stale Thumb classifications when an ARM prologue is found at the target address.
+
+**Rationale**: When Thumb BFS claims an ARM address (via fall-through through data-as-code), the cross-mode guard blocks ARM BFS from correcting the classification. ARM functions then execute via `_interp_fallback` instead of `dispatch_table_arm`, causing behavioral regressions (e.g., SWI handlers drop, wrong register outputs).
+
+**Violation consequence**: ARM functions execute via fallback interpreter, SWI handler mismatches, register output errors.
+
+### Invariant #11: Timer stepping must be per-instruction in fallback path
+
+**Statement**: Timer stepping in the fallback interpreter must be per-instruction (matching the fast path), not batch-stepped after the call returns.
+
+**Rationale**: Fast path steps timers per-instruction (`step(4)`), but the fallback path batch-stepped after the call (`step(4 * steps)`). After BX fix increased fallback usage, this caused IRQ timing regressions and timer-based ROM failures.
+
+**Violation consequence**: IRQ timing regressions, timer-based ROMs show pixel diffs or timing divergence.
+
+### Invariant #12: IE register writes must preserve high byte
+
+**Statement**: IE register writes must preserve the high byte — IE is a 16-bit register and partial byte writes must not clobber the other byte.
+
+**Rationale**: Partial writes that clobber the high byte silently disable IRQs. The IE register is 16-bit, but some write paths only update the low byte and zero the high byte, causing ROMs to hang waiting for IRQs that never fire.
+
+**Violation consequence**: IRQs silently disabled, ROM hangs waiting for IRQ that never fires.
+
+---
+
 ## 3. Code Generation Pipeline
 
 The transpiler uses a **3-stage pipeline**:

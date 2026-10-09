@@ -3,15 +3,15 @@
 > **Role:** Strategy, sequencing, and remaining work.
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
-> **Last updated**: 2026-10-05  
-> **Current state**: 91 PASS, 0 FAIL, 0 SKIP out of 91 ROMs. **0 regressions** from all fixes applied. Build: 0 errors, 0 warnings.
+> **Last updated**: 2026-10-08  
+> **Current state**: L3 (Visual) verification on 91 ROMs: 72-74 PASS, 5 FAIL (fantasy-knight, line_timing, rates, song, +1), 2 INCONCLUSIVE (cascade7, lyc_midline), 1 L2 timeout (gbarcade), 9 SKIP (non-visual test types). Build: 0 errors, 0 warnings.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
 ## 1. Project Overview
 
 GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files playable with pygame. NOT an emulator — the output is human-readable Python source code that can be read, modified, and extended.
 
-**Test suite:** 656 Python tests PASS · 443 Rust tests PASS · 91/91 ROMs PASS (L1/L2/L3 verification).
+**Test suite:** 656 Python tests PASS · 443 Rust tests PASS · L3 Visual: 72-74/91 ROMs PASS.
 
 ---
 
@@ -143,15 +143,15 @@ Failed: 0
 
 ### Visual Verification (ScreenshotGolden vs mGBA)
 ```
-Total: 91 ROMs (2026-10-03 verification)
-Verified (<30% diff): 91 (100%)
-FAIL: 0
-Untested: 0
-SKIP: 0 (ZERO-SKIP policy)
-Runtime hangs: 0
+Total: 91 ROMs (2026-10-08 verification)
+L3 PASS: 72-74
+L3 FAIL: 5 (fantasy-knight, line_timing, rates, song, +1)
+L3 INCONCLUSIVE: 2 (cascade7, lyc_midline)
+L2 timeout: 1 (gbarcade)
+SKIP: 9 (non-visual test types)
 ```
 
-**Note:** All fixes applied through 2026-10-03. 0 regressions.
+**Note:** The "91/91 PASS" claim was an illusion — only 72-74/91 actually pass visual comparison (L3). F270 (Thumb codegen MemoryAddress fix) COMMITTED — reduced stubs from 3933 to 508 in cascade7. F289 (SWI extraction fix at coprocessor.rs:62) COMMITTED at e1cf1da — fixed all Thumb SWIs routing to SoftReset.
 
 ### Golden Screenshot Coverage Audit (2026-10-03)
 - **Total f60 golden files**: 69 in `test-reports/goldens/`
@@ -160,7 +160,7 @@ Runtime hangs: 0
 - **ROMs without ScreenshotMgba coverage**: 79 ROMs use PassFailScreen, EwramDump, or Smoke test types — no ScreenshotMgba golden comparison
 - **Gap count**: 79 ROMs lack ScreenshotMgba golden coverage (but all 91 pass visual verification via compare_screenshots.py)
 
-**Level 2 (Assertion Text) Results (2026-10-03):** 91/91 PASS. Includes status-irq-dma (CpuFastSet mask fix), dispcnt-latch (IRQ return alignment fix), and all L1 ROMs.
+**Level 2 (Assertion Text) Results (2026-10-08):** 81/82 PASS (1 timeout: gbarcade). Includes status-irq-dma (CpuFastSet mask fix), dispcnt-latch (IRQ return alignment fix), and all L1 ROMs.
 
 ---
 
@@ -173,8 +173,12 @@ Runtime hangs: 0
 - **helloAudio.gba**: RESOLVED — F45 fix (SWI halt + IRQ IF clear) → PASS (0% diff)
 - **rates.gba**: RESOLVED — F46 fix (MUL decode + CRT0) → PASS (3.65% diff)
 
-### Visual Verification Failures (0 ROMs)
-- All 91 ROMs pass visual verification (<30% diff vs mGBA goldens).
+### Visual Verification Failures (5 ROMs)
+- cascade7.gba: L3 FAIL (47.58% diff)
+- fantasy-knight.gba: L3 FAIL
+- line_timing.gba: L3 FAIL
+- rates.gba: L3 FAIL
+- song.gba: L3 FAIL (36.23% diff)
 
 ### Recently Fixed (2026-09-01)
 - **blindjump_BlindJump**: PASS at 9.39% diff. Root causes: (F54) Thumb format-7 selector used bit 12 + bits 11-10 instead of bits 11-9, mis-decoding all register-offset load/store; (F12) DISPSTAT read path used stale Python attrs instead of the live MMIO buffer `io[4]/io[5]` that `step_scanline()` writes. Size tracked as F64.
@@ -307,7 +311,7 @@ Numba is referenced in 4 runtime files:
 
 ## Appendix: Phase 16/17 Runtime Fixes (2026-08-04 to 2026-08-17)
 
-These fixes bring the test suite from 91 PASS / 0 FAIL / 0 SKIP / 0 DEFERRED out of 91 ROMs as of 2026-10-03.
+These fixes bring the test suite to L3 (Visual) verification: 72-74 PASS / 5 FAIL / 2 INCONCLUSIVE / 1 L2 timeout / 9 SKIP (non-visual test types) out of 91 ROMs as of 2026-10-08.
 
 ### Phase 16 (2026-08-04 to 2026-08-13)
 

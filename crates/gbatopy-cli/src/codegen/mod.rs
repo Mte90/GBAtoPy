@@ -1307,8 +1307,8 @@ mod tests {
             is_data: false,
         };
         let result = generate_instruction_python(&inst);
-        // Unhandled instructions emit stderr warning + pass
+        // Unhandled instructions route to interpreter fallback
         assert!(result.contains("sys.stderr.write"));
-        assert!(result.contains("pass"));
+        assert!(result.contains("_interp_fallback"));
     }
 }

@@ -21,7 +21,7 @@ Codegen tree:        crates/gbatopy-cli/src/codegen/
 Runtime source:      crates/gbatopy-cli/assets/gba_runtime/   (ppu.py, dma.py, memory.py, arm7tdmi.py)
 Templates:           crates/gbatopy-cli/assets/templates/
 Current work log:    WORKPLAN.md (todo.md superseded)
-mGBA:                mgba/ (with custom patches, branch: extend-lua)
+mGBA:                mgba/ (custom patches in mgba-custom-patches.diff, not a git repo)
 mGBA binary:         mgba/build/sdl/mgba
 Scripts:             scripts/ — see scripts/README.md
 Test framework:      crates/gbatopy-test/
@@ -38,7 +38,7 @@ Transpiler output:   /tmp/<romname>.py  (NEVER in project dir)
 | [docs/hardware-reference.md](docs/hardware-reference.md) | CPU, display, memory map, PPU modes — single source of truth |
 | [docs/runtime-architecture.md](docs/runtime-architecture.md) | PPU scanline & DMA architecture, `_map_address()` |
 | [docs/how-debug.md](docs/how-debug.md) | Systematic debug workflow + known bug classes |
-| [docs/codegen-pitfalls.md](docs/codegen-pitfalls.md) | 15 documented codegen bug classes |
+| [docs/codegen-pitfalls.md](docs/codegen-pitfalls.md) | Documented codegen bug classes (see file for count) |
 | [docs/roadmap.md](docs/roadmap.md) | Full implementation status and strategy |
 | [docs/reference/test-roms.md](docs/reference/test-roms.md) | Per-ROM pass/fail matrix |
 | [WORKPLAN.md](WORKPLAN.md) | Source of truth for pending work — read at session start |
@@ -88,10 +88,12 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 1. **Read `WORKPLAN.md` first** at session start — it is the source of truth for pending work. Reconcile against `docs/reference/test-roms.md` and the live codebase.
 2. **Read `docs/roadmap.md`** for full status and strategy.
 3. **Read `docs/how-debug.md`** for systematic debug workflow + known bug classes.
-4. **One ROM at a time for fixing** — parallel root-cause *investigation* across multiple ROMs is allowed and encouraged (dispatch multiple @explorer in parallel). But apply fixes sequentially, one ROM at a time, verifying each before moving to the next. Never run the full 76-ROM suite during active debugging. Use `python3 scripts/run_tests.py --level 3 --rom <name>`.
+4. **One ROM at a time for fixing** — parallel root-cause *investigation* across multiple ROMs is allowed and encouraged (dispatch multiple @explorer in parallel). But apply fixes sequentially, one ROM at a time, verifying each before moving to the next. Never run the full 91-ROM suite during active debugging. Use `python3 scripts/run_tests.py --level 3 --rom <name>`.
+4a. **Codegen proceeds autonomously** — no user approval gate needed for codegen changes. Apply fix → build → canary regression (one ROM) → full L3 suite → commit. Do not stall waiting for an OK on codegen work.
+4b. **No ad-hoc code for a single ROM** — never special-case codegen to make one ROM pass without fixing the root cause. No stubs, no `if rom_name == X` workarounds, no hardcoded values tuned to one ROM's golden screenshot. A fix must address the structural bug so all affected ROMs benefit. If a fix only works for one ROM, it is a hack — find the real cause.
 
 ### Verification
-5. **Test with pixels** — "no crash" is not enough. Verify screenshot content against mGBA golden via `compare_screenshots.py`. See [RUNBOOK.md](RUNBOOK.md).
+5. **Test with pixels, specify level** — "no crash" is not enough. Verify screenshot content against mGBA golden via `compare_screenshots.py`. Every PASS claim MUST specify verification level: L1 (smoke/syntax), L2 (execution), L3 (visual comparison). "PASS" without a level is meaningless. See [RUNBOOK.md](RUNBOOK.md).
 6. **Re-test all previously-passing ROMs after codegen/dispatch changes** — a fix that targets one ROM can regress others. The peephole `+4` fix for Thumb loops regressed start-delay from 1.75% PASS to 100% blank. After any change to shared dispatch, peephole optimizer, or codegen headers, run `python3 scripts/run_tests.py --level 3` on the last known-passing set before declaring done.
 7. **One-shot verification** — `./scripts/verify/verify_rom.sh <rom> --no-golden` transpiles, runs, compares in one step.
 8. **Verify subagent claims** — always check their work manually.
@@ -110,7 +112,7 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 17. **Debug probes must flush** — `print(..., flush=True)` BEFORE any `os._exit(0)`; the runtime exits hard, bypassing buffer flush.
 18. **Never add step_scanline to memory reads** — see invariant #3. PPU stepping is exclusively in the main loop.
 19. **Fallback interpreter is pure CPU** — see invariant #1.
-20. **Check known bug classes first** — consult "Known Codegen Bug Classes" (5), "Known Runtime Bug Classes" (2), and "New Bug Classes" (3: SWI dispatch truncation, memory non-zero init, IRQ vector missing) in `docs/how-debug.md` before deep debugging. Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py` first.
+20. **Check known bug classes first** — consult the known bug classes in `docs/how-debug.md` (codegen, runtime, and Thumb-disassembler/codegen-mismatch classes). Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py` first.
 21. **Check dispatch table completeness** — NOP block bug may skip initialization code.
 22. **Verify STRH/LDRH offsets** — disassembler may use wrong bit field (bits 7-3 vs bits 3-0).
 22a. **Verify explorer code-pattern claims by reading the cited line** — an explorer hallucinated a NOP-detection mask `(opcode & 0xFF000000) == 0xEA000000` at emitter_arm.rs:609; grep found no such pattern. Before acting on any subagent's claim about a code pattern, read the cited file:line with `read` or `aft_zoom` and confirm the pattern exists as described.
@@ -132,8 +134,9 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
   5. Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/` to find failing runtime tests.
   6. Audit `docs/how-debug.md` "Known Bug Classes" — each unresolved class is a task.
   7. Grep for `TODO`, `FIXME`, `unimplemented`, `stub`, `pass  #` in `crates/` and `crates/gbatopy-cli/assets/gba_runtime/` — each hit is a task.
-  8. If still no work found, run the full 76-ROM regression suite (`python3 scripts/run_tests.py --level 3`) and investigate every FAIL/SKIP.
-  Create a `todowrite` entry for each discovered gap, then resume execution. The session only ends when steps 1-8 yield zero new work.
+  8. Count codegen stubs: transpile a failing ROM and grep stderr for "unhandled" — every stub line is an instruction the codegen can't handle. `gbatopy transpile <rom> --output /tmp/<rom>.py 2>&1 | grep -c unhandled`. Every stub is a task.
+  9. If still no work found, run the full 91-ROM regression suite (`python3 scripts/run_tests.py --level 3`) and investigate every FAIL/SKIP.
+  Create a `todowrite` entry for each discovered gap, then resume execution. The session only ends when steps 1-9 yield zero new work.
 
 28. **Keep at least 3 pending todos** — at any work boundary, if fewer than 3 pending todos remain, run the work discovery loop (27) before continuing. Always have a visible backlog of upcoming work.
 

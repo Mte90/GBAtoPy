@@ -244,7 +244,7 @@ def _sync_state_from_cpu(registers, cpsr):
                 _b['r10'] = _ib.get('r10', 0); _b['r11'] = _ib.get('r11', 0)
                 _b['r12'] = _ib.get('r12', 0)
 
-def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
+def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None, timers=None):
     global _interp_cpu
     global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
     _sync_state_to_cpu(registers, cpsr)
@@ -280,6 +280,8 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
         _old_pc = _pc
         _interp_cpu.step()
         _step_count += 1
+        if timers is not None:
+            timers.step(4)
         # Dynamic dispatch table expansion for indirect calls
         # When BX Rm or BLX Rm executes, the new PC may not be in the dispatch table
         _new_pc = _interp_cpu.registers[15]
@@ -380,21 +382,19 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
                         if _budget <= 0:
                             _budget = 1
-                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc, timers=timers_instance if _has_timers else None)
                         _steps = max(1, _steps)
                         ic += _steps
-                        if _has_timers:
-                            timers_instance.step(4 * _steps)
+
                     else:
                         # ROM address not in dispatch table - use fallback interpreter
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
                         if _budget <= 0:
                             _budget = 1
-                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc, timers=timers_instance if _has_timers else None)
                         _steps = max(1, _steps)
                         ic += _steps
-                        if _has_timers:
-                            timers_instance.step(4 * _steps)
+
                         if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
                             break
                 else:
@@ -531,21 +531,19 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
                         if _budget <= 0:
                             _budget = 1
-                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc, timers=timers_instance if _has_timers else None)
                         _steps = max(1, _steps)
                         ic += _steps
-                        if _has_timers:
-                            timers_instance.step(4 * _steps)
+
                     else:
                         # ROM address not in dispatch table - use fallback interpreter
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
                         if _budget <= 0:
                             _budget = 1
-                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc, timers=timers_instance if _has_timers else None)
                         _steps = max(1, _steps)
                         ic += _steps
-                        if _has_timers:
-                            timers_instance.step(4 * _steps)
+
                         if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
                             break
                     continue

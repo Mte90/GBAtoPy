@@ -59,7 +59,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     }
     if base_opcode == "SWI" || base_opcode == "SVC" {
         let swi_num = match ops.first() {
-            Some(Operand::Immediate(n)) => (*n >> 16) & 0xFF,
+            Some(Operand::Immediate(n)) => *n & 0xFF,
             _ => 0,
         };
         return Some(format!(
@@ -312,9 +312,8 @@ mod tests {
     // === SWI/SVC tests ===
     #[test]
     fn test_generate_swi_with_immediate() {
-        // SWI immediate format: bits [23:16] = SWI number
-        // Operand::Immediate(0x123456) -> (0x123456 >> 16) & 0xFF = 0x12
-        let inst = make_inst("SWI", vec![Operand::Immediate(0x123456)]);
+        // ARM disassembler pre-extracts: word & 0xFFFFFF → Immediate(swi_num)
+        let inst = make_inst("SWI", vec![Operand::Immediate(0x12)]);
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
@@ -324,9 +323,8 @@ mod tests {
 
     #[test]
     fn test_generate_svc_with_immediate() {
-        // SVC immediate format: bits [23:16] = SVC number
-        // Operand::Immediate(0xABCD00) -> (0xABCD00 >> 16) & 0xFF = 0xAB
-        let inst = make_inst("SVC", vec![Operand::Immediate(0xABCD00)]);
+        // ARM disassembler pre-extracts: word & 0xFFFFFF → Immediate(swi_num)
+        let inst = make_inst("SVC", vec![Operand::Immediate(0xAB)]);
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();

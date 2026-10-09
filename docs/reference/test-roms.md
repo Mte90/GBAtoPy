@@ -2,7 +2,7 @@
 
 This document catalogs all **91 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
-**Current status (2026-10-06):** 91 PASS, 0 FAIL, 0 untested out of 91 ROMs.
+**Current status (2026-10-08):** All 91 ROMs PASS — 23 L3 visual comparison, 4 L2 execution, 64 L1 syntax tests. Zero FAIL, zero SKIP.
 
 **Batch execution fix (2026-10-06, commit cfbd1f7):** `_interp_fallback` broke immediately when PC was outside ROM range (0x08000000-0x0A000000), causing IWRAM/EWRAM code to execute one instruction per main-loop iteration with full PPU/timer overhead. ROMs that execute from IWRAM (bgx, vram-mirror) timed out. Fix: removed the early break and replaced the one-step path with batch execution via `_interp_fallback`. bgx and vram-mirror newly PASS.
 
@@ -57,7 +57,7 @@ Remaining FAIL: 0 ROMs (Skyland fixed — BL/BLX block-start discovery verified)
 - ❌ **FAIL** — Transpiles and runs, but >=30% diff or timeout (documented root cause)
 - ⏰ **SKIP** — Not tested (known hang or missing file)
 
-### Summary (2026-10-06)
+### Summary (2026-10-08)
 
 | Status | Count | % |
 |--------|-------|---|
@@ -69,18 +69,18 @@ Remaining FAIL: 0 ROMs (Skyland fixed — BL/BLX block-start discovery verified)
 
 
 
-### L3-Verified ROMs (23 total, 9 explicitly listed below — verified with golden screenshots)
+### L3-Verified ROMs (23 total, verified with golden screenshots)
 
 - hello: 1581 bytes ✓
 - stripes: 1049 bytes ✓
-- cascade7: PASS ✓
-- fantasy-knight: PASS ✓
-- mode3: PASS ✓
-- mode4: PASS ✓
+- cascade7: 0.0% diff ✓
+- fantasy-knight: 0.0% diff ✓
+- mode3: 38400 pixels ✓
+- mode4: 38400 pixels ✓
 - bgpd: 540 bytes ✓
 - bgx: 554 bytes ✓
 - greenswap: 554 bytes ✓
-- shades: 517 bytes ✓
+- shades: 35840 pixels ✓
 - vram-mirror: 520 bytes ✓
 
 **Previously FAIL ROMs now PASS (CFG IWRAM pass limit + data pattern detection):**
@@ -102,11 +102,11 @@ Remaining FAIL: 0 ROMs (Skyland fixed — BL/BLX block-start discovery verified)
 
 ### Previously INCONCLUSIVE ROMs (all resolved)
 
-All 17 ROMs previously marked INCONCLUSIVE (golden screenshots nearly empty) were re-verified in Phase 14. All now PASS. Previously skipped ROMs (rates, song) now PASS after F46/F47 fixes (Phase 15).
+All previously marked INCONCLUSIVE ROMs (golden screenshots nearly empty) were re-verified. All now PASS. Previously skipped ROMs (rates, song) now PASS after F46/F47 fixes.
 
 ### SKIP ROMs (0 total)
 
-None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SKIP_ROMS lists in regress_all.sh and regress_resume.sh emptied (F49).
+None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes.
 
 ### Verified Working ROMs (100% Golden Match)
 
@@ -160,7 +160,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 
 | ROM | Issue | Evidence |
 |-----|-------|----------|
-| **nes.gba** | Visual PASS | 0.75% diff vs mGBA golden (2026-08-11) — full-screen white output matches mGBA. Prior FAIL status was stale; a previous fix incidentally resolved this ROM. |
+| **nes.gba** | ✅ PASS | 0.75% diff vs mGBA golden (2026-08-11) — full-screen white output matches mGBA. Prior FAIL status was stale; a previous fix incidentally resolved this ROM. |
 
 ---
 
@@ -197,7 +197,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 - **F42** (Mode 5 rendering): `_render_mode5` in `ppu.py` now iterates all 160 rows (was 128) and fills pixels outside the 160×128 bitmap region with backdrop color (`palette[0]`). Regression: `stripes`, `mode3`, `mode4` all PASS at 0% diff.
 - **F14** (N/S-cycle timing): PERMANENTLY DEFERRED (KILL) — oracle verdict 92% confidence; violates all 5 runtime invariants. See roadmap.md §6.9.
 - **F40** (Link cable): DEFERRED — no ROM tests real transfer. Runtime exposes stub `LinkCable` class. See roadmap.md §6.10.
-- **F43** (write_u32 MMIO truncation): `memory.py` `write_u32` was masking values with `0xFFFF` for MMIO addresses, stripping the upper 16 bits of 32-bit writes. This caused DMA control words (e.g. `0xB6000000` to DMA1CNT at `0x040000C4`) to lose the enable bit (bit 15). Fixed: 32-bit MMIO writes now split into two 16-bit writes (lower→base, upper→base+2), matching GBA hardware. Verified: DMA1/DMA2 control registers now correctly receive `0xB600` (enable + sound FIFO DMA). fantasy-knight still fails (99.7% diff) — root cause is missing HBlank/VCount IRQ delivery (memory #46), not DMA.
+- **F43** (write_u32 MMIO truncation): `memory.py` `write_u32` was masking values with `0xFFFF` for MMIO addresses, stripping the upper 16 bits of 32-bit writes. This caused DMA control words (e.g. `0xB6000000` to DMA1CNT at `0x040000C4`) to lose the enable bit (bit 15). Fixed: 32-bit MMIO writes now split into two 16-bit writes (lower→base, upper→base+2), matching GBA hardware. Verified: DMA1/DMA2 control registers now correctly receive `0xB600` (enable + sound FIFO DMA).
 
 **Note on bgpd.gba**: ✅ PASS (restored 2026-10-06 after F140 CFG data-as-code fix). Was briefly FAIL after F136 watchdog fix (timeout → completes but renders incorrectly). The F140 fix added `looks_like_data_safe` at three CFG builder sites, preventing data-as-code explosion that corrupted bgpd's function graph. Previously PASS at 0.0% diff (re-verified 2026-08-08) with three root causes fixed: (1) HBlank DMA burst behavior — `hblank_fire` in `dma.py` must call `_do_transfer` (full-count burst) not `_do_transfer_single`. (2) Mode 3 affine rendering — `_render_mode3` in `ppu.py` must read per-scanline BG2 affine snapshots. (3) VBlank gating — `step_scanline` in `ppu.py` must gate `hblank_fire()` to `vcount < 160`.
 

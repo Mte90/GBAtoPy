@@ -325,35 +325,69 @@ impl ThumbDecoder {
         (name.to_string(), vec![self.reg(rd), self.reg(rm)], false)
     }
 
-    fn format_14_push_pop(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
+        fn format_14_push_pop(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
         let l_bit = (hw >> 11) & 1;
         let r_flag = (hw >> 8) & 1;
         let rlist = hw & 0xFF;
-        let name = if l_bit != 0 { "POP" } else { "PUSH" };
-        let mut operands: Vec<crate::Operand> = Vec::new();
+        let mut registers: Vec<u8> = Vec::new();
         for i in 0..8 {
             if rlist & (1 << i) != 0 {
-                operands.push(self.reg(i));
+                registers.push(i as u8);
             }
         }
         if r_flag != 0 {
-            operands.push(self.reg(if l_bit != 0 { 15 } else { 14 }));
+            registers.push(if l_bit != 0 { 15 } else { 14 });
         }
-        (name.to_string(), operands, false)
+        let (name, increment, pre_index) = if l_bit != 0 {
+            ("LDMIA", true, false)
+        } else {
+            ("STMDB", false, true)
+        };
+        (
+            name.to_string(),
+            vec![crate::Operand::MemoryAddress {
+                base: 13,
+                offset: crate::operand::AddressingMode::Multi {
+                    base: 13,
+                    registers,
+                    increment,
+                    pre_index,
+                    writeback: true,
+                    s_bit: false,
+                },
+                writeback: true,
+            }],
+            false,
+        )
     }
 
-    fn format_15_multiple(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
+        fn format_15_multiple(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
         let l_bit = (hw >> 11) & 1;
         let rb = ((hw >> 8) & 0x7) as u8;
         let rlist = hw & 0xFF;
         let name = if l_bit != 0 { "LDMIA" } else { "STMIA" };
-        let mut operands: Vec<crate::Operand> = vec![self.reg(rb)];
+        let mut registers: Vec<u8> = Vec::new();
         for i in 0..8 {
             if rlist & (1 << i) != 0 {
-                operands.push(self.reg(i));
+                registers.push(i as u8);
             }
         }
-        (name.to_string(), operands, false)
+        (
+            name.to_string(),
+            vec![crate::Operand::MemoryAddress {
+                base: rb,
+                offset: crate::operand::AddressingMode::Multi {
+                    base: rb,
+                    registers,
+                    increment: true,
+                    pre_index: false,
+                    writeback: true,
+                    s_bit: false,
+                },
+                writeback: true,
+            }],
+            false,
+        )
     }
 
     fn format_16_cond_branch(&self, hw: u16, address: u32) -> (String, Vec<crate::Operand>, bool) {
@@ -447,11 +481,9 @@ impl ThumbDecoder {
             return None; // hw2 is not a BL_SUFFIX
         }
 
-        // Check if this is BLX (immediate): bit 10 of hw2 = 1 (BL has 0)
-        // BL_SUFFIX:  1111 10xx xxxxx... (bits 11-9 = 100 or 101)
-        // BLX_SUFFIX: 1111 11xx xxxxx... (bits 11-9 = 110 or 111)
-        let j1_bit = (hw2 >> 10) & 1; // bit 10 distinguishes BL (0) from BLX (1)
-        let is_blx = j1_bit == 1;
+        // ARMv4T (GBA's ARM7TDMI) has no BLX instruction — BLX was introduced in ARMv5T.
+        // All 32-bit Thumb branch-link instructions on the GBA are BL, never BLX.
+        let is_blx = false;
 
         // Extract the 23-bit offset (22 bits for BL/BLX, bit 22 is sign bit)
         let offset_high = hw1 & 0x7FF;
@@ -675,8 +707,8 @@ mod tests {
     fn test_thumb_format14_push() {
         let dec = ThumbDecoder::new();
         let (mnem, ops, _flags) = dec.decode(0xB5F0, 0x08000000);
-        assert_eq!(mnem, "PUSH");
-        assert_eq!(ops.len(), 5);
+        assert_eq!(mnem, "STMDB");
+        assert_eq!(ops.len(), 1); // MemoryAddress with Multi register list
     }
 
     #[test]
@@ -684,7 +716,7 @@ mod tests {
         let dec = ThumbDecoder::new();
         let (mnem, ops, _flags) = dec.decode(0xC003, 0x08000000);
         assert_eq!(mnem, "STMIA");
-        assert_eq!(ops.len(), 3);
+        assert_eq!(ops.len(), 1); // MemoryAddress with Multi register list
     }
 
     #[test]
