@@ -142,10 +142,14 @@ fn operand_to_expr(op: &Operand) -> String {
 }
 
 /// Replace R15 (PC) **source** operands with the computed PC value as an Immediate.
-/// In ARM mode, PC = instruction_address + 8.
+/// ARM: PC = instruction_address + 8. Thumb: PC = (instruction_address + 4) & !3.
 /// The destination register (ops[0] for instructions with Rd) is never replaced.
-fn resolve_pc_operands(ops: &[Operand], inst_addr: u32, base_opcode: &str) -> Vec<Operand> {
-    let pc_val = inst_addr.wrapping_add(ARM_PC_OFFSET);
+fn resolve_pc_operands(ops: &[Operand], inst: &DecodedInstruction, base_opcode: &str) -> Vec<Operand> {
+    let pc_val = if inst.mode == gbatopy_disasm::ArmMode::Thumb {
+        (inst.address + 4) & !3
+    } else {
+        inst.address + ARM_PC_OFFSET
+    };
     let has_rd = !matches!(base_opcode, "CMP" | "CMN" | "TST" | "TEQ");
     ops.iter()
         .enumerate()
@@ -176,7 +180,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         Some(cond_suffix.to_uppercase())
     };
 
-    let ops = resolve_pc_operands(&inst.operands, inst.address, base_opcode);
+    let ops = resolve_pc_operands(&inst.operands, inst, base_opcode);
 
     let code = match base_opcode {
         "MOV" => generate_mov(&ops, inst.sets_flags),
@@ -574,11 +578,21 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
             };
             let expr = match op {
                 "LSL" => format!("({} << {})", rn, shift),
-                "LSR" => format!("({} >> {})", rn, shift),
-                "ASR" => format!(
-                    "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
-                    rn, rn, rn, shift
-                ),
+                "LSR" => {
+                    match &ops[2] {
+                        Operand::Immediate(0) => format!("({} >> 32)", rn),
+                        _ => format!("({} >> {})", rn, shift),
+                    }
+                }
+                "ASR" => {
+                    match &ops[2] {
+                        Operand::Immediate(0) => format!("((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> 32)", rn, rn, rn),
+                        _ => format!(
+                            "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
+                            rn, rn, rn, shift
+                        ),
+                    }
+                }
                 "ROR" => format!(
                     "(({} >> ({} & 31)) | ({} << (32 - ({} & 31))))",
                     rn, shift, rn, shift
@@ -603,11 +617,21 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
             };
             let expr = match op {
                 "LSL" => format!("({} << {})", rn, shift),
-                "LSR" => format!("({} >> {})", rn, shift),
-                "ASR" => format!(
-                    "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
-                    rn, rn, rn, shift
-                ),
+                "LSR" => {
+                    match &ops[1] {
+                        Operand::Immediate(0) => format!("({} >> 32)", rn),
+                        _ => format!("({} >> {})", rn, shift),
+                    }
+                }
+                "ASR" => {
+                    match &ops[1] {
+                        Operand::Immediate(0) => format!("((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> 32)", rn, rn, rn),
+                        _ => format!(
+                            "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
+                            rn, rn, rn, shift
+                        ),
+                    }
+                }
                 "ROR" => format!(
                     "(({} >> ({} & 31)) | ({} << (32 - ({} & 31))))",
                     rn, shift, rn, shift
@@ -714,7 +738,10 @@ fn generate_cmp(ops: &[Operand]) -> Option<String> {
 cpsr['n'] = (result_cmp >> 31) & 1
 cpsr['z'] = 1 if result_cmp == 0 else 0
 cpsr['c'] = 1 if ({rn} >= {rm}) else 0
-if ({rn} >= 0 and {rm} < 0 and result_cmp < 0) or ({rn} < 0 and {rm} >= 0 and result_cmp >= 0):
+_rn_s = {rn} if {rn} < 0x80000000 else {rn} - 0x100000000
+_rm_s = {rm} if {rm} < 0x80000000 else {rm} - 0x100000000
+_result_s = result_cmp if result_cmp < 0x80000000 else result_cmp - 0x100000000
+if (_rn_s >= 0 and _rm_s < 0 and _result_s < 0) or (_rn_s < 0 and _rm_s >= 0 and _result_s >= 0):
     cpsr['v'] = 1
 else:
     cpsr['v'] = 0"#

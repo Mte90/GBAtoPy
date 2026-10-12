@@ -1107,27 +1107,21 @@ class ARM7TDMI:
                 self.memory.write_u16(0x04000004, _ds | 0x0008)
             self._halted = True
             self._halt_reason = 'vblank'
-        elif num == 0x06:  # Div (signed)
-            dividend = self.registers[0]
-            divisor = self.registers[1]
-            if divisor != 0:
-                # Interpret as signed 32-bit
-                sd = dividend - 0x100000000 if dividend & 0x80000000 else dividend
-                sv = divisor - 0x100000000 if divisor & 0x80000000 else divisor
-                q = int(sd / sv) if sv != 0 else 0
-                r = sd - q * sv
-                self.registers[0] = q & 0xFFFFFFFF
-                self.registers[1] = r & 0xFFFFFFFF
-                self.registers[3] = abs(sd) & 0xFFFFFFFF
-        elif num == 0x07:  # DivArm (unsigned)
-            dividend = self.registers[0] & 0xFFFFFFFF
-            divisor = self.registers[1] & 0xFFFFFFFF
-            if divisor != 0:
-                q = dividend // divisor
-                r = dividend % divisor
-                self.registers[0] = q & 0xFFFFFFFF
-                self.registers[1] = r & 0xFFFFFFFF
-                self.registers[3] = dividend & 0xFFFFFFFF
+        elif num == 0x06:  # Div
+            if hasattr(self, 'bios') and self.bios is not None:
+                result = self.bios.swi_div(self.registers[0], self.registers[1])
+                remainder = self.registers[0] % self.registers[1] if self.registers[1] != 0 else 0
+                self.registers[0] = result & 0xFFFFFFFF
+                self.registers[1] = remainder & 0xFFFFFFFF
+        elif num == 0x07:  # DivArm (unsigned division)
+            if hasattr(self, 'bios') and self.bios is not None:
+                dividend = self.registers[0] & 0xFFFFFFFF
+                divisor = self.registers[1] & 0xFFFFFFFF
+                if divisor == 0:
+                    self.registers[0] = 0
+                else:
+                    result = dividend // divisor
+                    self.registers[0] = result & 0xFFFFFFFF
         elif num == 0x08:  # Sqrt
             if hasattr(self, 'bios') and self.bios is not None:
                 result = self.bios.swi_sqrt(self.registers[0])

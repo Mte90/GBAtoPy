@@ -66,7 +66,7 @@ See `docs/how-debug.md` § "Systematic Spin Diagnosis Workflow" for usage patter
 ```bash
 python3 scripts/run_tests.py --level 3 --rom stripes
 ```
-Never run the full 76-ROM suite during active debugging — always test one ROM at a time with `--rom <name>`.
+Never run the full 91-ROM suite during active debugging — always test one ROM at a time with `--rom <name>`.
 
 ## mGBA on Headless Server
 
@@ -85,4 +85,4 @@ All three env settings required. `SDL_VIDEODRIVER=dummy` alone produces empty 33
 4. **Build:** `cargo build --release` (0 errors, 0 warnings)
 5. **Verify one ROM:** `cargo run -p gbatopy-cli -- pipeline --rom test_roms/roms/stripes.gba --output /tmp/stripes.py && python3 /tmp/stripes.py --headless --frame=60 --screenshot /tmp/stripes.png`
 6. **Fetch test ROMs:** `scripts/setup/download_test_roms.sh` (not in repo)
-7. **Build mGBA:** see `README.md` (branch: extend-lua)
+7. **Build mGBA:** see `README.md` (apply `mgba-custom-patches.diff` to upstream mGBA 0.11)

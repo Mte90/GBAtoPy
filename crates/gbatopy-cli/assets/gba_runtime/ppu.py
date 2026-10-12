@@ -1005,8 +1005,7 @@ class PPU:
                 # VBlank bit: set when vcount >= 160 (VBlank period)
                 if self.vcount >= self.screen_height:
                     dispstat |= 0x0001
-                # HBlank bit: set for all scanlines (simplified model)
-                dispstat |= 0x0002
+                # HBlank bit: 0 in our scanline-based model (ROM runs between scanline steps)
                 # LYC match bit: set when vcount == lyc
                 if self.vcount == self.lyc:
                     dispstat |= 0x0004
@@ -1221,11 +1220,10 @@ class PPU:
         return int(new_x), int(new_y)
 
     def _fixed_to_float(self, value: int) -> float:
-        """Convert 16.16 fixed point to float"""
-        # Handle signed value
+        """Convert 8.8 fixed point to float (GBA affine BG2PA/PB/PC/PD)"""
         if value & 0x8000:
             value = value - 0x10000
-        return value / 65536.0
+        return value / 256.0
 
     def _fixed_8_8_to_float(self, value: int) -> float:
         """Convert 8.8 fixed point to float"""
@@ -1493,10 +1491,7 @@ class PPU:
             dispstat = 0
             if vblank_current:
                 dispstat |= 0x0001
-            # HBlank bit: on GBA, HBlank occurs after every scanline (including VBlank)
-            # For snapshot purposes, set HBlank=1 for all scanlines since games
-            # typically poll DISPSTAT during HBlank waiting periods
-            dispstat |= 0x0002
+            # HBlank bit: 0 in our scanline-based model
             # Update LYC match bit (VCount compare) - read from memory.io[5]
             lyc_value = self.memory.io[5] & 0xFF
             if self.vcount == lyc_value:
@@ -1548,7 +1543,7 @@ class PPU:
         dispstat = 0
         if self.vblank:
             dispstat |= 0x0001
-        dispstat |= 0x0002  # HBlank bit
+        # HBlank bit: 0 in our scanline-based model
         lyc_value = self.memory.io[5] & 0xFF
         if old_vcount == lyc_value:
             dispstat |= 0x0004
@@ -1588,8 +1583,7 @@ class PPU:
             next_dispstat = 0
             if next_vblank:
                 next_dispstat |= 0x0001
-            # HBlank bit
-            next_dispstat |= 0x0002
+            # HBlank bit: 0 in our scanline-based model
             # LYC match bit
             if next_vcount == self.lyc:
                 next_dispstat |= 0x0004
@@ -1855,7 +1849,10 @@ class PPU:
             cnt = self.memory.read_u16(0x04000008 + bg * 2)
             bg_cnt[bg] = cnt
             bg_priority[bg] = cnt & 0x03
-            bg_bpp8[bg] = bool((cnt >> 7) & 1)
+            if bg == 2:
+                bg_bpp8[bg] = True  # Affine BG always 8BPP
+            else:
+                bg_bpp8[bg] = bool((cnt >> 7) & 1)
             bg_char_block[bg] = self.bg_char_block[bg]
             bg_screen_block[bg] = self.bg_screen_block[bg]
             bg_hofs[bg] = self.bg_hofs[bg]
@@ -2023,8 +2020,6 @@ class PPU:
                     if pixel_index >= len(palette_indices):
                         continue
                     color_idx = palette_indices[pixel_index]
-                    if color_idx == 0:
-                        continue
 
                     if bg_priority[2] < best_priority:
                         # Save previous color as second target (it was underneath)
@@ -2071,7 +2066,7 @@ class PPU:
                 continue
             cnt = self.memory.read_u16(0x04000008 + bg * 2)
             bg_priority[bg] = cnt & 0x03
-            bg_bpp8[bg] = bool((cnt >> 7) & 1)
+            bg_bpp8[bg] = True  # Affine BG always 8BPP
             bg_char_block[bg] = self.bg_char_block[bg]
             bg_screen_block[bg] = self.bg_screen_block[bg]
             bg_size[bg] = self.bg_size[bg]
@@ -2232,7 +2227,7 @@ class PPU:
                             palette_indices = get_tile(tile_index, bg_char_block[2], bg_bpp8[2])
                             if pixel_index < len(palette_indices):
                                 color_idx = palette_indices[pixel_index]
-                                if color_idx > 0 and bg_priority[2] < best_priority:
+                                if bg_priority[2] < best_priority:
                                     best_priority = bg_priority[2]
                                     best_color = palette_colors[color_idx]
                                     best_bg = 2
@@ -2298,7 +2293,7 @@ class PPU:
                             palette_indices = get_tile(tile_index, bg_char_block[3], bg_bpp8[3])
                             if pixel_index < len(palette_indices):
                                 color_idx = palette_indices[pixel_index]
-                                if color_idx > 0 and bg_priority[3] < best_priority:
+                                if bg_priority[3] < best_priority:
                                     best_priority = bg_priority[3]
                                     best_color = palette_colors[color_idx]
                                     best_bg = 3

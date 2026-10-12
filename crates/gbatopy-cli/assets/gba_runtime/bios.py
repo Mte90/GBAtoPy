@@ -48,18 +48,29 @@ class BIOS:
         return x
 
     def swi_cpuset(self, src: int, dst: int, count: int, control: int):
-        """CPU Set - block copy (bit 24 = 16-bit flag, no fill mode)"""
-        is_16bit = bool(control & 0x01000000)
+        """CPU Set - block copy/fill (bit 24 = fill mode, bit 26 = 32-bit width)."""
+        is_fill = bool(control & 0x01000000)
+        is_32bit = bool(control & 0x04000000)
         word_count = count & 0x001FFFFF
 
-        if is_16bit:
-            for i in range(word_count):
-                value = self.memory.read_u16(src + i * 2)
-                self.memory.write_u16(dst + i * 2, value)
+        if is_32bit:
+            if is_fill:
+                value = self.memory.read_u32(src)
+                for i in range(word_count):
+                    self.memory.write_u32(dst + i * 4, value)
+            else:
+                for i in range(word_count):
+                    value = self.memory.read_u32(src + i * 4)
+                    self.memory.write_u32(dst + i * 4, value)
         else:
-            for i in range(word_count):
-                value = self.memory.read_u32(src + i * 4)
-                self.memory.write_u32(dst + i * 4, value)
+            if is_fill:
+                value = self.memory.read_u16(src)
+                for i in range(word_count):
+                    self.memory.write_u16(dst + i * 2, value)
+            else:
+                for i in range(word_count):
+                    value = self.memory.read_u16(src + i * 2)
+                    self.memory.write_u16(dst + i * 2, value)
 
     def swi_cpufastset(self, src: int, dst: int, count: int, control: int):
         """CPU Fast Set - faster block copy/fill (32-bit only)"""

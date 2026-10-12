@@ -119,8 +119,12 @@ impl ArmDecoder {
                 match bits_27_25 {
                     0b110 => ("COPROCESSOR".to_string(), vec![], false),
                     0b111 => {
-                        let swi_num = (word >> 16) & 0xFF;
-                        ("SWI".to_string(), vec![Operand::Immediate(swi_num)], false)
+                        if (word >> 24) & 0xF == 0xF {
+                            let swi_num = (word >> 16) & 0xFF;
+                            ("SWI".to_string(), vec![Operand::Immediate(swi_num)], false)
+                        } else {
+                            ("COPROCESSOR".to_string(), vec![], false)
+                        }
                     }
                     _ => ("UNKNOWN".to_string(), vec![], false),
                 }

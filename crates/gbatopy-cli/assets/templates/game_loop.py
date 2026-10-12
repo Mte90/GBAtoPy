@@ -143,27 +143,9 @@ def swi_handler(swi_field):
         val = registers[0] & 0xFFFFFFFF
         registers[0] = int(val ** 0.5) & 0xFFFFFFFF
     elif swi_num == 0x0B:  # CpuSet
-        src = registers[0]
-        dst = registers[1]
-        n = registers[2] & 0x1FFFFF
-        is_16bit = bool(registers[2] & 0x01000000)  # bit 24 = 16-bit flag
-        if is_16bit:
-            for i in range(n):
-                memory.write_u16(dst + i*2, memory.read_u16(src + i*2))
-        else:
-            for i in range(n):
-                memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
+        arm7tdmi_instance.bios.swi_cpuset(registers[0], registers[1], registers[2], registers[2])
     elif swi_num == 0x0C:  # CpuFastSet
-        src = registers[0]
-        dst = registers[1]
-        n = registers[2] & 0x1FFFFF
-        if registers[2] & 0x01000000:  # fixed source (fill mode)
-            val = memory.read_u32(src)
-            for i in range(n):
-                memory.write_u32(dst + i*4, val)
-        else:
-            for i in range(n):
-                memory.write_u32(dst + i*4, memory.read_u32(src + i*4))
+        arm7tdmi_instance.bios.swi_cpufastset(registers[0], registers[1], registers[2], registers[2])
     elif swi_num == 0x09:  # ArcTan
         registers[0] = arm7tdmi_instance.bios.swi_arctan(registers[0]) & 0xFFFF
     elif swi_num == 0x0A:  # ArcTan2
@@ -244,7 +226,7 @@ def _sync_state_from_cpu(registers, cpsr):
                 _b['r10'] = _ib.get('r10', 0); _b['r11'] = _ib.get('r11', 0)
                 _b['r12'] = _ib.get('r12', 0)
 
-def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None, timers=None):
+def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
     global _interp_cpu
     global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
     _sync_state_to_cpu(registers, cpsr)
@@ -280,8 +262,6 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None, timers
         _old_pc = _pc
         _interp_cpu.step()
         _step_count += 1
-        if timers is not None:
-            timers.step(4)
         # Dynamic dispatch table expansion for indirect calls
         # When BX Rm or BLX Rm executes, the new PC may not be in the dispatch table
         _new_pc = _interp_cpu.registers[15]
@@ -379,22 +359,29 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                     # This prevents infinite fallback loops for IWRAM code
                     if not (0x08000000 <= pc < 0x0A000000):
                         # Non-ROM address: batch execute via fallback interpreter
-                        _budget = instr_per_scanline - (ic - _inner_ic_start)
-                        if _budget <= 0:
-                            _budget = 1
-                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc, timers=timers_instance if _has_timers else None)
+                        # IWRAM code (0x03000000-0x03008000) is performance-critical (e.g., memcpy)
+                        # Allow larger batches to avoid instruction-count overhead
+                        if 0x03000000 <= pc < 0x03008000:
+                            _budget = 100000  # Large budget for IWRAM code
+                        else:
+                            _budget = instr_per_scanline - (ic - _inner_ic_start)
+                            if _budget <= 0:
+                                _budget = 1
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                         _steps = max(1, _steps)
                         ic += _steps
-
+                        if _has_timers:
+                            timers_instance.step(4 * _steps)
                     else:
                         # ROM address not in dispatch table - use fallback interpreter
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
                         if _budget <= 0:
                             _budget = 1
-                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc, timers=timers_instance if _has_timers else None)
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                         _steps = max(1, _steps)
                         ic += _steps
-
+                        if _has_timers:
+                            timers_instance.step(4 * _steps)
                         if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
                             break
                 else:
@@ -528,22 +515,29 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     # This prevents infinite fallback loops for IWRAM code
                     if not (0x08000000 <= pc < 0x0A000000):
                         # Non-ROM address: batch execute via fallback interpreter
-                        _budget = instr_per_scanline - (ic - _inner_ic_start)
-                        if _budget <= 0:
-                            _budget = 1
-                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc, timers=timers_instance if _has_timers else None)
+                        # IWRAM code (0x03000000-0x03008000) is performance-critical (e.g., memcpy)
+                        # Allow larger batches to avoid instruction-count overhead
+                        if 0x03000000 <= pc < 0x03008000:
+                            _budget = 100000  # Large budget for IWRAM code
+                        else:
+                            _budget = instr_per_scanline - (ic - _inner_ic_start)
+                            if _budget <= 0:
+                                _budget = 1
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                         _steps = max(1, _steps)
                         ic += _steps
-
+                        if _has_timers:
+                            timers_instance.step(4 * _steps)
                     else:
                         # ROM address not in dispatch table - use fallback interpreter
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
                         if _budget <= 0:
                             _budget = 1
-                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc, timers=timers_instance if _has_timers else None)
+                        _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                         _steps = max(1, _steps)
                         ic += _steps
-
+                        if _has_timers:
+                            timers_instance.step(4 * _steps)
                         if _irq_return_pc is not None and (registers[15] == _irq_return_pc or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC)):
                             break
                     continue

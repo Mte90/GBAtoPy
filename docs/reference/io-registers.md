@@ -123,14 +123,15 @@
 
 | Bits  | Name           | Description                             |
 |-------|----------------|-----------------------------------------|
-| 5     | Repeat         | Repeat at next VBlank/HBlank/special    |
-| 6     | Word Size      | 0=16-bit, 1=32-bit                      |
-| 7     | -              | -                                       |
-| 8-9   | DMA Source     | 00=increment, 01=decrement, 10=fixed, 11=prohibited |
-| 10-11 | DMA Dest       | 00=increment, 01=decrement, 10=fixed, 11=increment-reload |
+| 5-6   | DMA Dest       | 00=increment, 01=decrement, 10=fixed, 11=increment-reload |
+| 7-8   | DMA Source     | 00=increment, 01=decrement, 10=fixed, 11=prohibited |
+| 9     | Repeat         | Repeat at next VBlank/HBlank/special    |
+| 10    | Word Size      | 0=16-bit, 1=32-bit                      |
 | 12-13 | Trigger Mode   | 00=immediate, 01=VBlank, 10=HBlank, 11=special |
 | 14    | IRQ            | Fire IRQ on completion                  |
 | 15    | Enable         | DMA enable                              |
+
+_Layout verified against mGBA source: `mgba/include/mgba/internal/gba/dma.h`_
 
 ### DMA Special Trigger Modes
 

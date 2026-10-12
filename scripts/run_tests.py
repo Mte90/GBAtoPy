@@ -60,6 +60,30 @@ def load_test_types():
     return types
 
 
+def load_rom_config(rom_filename):
+    """Load per-ROM config overrides. Returns dict with timeout, max_instrs, etc.
+    
+    Example config entry:
+        [[tests]]
+        name = "gbarcade"
+        rom_path = "gbarcade.gba"
+        timeout = 180
+        max_instrs = 20000000
+    """
+    if not TEST_CONFIG_PATH.exists():
+        return {}
+    with open(TEST_CONFIG_PATH, "rb") as f:
+        cfg = tomllib.load(f)
+    for test in cfg.get("tests", []):
+        if test.get("rom_path", "") == rom_filename:
+            # Return only the override fields, with defaults
+            return {
+                "timeout": test.get("timeout", 90),
+                "max_instrs": test.get("max_instrs", 10000000),
+            }
+    return {}
+
+
 def sweep_artifacts():
     """Clean stale build artifacts before building. Runs cargo-sweep if available."""
     sweep = shutil.which("cargo-sweep")
@@ -146,14 +170,14 @@ def check_syntax(output_path):
         return False, "syntax_check_timeout"
 
 
-def execute_rom(output_path, frame=10, timeout=90):
+def execute_rom(output_path, frame=10, timeout=90, max_instrs=10000000):
     """Run generated script headless. Returns (success, screenshot_path, error_msg).
     Default 10 frames at ~2.5s each (slow ROMs) = 25s; 90s timeout gives margin."""
     screenshot_path = output_path.replace('.py', f'_frame{frame}.png')
     try:
         result = subprocess.run(
             ["python3", str(output_path), "--headless", f"--frame={frame}",
-             "--screenshot", str(screenshot_path), "--max-instrs", "10000000"],
+             "--screenshot", str(screenshot_path), "--max-instrs", str(max_instrs)],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -247,7 +271,11 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
         return result
 
     # --- Level 2: Execution ---
-    success, screenshot_path, err = execute_rom(output_py, frame=frame, timeout=90)
+    # Read per-ROM overrides from config
+    rom_config = load_rom_config(rom_path.name)
+    timeout = rom_config.get("timeout", 90)
+    max_instrs = rom_config.get("max_instrs", 10000000)
+    success, screenshot_path, err = execute_rom(output_py, frame=frame, timeout=timeout, max_instrs=max_instrs)
     if not success:
         result["level2"] = False
         result["level2_status"] = err or "execution_failed"

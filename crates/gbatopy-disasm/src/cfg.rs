@@ -64,22 +64,10 @@ fn literal_pool_addr(opcode: &str, operands: &[Operand], addr: u32, mode: ArmMod
     }
 }
 
-/// ARMv5T+/ARMv6/ARMv6K instructions that do not exist on the ARM7TDMI (ARMv4T).
-/// The GBA's CPU is ARM7TDMI, so no legitimate ROM contains these as real code.
-/// When they appear in disassembly, it is always literal data decoded as an instruction.
-fn is_arm7tdmi_invalid_opcode(opcode: &str) -> bool {
-    matches!(
-        opcode,
-        "BKPT" | "CPS" | "YIELD" | "SEV" | "WFE" | "WFI" | "CLREX" | "DSB" | "DMB" | "ISB"
-    )
-}
-
 /// Decodes the word/halfword at `addr` and returns false if it does not look
 /// like valid code. Data constants (palette tables, struct pointers, tile
 /// data) frequently decode as UNKNOWN/UNDEFINED; filtering them out prevents
 /// the CFG sweeps from inflating the dispatch table with non-code addresses.
-/// ARM7TDMI-invalid opcodes (BKPT/CPS/YIELD etc.) are also rejected because
-/// they cannot appear in real GBA code — only in data decoded as instructions.
 fn decode_is_valid_code(
     rom: &[u8],
     addr: u32,
@@ -115,9 +103,7 @@ fn decode_is_valid_code(
             thumb_decoder.decode(halfword, addr).0
         }
     };
-    !opcode_str.starts_with("UNKNOWN")
-        && opcode_str != "UNDEFINED"
-        && !is_arm7tdmi_invalid_opcode(&opcode_str)
+    !opcode_str.starts_with("UNKNOWN") && opcode_str != "UNDEFINED"
 }
 
 /// Requires a run of `min_run` consecutive valid decodes starting at `addr`.
@@ -216,13 +202,7 @@ fn has_repeated_pattern(rom: &[u8], addr: u32) -> bool {
             if offset2 + PATTERN_SIZE > rom.len() {
                 break;
             }
-            // Skip zero-valued blocks: a run of zeros is alignment padding or a
-            // code gap (e.g. after a branch that skips it), not a data pattern.
-            let block = &rom[offset1..offset1 + PATTERN_SIZE];
-            if block == [0, 0, 0, 0] {
-                continue;
-            }
-            if *block == rom[offset2..offset2 + PATTERN_SIZE] {
+            if rom[offset1..offset1 + PATTERN_SIZE] == rom[offset2..offset2 + PATTERN_SIZE] {
                 matches += 1;
             }
         }
@@ -375,10 +355,6 @@ pub struct CfgBuilder {
     /// Registers used in BX/BLX instructions. The post-processing sweep adds
     /// all literal-pool values loaded into these registers as branch targets.
     bx_registers: BTreeSet<u8>,
-    /// Addresses where an explicit ARM branch overrode a stale Thumb
-    /// classification from data fall-through. ARM BFS must explore these
-    /// even though Thumb already visited them.
-    arm_overrides: HashSet<u32>,
 }
 
 /// BFS pass configuration context for CfgBuilder.
@@ -709,7 +685,8 @@ impl CfgBuilder {
 
             // Skip if already discovered
             let already_discovered =
-                self.branch_targets.contains(&addr) || self.instruction_addresses.contains(&addr);
+                self.branch_targets.contains(&addr) || self.instruction_addresses.contains(&addr)
+                || self.instruction_addresses.contains(&(addr & !1));
             if already_discovered {
                 continue;
             }
@@ -1226,7 +1203,7 @@ impl CfgBuilder {
         let mut prologue_targets: Vec<(u32, ArmMode)> = Vec::new();
         const PROLOGUE_SCAN_START: usize = 0x100; // Skip vector table
         const PROLOGUE_SCAN_END: usize = 0x80000; // Limit to first 512 KB of ROM
-        const PROLOGUE_MAX_TARGETS: usize = 1000; // Validation filters guard against over-discovery
+        const PROLOGUE_MAX_TARGETS: usize = 20; // Very strict limit
         for off in (PROLOGUE_SCAN_START..rom.len().saturating_sub(1)).step_by(2) {
             if off >= PROLOGUE_SCAN_END {
                 break;
@@ -1302,7 +1279,7 @@ impl CfgBuilder {
         let mut arm_prologue_targets: Vec<(u32, ArmMode)> = Vec::new();
         const ARM_PROLOGUE_SCAN_START: usize = 0x100; // Skip vector table
         const ARM_PROLOGUE_SCAN_END: usize = 0x80000; // Limit to first 512 KB of ROM
-        const ARM_PROLOGUE_MAX_TARGETS: usize = 1000; // Validation filters guard against over-discovery
+        const ARM_PROLOGUE_MAX_TARGETS: usize = 20; // Very strict limit
         for off in (ARM_PROLOGUE_SCAN_START..rom.len().saturating_sub(3)).step_by(4) {
             if off >= ARM_PROLOGUE_SCAN_END {
                 break;
@@ -1335,7 +1312,6 @@ impl CfgBuilder {
                 ) && self.branch_targets.insert(target)
                 {
                     arm_prologue_targets.push((target, ArmMode::Arm));
-                    self.arm_overrides.insert(target);
                 }
             }
         }
@@ -1681,9 +1657,16 @@ impl CfgBuilder {
                     // Record this register for the post-processing sweep.
                     self.bx_registers.insert(*rn);
                     if let Some(target) = self.register_tracker.get(*rn) {
-                        // Push the raw target with bit 0 intact.
-                        // bfs_pass uses bit 0 to detect Thumb vs ARM mode, then strips it.
-                        targets.push(target);
+                        // Indirect branch (BX Rm / BLX Rm): the register value is known via tracking.
+                        // The target address has bit 0 as the Thumb-mode indicator.
+                        // If bit 0 is set → Thumb mode, if clear → ARM mode.
+                        if target & 1 == 1 {
+                            // Thumb mode target: normalize by clearing bit 0
+                            targets.push(target & !1);
+                        } else {
+                            // ARM mode target: use as-is (already 4-byte aligned)
+                            targets.push(target);
+                        }
                     }
                 }
             }
@@ -1741,15 +1724,7 @@ impl CfgBuilder {
                 ArmMode::Arm => ArmMode::Thumb,
                 ArmMode::Thumb => ArmMode::Arm,
             };
-            if current_mode == ArmMode::Arm && own_visited.contains(&(addr, ArmMode::Thumb)) {
-                // ARM override case: an explicit ARM branch warranted re-exploration
-                // of an address previously claimed by Thumb fall-through through
-                // data. Allow ARM BFS to proceed so the function body is decoded
-                // as ARM code.
-                if !self.arm_overrides.contains(&addr) {
-                    continue;
-                }
-            } else if own_visited.contains(&(addr, opposite_mode)) {
+            if own_visited.contains(&(addr, opposite_mode)) {
                 continue;
             }
             // ARM mode uses looks_like_data_safe (zero-run + pattern only) —
@@ -1800,9 +1775,7 @@ impl CfgBuilder {
                 let thumb_conflict_minus2 = addr >= 2
                     && (own_visited.contains(&(addr - 2, ArmMode::Thumb))
                         || shared_visited.is_some_and(|s| s.contains(&(addr - 2, ArmMode::Thumb))));
-                if (thumb_conflict || thumb_conflict_minus2)
-                    && !self.arm_overrides.contains(&addr)
-                {
+                if thumb_conflict || thumb_conflict_minus2 {
                     eprintln!("[CFG] Cross-mode guard: skipping ARM visit at 0x{:08X} (Thumb already visited)", addr);
                     continue;
                 }
@@ -1815,6 +1788,8 @@ impl CfgBuilder {
                     continue;
                 }
             }
+
+            own_visited.insert((addr, current_mode));
 
             count += 1;
             if report_progress && count % 100_000 == 0 {
@@ -1847,20 +1822,8 @@ impl CfgBuilder {
             if matches!(current_mode, ArmMode::Arm) && rom_offset >= 2 {
                 let prev_hw = u16::from_le_bytes([rom[rom_offset - 2], rom[rom_offset - 1]]);
                 if (prev_hw & 0xF800) == 0xF000 {
-                    continue;
-                }
-            }
-            
-            // Additional guard for Thumb mode: detect if addr is the second halfword
-            // of a 32-bit Thumb BL instruction (BL_SUFFIX). Check if the previous
-            // halfword is a valid BL_PREFIX (0xF000-0xF7FF with bit 11 = 0) and
-            // the current halfword is a valid BL_SUFFIX (bit 11 = 1).
-            if matches!(current_mode, ArmMode::Thumb) && rom_offset >= 2 {
-                let prev_hw = u16::from_le_bytes([rom[rom_offset - 2], rom[rom_offset - 1]]);
-                let curr_hw = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
-                let is_prev_bl_prefix = (prev_hw & 0xF800) == 0xF000 && ((prev_hw >> 11) & 1) == 0;
-                let is_curr_bl_suffix = (curr_hw & 0xF800) == 0xF800 && ((curr_hw >> 11) & 1) == 1;
-                if is_prev_bl_prefix && is_curr_bl_suffix {
+                    // This address is the second halfword of a BL instruction
+                    eprintln!("[CFG] Cross-mode guard: skipping ARM visit at 0x{:08X} (inside BL at 0x{:08X})", addr, addr - 2);
                     continue;
                 }
             }
@@ -1916,10 +1879,7 @@ impl CfgBuilder {
                 }
             };
 
-            if opcode_str.starts_with("UNKNOWN")
-                || opcode_str == "UNDEFINED"
-                || is_arm7tdmi_invalid_opcode(&opcode_str)
-            {
+            if opcode_str.starts_with("UNKNOWN") || opcode_str == "UNDEFINED" {
                 continue;
             }
             if let Some(pool_addr) = literal_pool_addr(&opcode_str, &operands, addr, current_mode) {
@@ -1951,12 +1911,10 @@ impl CfgBuilder {
                 thumb_decoder,
             ) || (current_mode == ArmMode::Arm
                 && has_uniform_rare_condition_code(rom, addr));
-            if is_data {
-                continue;
+            if !is_data {
+                self.instruction_addresses.push(addr);
+                self.mode_map.push((addr, current_mode));
             }
-            own_visited.insert((addr, current_mode));
-            self.instruction_addresses.push(addr);
-            self.mode_map.push((addr, current_mode));
             let targets =
                 self.extract_branch_targets(&opcode_str, &operands, addr, instr_width.into());
             self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
@@ -2017,40 +1975,7 @@ impl CfgBuilder {
                     && !next_is_data
                     && !next_cross_mode_conflict
                 {
-                    // FIX 2: Dual-mode decode validation for fall-through addresses.
-                    // Data regions may decode as valid code in one mode but not the other.
-                    // If the current mode is ARM and the decode would fail in Thumb mode
-                    // (or vice versa), this is suspicious — likely data masquerading as code.
-                    // Only apply this to fall-through, not to explicit branch targets.
-                    let should_skip_fallthrough = {
-                        let other_mode = match current_mode {
-                            ArmMode::Arm => ArmMode::Thumb,
-                            ArmMode::Thumb => ArmMode::Arm,
-                        };
-                        // Check if decode validity differs between modes
-                        let current_valid = decode_is_valid_code(
-                            rom,
-                            next_addr,
-                            current_mode,
-                            arm_decoder,
-                            thumb_decoder,
-                        );
-                        let other_valid = decode_is_valid_code(
-                            rom,
-                            next_addr,
-                            other_mode,
-                            arm_decoder,
-                            thumb_decoder,
-                        );
-                        // If current mode says valid but other mode says invalid,
-                        // and we're in ARM mode (more likely to have false positives
-                        // from data), skip this fall-through.
-                        current_valid && !other_valid && current_mode == ArmMode::Arm
-                    };
-                    
-                    if !should_skip_fallthrough {
-                        queue.push((next_addr, current_mode));
-                    }
+                    queue.push((next_addr, current_mode));
                 }
             }
 
@@ -2058,38 +1983,11 @@ impl CfgBuilder {
                 if raw_target < 0x08000000 || (raw_target - 0x08000000) as usize >= rom.len() {
                     continue;
                 }
-                // For BX/BLX Rn targets, the register tracker may hold a stale
-                // value whose bit 0 doesn't match the actual code at the target.
-                // Determine the mode from the prologue at the target address: check
-                // both Thumb (PUSH {..., LR} = 0xB5xx) and ARM (STMFD SP!, {..., LR}
-                // = 0xE92Dxxxx) prologues. The matching prologue is authoritative.
-                // For BL/BL_SUFFIX, inherit the mode from the current BFS pass.
                 let target_mode = if opcode_str == "BX" || opcode_str == "BLX" {
-                    let base = raw_target & !1;
-                    let rom_off = (base - 0x08000000) as usize;
-                    let has_thumb_prologue = rom_off + 1 < rom.len() && {
-                        let hw = u16::from_le_bytes([rom[rom_off], rom[rom_off + 1]]);
-                        (hw & 0xFF00) == 0xB500
-                    };
-                    let has_arm_prologue = rom_off + 3 < rom.len() && {
-                        let word = u32::from_le_bytes([
-                            rom[rom_off],
-                            rom[rom_off + 1],
-                            rom[rom_off + 2],
-                            rom[rom_off + 3],
-                        ]);
-                        (word & 0xFFFF0000) == 0xE92D0000 && (word & 0x00004000) != 0
-                    };
-                    if has_thumb_prologue {
+                    if raw_target & 1 == 1 {
                         ArmMode::Thumb
-                    } else if has_arm_prologue {
-                        ArmMode::Arm
                     } else {
-                        let mode_from_bit = if raw_target & 1 == 1 { ArmMode::Thumb } else { ArmMode::Arm };
-                        if !decode_is_valid_code(rom, raw_target & !1, mode_from_bit, arm_decoder, thumb_decoder) {
-                            continue;
-                        }
-                        mode_from_bit
+                        ArmMode::Arm
                     }
                 } else {
                     current_mode
@@ -2099,24 +1997,6 @@ impl CfgBuilder {
                 } else {
                     raw_target & !3
                 };
-                // For BL/BL_SUFFIX (function calls from current pass), require
-                // code validity. BX/BLX prologue was already checked during mode detection.
-                if opcode_str == "BL" || opcode_str == "BL_SUFFIX" {
-                    // Thumb: keep prologue check to filter data tables
-                    // ARM: use decode_is_valid_code to accept leaf functions without prologue
-                    let rom_off = (target - 0x08000000) as usize;
-                    let is_valid = if target_mode == ArmMode::Thumb {
-                        rom_off + 1 < rom.len() && {
-                            let hw = u16::from_le_bytes([rom[rom_off], rom[rom_off + 1]]);
-                            (hw & 0xFF00) == 0xB500
-                        }
-                    } else {
-                        decode_is_valid_code(rom, target, target_mode, arm_decoder, thumb_decoder)
-                    };
-                    if !is_valid {
-                        continue;
-                    }
-                }
                 // Explicit branch targets are always added to instruction_addresses - do NOT filter by data heuristics.
                 // If code explicitly jumps to an address, it must be in the dispatch table.
                 // Data heuristics only apply to fall-through, not to explicit branches.
@@ -2140,25 +2020,13 @@ impl CfgBuilder {
                         || shared_visited.is_some_and(|s| s.contains(&(target, ArmMode::Arm)))
                 };
 
-                // FIX 1: BL_SUFFIX targets are never real branch targets — they are
-                // the second half of a 32-bit BL instruction. Skip BFS exploration
-                // from BL_SUFFIX targets to prevent over-discovery.
-                let is_bl_suffix_target = opcode_str == "BL_SUFFIX";
-                
-                if !is_bl_suffix_target
-                    && !own_visited.contains(&(target, target_mode))
+                if !own_visited.contains(&(target, target_mode))
                     && shared_visited.is_none_or(|s| !s.contains(&(target, target_mode)))
                     && !target_cross_mode_conflict
                 {
                     queue.push((target, target_mode));
-                } else if target_cross_mode_conflict && target_mode == ArmMode::Arm {
-                    // An explicit ARM branch targets an address that Thumb BFS
-                    // already claimed (via data fall-through). The ARM branch is
-                    // authoritative — real code branches are intentional, not
-                    // heuristic. Register an override so ARM BFS can re-explore
-                    // this function body as ARM code.
-                    self.arm_overrides.insert(target);
-                    queue.push((target, ArmMode::Arm));
+                } else if target_cross_mode_conflict {
+                    eprintln!("[CFG] Cross-mode guard: skipping ARM target at 0x{:08X} (Thumb already visited)", target);
                 }
                 self.branch_targets.insert(target);
             }
@@ -2171,6 +2039,10 @@ impl CfgBuilder {
             }
         }
 
+        eprintln!(
+            "AFTER_SCAN: 0x080000C8 in data_addresses={}",
+            data_addresses.contains(&0x080000C8)
+        );
         count
     }
 }

@@ -253,7 +253,7 @@ class Memory:
                 ch.count = value & 0xFFFF
                 ch.control = (value >> 16) & 0xFFFF
                 # Write back to memory.io
-                b = (channel * 0x0C)
+                b = 0xB0 + (channel * 0x0C)
                 self.io[b+8] = ch.count & 0xFF
                 self.io[b+9] = (ch.count >> 8) & 0xFF
                 self.io[b+10] = ch.control & 0xFF
@@ -261,13 +261,13 @@ class Memory:
             else:
                 ch.count = value & 0xFFFF
                 # Write back to memory.io
-                b = (channel * 0x0C)
+                b = 0xB0 + (channel * 0x0C)
                 self.io[b+8] = ch.count & 0xFF
                 self.io[b+9] = (ch.count >> 8) & 0xFF
         elif reg_offset == 10:
             ch.control = value & 0xFFFF
             # Write back to memory.io
-            b = (channel * 0x0C)
+            b = 0xB0 + (channel * 0x0C)
             self.io[b+10] = ch.control & 0xFF
             self.io[b+11] = (ch.control >> 8) & 0xFF
         ch.read_from_memory()

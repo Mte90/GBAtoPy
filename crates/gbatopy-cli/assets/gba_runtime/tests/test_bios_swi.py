@@ -100,8 +100,8 @@ def test_swi_cpuset_basic():
     for i in range(4):
         memory.write_u32(src_addr + i * 4, 0xDEADBEEF + i)
     
-    # Copy 4 words (count = 4, not 16-bit mode)
-    bios.swi_cpuset(src_addr, dst_addr, 4, 0)
+    # Copy 4 words (32-bit mode: bit 26 = 0x04000000)
+    bios.swi_cpuset(src_addr, dst_addr, 4, 0x04000000)
     
     # Verify destination has the same data
     for i in range(4):
@@ -124,8 +124,8 @@ def test_swi_cpuset_count_semantics():
     for i in range(4):
         memory.write_u32(src_addr + i * 4, 0x12345678 + i)
     
-    # Copy only 2 words
-    bios.swi_cpuset(src_addr, dst_addr, 2, 0)
+    # Copy only 2 words (32-bit mode: bit 26 = 0x04000000)
+    bios.swi_cpuset(src_addr, dst_addr, 2, 0x04000000)
     
     # First 2 words should match
     assert memory.read_u32(dst_addr + 0) == 0x12345678

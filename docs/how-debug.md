@@ -426,17 +426,6 @@ The fast-path CPU in cpu.py did not implement IRQ vector delivery. ROMs that rel
 - **Symptom:** ALL ROMs render white/blank. No crash, no hang.
 - **Status:** All forced-blank checks read `self.forced_blank` field.
 
-### Bug Class: SWI Handler Mismatch Between Codegen and ARM7TDMI ⚠️ OPEN
-- **Symptom:** ROMs that use Div/DivArm for audio/timing calculations show pixel diffs when functions switch from ARM fast path to `_interp_fallback`. Behavioral differences between codegen `swi_handler` (game_loop.py template) and ARM7TDMI `swi_handler` (arm7tdmi.py).
-- **Root cause:** Two SWI dispatch paths exist with different implementations:
-  - **SWI Div (0x06):** codegen uses truncated division + sets R3=abs(sd); ARM7TDMI uses Python floored `%` + doesn't set R3
-  - **SWI DivArm (0x07):** codegen sets R0, R1, R3; ARM7TDMI only sets R0
-  - **SWI SoftReset (0x00):** codegen zeroes R0+R14; ARM7TDMI zeroes R0-R12, not R14
-  - **IRQ return register restoration:** `_interp_fallback` correctly breaks on IRQ return PC; ARM fast path doesn't, potentially missing register restore window
-- **Detection:** Compare `swi_handler` in `game_loop.py` template vs `arm7tdmi.py` runtime — any SWI with different register outputs is a bug. Run ROMs that exercise Div/DivArm/SoftReset via fallback interpreter.
-- **Fix approach:** ARM7TDMI `swi_handler` must match codegen `swi_handler` output for all registers (R0-R3, R12, R14). The codegen path is the authoritative implementation.
-- **Status:** Documentation added. Fixes pending in WORKPLAN.md F301-F304.
-
 ### Bug Class: Thumb load/store rd/rn bit-field swap (critical, systemic) ✅ FIXED
 - **Symptom:** ROMs with heavy Thumb LDR/STR immediate-offset code produce garbage or blank output. ~6600 instructions affected in a single ROM (start-delay).
 - **Status:** rd/rn bit-field extraction corrected in all three format handlers.
@@ -448,50 +437,6 @@ The fast-path CPU in cpu.py did not implement IRQ vector delivery. ROMs that rel
 ### Bug Class: Window register read ordering (memory.py) ✅ FIXED
 - **Symptom:** Window-enabled ROMs render backdrop everywhere (window ignored). window_midframe at 43-87% diff.
 - **Status:** Window register check moved before generic PPU range check.
-
-## Additional New Bug Classes
-
-### Bug Class: BL-suffix CFG pollution
-- **Symptom:** Exponential CFG growth, transpiler OOM or timeout. Generated Python has thousands of unreachable `func_XXXXXX()` entries for data addresses.
-- **Root cause:** BL_SUFFIX addresses (second halfword of 32-bit Thumb BL instruction) treated as valid code entry points by BFS exploration. Since Thumb instructions decode as valid for all 256 values of `(halfword >> 8)`, data regions explode exponentially in the CFG.
-- **Fix:** Reject BL_SUFFIX targets in BFS exploration — they are always the second half of a 32-bit BL instruction, never function entry points.
-- **Status:** ✅ FIXED (invariant #9). CFG builder now rejects BL_SUFFIX addresses as BFS exploration targets.
-
-### Bug Class: Cross-mode BFS guard blocking ARM discovery
-- **Symptom:** ARM functions execute via `_interp_fallback` instead of `dispatch_table_arm`, causing behavioral regressions (e.g., SWI handlers drop, wrong register outputs).
-- **Root cause:** When Thumb BFS claims an ARM address (via fall-through through data-as-code), the cross-mode guard at line ~1790 blocks ARM BFS from correcting the classification. ARM functions then never get their proper dispatch handlers.
-- **Fix:** Cross-mode BFS guard must allow ARM BFS to override stale Thumb classifications when an ARM prologue is found at the target address.
-- **Status:** ✅ FIXED (invariant #10). Cross-mode BFS guard now allows ARM override when ARM prologue is detected.
-
-### Bug Class: Stale register tracker → BX Rn → data explosion
-- **Symptom:** Exponential CFG growth, black screen or garbage output. Transpiler OOM during CFG construction.
-- **Root cause:** Stale values in the register tracker cause `BX Rn` targets to point into data regions. Since Thumb instructions decode as valid for all 256 values of `(halfword >> 8)`, data regions explode exponentially in the CFG.
-- **Fix:** Register tracker must invalidate stale values on mode switches and branch targets. BX Rn targets must be validated against known code regions.
-- **Status:** Documentation added. Fix pending in WORKPLAN.md.
-
-### Bug Class: BL prologue check bypass
-- **Symptom:** Exponential CFG pollution, false function discovery. Data addresses classified as code.
-- **Root cause:** BL/BL_SUFFIX targets bypass the prologue check that BX/BLX targets get. The 24-bit offset in a BL instruction can point into arbitrary data, and that data decoded as Thumb instructions creates a chain reaction of false function discovery.
-- **Fix:** BL/BL_SUFFIX targets must undergo the same prologue validation as BX/BLX targets before being added to the BFS frontier.
-- **Status:** Documentation added. Fix pending in WORKPLAN.md.
-
-### Bug Class: Prologue scan limit (PROLOGUE_MAX_TARGETS)
-- **Symptom:** Initialization code skipped, ROM hangs or produces wrong output. The init function is never discovered.
-- **Root cause:** When the init function is the 21st+ prologue target, it is never discovered because PROLOGUE_MAX_TARGETS is set to 20. Subsequent prologue targets are silently ignored.
-- **Fix:** Increase PROLOGUE_MAX_TARGETS from 20 to 1000 to accommodate ROMs with large initialization sequences.
-- **Status:** Documentation added. Fix pending in WORKPLAN.md.
-
-### Bug Class: Timer stepping mismatch between fast/fallback paths
-- **Symptom:** IRQ timing regressions after BX fix increased fallback usage. Timer-based ROMs show pixel diffs or timing divergence.
-- **Root cause:** Fast path steps timers per-instruction (`step(4)`), fallback path batch-stepped after the call (`step(4 * steps)`). This caused timer counters to diverge between the two execution paths.
-- **Fix:** Timer stepping in the fallback interpreter must be per-instruction (matching the fast path), not batch-stepped after the call returns.
-- **Status:** ✅ FIXED (invariant #11). Timer stepping in fallback interpreter now matches fast path (per-instruction).
-
-### Bug Class: IE register high-byte handling
-- **Symptom:** IRQs silently disabled after partial register write. ROM hangs waiting for IRQ that never fires.
-- **Root cause:** IE register writes must preserve the high byte — partial writes that clobber the high byte silently disable IRQs. The IE register is 16-bit, but some write paths only update the low byte and zero the high byte.
-- **Fix:** IE register writes must preserve the high byte — use read-modify-write semantics for partial writes.
-- **Status:** ✅ FIXED (invariant #12). IE register writes now preserve the high byte.
 
 ## Additional Fixed Bug Classes
 

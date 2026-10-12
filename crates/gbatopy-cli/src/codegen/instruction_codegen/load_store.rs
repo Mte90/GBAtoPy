@@ -649,6 +649,10 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                             code.push_str("_switch_mode(cpsr['mode'])\n");
                         } else if has_s_bit {
                             code.push_str(&format!("_write_user_reg({}, memory.read_u32(addr))\n", reg));
+                        } else if reg == 15 && inst.mode == gbatopy_disasm::ArmMode::Thumb {
+                            code.push_str("_pc_val = memory.read_u32(addr)\n");
+                            code.push_str("cpsr['t'] = _pc_val & 1\n");
+                            code.push_str("registers[15] = _pc_val & 0xFFFFFFFE\n");
                         } else {
                             code.push_str(&format!("registers[{}] = memory.read_u32(addr)\n", reg));
                         }
@@ -706,7 +710,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 return Some(format!(
-                    "temp = memory.read_u16({}{})\nregisters[{}] = (temp << 16) >> 16",
+                    "temp = memory.read_u16({}{})\nregisters[{}] = ((temp - 0x10000) if (temp & 0x8000) else temp) & 0xFFFFFFFF",
                     base_address_expr(*base, inst),
                     offset_expr,
                     rd
@@ -733,7 +737,7 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     _ => String::new(),
                 };
                 return Some(format!(
-                    "temp = memory.read_u8({}{})\nregisters[{}] = (temp << 24) >> 24",
+                    "temp = memory.read_u8({}{})\nregisters[{}] = ((temp - 0x100) if (temp & 0x80) else temp) & 0xFFFFFFFF",
                     base_address_expr(*base, inst),
                     offset_expr,
                     rd

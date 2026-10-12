@@ -1,10 +1,9 @@
-use gbatopy_disasm::{Condition, DecodedInstruction, Operand};
+use gbatopy_disasm::{ArmMode, Condition, DecodedInstruction, Operand};
 
 pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let opcode = inst.opcode.as_str();
     let ops = &inst.operands;
     let base_opcode = opcode.trim_end_matches(|c: char| c.is_ascii_lowercase());
-    let width = inst.width;
 
     if base_opcode == "B" || base_opcode == "BL" {
         if let Some(Operand::Immediate(target)) = ops.first() {
@@ -14,9 +13,16 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 return Some(format!("# Invalid branch target: 0x{:08X}", target));
             };
             if base_opcode == "BL" {
-                // BL is always 4 bytes (32-bit) in both ARM and Thumb, so LR = PC + 4.
+                // BL (Branch with Link): set LR = return address (next instruction).
+                // Thumb BL must set bit 0 of LR to indicate Thumb mode for BX LR interworking.
+                let lr_expr = if inst.mode == ArmMode::Thumb {
+                    "((registers[15] + 4) | 1) & 0xFFFFFFFF"
+                } else {
+                    "(registers[15] + 4) & 0xFFFFFFFF"
+                };
                 return Some(format!(
-                    "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\nregisters[15] = 0x{:08X}",
+                    "registers[14] = {}\nregisters[15] = 0x{:08X}",
+                    lr_expr,
                     target
                 ));
             }
@@ -25,6 +31,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         return Some(format!("# {} branch (target unknown)", base_opcode));
     }
     if base_opcode == "BX" || base_opcode == "BLX" {
+        // BLX/BX with register operand
         if let Some(Operand::Register(rn)) = ops.first() {
             let cond_str = match inst.condition {
                 Some(c) if c != Condition::Al => c.name().to_uppercase(),
@@ -38,8 +45,8 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                     String::new()
                 };
                 return Some(format!(
-                    "if cpsr_check('{}'):\n{}    cpsr['t'] = registers[{}] & 1\n    registers[15] = registers[{}] & 0xFFFFFFFE\nelse:\n    registers[15] = (registers[15] + {}) & 0xFFFFFFFF",
-                    cond_str, lr_set, rn, rn, width
+                    "if cpsr_check('{}'):\n{}    cpsr['t'] = registers[{}] & 1\n    registers[15] = registers[{}] & 0xFFFFFFFE\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
+                    cond_str, lr_set, rn, rn
                 ));
             }
             let lr_set = if is_blx {
@@ -70,10 +77,11 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     if opcode.len() == 3 && opcode.starts_with('B') && opcode != "BX" && opcode != "BLX" {
         if let Some(Operand::Immediate(target)) = ops.first() {
             let cond = &opcode[1..];
+            let pc_advance = if inst.mode == gbatopy_disasm::ArmMode::Thumb { 2 } else { 4 };
             if *target > 0x08000000 && *target < 0x0A000000 {
-                return Some(format!("if cpsr_check('{}'):\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + {}) & 0xFFFFFFFF", cond, target, width));
+                return Some(format!("if cpsr_check('{}'):\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + {}) & 0xFFFFFFFF", cond, target, pc_advance));
             }
-            return Some(format!("registers[15] = (registers[15] + {}) & 0xFFFFFFFF", width));
+            return Some(format!("registers[15] = (registers[15] + {}) & 0xFFFFFFFF", pc_advance));
         }
     }
     // Conditional BL: BLEQ, BLNE, etc. (4 chars, starts with "BL", not "BLX")
@@ -82,11 +90,11 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
             let cond = &opcode[2..];
             if *target > 0x08000000 && *target < 0x0A000000 {
                 return Some(format!(
-                    "if cpsr_check('{}'):\n    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + {}) & 0xFFFFFFFF",
-                    cond, target, width
+                    "if cpsr_check('{}'):\n    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
+                    cond, target
                 ));
             }
-            return Some(format!("registers[15] = (registers[15] + {}) & 0xFFFFFFFF", width));
+            return Some("registers[15] = (registers[15] + 4) & 0xFFFFFFFF".to_string());
         }
     }
     None

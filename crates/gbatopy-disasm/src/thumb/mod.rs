@@ -83,7 +83,7 @@ impl ThumbDecoder {
                 self.reg(rs as u8),
                 self.imm(offset5 as u32),
             ],
-            false,
+            true,
         )
     }
 
@@ -159,8 +159,8 @@ impl ThumbDecoder {
         let rs = (hw >> 3) & 0x7;
         let rd = hw & 0x7;
         let (name, sets_flags) = match op {
-            0x0 => ("AND", false),
-            0x1 => ("EOR", false),
+            0x0 => ("AND", true),
+            0x1 => ("EOR", true),
             0x2 => ("LSL", true),
             0x3 => ("LSR", true),
             0x4 => ("ASR", true),
@@ -171,10 +171,10 @@ impl ThumbDecoder {
             0x9 => ("NEG", true),
             0xA => ("CMP", true),
             0xB => ("CMN", true),
-            0xC => ("ORR", false),
-            0xD => ("MUL", false),
-            0xE => ("BIC", false),
-            0xF => ("MVN", false),
+            0xC => ("ORR", true),
+            0xD => ("MUL", true),
+            0xE => ("BIC", true),
+            0xF => ("MVN", true),
             _ => ("UNKNOWN", false),
         };
         (
@@ -481,8 +481,8 @@ impl ThumbDecoder {
             return None; // hw2 is not a BL_SUFFIX
         }
 
-        // ARMv4T (GBA's ARM7TDMI) has no BLX instruction — BLX was introduced in ARMv5T.
-        // All 32-bit Thumb branch-link instructions on the GBA are BL, never BLX.
+        // ARMv4T (ARM7TDMI) has no BLX immediate — bit 10 is part of the offset, not a J1 flag.
+        // BLX immediate is ARMv5T+ only. Force BL for all GBA code.
         let is_blx = false;
 
         // Extract the 23-bit offset (22 bits for BL/BLX, bit 22 is sign bit)
