@@ -67,6 +67,7 @@ pub fn generate_python_code(
         &format!("{}/assets/gba_runtime/bios.py", manifest_dir),
         &format!("{}/assets/gba_runtime/save_state.py", manifest_dir),
         &format!("{}/assets/gba_runtime/hooks.py", manifest_dir),
+        &format!("{}/assets/gba_runtime/serial.py", manifest_dir),
     ];
 
     // Optional modules - included based on feature flags (using manifest_dir from above)
@@ -163,6 +164,13 @@ pub fn generate_python_code(
         code.push_str("timers_instance = None\n");
     }
 
+    // Create serial instance if enabled
+    code.push_str("serial_instance = Serial(memory)\n");
+    code.push_str("memory.attach_serial(serial_instance)\n");
+    if flags.irq {
+        code.push_str("serial_instance.attach_interrupts(interrupts_instance)\n");
+    }
+
     // Create DMA instance if enabled
     if flags.dma {
         code.push_str("dma_instance = DMA()\n");
@@ -171,6 +179,8 @@ pub fn generate_python_code(
         if flags.irq {
             code.push_str("dma_instance.attach_interrupts(interrupts_instance)\n");
         }
+        // Wire DMA to timers for timer-triggered DMA transfers
+        code.push_str("timers_instance.attach_dma(dma_instance)\n");
     } else {
         code.push_str("dma_instance = None\n");
     }
@@ -337,20 +347,14 @@ pub fn generate_python_code(
 
     let mut current_block_start: Option<(u64, ArmMode)> = None;
     let mut prev_addr: Option<u64> = None;
+    let mut prev_width: u64 = 0;
+    let mut prev_mode: Option<ArmMode> = None;
     let mut prev_was_branch = false;
-
     for inst in &instructions {
-        let addr = inst.address as u64;
-        if (0x08000100..=0x08000120).contains(&addr) {
-            eprintln!(
-                "PASS2: instr at 0x{:08X}: {} mode={:?}",
-                addr, inst.opcode, inst.mode
-            );
-        }
         let addr = inst.address as u64;
         let mode = inst.mode;
         let instr_size = inst.width as u64;
-        let next_expected = prev_addr.map(|a| a + instr_size);
+        let next_expected = prev_addr.map(|a| a + prev_width);
         let is_branch = writes_r15(inst);
 
 
@@ -372,7 +376,9 @@ pub fn generate_python_code(
         // 1. This is a branch target, OR
         // 2. Previous instruction was a branch, OR
         // 3. Gap in addresses (not sequential) OR mode change
+        let mode_changed = prev_mode.is_some_and(|pm| pm != mode);
         let should_start_new_block = branch_targets.contains(&addr)
+            || mode_changed
             || prev_addr.is_none_or(|_pa| {
                 let is_sequential = next_expected == Some(addr);
                 prev_was_branch || !is_sequential
@@ -396,6 +402,8 @@ pub fn generate_python_code(
         }
 
         prev_addr = Some(addr);
+        prev_width = instr_size;
+        prev_mode = Some(mode);
     }
 
     eprintln!(
@@ -411,8 +419,9 @@ pub fn generate_python_code(
     use base64::Engine;
     use flate2::write::ZlibEncoder;
     use flate2::Compression;
-    use std::io::Write;
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+    use std::fmt::Write as FmtWrite;
+    use std::io::Write as IoWrite;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(rom).expect("compress ROM data");
     let rom_compressed = encoder.finish().expect("finalize ROM compression");
     let rom_b64 = base64::engine::general_purpose::STANDARD.encode(&rom_compressed);
@@ -434,45 +443,9 @@ pub fn generate_python_code(
         if i % 16 == 0 {
             code.push_str("\n    ");
         }
-        code.push_str(&format!("0x{:02X}", byte));
+        write!(code, "0x{:02X}", byte).unwrap();
     }
     code.push_str("\n])\n\n");
-
-    // Embed tilemap data (16-bit values)
-    code.push_str("# Tilemap data for backgrounds\n");
-    code.push_str("bg0_tilemap = [\n");
-    for chunk in assets.tilemap_data.chunks(2) {
-        if chunk.len() == 2 {
-            let value = u16::from_le_bytes([chunk[0], chunk[1]]);
-            code.push_str(&format!("    0x{:04X},\n", value));
-        }
-    }
-    code.push_str("]\n\n");
-
-    // Embed tile data (raw bytes)
-    code.push_str("# Tile data for backgrounds\n");
-    code.push_str("tile_data = bytearray([\n");
-    for (i, &byte) in assets.tile_data.iter().enumerate() {
-        if i > 0 {
-            code.push_str(", ");
-        }
-        if i % 16 == 0 {
-            code.push_str("\n    ");
-        }
-        code.push_str(&format!("0x{:02X}", byte));
-    }
-    code.push_str("\n])\n\n");
-
-    // Embed palette data (16-bit RGB555 values)
-    code.push_str("# Palette data for backgrounds and sprites\n");
-    code.push_str("palette_data = [\n");
-    for chunk in assets.palette_data.chunks(2) {
-        if chunk.len() == 2 {
-            let value = u16::from_le_bytes([chunk[0], chunk[1]]);
-            code.push_str(&format!("    0x{:04X},\n", value));
-        }
-    }
-    code.push_str("]\n\n");
 
     // Embed sample metadata (start_addr, length, format)
     code.push_str("# Sample metadata: (start_addr, length, format)\n");
@@ -481,17 +454,6 @@ pub fn generate_python_code(
         code.push_str(&format!("    (0x{:08X}, {}, {}),\n", addr, len, fmt));
     }
     code.push_str("]\n\n");
-
-    // Copy extracted tile/palette data to VRAM at initialization
-    code.push_str("# Copy extracted assets to VRAM/palette at initialization\n");
-    code.push_str("if tile_data:\n");
-    code.push_str("    for i, b in enumerate(tile_data):\n");
-    code.push_str("        memory.vram[i] = b\n");
-    code.push_str("if palette_data:\n");
-    code.push_str("    for i, val in enumerate(palette_data):\n");
-    code.push_str("        memory.palette[i*2] = val & 0xFF\n");
-    code.push_str("        memory.palette[i*2+1] = (val >> 8) & 0xFF\n");
-    code.push('\n');
 
     // Generate sample playback function
     code.push_str("# Sample playback helper\n");
@@ -938,17 +900,13 @@ pub fn generate_python_code(
     }
     code.push_str("}\n\n");
 
-    // Only register peephole-optimized Thumb functions (memset loops) in the dispatch
-    // table. Other Thumb functions use ARM-style codegen handlers that may produce
-    // incorrect PC-relative addressing (data_processing.rs uses ARM_PC_OFFSET=8, not
-    // Thumb's +4). Peephole-optimized functions are mode-independent memset loops —
-    // guaranteed correct. All other Thumb code falls through to the fallback interpreter.
+    // All Thumb functions with generated code are registered in the dispatch table.
+    // PC-relative addressing is mode-aware (data_processing.rs:148 and load_store.rs:5
+    // both use (addr+4)&!3 for Thumb, addr+8 for ARM). Unhandled instructions fall
+    // through to _interp_fallback via instruction_codegen/mod.rs:29.
     code.push_str("dispatch_table_thumb = {\n");
     for &(addr, mode) in &non_nop_addrs {
         if mode != ArmMode::Thumb {
-            continue;
-        }
-        if !thumb_optimized_addrs.contains(&(addr, mode)) {
             continue;
         }
         let idx = (addr - base_addr) >> 1;

@@ -45,6 +45,9 @@ _interp_cpu = None
 _halt_reason = None  # None, "any" (Halt), or "vblank" (VBlankIntrWait)
 _swi_lr = None  # Save LR_svc when SWI halts CPU
 _swi_caller_pc = None  # Save PC (caller's return address) when SWI halts
+_sound_work_area = None  # Sound driver work area pointer (SWI 0x19)
+_sound_mode = 0  # Sound driver mode (SWI 0x1A)
+_sound_vsync_enabled = True  # VSync sound processing enabled (SWI 0x1F)
 
 
 def swi_handler(swi_field):
@@ -61,11 +64,12 @@ def swi_handler(swi_field):
         registers[15] = 0x08000000
     elif swi_num == 0x01:  # RegisterRamReset
         flags = registers[0] & 0xFF
+        memory.write_u16(0x04000000, 0x0080)
         if flags & 0x01:
             for addr in range(0x02000000, 0x02040000, 4):
                 memory.write_u32(addr, 0)
         if flags & 0x02:
-            for addr in range(0x03000000, 0x03008000, 4):
+            for addr in range(0x03000000, 0x03008000 - 0x200, 4):
                 memory.write_u32(addr, 0)
         if flags & 0x04:
             for addr in range(0x05000000, 0x05000400, 2):
@@ -76,6 +80,79 @@ def swi_handler(swi_field):
         if flags & 0x10:
             for addr in range(0x07000000, 0x07000400, 2):
                 memory.write_u16(addr, 0)
+        if flags & 0x20:
+            memory.write_u16(0x04000128, 0)
+            memory.write_u16(0x04000134, 0x8000)
+            memory.write_u16(0x0400012A, 0)
+            memory.write_u16(0x04000140, 0)
+            memory.write_u32(0x04000150, 0)
+            memory.write_u32(0x04000154, 0)
+        if flags & 0x40:
+            memory.write_u16(0x04000060, 0)
+            memory.write_u16(0x04000062, 0)
+            memory.write_u16(0x04000064, 0)
+            memory.write_u16(0x04000068, 0)
+            memory.write_u16(0x0400006C, 0)
+            memory.write_u16(0x04000070, 0)
+            memory.write_u16(0x04000072, 0)
+            memory.write_u16(0x04000074, 0)
+            memory.write_u16(0x04000078, 0)
+            memory.write_u16(0x0400007C, 0)
+            memory.write_u16(0x04000080, 0)
+            memory.write_u16(0x04000082, 0)
+            memory.write_u16(0x04000084, 0)
+            memory.write_u16(0x04000088, 0x0200)
+        if flags & 0x80:
+            memory.write_u16(0x04000004, 0)
+            memory.write_u16(0x04000006, 0)
+            memory.write_u16(0x04000008, 0)
+            memory.write_u16(0x0400000A, 0)
+            memory.write_u16(0x0400000C, 0)
+            memory.write_u16(0x0400000E, 0)
+            memory.write_u16(0x04000010, 0)
+            memory.write_u16(0x04000012, 0)
+            memory.write_u16(0x04000014, 0)
+            memory.write_u16(0x04000016, 0)
+            memory.write_u16(0x04000018, 0)
+            memory.write_u16(0x0400001A, 0)
+            memory.write_u16(0x0400001C, 0)
+            memory.write_u16(0x0400001E, 0)
+            memory.write_u16(0x04000020, 0x0100)
+            memory.write_u16(0x04000022, 0)
+            memory.write_u16(0x04000024, 0)
+            memory.write_u16(0x04000026, 0x0100)
+            memory.write_u32(0x04000028, 0)
+            memory.write_u32(0x0400002C, 0)
+            memory.write_u16(0x04000030, 0x0100)
+            memory.write_u16(0x04000032, 0)
+            memory.write_u16(0x04000034, 0)
+            memory.write_u16(0x04000036, 0x0100)
+            memory.write_u32(0x04000038, 0)
+            memory.write_u32(0x0400003C, 0)
+            memory.write_u16(0x04000040, 0)
+            memory.write_u16(0x04000042, 0)
+            memory.write_u16(0x04000044, 0)
+            memory.write_u16(0x04000046, 0)
+            memory.write_u16(0x04000048, 0)
+            memory.write_u16(0x0400004A, 0)
+            memory.write_u16(0x0400004C, 0)
+            memory.write_u16(0x04000050, 0)
+            memory.write_u16(0x04000052, 0)
+            memory.write_u16(0x04000054, 0)
+            for base in [0x040000B0, 0x040000BC, 0x040000C8, 0x040000D4]:
+                memory.write_u16(base + 0, 0)
+                memory.write_u16(base + 2, 0)
+                memory.write_u16(base + 4, 0)
+                memory.write_u16(base + 6, 0)
+                memory.write_u16(base + 8, 0)
+                memory.write_u16(base + 10, 0)
+            for base in [0x04000100, 0x04000104, 0x04000108, 0x0400010C]:
+                memory.write_u16(base, 0)
+                memory.write_u16(base + 2, 0)
+            memory.write_u16(0x04000208, 0)
+            memory.write_u16(0x04000202, 0xFFFF)
+            memory.write_u16(0x04000204, 0)
+            memory.write_u16(0x04000200, 0)
     elif swi_num == 0x02:  # Halt — wakes on ANY enabled IRQ
         _swi_lr = registers[14]
         _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
@@ -183,6 +260,35 @@ def swi_handler(swi_field):
         arm7tdmi_instance.bios.swi_diff_unfilter(registers[0], registers[1], is_16bit=False)
     elif swi_num == 0x18:  # Diff16bitUnFilter
         arm7tdmi_instance.bios.swi_diff_unfilter(registers[0], registers[1], is_16bit=True)
+    elif swi_num == 0x19:  # SoundDriverInit
+        # Store sound driver work area pointer for later use
+        global _sound_work_area
+        _sound_work_area = registers[0]
+    elif swi_num == 0x1A:  # SoundDriverMode
+        # Store sound driver mode
+        global _sound_mode
+        _sound_mode = registers[0]
+    elif swi_num == 0x1B:  # SoundDriverMain
+        # Main sound driver processing - minimal (pygame handles audio)
+        pass
+    elif swi_num == 0x1C:  # SoundDriverVSync
+        # VBlank sound processing - minimal
+        pass
+    elif swi_num == 0x1D:  # SoundChannelClear
+        # Clear sound channels - no-op (pygame handles channels)
+        pass
+    elif swi_num == 0x1E:  # MidiKey2Freq
+        # Convert MIDI key to frequency
+        # r1 = MIDI key number (fixed-point with 8-bit fractional part)
+        # Formula: freq = 440 * 2^((key - 69) / 12)
+        key_fixed = registers[1]
+        key = key_fixed / 256.0
+        freq = 440.0 * (2.0 ** ((key - 69.0) / 12.0))
+        registers[0] = int(freq * 256) & 0xFFFFFFFF
+    elif swi_num == 0x1F:  # SoundDriverVSyncOff
+        # Disable VSync sound processing
+        global _sound_vsync_enabled
+        _sound_vsync_enabled = False
 def _sync_state_to_cpu(registers, cpsr):
     global _interp_cpu
     if _interp_cpu is None:
@@ -359,14 +465,9 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                     # This prevents infinite fallback loops for IWRAM code
                     if not (0x08000000 <= pc < 0x0A000000):
                         # Non-ROM address: batch execute via fallback interpreter
-                        # IWRAM code (0x03000000-0x03008000) is performance-critical (e.g., memcpy)
-                        # Allow larger batches to avoid instruction-count overhead
-                        if 0x03000000 <= pc < 0x03008000:
-                            _budget = 100000  # Large budget for IWRAM code
-                        else:
-                            _budget = instr_per_scanline - (ic - _inner_ic_start)
-                            if _budget <= 0:
-                                _budget = 1
+                        _budget = instr_per_scanline - (ic - _inner_ic_start)
+                        if _budget <= 0:
+                            _budget = 1
                         _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                         _steps = max(1, _steps)
                         ic += _steps
@@ -400,6 +501,8 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             ppu_instance.recapture_window_snapshot()
             if _has_timers:
                 timers_instance.step(960)
+            if serial_instance is not None:
+                serial_instance.step()
             ppu_instance.fire_hblank_irq()
             _deliver_irq()
         ppu_instance.render_frame()
@@ -515,14 +618,9 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                     # This prevents infinite fallback loops for IWRAM code
                     if not (0x08000000 <= pc < 0x0A000000):
                         # Non-ROM address: batch execute via fallback interpreter
-                        # IWRAM code (0x03000000-0x03008000) is performance-critical (e.g., memcpy)
-                        # Allow larger batches to avoid instruction-count overhead
-                        if 0x03000000 <= pc < 0x03008000:
-                            _budget = 100000  # Large budget for IWRAM code
-                        else:
-                            _budget = instr_per_scanline - (ic - _inner_ic_start)
-                            if _budget <= 0:
-                                _budget = 1
+                        _budget = instr_per_scanline - (ic - _inner_ic_start)
+                        if _budget <= 0:
+                            _budget = 1
                         _steps = _interp_fallback(registers, cpsr, max_steps=_budget, irq_return_pc=_irq_return_pc)
                         _steps = max(1, _steps)
                         ic += _steps
@@ -574,6 +672,8 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
             ppu_instance.recapture_window_snapshot()
             if _has_timers:
                 timers_instance.step(960)
+            if serial_instance is not None:
+                serial_instance.step()
             ppu_instance.fire_hblank_irq()
             _deliver_irq()
         # Render the completed frame
@@ -648,7 +748,10 @@ if __name__ == "__main__":
     parser.add_argument("--dump-at", type=str, help="Dump memory region when PC first hits target. Format: 0xPC[:region] (e.g. 0x080182CC:iwram)")
     parser.add_argument("--audio-capture", type=str, help="Capture audio to WAV file (stereo, 16-bit signed, 44100 Hz)")
     parser.add_argument("--profile", type=str, help="Dump cProfile stats to file")
+    parser.add_argument("--debug-ppu", action="store_true", help="Re-raise PPU rendering exceptions with context for debugging")
     args = parser.parse_args()
+    if args.debug_ppu:
+        os.environ['GBATOPY_DEBUG_PPU'] = '1'
     if args.profile:
         import cProfile
         pr = cProfile.Profile()
@@ -702,4 +805,11 @@ if __name__ == "__main__":
         pr.dump_stats(args.profile)
         print(f"Profile stats written to: {args.profile}", flush=True)
     print(f"{frames} frames")
+    # Report swallowed PPU exceptions if any
+    try:
+        from gba_runtime import ppu as _ppu_module
+        if hasattr(_ppu_module, '_SWALLOWED_COUNT') and _ppu_module._SWALLOWED_COUNT > 0:
+            print(f"PPU: {_ppu_module._SWALLOWED_COUNT} exceptions swallowed during rendering", flush=True)
+    except ImportError:
+        pass
     import os; os._exit(0)

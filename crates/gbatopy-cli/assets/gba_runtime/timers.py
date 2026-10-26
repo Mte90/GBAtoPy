@@ -40,8 +40,13 @@ class Timers:
         self._channels = [TimerChannel() for _ in range(4)]
         self._overflow_flags = [False] * 4
         self._interrupts = None
+        self._dma = None
         self._cycle_subcount = [0] * 4
         self._active_count = 0
+
+    def attach_dma(self, dma):
+        """Attach DMA controller for timer-triggered DMA transfers."""
+        self._dma = dma
 
     def attach_interrupts(self, interrupts):
         """Attach interrupt controller for timer IRQ callbacks"""
@@ -163,4 +168,7 @@ class Timers:
                     new_count = (new_count - 0x10000) + channel.reload
                     if (ctrl & 0x40) and interrupts:
                         interrupts.timer_irq(i)
+                    # Fire timer-triggered DMA if attached
+                    if self._dma:
+                        self._dma.timer_trigger_fire(i)
                 channel.count = new_count & 0xFFFF

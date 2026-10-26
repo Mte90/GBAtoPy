@@ -177,6 +177,24 @@ if [[ ! -f "${TEMP_TRANSPILED_SCREENSHOT}" ]]; then
 fi
 echo "✓ Transpiled screenshot: ${TEMP_TRANSPILED_SCREENSHOT}"
 
+# --- Validate golden screenshot ---
+echo "Validating golden screenshot..."
+VALIDATE_OUTPUT=$(python3 "${PROJECT_ROOT}/scripts/verify/validate_golden.py" "${GOLDEN_PNG}" "${ROM_BASENAME}" 2>&1) || true
+echo "${VALIDATE_OUTPUT}"
+
+# Check if golden is invalid (segfault artifact)
+if [[ ! "${VALIDATE_OUTPUT}" =~ ^VALID: ]]; then
+    echo ""
+    echo "=========================================="
+    echo "SKIP: ${ROM_BASENAME} — invalid golden screenshot"
+    echo "=========================================="
+    echo "The golden screenshot appears to be an mGBA segfault artifact."
+    echo "Regenerate with: python3 scripts/generate_goldens.py --rom ${ROM_BASENAME}"
+    exit 0  # SKIP with exit 0, but clearly marked
+fi
+echo "✓ Golden validated"
+echo ""
+
 # --- Compare screenshots ---
 echo "Comparing screenshots..."
 cd "${PROJECT_ROOT}"

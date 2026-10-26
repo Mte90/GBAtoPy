@@ -62,6 +62,7 @@ cargo run --release -p gbatopy-cli -- pipeline --rom game.gba --output game.py
 | Command | Description |
 |---------|-------------|
 | `disasm` | Disassemble ROM to JSON |
+| `lift` | Lift ROM to intermediate representation |
 | `pipeline` | Generate Python from ROM (run all stages end-to-end) |
 | `test` | Test a single ROM |
 | `test-all` | Test all ROMs in a directory |
@@ -107,7 +108,7 @@ bash scripts/setup/download_roms.sh
 ```
 
 This downloads 18 test suites and organizes them:
-- `test_roms/roms/` — 76 `.gba` files
+- `test_roms/roms/` — 91 `.gba` files
 - `test_roms/sources/` — source code and documentation
 
 Test ROMs are not included in the repository. Use the download script to obtain them.

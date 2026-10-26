@@ -22,6 +22,7 @@ class InterruptController:
     IRQ_TIMER1 = 4
     IRQ_TIMER2 = 5
     IRQ_TIMER3 = 6
+    IRQ_SERIAL = 7
     IRQ_DMA0 = 8
     IRQ_DMA1 = 9
     IRQ_DMA2 = 10
@@ -90,6 +91,10 @@ class InterruptController:
         """
         if 0 <= channel <= 3:
             self.fire(self.IRQ_TIMER0 + channel)
+
+    def serial_irq(self):
+        """Convenience method to fire a Serial interrupt (IRQ 7)."""
+        self.fire(self.IRQ_SERIAL)
 
     def dma_irq(self, channel: int):
         """Convenience method to fire a DMA interrupt.

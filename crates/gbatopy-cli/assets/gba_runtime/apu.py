@@ -276,15 +276,27 @@ class FIFO:
         self.enabled = False
         self.volume_left = 0
         self.volume_right = 0
+        self._dma = None  # Reference to DMA controller for FIFO trigger
 
     def write(self, value: int):
         """Write a byte to FIFO"""
         self.data.append(value & 0xFF)
 
+    def attach_dma(self, dma):
+        """Attach DMA controller for FIFO empty trigger."""
+        self._dma = dma
+
     def read(self) -> int:
-        """Read a byte from FIFO"""
+        """Read a byte from FIFO and trigger DMA if FIFO becomes empty."""
         if self.data:
-            return self.data.popleft()
+            value = self.data.popleft()
+            # When FIFO becomes empty after read, trigger DMA
+            if len(self.data) == 0 and self._dma is not None:
+                if self is self._dma._apu.fifo_a:
+                    self._dma.fifo_a_empty_fire()
+                elif self is self._dma._apu.fifo_b:
+                    self._dma.fifo_b_empty_fire()
+            return value
         return 128  # Silence
 
     def step(self, sample_rate: int) -> int:

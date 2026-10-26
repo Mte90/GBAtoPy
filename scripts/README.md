@@ -9,6 +9,7 @@ scripts/
 ├── run-all-tests.sh           ← Smoke test: transpile + syntax check for all ROMs
 ├── verify_batch.sh            ← Batch verify: generate golden + transpile + run + compare
 ├── run_tests.py               ← Unified 3-level test runner (syntax → execution → visual)
+├── run_audio_tests.py         ← Audio spectral test runner (transpile → capture → compare)
 ├── generate_goldens.py        ← Batch golden screenshot generator via mGBA (all ROMs, multi-frame, Python)
 │   └── capture_golden.sh      ← Capture golden audio via mGBA SDL disk driver
 ├── screenshot/
@@ -20,11 +21,14 @@ scripts/
 │   ├── download_roms.sh       ← Downloads test ROMs from GitHub
 │   └── download_test_roms.sh  ← Wrapper for downloading GBA test ROMs
 ├── verify/
-│   ├── verify_rom.sh          ← One-shot ROM verification: transpile + run + compare
-│   ├── compare_screenshots.py ← Golden screenshot comparison (mGBA vs transpiled)
-│   ├── compare_audio.py       ← Golden audio comparison (WAV diff)
-│   ├── coverage_tracker.py    ← Track test coverage across ROMs
-│   └── ewram_dump_verify.py   ← Verify EWRAM dump binary format
+│   ├── verify_rom.sh                ← One-shot ROM verification: transpile + run + compare
+│   ├── compare_screenshots.py       ← Golden screenshot comparison (mGBA vs transpiled)
+│   ├── compare_audio.py             ← Golden audio comparison (WAV diff)
+│   ├── coverage_tracker.py          ← Track test coverage across ROMs
+│   ├── ewram_dump_verify.py         ← Verify EWRAM dump binary format
+│   ├── validate_golden.py           ← Detect mGBA segfault artifacts in goldens
+│   ├── verify_subagent_claim.py     ← Verify subagent claims about files/commands
+│   └── test_verify_subagent_claim.py ← Pytest tests for verify_subagent_claim.py
 ├── ci/
 │   └── visual_tests.sh        ← CI visual test script for ci-fixtures ROMs (L3 comparison)
 └── check/
@@ -272,6 +276,93 @@ python3 scripts/audio/capture_transpiled.py /tmp/stripes.py /tmp/stripes_transpi
 # 4. Compare audio
 python3 scripts/verify/compare_audio.py /tmp/stripes_golden.wav /tmp/stripes_transpiled.wav
 ```
+
+---
+
+### `run_audio_tests.py` — Audio Spectral Test Runner
+
+**Purpose:** Orchestrates the existing capture/compare pipeline across all audio-capable ROMs. For each ROM: transpile → capture transpiled audio → capture mGBA golden → spectral compare. Reports per-ROM pass/fail/skip with diff percentage.
+
+**What it does:**
+- ✅ Reads ROM list from `test-roms-config.toml` — filters by `"audio"` in features
+- ✅ For each audio ROM:
+  - Checks ROM file exists in `test_roms/roms/` — SKIP if missing
+  - Transpile: `./target/release/gbatopy transpile <rom> --output /tmp/<rom>_audio.py`
+  - Capture transpiled audio: `python3 scripts/audio/capture_transpiled.py <transpiled.py> <output.wav> --frames 300`
+  - Capture golden audio: `bash scripts/audio/capture_golden.sh <rom> --frame 300 --output <golden.wav>`
+  - Compare: `python3 scripts/verify/compare_audio.py <golden.wav> <transpiled.wav>`
+  - Record result: PASS/FAIL/SKIP + diff percentage + duration
+- ✅ Handles errors gracefully:
+  - Transpile failure → FAIL with stderr
+  - Capture timeout (30s per step) → FAIL with "timeout"
+  - Compare SKIP (both silent) → SKIP with "both silent"
+  - Missing ROM file → SKIP with "ROM not found"
+- ✅ Reports summary:
+  - Per-ROM table: name, status, diff%, duration, notes
+  - Summary: X PASS, Y FAIL, Z SKIP out of N total
+  - Exit code: 0 if all PASS, 1 if any FAIL, 2 if all SKIP
+
+**Usage:**
+```bash
+# List all audio-capable ROMs
+python3 scripts/run_audio_tests.py --list
+
+# Test a single ROM
+python3 scripts/run_audio_tests.py --rom helloAudio
+
+# Test with verbose output
+python3 scripts/run_audio_tests.py --rom helloAudio --verbose
+
+# Test with custom frame count
+python3 scripts/run_audio_tests.py --rom helloAudio --frames 600
+
+# Write results to file
+python3 scripts/run_audio_tests.py --rom helloAudio --output /tmp/audio_report.txt
+
+# Run all audio ROMs (batch mode)
+python3 scripts/run_audio_tests.py
+```
+
+**Exit codes:**
+- `0` — All PASS (or single ROM PASS)
+- `1` — Any FAIL (or single ROM FAIL)
+- `2` — All SKIP (or single ROM SKIP, or no audio ROMs found)
+
+**Output format:**
+```
+======================================================================
+GBAtoPy Audio Spectral Test Runner
+======================================================================
+Testing 5 audio-capable ROMs
+Audio frames per ROM: 300
+Output directory: /tmp
+======================================================================
+
+[1/5] Testing: helloAudio
+  → PASS (12.34%) (5.23s)
+
+[2/5] Testing: stripes
+  → FAIL (capture timeout) (30.01s)
+
+...
+
+======================================================================
+SUMMARY
+======================================================================
+ROM                               Status          Diff%     Duration
+----------------------------------------------------------------------
+helloAudio                        PASS            12.34       5.23s
+stripes                           FAIL            -         30.01s
+...
+----------------------------------------------------------------------
+Total: 5 | PASS: 3 | FAIL: 1 | SKIP: 1
+======================================================================
+```
+
+**Requirements:**
+- Test ROMs must be downloaded (see `setup/download_test_roms.sh`)
+- mGBA binary must exist at `mgba/build/sdl/mgba`
+- Audio-capable ROMs defined in `test-roms-config.toml` with `features = ["audio"]`
 
 ---
 
@@ -627,6 +718,110 @@ grep -c 'pass_status' test-roms-config.toml  # Should return 76
 
 ---
 
+### `verify/validate_golden.py` — Golden Screenshot Validation
+
+**Purpose:** Detect mGBA segfault artifacts in golden screenshots before comparison.
+
+mGBA in offscreen mode can produce tiny PNG files (33B, 507B) that are segfault artifacts, NOT real reference images. Comparing transpiled output against these invalid goldens produces meaningless diffs and wastes debugging time.
+
+**The threshold:** Goldens < 1024 bytes (1KB) are considered segfault artifacts. Valid goldens are always >1KB.
+
+**Usage:**
+```bash
+# Validate a single golden file
+python3 scripts/verify/validate_golden.py scripts/screenshot/golden/hello.png
+
+# Validate with ROM name for context
+python3 scripts/verify/validate_golden.py scripts/screenshot/golden/hello.png hello
+
+# Batch validate all goldens in a directory
+python3 scripts/verify/validate_golden.py --batch scripts/screenshot/golden/
+```
+
+**Exit codes:**
+- `0` — all goldens valid (size >= 1024 bytes)
+- `1` — one or more goldens invalid (size < 1024 bytes, segfault artifact)
+- `2` — usage error (missing file, invalid directory, bad arguments)
+
+**Integration:**
+- Automatically called by `verify_rom.sh` before screenshot comparison
+- If validation fails, the ROM is marked as SKIP with a clear message to regenerate the golden
+- Prevents meaningless comparison results from invalid goldens
+
+**Example output:**
+```
+$ python3 scripts/verify/validate_golden.py scripts/screenshot/golden/hello.png
+VALID: scripts/screenshot/golden/hello.png is 2456B
+
+$ python3 scripts/verify/validate_golden.py /tmp/broken_golden.png
+INVALID: /tmp/broken_golden.png is 33B — segfault artifact (<1024B threshold)
+```
+
+---
+
+### `verify/verify_subagent_claim.py` — Subagent Claim Verification
+
+**Purpose:** Detect fabricated subagent results — when a fixer/fast-generic subagent claims a file exists or a command succeeded when it didn't.
+
+Subagents sometimes fabricate results: claiming `"pong works"` using a flag that doesn't exist, or reporting results for a file that doesn't exist. This script verifies the factual parts of a claim before the orchestrator accepts it.
+
+**The checks:**
+- `--file-exists PATH` — File must exist AND be non-empty (>0 bytes)
+- `--file-contains PATH SUBSTRING` — File must exist and contain the substring
+- `--file-size PATH --min N --max M` — File size must be within range
+- `--command "CMD"` — Command must exit 0 (timeout: 60s)
+- `--golden PATH` — Golden screenshot must be >1024 bytes (not a segfault artifact)
+
+**Usage:**
+```bash
+# Verify a file exists and is non-empty
+python3 scripts/verify/verify_subagent_claim.py --file-exists /tmp/pong.py
+
+# Verify a file contains expected content
+python3 scripts/verify/verify_subagent_claim.py --file-contains /tmp/pong.py --substring "def main"
+
+# Verify a file size is in a range
+python3 scripts/verify/verify_subagent_claim.py --file-size /tmp/pong.py --min 1000 --max 100000
+
+# Verify a command succeeds
+python3 scripts/verify/verify_subagent_claim.py --command "python3 /tmp/pong.py --headless"
+
+# Verify a golden screenshot is valid
+python3 scripts/verify/verify_subagent_claim.py --golden /tmp/pong.png
+```
+
+**Exit codes:**
+- `0` — claim VERIFIED (all checks passed)
+- `1` — claim FABRICATED (a check failed)
+- `2` — usage error
+
+**Integration:**
+- Orchestrator calls this script to verify fixer/fast-generic claims before accepting them
+- Every FABRICATED result is logged to `docs/fabrications.md` with timestamp and failure reason
+- Prevents subagent hallucinations from being accepted as fact
+
+**Example output:**
+```
+$ python3 scripts/verify/verify_subagent_claim.py --file-exists /tmp/nonexistent.py
+FABRICATED: /tmp/nonexistent.py does not exist
+
+$ python3 scripts/verify/verify_subagent_claim.py --file-exists scripts/verify/validate_golden.py
+VERIFIED: scripts/verify/validate_golden.py exists (5475 bytes)
+
+$ python3 scripts/verify/verify_subagent_claim.py --command "false"
+FABRICATED: command exited 1:
+
+$ python3 scripts/verify/verify_subagent_claim.py --golden /tmp/broken_golden.png
+FABRICATED: golden /tmp/broken_golden.png is 33 bytes (segfault artifact)
+```
+
+**Tests:**
+```bash
+python3 -m pytest scripts/verify/test_verify_subagent_claim.py -v
+```
+
+---
+
 ## Enforcement Checks
 
 Deterministic shell scripts that enforce AGENTS.md rules without relying on AI compliance. Run before declaring a task done, or wire into a pre-commit/push hook.
@@ -731,6 +926,47 @@ for c in scripts/check/*.sh; do bash "$c" || exit 1; done
 **Usage:** See `scripts/ghidra/README.md` for detailed documentation and cross-validation workflow.
 
 ---
+
+## Cache
+
+### `cache/regression_cache.py` — Regression Baseline Cache
+
+**Purpose:** Store and compare regression baselines per ROM. After a shared-code change (PPU/DMA/memory/CFG), quickly detect regressions by comparing current transpiled output against cached baselines.
+
+**Cache layout:** `/tmp/regression-cache/<rom>/`
+- `transpiled.py.sha256` — SHA-256 hash of last-known-good transpiled output
+- `result.json` — Metadata: rom, diff_pct, status, timestamp, transpiled_hash
+
+**Usage:**
+```bash
+# Record a baseline for a ROM (after a known-good L3 run)
+python3 scripts/cache/regression_cache.py record --rom pong --transpiled /tmp/pong.py --diff-pct 44.79 --status PASS
+
+# Verify a ROM against its cached baseline (after a new transpile)
+python3 scripts/cache/regression_cache.py verify --rom pong --transpiled /tmp/pong_new.py
+
+# List all cached ROMs
+python3 scripts/cache/regression_cache.py list
+
+# Clear the cache (or a single ROM)
+python3 scripts/cache/regression_cache.py clear --rom pong
+python3 scripts/cache/regression_cache.py clear --all
+```
+
+**Exit codes for 'verify':**
+- `0` — MATCH (transpiled output hash matches baseline)
+- `1` — DIFFERS (transpiled output hash differs — potential regression OR intentional change)
+- `2` — NO BASELINE (no cached entry for this ROM)
+- `3` — usage error
+
+**Tests:**
+```bash
+python3 -m pytest scripts/cache/test_regression_cache.py -v
+```
+
+---
+
+## Notes
 
 ## Notes
 

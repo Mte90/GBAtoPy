@@ -38,6 +38,24 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 _ => String::new(),
             };
             let is_blx = base_opcode == "BLX";
+            // BX PC: branch to the pipeline value of PC.
+            // ARM7TDMI pipeline: PC = addr + 4 (Thumb) or + 8 (ARM).
+            // Bit 0 is always 0 (aligned), so this switches to ARM mode.
+            if *rn == 15 && !is_blx {
+                let offset = if inst.mode == ArmMode::Thumb { 4 } else { 8 };
+                let bx_code = format!(
+                    "cpsr['t'] = (registers[15] + {}) & 1\nregisters[15] = (registers[15] + {}) & 0xFFFFFFFE",
+                    offset, offset
+                );
+                if !cond_str.is_empty() {
+                    let indented = bx_code.replace('\n', "\n    ");
+                    return Some(format!(
+                        "if cpsr_check('{}'):\n    {}\nelse:\n    registers[15] = (registers[15] + 4) & 0xFFFFFFFF",
+                        cond_str, indented
+                    ));
+                }
+                return Some(bx_code);
+            }
             if !cond_str.is_empty() {
                 let lr_set = if is_blx {
                     "    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n".to_string()

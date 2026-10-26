@@ -17,6 +17,10 @@ class BIOS:
         self._frame_count = 0
         self._sleep_mode = False
 
+    def _read_s16(self, addr: int) -> int:
+        val = self.memory.read_u16(addr)
+        return val - 0x10000 if val >= 0x8000 else val
+
     def swi_div(self, dividend: int, divisor: int) -> int:
         """Division: r0 = dividend / divisor, r1 = remainder"""
         if divisor == 0:
@@ -294,9 +298,47 @@ class BIOS:
         self.memory.write_u16(param_addr + 4, c & 0xFFFF)
         self.memory.write_u16(param_addr + 6, d & 0xFFFF)
 
-    def swi_bg_affine_set(self, param_addr: int, angle: int, scale_x: int, scale_y: int):
-        """Set up affine matrix for backgrounds"""
-        self.swi_obj_affine_set(param_addr, angle, scale_x, scale_y)
+    def swi_bg_affine_set(self, src_addr: int, dst_addr: int, num_sets: int, increment: int):
+        """Set up affine matrix for backgrounds (SWI 0x0E).
+
+        Reads parameter sets from src_addr, computes affine transformation
+        matrices, and writes them to dst_addr.
+
+        Source struct (14 bytes per set):
+            s16 tex_x, s16 tex_y, s16 scr_x, s16 scr_y, s16 sx, s16 sy, u16 angle
+        Destination struct (16 bytes per set):
+            s16 Pa, s16 Pb, s16 Pc, s16 Pd, s32 Dx, s32 Dy
+        """
+        for _ in range(num_sets):
+            tex_x = self._read_s16(src_addr)
+            tex_y = self._read_s16(src_addr + 2)
+            scr_x = self._read_s16(src_addr + 4)
+            scr_y = self._read_s16(src_addr + 6)
+            sx = self._read_s16(src_addr + 8)
+            sy = self._read_s16(src_addr + 10)
+            angle = self.memory.read_u16(src_addr + 12)
+
+            rad = angle * 2 * math.pi / 65536
+            cos_val = math.cos(rad)
+            sin_val = math.sin(rad)
+
+            pa = max(-32768, min(32767, round(sx * cos_val)))
+            pb = max(-32768, min(32767, round(-sx * sin_val)))
+            pc = max(-32768, min(32767, round(sy * sin_val)))
+            pd = max(-32768, min(32767, round(sy * cos_val)))
+
+            dx = (tex_x - scr_x) * pa + (tex_y - scr_y) * pc + (scr_x * 256)
+            dy = (tex_x - scr_x) * pb + (tex_y - scr_y) * pd + (scr_y * 256)
+
+            self.memory.write_u16(dst_addr, pa & 0xFFFF)
+            self.memory.write_u16(dst_addr + 2, pb & 0xFFFF)
+            self.memory.write_u16(dst_addr + 4, pc & 0xFFFF)
+            self.memory.write_u16(dst_addr + 6, pd & 0xFFFF)
+            self.memory.write_u32(dst_addr + 8, dx & 0xFFFFFFFF)
+            self.memory.write_u32(dst_addr + 12, dy & 0xFFFFFFFF)
+
+            src_addr += 14
+            dst_addr += increment
 
     def swi_bit_unpack(self, src_addr: int, dst_addr: int, params_addr: int) -> int:
         """BitUnPack BIOS function (SWI 0x10).

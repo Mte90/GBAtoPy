@@ -176,6 +176,10 @@ class DMA:
 
     def attach_apu(self, apu):
         self._apu = apu
+        # Wire FIFO empty triggers to DMA
+        if apu:
+            apu.fifo_a.attach_dma(self)
+            apu.fifo_b.attach_dma(self)
 
     def attach_interrupts(self, interrupts):
         self._interrupts = interrupts
@@ -397,11 +401,21 @@ class DMA:
                 self._do_transfer(ch)
                 ch.pending = False
 
-    def timer_trigger(self, timer_index: int):
+    def timer_trigger_fire(self, timer_id: int):
+        """Fire DMA transfer triggered by timer overflow.
+        
+        When a timer overflows, any DMA channel with timing mode set to
+        timer-triggered (mode 3, special) for that timer ID will perform
+        a full-count burst transfer.
+        """
+        if timer_id < 0 or timer_id > 3:
+            return
         for ch in self.channels:
             ch.read_from_memory()
             if not ch.enabled or ch.busy:
                 continue
+            # Timer-triggered DMA uses timing mode 3 (special)
+            # Only channels 0-3 can be triggered by timers 0-3
             if ch.is_special() and ch.pending:
                 self._do_transfer(ch)
                 ch.pending = False

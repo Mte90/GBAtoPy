@@ -85,7 +85,7 @@ The mGBA binary builds at `mgba/build/sdl/mgba`.
 
 Test ROMs are organized in `test_roms/`:
 
-- `test_roms/roms/` — 76 `.gba` files across test suites
+- `test_roms/roms/` — 91 `.gba` files across test suites
 - `test_roms/sources/` — Source code and documentation for each suite
 
 Download script: `bash scripts/setup/download_roms.sh`

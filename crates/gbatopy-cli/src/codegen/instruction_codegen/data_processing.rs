@@ -564,6 +564,55 @@ fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
     None
 }
 
+/// Generate Python code to update cpsr['c'] for shift instructions
+/// (LSL/LSR/ASR/ROR). Must be emitted BEFORE the destination register is
+/// updated so the source value is still original. Returns empty string when
+/// carry is unchanged (LSL #0 only).
+fn shift_carry_code(op: &str, src_expr: &str, shift_operand: &Operand) -> String {
+    match shift_operand {
+        Operand::Immediate(amt) => {
+            let amt = *amt as u32;
+            match (op, amt) {
+                ("LSL", 0) => String::new(),
+                ("LSL", n) if n < 32 => format!("cpsr['c'] = ({} >> (32 - {})) & 1", src_expr, n),
+                ("LSL", _) => format!("cpsr['c'] = {} & 1", src_expr),
+                ("LSR", 0) => format!("cpsr['c'] = ({} >> 31) & 1", src_expr),
+                ("LSR", n) if n < 32 => format!("cpsr['c'] = ({} >> ({} - 1)) & 1", src_expr, n),
+                ("LSR", _) => format!("cpsr['c'] = ({} >> 31) & 1", src_expr),
+                ("ASR", 0) => format!("cpsr['c'] = ({} >> 31) & 1", src_expr),
+                ("ASR", n) if n < 32 => format!("cpsr['c'] = ({} >> ({} - 1)) & 1", src_expr, n),
+                ("ASR", _) => format!("cpsr['c'] = ({} >> 31) & 1", src_expr),
+                ("ROR", 0) => format!("cpsr['c'] = {} & 1", src_expr),
+                ("ROR", n) => format!("cpsr['c'] = ({} >> ({} - 1)) & 1", src_expr, n),
+                _ => String::new(),
+            }
+        }
+        Operand::Register(rs) => {
+            let rs_expr = format!("registers[{}]", rs);
+            match op {
+                "LSL" => format!(
+                    "_sh = ({}) & 0xFF\ncpsr['c'] = (0 if _sh > 32 else ({} & 1 if _sh == 32 else (({} >> (32 - _sh)) & 1 if 0 < _sh < 32 else cpsr.get('c', 0))))",
+                    rs_expr, src_expr, src_expr
+                ),
+                "LSR" => format!(
+                    "_sh = ({}) & 0xFF\ncpsr['c'] = (({} >> 31) & 1 if _sh >= 32 else (({} >> (_sh - 1)) & 1 if 0 < _sh < 32 else cpsr.get('c', 0)))",
+                    rs_expr, src_expr, src_expr
+                ),
+                "ASR" => format!(
+                    "_sh = ({}) & 0xFF\ncpsr['c'] = (({} >> 31) & 1 if _sh >= 32 else (({} >> (_sh - 1)) & 1 if 0 < _sh < 32 else cpsr.get('c', 0)))",
+                    rs_expr, src_expr, src_expr
+                ),
+                "ROR" => format!(
+                    "_sh = ({}) & 0xFF\n_n = _sh & 31\ncpsr['c'] = (({} >> 31) & 1 if _sh > 0 and _n == 0 else (({} >> (_n - 1)) & 1 if _n > 0 else cpsr.get('c', 0)))",
+                    rs_expr, src_expr, src_expr
+                ),
+                _ => String::new(),
+            }
+        }
+        _ => String::new(),
+    }
+}
+
 fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
     if ops.len() >= 3 {
         if let Operand::Register(rd) = ops[0] {
@@ -600,9 +649,11 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                 _ => return None,
             };
             if sets_flags {
+                let carry_line = shift_carry_code(op, &rn, &ops[2]);
+                let carry_prefix = if carry_line.is_empty() { String::new() } else { format!("{}\n", carry_line) };
                 return Some(format!(
-                    "registers[{}] = ({}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
-                    rd, expr, rd
+                    "{}registers[{}] = ({}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    carry_prefix, rd, expr, rd
                 ));
             }
             return Some(format!("registers[{}] = ({}) & 0xFFFFFFFF", rd, expr));
@@ -639,9 +690,11 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                 _ => return None,
             };
             if sets_flags {
+                let carry_line = shift_carry_code(op, &rn, &ops[1]);
+                let carry_prefix = if carry_line.is_empty() { String::new() } else { format!("{}\n", carry_line) };
                 return Some(format!(
-                    "registers[{}] = ({}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
-                    rd, expr, rd
+                    "{}registers[{}] = ({}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
+                    carry_prefix, rd, expr, rd
                 ));
             }
             return Some(format!("registers[{}] = ({}) & 0xFFFFFFFF", rd, expr));

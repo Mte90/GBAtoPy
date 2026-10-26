@@ -41,22 +41,13 @@ The SWI number is the instruction's immediate field. In ARM mode, the top 24 bit
 | 0x16  | Diff8bitUnFilterWram | r0=src, r1=dst                      | -                   | 8-bit delta filter        |
 | 0x17  | Diff8bitUnFilterVram | r0=src, r1=dst                      | -                   | 8-bit delta to VRAM       |
 | 0x18  | Diff16bitUnFilter  | r0=src, r1=dst                        | -                   | 16-bit delta filter       |
-| 0x19  | SoundBias         | r0=level (0=reduce, 0x0001=normal)    | -                   | Sound bias level          |
-| 0x1A  | SoundDriverInit   | r0=player workspace                   | -                   | Init music player         |
-| 0x1B  | SoundDriverMode   | r0=mode flags                          | -                   | Music player mode         |
-| 0x1C  | SoundDriverMain   | -                                      | -                   | Music player tick         |
-| 0x1D  | SoundDriverVSync  | -                                      | -                   | VBlank music sync         |
-| 0x1E  | SoundChannelClear  | -                                      | -                   | Clear sound channels      |
-| 0x1F  | MidiKey2Freq      | r0=sample, r1=key, r2=fine adjust     | r0=frequency (u32)  | MIDI key to frequency     |
-| 0x20  | MusicPlayerOpen   | r0=player, r1=work area               | -                   | Open music player         |
-| 0x21  | MusicPlayerStart  | r0=player                              | -                   | Start playback            |
-| 0x22  | MusicPlayerStop   | r0=player                              | -                   | Stop playback             |
-| 0x23  | MusicPlayerContinue | r0=player                            | -                   | Continue playback         |
-| 0x24  | SoundClearPCM     | r0=PSG channel mask                    | -                   | Clear PSG channels        |
-| 0x25  | MultiBoot         | r0=multiboot struct, r1=mode, r2=count| r0=result           | Multiboot send            |
-| 0x26  | HardReset         | -                                      | -                   | Full system reset         |
-| 0x27  | SoundDriverVSyncOff | -                                    | -                   | Disable VSync sound sync  |
-| 0x28  | SoundDriverJmpBuf  | -                                    | -                   | Jump buffer for sound     |
+| 0x19  | SoundDriverInit   | r0=work area pointer                     | -                   | Initialize sound driver   |
+| 0x1A  | SoundDriverMode   | r0=mode flags                            | -                   | Set sound driver mode     |
+| 0x1B  | SoundDriverMain   | -                                        | -                   | Main sound processing     |
+| 0x1C  | SoundDriverVSync  | -                                        | -                   | VBlank sound sync         |
+| 0x1D  | SoundChannelClear | -                                        | -                   | Clear sound channels      |
+| 0x1E  | MidiKey2Freq      | r0=work area, r1=key (fixed-point)      | r0=frequency (fixed) | MIDI key to frequency     |
+| 0x1F  | SoundDriverVSyncOff | -                                      | -                   | Disable VSync sound       |
 
 ### Notes on Key Functions
 

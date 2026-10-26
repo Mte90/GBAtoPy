@@ -72,11 +72,14 @@ The generated `.py` file must be:
 Established after multi-session debugging. Violating reintroduces solved bugs. Full details in `docs/runtime-architecture.md` § "PPU Scanline & DMA Architecture".
 
 1. **Fallback interpreter = pure CPU executor.** `_interp_fallback` in `pipeline_cmd.rs` executes CPU instructions only — NEVER calls `step_scanline()`. Violating causes DMA double-stepping.
+   **Codegen:** the fallback interpreter budget for IWRAM code must NOT exceed `instr_per_scanline` — a large budget (e.g., 100000) blocks VBlank IRQ delivery by running too long without returning to the main loop.
 2. **Main loop is instruction-counted.** PPU advances one scanline per `instr_per_scanline` CPU instructions.
+   **Codegen:** the dispatch loop template must use the same per-scanline budget for IWRAM code as for ROM code. No special-casing IWRAM with a larger budget.
 3. **No step_scanline in memory reads.** `read_u16`/`read_u32`/`read_u64` must NEVER call `step_scanline()`.
 4. **HBlank/VBlank DMA = full-count burst on first trigger.** `hblank_fire()` and `vblank_fire()` call `_do_transfer()`, NOT `_do_transfer_single()`.
 5. **Per-scanline affine snapshots.** `step_scanline(capture_snapshot=True)` captures BG2PA/PB/PC/PD/X/Y BEFORE DMA fires. Fallback interpreter calls `step_scanline(capture_snapshot=False)`.
 6. **All memory regions must be zero-initialized at construction.** `memory.py` must use `[0] * SIZE` for VRAM, Palette RAM, OAM, IWRAM, EWRAM. Debug patterns like `[(i%256) for i in range(SIZE)]` left in production cause uninitialized tiles to decode to non-zero palette indices → black screens.
+   **Codegen:** must NOT emit pre-loading code that writes ROM-extracted data into VRAM/palette at init. The asset extractor's `is_valid_4bpp_tile` heuristic is too loose (accepts ARM code as tiles) — do not trust it. VRAM/palette start zeroed on real hardware.
 7. **All instruction/SWI dispatch tables must be single-source.** Two SWI dispatchers existed (cpu.py:_arm_swi with 4 handlers, arm7tdmi.py:swi_handler with 24). The fast-path CPU silently dropped CpuSet/CpuFastSet. There must be ONE dispatch table for SWI instructions, shared by both the fast-path and fallback interpreters.
 8. **PPU `forced_blank` must track DISPCNT bit 7 live.** `ppu.py` maintains `self.forced_blank` as the authoritative field; code that reads `self.dispcnt & 0x0080` uses a stale cached value (initialized to 0x0480 at line 519, never updated). This caused a GLOBAL white-screen regression — every ROM rendered blank. All forced-blank checks must read `self.forced_blank`, not `self.dispcnt`.
 
@@ -97,6 +100,7 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 6. **Re-test all previously-passing ROMs after codegen/dispatch changes** — a fix that targets one ROM can regress others. The peephole `+4` fix for Thumb loops regressed start-delay from 1.75% PASS to 100% blank. After any change to shared dispatch, peephole optimizer, or codegen headers, run `python3 scripts/run_tests.py --level 3` on the last known-passing set before declaring done.
 7. **One-shot verification** — `./scripts/verify/verify_rom.sh <rom> --no-golden` transpiles, runs, compares in one step.
 8. **Verify subagent claims** — always check their work manually.
+8a. **Commit messages for codegen/runtime fixes must include verification evidence** — a commit that claims "X now works" must show the exact command and output that proves it. Format: `Verified: <command> → <result>`. Example: `Verified: python3 /tmp/pong.py --headless --screenshot /tmp/pong.png → 2424 bytes, 44.79% diff`. A commit without evidence is an unverified claim — do not trust it, re-verify before building on it.
 
 ### Output Discipline
 9. **Transpiled Python output goes to `/tmp/`** — NEVER inside the project directory. Project holds only source, templates, scripts, docs.
@@ -107,8 +111,8 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 ### Debugging
 13. **Debug workflow** — modify generated Python first to verify a fix, then apply to Rust codegen.
 14. **Use built-in debug flags** — `--pc-trace=FILE`, `--trace-n=N`, `--max-instrs=N`. Do not inject `print(f"PC={...}")`. See [RUNBOOK.md](RUNBOOK.md) and `docs/how-debug.md`.
-15. **Goldens must be validated before comparison** — a golden screenshot <1KB (typically 33 bytes) is a segfault artifact from mGBA, not a real golden. Always check `ls -la` on golden PNGs before running compare_screenshots.py. Correct mGBA headless setup: `export SDL_VIDEODRIVER=offscreen` + `export SDL_AUDIODRIVER=dummy` + `export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH"`. Do NOT use `SDL_VIDEODRIVER=dummy` (causes 33-byte segfault artifacts). Do NOT use `xvfb-run` alone (produces >1KB but all-black blank goldens). `SDL_VIDEODRIVER=offscreen` is the only proven working backend for mGBA screenshot generation on a headless server.
-16. **Golden screenshots must be validated as >1KB before comparison** — a golden <1KB is a segfault artifact, not a real reference image. Comparing transpiled output against a broken golden produces meaningless results. Always `ls -la` the golden first.
+15. **Goldens must be validated before comparison** — a golden screenshot <200B (typically 33 bytes) is a segfault artifact from mGBA, not a real golden. Always check `ls -la` on golden PNGs before running compare_screenshots.py. Correct mGBA headless setup: `export SDL_VIDEODRIVER=offscreen` + `export SDL_AUDIODRIVER=dummy` + `export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH"`. Do NOT use `SDL_VIDEODRIVER=dummy` (causes 33-byte segfault artifacts). Do NOT use `xvfb-run` alone (produces >200B but all-black blank goldens). `SDL_VIDEODRIVER=offscreen` is the only proven working backend for mGBA screenshot generation on a headless server.
+16. **Golden screenshots must be validated as >200B before comparison** — a golden <200B is a segfault artifact, not a real reference image. Comparing transpiled output against a broken golden produces meaningless results. Always `ls -la` the golden first.
 17. **Debug probes must flush** — `print(..., flush=True)` BEFORE any `os._exit(0)`; the runtime exits hard, bypassing buffer flush.
 18. **Never add step_scanline to memory reads** — see invariant #3. PPU stepping is exclusively in the main loop.
 19. **Fallback interpreter is pure CPU** — see invariant #1.
@@ -165,6 +169,12 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 
 ### Script Discipline
 38. **Script placement** — generic reusable scripts go in `scripts/` and MUST be documented in `scripts/README.md`. Ad-hoc, one-off, or debug scripts go in `/tmp/`. Never create temporary scripts in the project root or `scripts/` without adding them to the README.
+
+### Workflow Improvement (Commit-Gated Friction Analysis)
+
+39. **Friction analysis at every commit** — BEFORE creating any commit, run a friction analysis on the work that led to it. For each friction point encountered this cycle (fabricated subagent results, stale docs, invalid goldens, missing baselines, repeated manual steps, wrong CLI flags, silent fallbacks), record a concrete speedup entry in `docs/WORKFLOW_SPEEDUPS_<YYYY-MM-DD>.md` with: ID, title, problem it kills, effort estimate, ROI. This is NOT optional — a commit without a friction analysis checkpoint is incomplete. The analysis lives in the repo, not chat, so a session dying right after the commit does not lose it.
+
+40. **Implement P0 speedups before resuming feature work** — after the friction analysis, if any P0 speedup item (≤2hr effort, prevents a failure mode observed this cycle) is unimplemented, implement it BEFORE moving to the next feature/bug work. The session does not end while unimplemented P0 speedups remain from the current commit's friction analysis. A friction point observed twice across sessions becomes a structural fix (script, lint rule, or AGENTS.md rule), not a repeated manual workaround — promote it per global §17.
 
 ## Zero Tolerance for Stubs
 

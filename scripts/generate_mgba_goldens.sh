@@ -96,6 +96,9 @@ export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$L
 export SDL_AUDIODRIVER=dummy
 export SDL_VIDEODRIVER=offscreen
 
+# --- BIOS path ---
+BIOS_FILE="$PROJECT_ROOT/test_roms/roms/gba_bios.bin"
+
 # --- Collect ROMs ---
 collect_roms() {
     if [[ -n "${ROM_BASE:-}" ]]; then
@@ -136,7 +139,7 @@ capture_golden() {
     export GBATOPY_SCREENSHOT_PATH="$output_path"
     export GBATOPY_TARGET_FRAME="$frame"
     
-    # Run mGBA with offscreen rendering
+    # Run mGBA with offscreen rendering (no BIOS)
     "$MGBA_BIN" -S "$LUA_SCRIPT" "$rom_path" \
         2>/dev/null
     
@@ -193,7 +196,7 @@ for item in "${WORK_ITEMS[@]}"; do
         export SDL_AUDIODRIVER=dummy
         export SDL_VIDEODRIVER=offscreen
         
-        # Run mGBA with offscreen rendering
+        # Run mGBA with offscreen rendering (no BIOS)
         "$MGBA_BIN" -S "$LUA_SCRIPT" "$rom" \
             2>/dev/null
         

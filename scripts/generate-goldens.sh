@@ -53,6 +53,8 @@ else
         "$ROMS_DIR/hello.gba"
         "$ROMS_DIR/hello_world.gba"
         "$ROMS_DIR/helloWorld.gba"
+        # mode2.gba: requires BIOS for visible output (agbrs test ROM limitation)
+        "$ROMS_DIR/mode2.gba"
         "$ROMS_DIR/mode3.gba"
         "$ROMS_DIR/mode4.gba"
         "$ROMS_DIR/shades.gba"

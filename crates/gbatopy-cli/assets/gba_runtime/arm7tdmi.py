@@ -1044,26 +1044,95 @@ class ARM7TDMI:
             self.registers[15] = 0x08000000
         elif num == 0x01:  # RegisterRamReset
             flags = self.registers[0]
-            # Reset EWRAM
+            self.memory.write_u16(0x04000000, 0x0080)
             if flags & 0x01:
                 for addr in range(0x02000000, 0x02040000, 4):
                     self.memory.write_u32(addr, 0)
-            # Reset IWRAM
             if flags & 0x02:
-                for addr in range(0x03000000, 0x03008000, 4):
+                for addr in range(0x03000000, 0x03008000 - 0x200, 4):
                     self.memory.write_u32(addr, 0)
-            # Reset Palette
             if flags & 0x04:
                 for addr in range(0x05000000, 0x05000400, 2):
                     self.memory.write_u16(addr, 0)
-            # Reset VRAM
             if flags & 0x08:
                 for addr in range(0x06000000, 0x06018000, 2):
                     self.memory.write_u16(addr, 0)
-            # Reset OAM
             if flags & 0x10:
                 for addr in range(0x07000000, 0x07000400, 2):
                     self.memory.write_u16(addr, 0)
+            if flags & 0x20:
+                self.memory.write_u16(0x04000128, 0)
+                self.memory.write_u16(0x04000134, 0x8000)
+                self.memory.write_u16(0x0400012A, 0)
+                self.memory.write_u16(0x04000140, 0)
+                self.memory.write_u32(0x04000150, 0)
+                self.memory.write_u32(0x04000154, 0)
+            if flags & 0x40:
+                self.memory.write_u16(0x04000060, 0)
+                self.memory.write_u16(0x04000062, 0)
+                self.memory.write_u16(0x04000064, 0)
+                self.memory.write_u16(0x04000068, 0)
+                self.memory.write_u16(0x0400006C, 0)
+                self.memory.write_u16(0x04000070, 0)
+                self.memory.write_u16(0x04000072, 0)
+                self.memory.write_u16(0x04000074, 0)
+                self.memory.write_u16(0x04000078, 0)
+                self.memory.write_u16(0x0400007C, 0)
+                self.memory.write_u16(0x04000080, 0)
+                self.memory.write_u16(0x04000082, 0)
+                self.memory.write_u16(0x04000084, 0)
+                self.memory.write_u16(0x04000088, 0x0200)
+            if flags & 0x80:
+                self.memory.write_u16(0x04000004, 0)
+                self.memory.write_u16(0x04000006, 0)
+                self.memory.write_u16(0x04000008, 0)
+                self.memory.write_u16(0x0400000A, 0)
+                self.memory.write_u16(0x0400000C, 0)
+                self.memory.write_u16(0x0400000E, 0)
+                self.memory.write_u16(0x04000010, 0)
+                self.memory.write_u16(0x04000012, 0)
+                self.memory.write_u16(0x04000014, 0)
+                self.memory.write_u16(0x04000016, 0)
+                self.memory.write_u16(0x04000018, 0)
+                self.memory.write_u16(0x0400001A, 0)
+                self.memory.write_u16(0x0400001C, 0)
+                self.memory.write_u16(0x0400001E, 0)
+                self.memory.write_u16(0x04000020, 0x0100)
+                self.memory.write_u16(0x04000022, 0)
+                self.memory.write_u16(0x04000024, 0)
+                self.memory.write_u16(0x04000026, 0x0100)
+                self.memory.write_u32(0x04000028, 0)
+                self.memory.write_u32(0x0400002C, 0)
+                self.memory.write_u16(0x04000030, 0x0100)
+                self.memory.write_u16(0x04000032, 0)
+                self.memory.write_u16(0x04000034, 0)
+                self.memory.write_u16(0x04000036, 0x0100)
+                self.memory.write_u32(0x04000038, 0)
+                self.memory.write_u32(0x0400003C, 0)
+                self.memory.write_u16(0x04000040, 0)
+                self.memory.write_u16(0x04000042, 0)
+                self.memory.write_u16(0x04000044, 0)
+                self.memory.write_u16(0x04000046, 0)
+                self.memory.write_u16(0x04000048, 0)
+                self.memory.write_u16(0x0400004A, 0)
+                self.memory.write_u16(0x0400004C, 0)
+                self.memory.write_u16(0x04000050, 0)
+                self.memory.write_u16(0x04000052, 0)
+                self.memory.write_u16(0x04000054, 0)
+                for base in [0x040000B0, 0x040000BC, 0x040000C8, 0x040000D4]:
+                    self.memory.write_u16(base + 0, 0)
+                    self.memory.write_u16(base + 2, 0)
+                    self.memory.write_u16(base + 4, 0)
+                    self.memory.write_u16(base + 6, 0)
+                    self.memory.write_u16(base + 8, 0)
+                    self.memory.write_u16(base + 10, 0)
+                for base in [0x04000100, 0x04000104, 0x04000108, 0x0400010C]:
+                    self.memory.write_u16(base, 0)
+                    self.memory.write_u16(base + 2, 0)
+                self.memory.write_u16(0x04000208, 0)
+                self.memory.write_u16(0x04000202, 0xFFFF)
+                self.memory.write_u16(0x04000204, 0)
+                self.memory.write_u16(0x04000200, 0)
         elif num == 0x02:  # Halt — wake on ANY enabled IRQ
             self._swi_lr = self.registers[14]
             self._swi_caller_pc = (self.registers[15] + (2 if self.thumb_mode else 4)) & 0xFFFFFFFF
@@ -1184,6 +1253,41 @@ class ARM7TDMI:
         elif num == 0x18:  # Diff16bitUnFilter
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=True)
+        elif num == 0x19:  # SoundDriverInit
+            # Store sound driver work area pointer (r0) for later use
+            self._sound_work_area = self.registers[0]
+        elif num == 0x1A:  # SoundDriverMode
+            # Store sound driver mode (r0)
+            self._sound_mode = self.registers[0]
+        elif num == 0x1B:  # SoundDriverMain
+            # Main sound driver processing - minimal implementation
+            # Since pygame.mixer handles actual audio, just update state
+            if hasattr(self, '_sound_work_area') and self._sound_work_area:
+                # Read work area pointer and do minimal processing
+                pass  # pygame handles actual mixing
+        elif num == 0x1C:  # SoundDriverVSync
+            # VBlank sound processing - trigger pending sound updates
+            if hasattr(self, '_sound_work_area') and self._sound_work_area:
+                pass  # Called on VBlank, pygame handles audio
+        elif num == 0x1D:  # SoundChannelClear
+            # Clear sound channels - no-op since we use pygame
+            pass
+        elif num == 0x1E:  # MidiKey2Freq
+            # Convert MIDI key to frequency
+            # r0 = sound work area (unused for math)
+            # r1 = MIDI key number (fixed-point with 8-bit fractional part)
+            # Formula: freq = 440 * 2^((key - 69) / 12)
+            # GBA uses fixed-point: key has 8-bit fractional part
+            key_fixed = self.registers[1]
+            # Convert fixed-point (8.8 format) to float
+            key = key_fixed / 256.0
+            # Calculate frequency: 440 * 2^((key - 69) / 12)
+            freq = 440.0 * (2.0 ** ((key - 69.0) / 12.0))
+            # Return as fixed-point (multiply by 256 for 8.8 format)
+            self.registers[0] = int(freq * 256) & 0xFFFFFFFF
+        elif num == 0x1F:  # SoundDriverVSyncOff
+            # Disable VSync sound processing
+            self._sound_vsync_enabled = False
 
     def _swi_exception_entry(self):
         """Model ARM SWI exception entry.

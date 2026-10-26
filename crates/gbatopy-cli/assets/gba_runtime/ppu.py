@@ -4,6 +4,10 @@ import struct
 import os
 from typing import Optional, List, Tuple
 
+# Debug flag for PPU exception reporting
+_DEBUG_PPU = bool(os.environ.get('GBATOPY_DEBUG_PPU', ''))
+_SWALLOWED_COUNT = 0
+
 # Numpy vectorization for affine bitmap rendering
 try:
     import numpy as np
@@ -19,22 +23,30 @@ def _c5to8_arr(arr):
 
 def _get_vram_bytes(memory, start: int, size: int) -> bytes:
     """Extract VRAM bytes for JIT functions."""
+    global _SWALLOWED_COUNT
     data = bytearray(size)
     for i in range(size):
         try:
             data[i] = memory.read_u8(start + i)
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at VRAM read offset={i}: {e}") from e
+            _SWALLOWED_COUNT += 1
             data[i] = 0
     return bytes(data)
 
 
 def _get_palette_bytes(memory, start: int = 0x05000000, size: int = 512) -> bytes:
     """Extract palette RAM bytes for JIT functions."""
+    global _SWALLOWED_COUNT
     data = bytearray(size)
     for i in range(size):
         try:
             data[i] = memory.read_u8(start + i)
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at palette read offset={i}: {e}") from e
+            _SWALLOWED_COUNT += 1
             data[i] = 0
     return bytes(data)
 
@@ -242,13 +254,13 @@ class PPU:
         tile_size = 32 if color_mode == 0 else 64
         
         # VRAM tile addressing - DISPCNT bit 6 controls OBJ character VRAM mapping
-        #   1D mapping (bit 6 == 1): stride 32, no VRAM offset
-        #   2D mapping (bit 6 == 0): stride 32, BG2 VRAM offset (4K = 128 tiles for 32B, 64 for 64B)
-        tiles_per_row = 32
+        #   1D mapping (bit 6 == 1): tiles are linear, stride = sprite width in tiles
+        #   2D mapping (bit 6 == 0): 32-tile row stride
+        if self.obj_character_vram_mapping:
+            tiles_per_row = width // 8
+        else:
+            tiles_per_row = 32
         vram_offset = 0
-        if not self.obj_character_vram_mapping:
-            # 2D mode: OBJ characters use BG2 character VRAM region (4K offset)
-            vram_offset = 128 if color_mode == 0 else 64
         
         for py in range(height):
             for px in range(width):
@@ -265,10 +277,12 @@ class PPU:
                 
                 # Handle horizontal flip
                 if sprite["flip_h"]:
+                    tile_x = (width // 8) - 1 - tile_x
                     local_x = 7 - local_x
                 
                 # Handle vertical flip
                 if sprite["flip_v"]:
+                    tile_y = (height // 8) - 1 - tile_y
                     local_y = 7 - local_y
                 
                 # Calculate global tile number (with 2D mode offset if applicable)
@@ -283,9 +297,9 @@ class PPU:
                     byte_offset = local_y * 4 + (local_x // 2)
                     byte_val = self.memory.read_u8(tile_addr + byte_offset)
                     if local_x % 2 == 0:
-                        color_idx = (byte_val >> 4) & 0x0F
-                    else:
                         color_idx = byte_val & 0x0F
+                    else:
+                        color_idx = (byte_val >> 4) & 0x0F
                 else:
                     # 8BPP: 1 byte per pixel
                     byte_offset = local_y * 8 + local_x
@@ -348,7 +362,9 @@ class PPU:
             pb = self._read_oam_fixed16_8(matrix_base + 2)
             pc = self._read_oam_fixed16_8(matrix_base + 4)
             pd = self._read_oam_fixed16_8(matrix_base + 6)
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at sprite x={x} y={y} OAM matrix read: {e}") from e
             # Default to identity if read fails
             pa, pb, pc, pd = 1.0, 0.0, 0.0, 1.0
         
@@ -359,10 +375,11 @@ class PPU:
         # VRAM tile addressing - OBJ char base is 0x06010000
         vram_base = 0x06010000
         tile_size = 32
-        tiles_per_row = 32
+        if self.obj_character_vram_mapping:
+            tiles_per_row = width // 8
+        else:
+            tiles_per_row = 32
         vram_offset = 0
-        if not self.obj_character_vram_mapping:
-            vram_offset = 128
         
         # Render sprite with affine transformation
         for py in range(height):
@@ -393,11 +410,11 @@ class PPU:
                 # Read pixel from tile
                 byte_offset = local_y * 4 + (local_x // 2)
                 byte_val = self.memory.read_u8(tile_addr + byte_offset)
-                
+
                 if local_x % 2 == 0:
-                    color_idx = (byte_val >> 4) & 0x0F
-                else:
                     color_idx = byte_val & 0x0F
+                else:
+                    color_idx = (byte_val >> 4) & 0x0F
                 
                 # Skip transparent
                 if color_idx == 0:
@@ -424,7 +441,9 @@ class PPU:
                     self.second_target_layer[screen_y][screen_x] = self.layer_origin[screen_y][screen_x]
                     self.framebuffer[screen_y][screen_x] = (r, g, b)
                     self.layer_origin[screen_y][screen_x] = 4
-                except (IndexError, KeyError, ValueError):
+                except (IndexError, KeyError, ValueError) as e:
+                    if _DEBUG_PPU:
+                        raise RuntimeError(f"PPU error at sprite x={screen_x} y={screen_y} palette read: {e}") from e
                     continue
 
     def _read_oam_fixed16_8(self, addr: int) -> float:
@@ -675,6 +694,7 @@ class PPU:
         # Framebuffer
         self.framebuffer: List[List[Tuple[int, int, int]]] = []
         self._init_framebuffer()
+        self._mode2_active = False
 
     def get_surface(self) -> "pygame.Surface":
         """Convert framebuffer to pygame Surface for screenshot.
@@ -699,8 +719,14 @@ class PPU:
                     color = self.framebuffer[y][x]
                     surf.set_at((x, y), color)
             return surf
+
+    def get_swallowed_count(self) -> int:
+        """Return the count of swallowed PPU exceptions."""
+        return _SWALLOWED_COUNT
+
     def _init_framebuffer(self):
         """Initialize the framebuffer with the backdrop color (palette entry 0)."""
+        global _SWALLOWED_COUNT
         backdrop = (0, 0, 0)
         try:
             color_val = self.memory.read_u16(0x05000000)
@@ -708,8 +734,10 @@ class PPU:
             g = (color_val >> 5) & 0x1F
             b = (color_val >> 10) & 0x1F
             backdrop = (_c5to8(r), _c5to8(g), _c5to8(b))
-        except (IndexError, KeyError, ValueError):
-            pass
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at backdrop color read: {e}") from e
+            _SWALLOWED_COUNT += 1
         self.framebuffer = [
             [backdrop for _ in range(self.screen_width)] for _ in range(self.screen_height)
         ]
@@ -729,20 +757,28 @@ class PPU:
         vram_start = 0x06000000
         vram_size = 0x18000  # 96KB
         pad_size = 0x4000    # 16KB
+        global _SWALLOWED_COUNT
         try:
             raw = bytearray(self.memory.read_range(vram_start, vram_size))
             raw.extend(raw[:pad_size])
             return bytes(raw)
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at VRAM data read: {e}") from e
+            _SWALLOWED_COUNT += 1
             return b'\x00' * (vram_size + pad_size)
 
     def _get_palette_data(self) -> bytes:
         """Get palette RAM data as bytes for JIT functions."""
         palette_start = 0x05000000
         palette_end = 0x05000400
+        global _SWALLOWED_COUNT
         try:
             return bytes(self.memory.read_range(palette_start, palette_end - palette_start))
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at palette data read: {e}") from e
+            _SWALLOWED_COUNT += 1
             return b'\x00' * (palette_end - palette_start)
 
     def write_register(self, addr: int, value: int):
@@ -1123,7 +1159,9 @@ class PPU:
                         color_idx = (byte_val >> 4) & 0x0F
 
                     palette_indices.append(color_idx)
-                except (IndexError, KeyError, ValueError):
+                except (IndexError, KeyError, ValueError) as e:
+                    if _DEBUG_PPU:
+                        raise RuntimeError(f"PPU error at tile 4bpp decode row={row} col={col}: {e}") from e
                     palette_indices.append(0)
 
         return palette_indices
@@ -1163,7 +1201,9 @@ class PPU:
                 try:
                     color_idx = self.memory.read_u8(byte_addr)
                     palette_indices.append(color_idx)
-                except (IndexError, KeyError, ValueError):
+                except (IndexError, KeyError, ValueError) as e:
+                    if _DEBUG_PPU:
+                        raise RuntimeError(f"PPU error at tile 8bpp decode row={row} col={col}: {e}") from e
                     palette_indices.append(0)
 
         return palette_indices
@@ -1189,7 +1229,9 @@ class PPU:
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at palette index {palette_idx}: {e}") from e
             return (0, 0, 0)
 
     def _apply_affine_transform(
@@ -1408,7 +1450,9 @@ class PPU:
                 try:
                     attr0 = self.memory.read_u16(sprite_addr)
                     attr1 = self.memory.read_u16(sprite_addr + 2)
-                except (IndexError, KeyError, ValueError):
+                except (IndexError, KeyError, ValueError) as e:
+                    if _DEBUG_PPU:
+                        raise RuntimeError(f"PPU error at OAM sprite {sprite_idx}: {e}") from e
                     continue
                 if ((attr0 >> 10) & 3) != 3:
                     continue
@@ -1444,6 +1488,12 @@ class PPU:
             # Reset DISPSTAT/VCOUNT snapshots at frame start
             self._dispstat_snapshot = [0] * 228
             self._vcount_snapshot = [0] * 228
+            # Mode 2 per-scanline rendering: do frame setup at vcount==0
+            # so each scanline sees the correct VRAM state as HBlank DMA modifies it.
+            self._read_registers()
+            self._init_framebuffer()
+            if self.mode == 2 and not self.forced_blank:
+                self._mode2_frame_setup()
 
         if 0 <= self.vcount < self.screen_height:
             # Always capture window control bits for this scanline
@@ -1507,7 +1557,9 @@ class PPU:
         if 0 <= self.vcount < self.screen_height:
             try:
                 self._bg2_affine_snapshots[self.vcount] = self._read_affine_bg2_params()
-            except (IndexError, KeyError, ValueError):
+            except (IndexError, KeyError, ValueError) as e:
+                if _DEBUG_PPU:
+                    raise RuntimeError(f"PPU error at scanline {self.vcount} affine snapshot: {e}") from e
                 self._bg2_affine_snapshots[self.vcount] = None
 
             # Snapshot OBJ mosaic params for the CURRENT scanline BEFORE HBlank-DMA
@@ -1519,6 +1571,10 @@ class PPU:
             h_size = obj_mosaic_h + 1 if obj_mosaic_h > 0 else 1
             v_size = obj_mosaic_v + 1 if obj_mosaic_v > 0 else 1
             self._obj_mosaic_snapshots[self.vcount] = (h_size, v_size)
+            # Mode 2: render this scanline BEFORE HBlank DMA fires, so it sees
+            # VRAM state from the previous scanline's DMA transfer.
+            if self.mode == 2 and not self.forced_blank:
+                self._mode2_render_scanline(self.vcount)
 
         # Fire HBlank DMA AFTER the snapshot so DMA-written values land in the
         # next scanline's snapshot, not the current one.
@@ -1678,32 +1734,34 @@ class PPU:
 
     def render_frame(self):
         """Render one frame of graphics. Called once per frame after all scanlines."""
-        self._read_registers()
-        # Force blank check: if DISPCNT bit 7 is set, output white screen
-        if self.forced_blank:
-            # Fill framebuffer with white (RGB888 = (255, 255, 255))
-            self.framebuffer = [[(255, 255, 255) for _ in range(self.screen_width)] for _ in range(self.screen_height)]
-            self.layer_origin = [[5]*self.screen_width for _ in range(self.screen_height)]
-            return
-        self._init_framebuffer()
-        _fc = getattr(self, '_frame_count', 0) + 1
-        self._frame_count = _fc
-        # Get current display mode
-        mode = self.mode
-
-        # Render based on mode (each mode handles its own sprite rendering)
-        if mode == 0:
-            self._render_mode0()
-        elif mode == 1:
-            self._render_mode1()
-        elif mode == 2:
-            self._render_mode2()
-        elif mode == 3:
-            self._render_mode3()
-        elif mode == 4:
-            self._render_mode4()
-        elif mode == 5:
-            self._render_mode5()
+        # Mode 2 renders per-scanline in step_scanline(); skip frame-level rendering.
+        # _read_registers() and _init_framebuffer() were already called at vcount==0.
+        if self.mode == 2 and not self.forced_blank:
+            # Mode 2 already rendered per-scanline; just render sprites + blending
+            if self.obj_enable:
+                self._render_sprites(0x3F)
+        else:
+            self._read_registers()
+            if self.forced_blank:
+                self.framebuffer = [[(255, 255, 255) for _ in range(self.screen_width)] for _ in range(self.screen_height)]
+                self.layer_origin = [[5]*self.screen_width for _ in range(self.screen_height)]
+                return
+            self._init_framebuffer()
+            _fc = getattr(self, '_frame_count', 0) + 1
+            self._frame_count = _fc
+            mode = self.mode
+            if mode == 0:
+                self._render_mode0()
+            elif mode == 1:
+                self._render_mode1()
+            elif mode == 2:
+                self._render_mode2()
+            elif mode == 3:
+                self._render_mode3()
+            elif mode == 4:
+                self._render_mode4()
+            elif mode == 5:
+                self._render_mode5()
 
         # Apply blending if enabled
         if self._blending_enabled():
@@ -1715,24 +1773,24 @@ class PPU:
         if not any_bg and not self.obj_enable:
             return
 
-        # Cache BG control registers per BG (avoids per-pixel read_u16)
         bg_enabled = [self.bg0_enable, self.bg1_enable, self.bg2_enable, self.bg3_enable]
-        bg_cnt = [0, 0, 0, 0]
         bg_priority = [0, 0, 0, 0]
         bg_bpp8 = [False, False, False, False]
         bg_char_block = [0, 0, 0, 0]
         bg_screen_block = [0, 0, 0, 0]
+        bg_mosaic_on = [False, False, False, False]
         for bg in range(4):
             if not bg_enabled[bg]:
                 continue
             cnt = self.memory.read_u16(0x04000008 + bg * 2)
-            bg_cnt[bg] = cnt
             bg_priority[bg] = cnt & 0x03
             bg_bpp8[bg] = bool((cnt >> 7) & 1)
             bg_char_block[bg] = self.bg_char_block[bg]
             bg_screen_block[bg] = self.bg_screen_block[bg]
+            bg_mosaic_on[bg] = bool(self.bg_mosaic[bg])
 
-        # Tile decode cache: key=(tile_index, char_block, bpp8) → palette_indices list
+        active_bgs = [bg for bg in range(4) if bg_enabled[bg]]
+
         tile_cache = {}
 
         def get_tile(tile_index, char_block, bpp8):
@@ -1747,66 +1805,85 @@ class PPU:
             tile_cache[key] = decoded
             return decoded
 
-        # Cache palette colors for speed (palette has 256 entries)
         palette_colors = [self._get_palette_color(i) for i in range(256)]
 
-        # Check if windows are active
         win_active = self.win0_enable or self.win1_enable or self.obj_window_enable
 
-        for y in range(self.screen_height):
-            for x in range(self.screen_width):
+        last_tilemap_key = [-1, -1, -1, -1]
+        cached_tilemap_entry = [0, 0, 0, 0]
+        cached_tile_index = [0, 0, 0, 0]
+        cached_palette_bank = [0, 0, 0, 0]
+        cached_h_flip = [0, 0, 0, 0]
+        cached_v_flip = [0, 0, 0, 0]
+        cached_palette_indices = [None, None, None, None]
+
+        screen_width = self.screen_width
+        screen_height = self.screen_height
+        framebuffer = self.framebuffer
+        second_target_framebuffer = self.second_target_framebuffer
+        second_target_layer = self.second_target_layer
+        layer_origin = self.layer_origin
+        bg_hofs = self.bg_hofs
+        bg_vofs = self.bg_vofs
+
+        for y in range(screen_height):
+            for x in range(screen_width):
                 if win_active:
                     layer_enable = self._get_window_layer_enable(x, y)
                 else:
-                    layer_enable = 0x0F  # All BGs enabled
+                    layer_enable = 0x0F
 
                 best_priority = 99
                 best_color = None
                 best_bg = -1
 
-                for bg in range(4):
-                    if not bg_enabled[bg]:
-                        continue
+                for bg in active_bgs:
                     if not (layer_enable & (1 << bg)):
                         continue
 
-                    mx, my = self._apply_mosaic(x, y, is_obj=False, bg=bg)
-                    tile_x = (mx + self.bg_hofs[bg]) % 256
-                    tile_y = (my + self.bg_vofs[bg]) % 256
+                    if bg_mosaic_on[bg]:
+                        mx, my = self._apply_mosaic(x, y, is_obj=False, bg=bg)
+                    else:
+                        mx, my = x, y
+                    tile_x = (mx + bg_hofs[bg]) & 0xFF
+                    tile_y = (my + bg_vofs[bg]) & 0xFF
 
-                    screen_block = bg_screen_block[bg]
-                    tilemap_base = 0x06000000 + (screen_block * 0x0800)
-                    tilemap_x = tile_x // 8
-                    tilemap_y = tile_y // 8
-                    tilemap_index = tilemap_y * 32 + tilemap_x
-                    tilemap_addr = tilemap_base + (tilemap_index * 2)
+                    tilemap_x = tile_x >> 3
+                    tilemap_y = tile_y >> 3
+                    tilemap_index = (tilemap_y << 5) + tilemap_x
 
-                    tilemap_entry = self.memory.read_u16(tilemap_addr)
-                    tile_index = tilemap_entry & 0x03FF
-                    palette_bank = (tilemap_entry >> 12) & 0xF
-                    h_flip = bool((tilemap_entry >> 10) & 1)
-                    v_flip = bool((tilemap_entry >> 11) & 1)
+                    if tilemap_index != last_tilemap_key[bg]:
+                        tilemap_addr = 0x06000000 + (bg_screen_block[bg] << 11) + (tilemap_index << 1)
+                        tilemap_entry = self.memory.read_u16(tilemap_addr)
+                        cached_tilemap_entry[bg] = tilemap_entry
+                        last_tilemap_key[bg] = tilemap_index
+                        cached_tile_index[bg] = tilemap_entry & 0x03FF
+                        cached_palette_bank[bg] = (tilemap_entry >> 12) & 0xF
+                        cached_h_flip[bg] = (tilemap_entry >> 10) & 1
+                        cached_v_flip[bg] = (tilemap_entry >> 11) & 1
+                        cached_palette_indices[bg] = get_tile(cached_tile_index[bg], bg_char_block[bg], bg_bpp8[bg])
+                    palette_bank = cached_palette_bank[bg]
+                    h_flip = cached_h_flip[bg]
+                    v_flip = cached_v_flip[bg]
+                    palette_indices = cached_palette_indices[bg]
 
-                    pixel_x = tile_x % 8
-                    pixel_y = tile_y % 8
+                    pixel_x = tile_x & 7
+                    pixel_y = tile_y & 7
                     if h_flip:
                         pixel_x = 7 - pixel_x
                     if v_flip:
                         pixel_y = 7 - pixel_y
-                    pixel_index = pixel_y * 8 + pixel_x
-
-                    palette_indices = get_tile(tile_index, bg_char_block[bg], bg_bpp8[bg])
-                    if pixel_index >= len(palette_indices):
+                    pixel_index = (pixel_y << 3) + pixel_x
+                    if pixel_index >= 64:
                         continue
                     color_idx = palette_indices[pixel_index]
                     if color_idx == 0:
                         continue
 
                     if bg_priority[bg] < best_priority:
-                        # Save previous color as second target (it was underneath)
                         if best_color is not None:
-                            self.second_target_framebuffer[y][x] = best_color
-                            self.second_target_layer[y][x] = best_bg
+                            second_target_framebuffer[y][x] = best_color
+                            second_target_layer[y][x] = best_bg
                         best_priority = bg_priority[bg]
                         if bg_bpp8[bg]:
                             best_color = palette_colors[color_idx]
@@ -1815,8 +1892,8 @@ class PPU:
                         best_bg = bg
 
                 if best_color is not None:
-                    self.framebuffer[y][x] = best_color
-                    self.layer_origin[y][x] = best_bg
+                    framebuffer[y][x] = best_color
+                    layer_origin[y][x] = best_bg
 
         if self.obj_enable:
             self._render_sprites(0x3F)
@@ -2008,7 +2085,9 @@ class PPU:
                     
                     try:
                         tilemap_entry = self.memory.read_u8(tilemap_addr)
-                    except (IndexError, KeyError, ValueError):
+                    except (IndexError, KeyError, ValueError) as e:
+                        if _DEBUG_PPU:
+                            raise RuntimeError(f"PPU error at affine BG2 tilemap tx={tx} ty={ty}: {e}") from e
                         continue
 
                     tile_index = tilemap_entry & 0xFF
@@ -2041,6 +2120,275 @@ class PPU:
 
         if self.obj_enable:
             self._render_sprites(0x3F)
+
+    def _read_affine_bg3_params(self):
+        """Read and sign-extend BG3 affine parameters from MMIO.
+        Returns (dx, dmx, dy, dmy, refx, refy, overflow)."""
+        def _s16(lo, hi):
+            v = lo | (hi << 8)
+            return v - 0x10000 if v & 0x8000 else v
+
+        try:
+            bg3pa = self.memory.read_u16(0x04000030)
+            bg3pb = self.memory.read_u16(0x04000032)
+            bg3pc = self.memory.read_u16(0x04000034)
+            bg3pd = self.memory.read_u16(0x04000036)
+            bg3x_lo = self.memory.read_u16(0x04000038)
+            bg3x_hi = self.memory.read_u16(0x0400003A)
+            bg3y_lo = self.memory.read_u16(0x0400003C)
+            bg3y_hi = self.memory.read_u16(0x0400003E)
+
+            dx = _s16(bg3pa & 0xFF, (bg3pa >> 8) & 0xFF)
+            dmx = _s16(bg3pb & 0xFF, (bg3pb >> 8) & 0xFF)
+            dy = _s16(bg3pc & 0xFF, (bg3pc >> 8) & 0xFF)
+            dmy = _s16(bg3pd & 0xFF, (bg3pd >> 8) & 0xFF)
+
+            raw_refx = bg3x_lo | (bg3x_hi << 16)
+            raw_refy = bg3y_lo | (bg3y_hi << 16)
+
+            refx = raw_refx - 0x10000000 if raw_refx & 0x08000000 else raw_refx
+            refy = raw_refy - 0x10000000 if raw_refy & 0x08000000 else raw_refy
+
+            overflow = self.bg_affine[3]
+            return dx, dmx, dy, dmy, refx, refy, overflow
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at affine BG3 params read: {e}") from e
+            return 256, 0, 0, 256, 0, 0, False
+
+    def _mode2_frame_setup(self):
+        """Frame-start setup for Mode 2 affine BG rendering.
+        Called once at vcount==0 before per-scanline rendering begins.
+        Stores state in self._mode2_* instance variables."""
+        any_bg = self.bg2_enable or self.bg3_enable
+        if not any_bg and not self.obj_enable:
+            self._mode2_active = False
+            return
+        self._mode2_active = True
+
+        self._mode2_bg_enabled = [False, False, self.bg2_enable, self.bg3_enable]
+        self._mode2_bg_priority = [0, 0, 0, 0]
+        self._mode2_bg_char_block = [0, 0, 0, 0]
+        self._mode2_bg_screen_block = [0, 0, 0, 0]
+        self._mode2_bg_size = [0, 0, 0, 0]
+
+        for bg in [2, 3]:
+            if not self._mode2_bg_enabled[bg]:
+                continue
+            cnt = self.memory.read_u16(0x04000008 + bg * 2)
+            self._mode2_bg_priority[bg] = cnt & 0x03
+            self._mode2_bg_char_block[bg] = self.bg_char_block[bg]
+            self._mode2_bg_screen_block[bg] = self.bg_screen_block[bg]
+            self._mode2_bg_size[bg] = self.bg_size[bg]
+
+        self._mode2_tile_cache = {}
+        self._mode2_palette_colors = [self._get_palette_color(i) for i in range(256)]
+        self._mode2_win_active = self.win0_enable or self.win1_enable or self.obj_window_enable
+
+        snaps = self._bg2_affine_snapshots
+        if snaps and len(snaps) > 0 and snaps[0] is not None:
+            _, _, _, _, refx_bg2, refy_bg2, _ = snaps[0]
+        else:
+            _, _, _, _, refx_bg2, refy_bg2, _ = self._read_affine_bg2_params()
+
+        _, _, _, _, refx_bg3, refy_bg3, _ = self._read_affine_bg3_params()
+
+        self._mode2_sx_bg2 = refx_bg2
+        self._mode2_sy_bg2 = refy_bg2
+        self._mode2_sx_bg3 = refx_bg3
+        self._mode2_sy_bg3 = refy_bg3
+
+    def _mode2_render_scanline(self, y):
+        """Render one scanline of Mode 2 affine BG.
+        Called per-scanline from step_scanline() between snapshot capture
+        and HBlank DMA fire, so VRAM reflects the current scanline's state."""
+        if not getattr(self, '_mode2_active', False):
+            return
+
+        snaps = self._bg2_affine_snapshots
+        if y < len(snaps) and snaps[y] is not None:
+            dx_bg2, dmx_bg2, dy_bg2, dmy_bg2, _, _, overflow_bg2 = snaps[y]
+        else:
+            dx_bg2, dmx_bg2, dy_bg2, dmy_bg2, _, _, overflow_bg2 = self._read_affine_bg2_params()
+
+        dx_bg3, dmx_bg3, dy_bg3, dmy_bg3, _, _, overflow_bg3 = self._read_affine_bg3_params()
+
+        bg_enabled = self._mode2_bg_enabled
+        bg_priority = self._mode2_bg_priority
+        bg_char_block = self._mode2_bg_char_block
+        bg_screen_block = self._mode2_bg_screen_block
+        bg_size = self._mode2_bg_size
+        tile_cache = self._mode2_tile_cache
+        palette_colors = self._mode2_palette_colors
+        win_active = self._mode2_win_active
+
+        sx_bg2 = self._mode2_sx_bg2
+        sy_bg2 = self._mode2_sy_bg2
+        sx_bg3 = self._mode2_sx_bg3
+        sy_bg3 = self._mode2_sy_bg3
+
+        def get_tile(tile_index, char_block, bpp8):
+            key = (tile_index, char_block, bpp8)
+            cached = tile_cache.get(key)
+            if cached is not None:
+                return cached
+            if bpp8:
+                decoded = self._decode_tile_8bpp(tile_index, char_block)
+            else:
+                decoded = self._decode_tile_4bpp(tile_index, char_block)
+            tile_cache[key] = decoded
+            return decoded
+
+        row_fb = self.framebuffer[y]
+        row_lo = self.layer_origin[y]
+
+        for x in range(self.screen_width):
+            if win_active:
+                layer_enable = self._get_window_layer_enable(x, y)
+            else:
+                layer_enable = 0x0F
+
+            best_priority = 99
+            best_color = None
+            best_bg = -1
+
+            # Render affine BG2
+            if bg_enabled[2] and (layer_enable & 0x04):
+                mx, my = self._apply_mosaic(x, y, is_obj=False, bg=2)
+                x_float = float(mx)
+                y_float = float(my)
+
+                source_x = sx_bg2 + (x_float * dx_bg2)
+                source_y = sy_bg2 + (x_float * dy_bg2)
+
+                tx = int(source_x) >> 8
+                ty = int(source_y) >> 8
+
+                if overflow_bg2:
+                    size = bg_size[2]
+                    if size == 0:
+                        tx &= 127
+                        ty &= 127
+                    elif size == 1:
+                        tx &= 255
+                        ty &= 255
+                    elif size == 2:
+                        tx &= 511
+                        ty &= 511
+                    else:
+                        tx &= 1023
+                        ty &= 1023
+                elif tx < 0 or ty < 0:
+                    tx = -1
+                else:
+                    affine_bg_sizes = {0: (128, 128), 1: (256, 256), 2: (512, 512), 3: (1024, 1024)}
+                    bg_width, bg_height = affine_bg_sizes[bg_size[2]]
+                    if tx >= bg_width or ty >= bg_height:
+                        tx = -1
+
+                if tx >= 0:
+                    screen_block = bg_screen_block[2]
+                    tilemap_base = 0x06000000 + (screen_block * 0x0800)
+                    tilemap_x = tx // 8
+                    tilemap_y = ty // 8
+
+                    affine_tilemap_widths = {0: 16, 1: 32, 2: 64, 3: 128}
+                    tilemap_width = affine_tilemap_widths[bg_size[2]]
+                    tilemap_index = tilemap_y * tilemap_width + tilemap_x
+                    tilemap_addr = tilemap_base + tilemap_index
+
+                    try:
+                        tilemap_entry = self.memory.read_u8(tilemap_addr)
+                    except (IndexError, KeyError, ValueError) as e:
+                        if _DEBUG_PPU:
+                            raise RuntimeError(f"PPU error at affine BG2 tilemap tx={tx} ty={ty}: {e}") from e
+                    else:
+                        tile_index = tilemap_entry & 0xFF
+                        pixel_x = int(tx) % 8
+                        pixel_y = int(ty) % 8
+                        pixel_index = pixel_y * 8 + pixel_x
+
+                        palette_indices = get_tile(tile_index, bg_char_block[2], True)
+                        if pixel_index < len(palette_indices):
+                            color_idx = palette_indices[pixel_index]
+                            if bg_priority[2] < best_priority:
+                                best_priority = bg_priority[2]
+                                best_color = palette_colors[color_idx]
+                                best_bg = 2
+
+            # Render affine BG3
+            if bg_enabled[3] and (layer_enable & 0x08):
+                mx, my = self._apply_mosaic(x, y, is_obj=False, bg=3)
+                x_float = float(mx)
+                y_float = float(my)
+
+                source_x = sx_bg3 + (x_float * dx_bg3)
+                source_y = sy_bg3 + (x_float * dy_bg3)
+
+                tx = int(source_x) >> 8
+                ty = int(source_y) >> 8
+
+                if overflow_bg3:
+                    size = bg_size[3]
+                    if size == 0:
+                        tx &= 127
+                        ty &= 127
+                    elif size == 1:
+                        tx &= 255
+                        ty &= 255
+                    elif size == 2:
+                        tx &= 511
+                        ty &= 511
+                    else:
+                        tx &= 1023
+                        ty &= 1023
+                elif tx < 0 or ty < 0:
+                    tx = -1
+                else:
+                    affine_bg_sizes = {0: (128, 128), 1: (256, 256), 2: (512, 512), 3: (1024, 1024)}
+                    bg_width, bg_height = affine_bg_sizes[bg_size[3]]
+                    if tx >= bg_width or ty >= bg_height:
+                        tx = -1
+
+                if tx >= 0:
+                    screen_block = bg_screen_block[3]
+                    tilemap_base = 0x06000000 + (screen_block * 0x0800)
+                    tilemap_x = tx // 8
+                    tilemap_y = ty // 8
+
+                    affine_tilemap_widths = {0: 16, 1: 32, 2: 64, 3: 128}
+                    tilemap_width = affine_tilemap_widths[bg_size[3]]
+                    tilemap_index = tilemap_y * tilemap_width + tilemap_x
+                    tilemap_addr = tilemap_base + tilemap_index
+
+                    try:
+                        tilemap_entry = self.memory.read_u8(tilemap_addr)
+                    except (IndexError, KeyError, ValueError) as e:
+                        if _DEBUG_PPU:
+                            raise RuntimeError(f"PPU error at affine BG3 tilemap tx={tx} ty={ty}: {e}") from e
+                    else:
+                        tile_index = tilemap_entry & 0xFF
+                        pixel_x = int(tx) % 8
+                        pixel_y = int(ty) % 8
+                        pixel_index = pixel_y * 8 + pixel_x
+
+                        palette_indices = get_tile(tile_index, bg_char_block[3], True)
+                        if pixel_index < len(palette_indices):
+                            color_idx = palette_indices[pixel_index]
+                            if bg_priority[3] < best_priority:
+                                best_priority = bg_priority[3]
+                                best_color = palette_colors[color_idx]
+                                best_bg = 3
+
+            if best_color is not None:
+                row_fb[x] = best_color
+                row_lo[x] = best_bg
+
+        # Accumulate affine offsets for next scanline
+        self._mode2_sx_bg2 += dmx_bg2
+        self._mode2_sy_bg2 += dmy_bg2
+        self._mode2_sx_bg3 += dmx_bg3
+        self._mode2_sy_bg3 += dmy_bg3
 
     def _render_mode2(self):
         """Render Mode 2: Affine BG2/3 only
@@ -2126,7 +2474,9 @@ class PPU:
                 
                 overflow = self.bg_affine[3]
                 return dx, dmx, dy, dmy, refx, refy, overflow
-            except (IndexError, KeyError, ValueError):
+            except (IndexError, KeyError, ValueError) as e:
+                if _DEBUG_PPU:
+                    raise RuntimeError(f"PPU error at affine BG3 params read: {e}") from e
                 return 256, 0, 0, 256, 0, 0, False
 
         # Frame-start reference positions
@@ -2216,8 +2566,9 @@ class PPU:
                         
                         try:
                             tilemap_entry = self.memory.read_u8(tilemap_addr)
-                        except (IndexError, KeyError, ValueError):
-                            pass
+                        except (IndexError, KeyError, ValueError) as e:
+                            if _DEBUG_PPU:
+                                raise RuntimeError(f"PPU error at affine BG2 tilemap tx={tx} ty={ty}: {e}") from e
                         else:
                             tile_index = tilemap_entry & 0xFF
                             pixel_x = int(tx) % 8
@@ -2282,8 +2633,9 @@ class PPU:
                         
                         try:
                             tilemap_entry = self.memory.read_u8(tilemap_addr)
-                        except (IndexError, KeyError, ValueError):
-                            pass
+                        except (IndexError, KeyError, ValueError) as e:
+                            if _DEBUG_PPU:
+                                raise RuntimeError(f"PPU error at affine BG3 tilemap tx={tx} ty={ty}: {e}") from e
                         else:
                             tile_index = tilemap_entry & 0xFF
                             pixel_x = int(tx) % 8
@@ -2351,7 +2703,9 @@ class PPU:
         try:
             vram_arr, vram_off = self.memory._buffer_for_addr(vram_base)
             vram_bytes = bytes(vram_arr[vram_off:vram_off + self.screen_height * self.screen_width * 2])
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at Mode 2 VRAM read: {e}") from e
             vram_bytes = bytes(self.screen_height * self.screen_width * 2)
 
         try:
@@ -2361,7 +2715,9 @@ class PPU:
                 _c5to8((bdv >> 5) & 0x1F),
                 _c5to8((bdv >> 10) & 0x1F),
             )
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at backdrop read: {e}") from e
             backdrop_rgb = (0, 0, 0)
 
         snaps = self._bg2_affine_snapshots
@@ -2416,12 +2772,16 @@ class PPU:
         try:
             vram_arr, vram_off = self.memory._buffer_for_addr(vram_base)
             vram_bytes = bytes(vram_arr[vram_off:vram_off + self.screen_height * self.screen_width])
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at Mode 4 VRAM read: {e}") from e
             vram_bytes = bytes(self.screen_height * self.screen_width)
         try:
             pal_arr, pal_off = self.memory._buffer_for_addr(0x05000000)
             palette_bytes = bytes(pal_arr[pal_off:pal_off + 512])
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at Mode 4 palette read: {e}") from e
             palette_bytes = bytes(512)
         palette_rgb = []
         for i in range(256):
@@ -2545,7 +2905,9 @@ class PPU:
             g = _c5to8((color_val >> 5) & 0x1F)
             b = _c5to8((color_val >> 10) & 0x1F)
             return (r, g, b)
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at palette index {palette_idx}: {e}") from e
             return (0, 0, 0)
 
     def _render_bitmap_affine_bg2(self, fb, lo, dx, dy, dmx, dmy, x, y_coord,
@@ -2666,7 +3028,9 @@ class PPU:
         try:
             vram_arr, vram_off = self.memory._buffer_for_addr(vram_base)
             vram_bytes = bytes(vram_arr[vram_off:vram_off + 128 * 160 * 2])
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at Mode 5 VRAM read: {e}") from e
             vram_bytes = bytes(128 * 160 * 2)
 
         try:
@@ -2676,7 +3040,9 @@ class PPU:
                 _c5to8((bdv >> 5) & 0x1F),
                 _c5to8((bdv >> 10) & 0x1F),
             )
-        except (IndexError, KeyError, ValueError):
+        except (IndexError, KeyError, ValueError) as e:
+            if _DEBUG_PPU:
+                raise RuntimeError(f"PPU error at backdrop read: {e}") from e
             backdrop_rgb = (0, 0, 0)
 
         snaps = self._bg2_affine_snapshots
@@ -2738,7 +3104,9 @@ class PPU:
                     bg_backdrop_r = _c5to8((backdrop_color_val >> 0) & 0x1F)
                     bg_backdrop_g = _c5to8((backdrop_color_val >> 5) & 0x1F)
                     bg_backdrop_b = _c5to8((backdrop_color_val >> 10) & 0x1F)
-                except (IndexError, KeyError, ValueError):
+                except (IndexError, KeyError, ValueError) as e:
+                    if _DEBUG_PPU:
+                        raise RuntimeError(f"PPU error at blend backdrop read: {e}") from e
                     bg_backdrop_r, bg_backdrop_g, bg_backdrop_b = 0, 0, 0
                 if second_target_mask & (1 << 5):  # BD is 2nd target
                     pass  # backdrop already read above
@@ -2892,7 +3260,9 @@ class PPU:
                             colors.append((r, g, b))
                         else:
                             colors.append(None)
-                    except (IndexError, KeyError, ValueError):
+                    except (IndexError, KeyError, ValueError) as e:
+                        if _DEBUG_PPU:
+                            raise RuntimeError(f"PPU error at sprite 16bpp color read x={src_x} y={src_y}: {e}") from e
                         colors.append(None)
                 else:
                     colors.append(None)
@@ -2925,7 +3295,9 @@ class PPU:
                         colors.append((r, g, b))
                     else:
                         colors.append(None)
-                except (IndexError, KeyError, ValueError):
+                except (IndexError, KeyError, ValueError) as e:
+                    if _DEBUG_PPU:
+                        raise RuntimeError(f"PPU error at sprite 16bpp color read x={src_px} line={src_line}: {e}") from e
                     colors.append(None)
 
         return colors

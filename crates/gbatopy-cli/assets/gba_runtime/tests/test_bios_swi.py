@@ -1,12 +1,13 @@
 """GBA BIOS SWI handler unit tests for GBAtoPy.
 
 Tests cover division, square root, memory copy, LZ77 decompression,
-trigonometric functions, and CPU state management.
+trigonometric functions, sound driver SWIs, and CPU state management.
 """
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from memory import Memory
 from bios import BIOS
+import arm7tdmi
 
 
 def test_swi_div_basic():
@@ -222,6 +223,164 @@ def test_swi_arctan2_zero():
     print("✓ test_swi_arctan2_zero passed")
 
 
+def test_swi_sound_driver_init():
+    """SWI 0x19 SoundDriverInit: stores work area pointer."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Set up work area pointer in r0
+    work_area = 0x03005000
+    cpu.registers[0] = work_area
+    
+    # Call SWI 0x19
+    cpu.swi_handler(0x19)
+    
+    # Verify work area was stored
+    assert hasattr(cpu, '_sound_work_area'), "CPU should have _sound_work_area attribute"
+    assert cpu._sound_work_area == work_area, f"Expected work area {hex(work_area)}, got {hex(cpu._sound_work_area)}"
+    
+    print("✓ test_swi_sound_driver_init passed")
+
+
+def test_swi_sound_driver_mode():
+    """SWI 0x1A SoundDriverMode: stores mode value."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Set mode in r0
+    mode = 0x0003  # Example mode flags
+    cpu.registers[0] = mode
+    
+    # Call SWI 0x1A
+    cpu.swi_handler(0x1A)
+    
+    # Verify mode was stored
+    assert hasattr(cpu, '_sound_mode'), "CPU should have _sound_mode attribute"
+    assert cpu._sound_mode == mode, f"Expected mode {hex(mode)}, got {hex(cpu._sound_mode)}"
+    
+    print("✓ test_swi_sound_driver_mode passed")
+
+
+def test_swi_sound_driver_main():
+    """SWI 0x1B SoundDriverMain: minimal processing, no crash."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Set up work area first
+    cpu._sound_work_area = 0x03005000
+    
+    # Call SWI 0x1B - should not crash
+    cpu.swi_handler(0x1B)
+    
+    # Just verify it returns cleanly
+    assert True
+    
+    print("✓ test_swi_sound_driver_main passed")
+
+
+def test_swi_sound_driver_vsync():
+    """SWI 0x1C SoundDriverVSync: VBlank processing, no crash."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Set up work area first
+    cpu._sound_work_area = 0x03005000
+    
+    # Call SWI 0x1C - should not crash
+    cpu.swi_handler(0x1C)
+    
+    # Just verify it returns cleanly
+    assert True
+    
+    print("✓ test_swi_sound_driver_vsync passed")
+
+
+def test_swi_sound_channel_clear():
+    """SWI 0x1D SoundChannelClear: no-op, no crash."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Call SWI 0x1D - should not crash
+    cpu.swi_handler(0x1D)
+    
+    # Just verify it returns cleanly
+    assert True
+    
+    print("✓ test_swi_sound_channel_clear passed")
+
+
+def test_swi_midi_key_to_freq():
+    """SWI 0x1E MidiKey2Freq: convert MIDI key to frequency."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Test case 1: MIDI key 69 = A4 = 440 Hz
+    # In fixed-point (8.8 format): 69 * 256 = 17664
+    cpu.registers[1] = 69 * 256  # 69.0 in fixed-point
+    cpu.swi_handler(0x1E)
+    
+    # Expected: 440 Hz * 256 = 112640 (fixed-point)
+    expected_440 = int(440.0 * 256)
+    actual = cpu.registers[0]
+    assert abs(actual - expected_440) < 100, f"Key 69: expected ~{expected_440} (440Hz), got {actual}"
+    
+    # Test case 2: MIDI key 81 = A5 = 880 Hz (one octave up)
+    cpu.registers[1] = 81 * 256  # 81.0 in fixed-point
+    cpu.swi_handler(0x1E)
+    
+    # Expected: 880 Hz * 256 = 225280 (fixed-point)
+    expected_880 = int(880.0 * 256)
+    actual = cpu.registers[0]
+    assert abs(actual - expected_880) < 100, f"Key 81: expected ~{expected_880} (880Hz), got {actual}"
+    
+    # Test case 3: MIDI key 60 = C4 (middle C) ≈ 261.63 Hz
+    cpu.registers[1] = 60 * 256  # 60.0 in fixed-point
+    cpu.swi_handler(0x1E)
+    
+    # Expected: 261.63 Hz * 256 ≈ 66977
+    expected_c4 = int(261.63 * 256)
+    actual = cpu.registers[0]
+    assert abs(actual - expected_c4) < 200, f"Key 60: expected ~{expected_c4} (261.63Hz), got {actual}"
+    
+    print("✓ test_swi_midi_key_to_freq passed")
+
+
+def test_swi_midi_key_to_freq_fractional():
+    """SWI 0x1E MidiKey2Freq: fractional key values."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Test with key 69.5 (half step between A4 and A#4)
+    # 69.5 * 256 = 17792
+    cpu.registers[1] = 17792
+    cpu.swi_handler(0x1E)
+    
+    # Expected: 440 * 2^(0.5/12) ≈ 466.16 Hz * 256 ≈ 119337
+    expected = int(440.0 * (2.0 ** (0.5 / 12.0)) * 256)
+    actual = cpu.registers[0]
+    assert abs(actual - expected) < 200, f"Key 69.5: expected ~{expected}, got {actual}"
+    
+    print("✓ test_swi_midi_key_to_freq_fractional passed")
+
+
+def test_swi_sound_vsync_off():
+    """SWI 0x1F SoundDriverVSyncOff: disables VSync processing."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Initially vsync should be enabled (default)
+    assert not hasattr(cpu, '_sound_vsync_enabled') or cpu._sound_vsync_enabled == True
+    
+    # Call SWI 0x1F
+    cpu.swi_handler(0x1F)
+    
+    # Verify vsync is disabled
+    assert hasattr(cpu, '_sound_vsync_enabled'), "CPU should have _sound_vsync_enabled attribute"
+    assert cpu._sound_vsync_enabled == False, f"Expected vsync disabled, got {cpu._sound_vsync_enabled}"
+    
+    print("✓ test_swi_sound_vsync_off passed")
+
+
 if __name__ == "__main__":
     # Division tests
     test_swi_div_basic()
@@ -246,4 +405,14 @@ if __name__ == "__main__":
     test_swi_arctan_zero()
     test_swi_arctan2_zero()
     
-    print("\nAll 13 BIOS SWI tests passed!")
+    # Sound driver SWI tests (0x19-0x1F)
+    test_swi_sound_driver_init()
+    test_swi_sound_driver_mode()
+    test_swi_sound_driver_main()
+    test_swi_sound_driver_vsync()
+    test_swi_sound_channel_clear()
+    test_swi_midi_key_to_freq()
+    test_swi_midi_key_to_freq_fractional()
+    test_swi_sound_vsync_off()
+    
+    print("\nAll 21 BIOS SWI tests passed!")

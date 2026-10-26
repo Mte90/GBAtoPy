@@ -23,6 +23,7 @@ Exit codes:
 
 import argparse
 import json
+import multiprocessing
 import os
 import shutil
 import subprocess
@@ -327,6 +328,29 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
     return result
 
 
+def run_single_rom_worker(rom_path, level, frame, test_type):
+    """Worker function for multiprocessing.Pool. Top-level so it can be pickled.
+    
+    Processes one ROM: transpile → run → compare. Returns result dict.
+    Handles worker crashes gracefully by catching exceptions.
+    """
+    try:
+        return test_rom_worker(rom_path, level, frame, test_type)
+    except Exception as e:
+        # Handle worker crashes gracefully - one ROM failing shouldn't kill the whole run
+        return {
+            "name": rom_path.name,
+            "level1": False,
+            "level1_status": f"worker_error: {e}",
+            "level2": False,
+            "level2_status": "skipped",
+            "level3": False,
+            "level3_status": "skipped",
+            "level3_detail": None,
+            "elapsed": 0.0,
+        }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="GBAtoPy unified 3-level test runner"
@@ -337,11 +361,21 @@ def main():
     )
     parser.add_argument("--rom", type=str, help="Run single ROM by name")
     parser.add_argument("--filter", type=str, help="Filter ROMs by name substring")
-    parser.add_argument("--workers", type=int, default=4, help="Parallel workers")
+    parser.add_argument("--workers", type=int, default=None, help="Parallel workers (alias for --parallel)")
+    parser.add_argument("--parallel", type=int, default=None, help="Parallel workers (default: 1 = serial)")
     parser.add_argument("--frame", type=int, default=60, help="Frame count for execution")
     parser.add_argument("--json", type=Path, help="Save JSON report to this path")
     parser.add_argument("--no-build", action="store_true", help="Skip building transpiler")
     args = parser.parse_args()
+
+    # --parallel takes precedence; --workers is alias for backward compat
+    # Default is 1 (serial) if neither flag is set
+    if args.parallel is not None:
+        num_workers = args.parallel
+    elif args.workers is not None:
+        num_workers = args.workers
+    else:
+        num_workers = 1  # Default: serial mode
 
     if not args.no_build:
         build_transpiler()
@@ -371,24 +405,26 @@ def main():
         print("ERROR: No ROMs to test")
         sys.exit(1)
 
-    print(f"Testing {len(roms)} ROM(s) at Level {args.level} with {args.workers} workers")
+    print(f"Testing {len(roms)} ROM(s) at Level {args.level} with {num_workers} worker(s)")
     print(f"  Levels: {'syntax' if args.level == 1 else 'syntax+execution' if args.level == 2 else 'syntax+execution+visual'}")
     print()
 
     start = time()
     results = []
 
-    with ProcessPoolExecutor(max_workers=args.workers) as executor:
-        futures = {
-            executor.submit(
-                test_rom_worker, rom, args.level, args.frame,
+    if num_workers > 1:
+        # Parallel execution with multiprocessing.Pool
+        # Pack args into tuples for map() since we need to pass multiple params
+        rom_args = [(rom, args.level, args.frame, test_types.get(rom.name, "Smoke")) for rom in roms]
+        with multiprocessing.Pool(processes=num_workers) as pool:
+            results = pool.starmap(run_single_rom_worker, rom_args)
+    else:
+        # Serial execution (backward compatible)
+        for i, rom in enumerate(roms, 1):
+            result = test_rom_worker(
+                rom, args.level, args.frame,
                 test_types.get(rom.name, "Smoke")
-            ): rom
-            for rom in roms
-        }
-
-        for i, future in enumerate(as_completed(futures), 1):
-            result = future.result()
+            )
             results.append(result)
 
             # Print per-ROM status

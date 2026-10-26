@@ -120,8 +120,16 @@ fn disassemble_rom(
 ) -> Result<(Vec<gbatopy_disasm::DecodedInstruction>, CfgBuilder), String> {
     let mut cfg = CfgBuilder::new();
     cfg.build_from_entry(rom, 0x08000000);
-    let reachable: Vec<u32> = cfg.get_reachable_addresses().to_vec();
+    let reachable: Vec<u32> = cfg.get_reachable_addresses().iter().copied().collect();
     eprintln!("  CFG found {} reachable addresses", reachable.len());
+
+    // Graceful degradation: if address count is excessive, use fallback-only mode
+    if cfg.is_address_count_excessive() {
+        eprintln!("  Warning: {} reachable addresses exceeds limit ({}), using fallback-only mode", 
+                  reachable.len(), CfgBuilder::MAX_REACHABLE_ADDRESSES);
+        // Return empty reachable set to force fallback-only codegen
+        return Ok((vec![], cfg));
+    }
 
     const ESTIMATED_LINES_PER_INSTRUCTION: u64 = 15;
     let estimated_output_lines = reachable.len() as u64 * ESTIMATED_LINES_PER_INSTRUCTION;

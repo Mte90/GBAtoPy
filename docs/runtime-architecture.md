@@ -146,6 +146,20 @@ Affine background parameters (BG2PA, BG2PB, BG2PC, BG2PD, BG2X, BG2Y) are captur
 - `_render_mode3/4/5` read affine parameters from `self._bg2_affine_snapshots[y]`.
 - If the snapshot is `None` (e.g., when called from fallback interpreter), falls back to reading live registers.
 
+### 2.1.1 BG2 vs BG3 Affine Parameter Sources
+
+**Dual source of truth** (see issue #7734):
+
+- **BG2 affine parameters**: Read from `self.memory._affine_params` — a byte buffer initialized to identity values at construction time. This is the authoritative source for BG2 affine transforms.
+
+- **BG3 affine parameters**: Read from MMIO registers `io[0x30-0x0400003F]` (BG3PA, BG3PB, BG3PC, BG3PD, BG3X, BG3Y). These registers are now initialized to identity values at construction in `memory.py`:
+  - `io[0x30-0x33]` (BG3PA, BG3PB): Set to `0x0100, 0x0000, 0x0000, 0x0100` (identity matrix)
+  - `io[0x34-0x37]` (BG3PC, BG3PD): Set to `0x0100, 0x0000, 0x0000, 0x0100` (identity matrix)
+  - `io[0x38-0x3B]` (BG3X, BG3Y): Set to `0x0000, 0x0000` (origin)
+
+**Previous bug**: MMIO region was zero-initialized, causing Mode 2 BG3 to map every pixel to texture coordinate (0,0) → solid color output. The fix (commit 9fa068a) initializes affine parameters to identity, matching mGBA's reset behavior (`io.c:287-290`).
+
+**mGBA reference**: On reset, mGBA initializes both BG2 and BG3 affine registers to identity matrices, ensuring affine backgrounds render with no transformation by default.
 ### 2.2 Fallback Interpreter Contract
 
 The fallback interpreter (`_interp_fallback` in `pipeline_cmd.rs`) is a PURE CPU executor with strict boundaries:

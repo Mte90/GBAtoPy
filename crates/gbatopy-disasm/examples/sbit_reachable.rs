@@ -50,7 +50,7 @@ fn scan_rom(path: &Path) -> (usize, usize, usize, usize, usize, Vec<(String, u32
     };
     let mut cfg = CfgBuilder::new();
     cfg.build_from_entry(&rom, 0x08000000);
-    let reachable = cfg.get_reachable_addresses().to_vec();
+    let reachable: Vec<u32> = cfg.get_reachable_addresses().iter().copied().collect();
     let mut disasm = Disassembler::new();
     let mut instructions = disasm.selective_disassemble(&rom, &reachable, &cfg.mode_map);
     let _ = disasm.mark_data_regions(&mut instructions);

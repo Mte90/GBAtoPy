@@ -683,26 +683,95 @@ class CPU:
             self.registers[15] = 0x08000000
         elif num == 0x01:  # RegisterRamReset
             flags = self.registers[0]
-            # Reset EWRAM
+            self.memory.write_u16(0x04000000, 0x0080)
             if flags & 0x01:
                 for addr in range(0x02000000, 0x02040000, 4):
                     self.memory.write_u32(addr, 0)
-            # Reset IWRAM
             if flags & 0x02:
-                for addr in range(0x03000000, 0x03008000, 4):
+                for addr in range(0x03000000, 0x03008000 - 0x200, 4):
                     self.memory.write_u32(addr, 0)
-            # Reset Palette
             if flags & 0x04:
                 for addr in range(0x05000000, 0x05000400, 2):
                     self.memory.write_u16(addr, 0)
-            # Reset VRAM
             if flags & 0x08:
                 for addr in range(0x06000000, 0x06018000, 2):
                     self.memory.write_u16(addr, 0)
-            # Reset OAM
             if flags & 0x10:
                 for addr in range(0x07000000, 0x07000400, 2):
                     self.memory.write_u16(addr, 0)
+            if flags & 0x20:
+                self.memory.write_u16(0x04000128, 0)
+                self.memory.write_u16(0x04000134, 0x8000)
+                self.memory.write_u16(0x0400012A, 0)
+                self.memory.write_u16(0x04000140, 0)
+                self.memory.write_u32(0x04000150, 0)
+                self.memory.write_u32(0x04000154, 0)
+            if flags & 0x40:
+                self.memory.write_u16(0x04000060, 0)
+                self.memory.write_u16(0x04000062, 0)
+                self.memory.write_u16(0x04000064, 0)
+                self.memory.write_u16(0x04000068, 0)
+                self.memory.write_u16(0x0400006C, 0)
+                self.memory.write_u16(0x04000070, 0)
+                self.memory.write_u16(0x04000072, 0)
+                self.memory.write_u16(0x04000074, 0)
+                self.memory.write_u16(0x04000078, 0)
+                self.memory.write_u16(0x0400007C, 0)
+                self.memory.write_u16(0x04000080, 0)
+                self.memory.write_u16(0x04000082, 0)
+                self.memory.write_u16(0x04000084, 0)
+                self.memory.write_u16(0x04000088, 0x0200)
+            if flags & 0x80:
+                self.memory.write_u16(0x04000004, 0)
+                self.memory.write_u16(0x04000006, 0)
+                self.memory.write_u16(0x04000008, 0)
+                self.memory.write_u16(0x0400000A, 0)
+                self.memory.write_u16(0x0400000C, 0)
+                self.memory.write_u16(0x0400000E, 0)
+                self.memory.write_u16(0x04000010, 0)
+                self.memory.write_u16(0x04000012, 0)
+                self.memory.write_u16(0x04000014, 0)
+                self.memory.write_u16(0x04000016, 0)
+                self.memory.write_u16(0x04000018, 0)
+                self.memory.write_u16(0x0400001A, 0)
+                self.memory.write_u16(0x0400001C, 0)
+                self.memory.write_u16(0x0400001E, 0)
+                self.memory.write_u16(0x04000020, 0x0100)
+                self.memory.write_u16(0x04000022, 0)
+                self.memory.write_u16(0x04000024, 0)
+                self.memory.write_u16(0x04000026, 0x0100)
+                self.memory.write_u32(0x04000028, 0)
+                self.memory.write_u32(0x0400002C, 0)
+                self.memory.write_u16(0x04000030, 0x0100)
+                self.memory.write_u16(0x04000032, 0)
+                self.memory.write_u16(0x04000034, 0)
+                self.memory.write_u16(0x04000036, 0x0100)
+                self.memory.write_u32(0x04000038, 0)
+                self.memory.write_u32(0x0400003C, 0)
+                self.memory.write_u16(0x04000040, 0)
+                self.memory.write_u16(0x04000042, 0)
+                self.memory.write_u16(0x04000044, 0)
+                self.memory.write_u16(0x04000046, 0)
+                self.memory.write_u16(0x04000048, 0)
+                self.memory.write_u16(0x0400004A, 0)
+                self.memory.write_u16(0x0400004C, 0)
+                self.memory.write_u16(0x04000050, 0)
+                self.memory.write_u16(0x04000052, 0)
+                self.memory.write_u16(0x04000054, 0)
+                for base in [0x040000B0, 0x040000BC, 0x040000C8, 0x040000D4]:
+                    self.memory.write_u16(base + 0, 0)
+                    self.memory.write_u16(base + 2, 0)
+                    self.memory.write_u16(base + 4, 0)
+                    self.memory.write_u16(base + 6, 0)
+                    self.memory.write_u16(base + 8, 0)
+                    self.memory.write_u16(base + 10, 0)
+                for base in [0x04000100, 0x04000104, 0x04000108, 0x0400010C]:
+                    self.memory.write_u16(base, 0)
+                    self.memory.write_u16(base + 2, 0)
+                self.memory.write_u16(0x04000208, 0)
+                self.memory.write_u16(0x04000202, 0xFFFF)
+                self.memory.write_u16(0x04000204, 0)
+                self.memory.write_u16(0x04000200, 0)
         elif num == 0x02:  # Halt
             self._halted = True
             self._halt_reason = "any"
@@ -952,51 +1021,6 @@ class CPU:
 
         return True
 
-    # DEAD CODE: SWI handlers not used by runtime (runtime uses ARM7TDMI class from arm7tdmi.py)
-    def dump_registers(self, frame: int = None) -> dict:
-        """
-        Dump CPU register state to a dictionary.
-
-        Returns:
-            dict containing register values
-        """
-        return {
-            "timestamp": frame if frame is not None else "unknown",
-            "registers": [self.registers[i] for i in range(16)],
-            "cpsr_flags": {
-                "N": self.flag_n,
-                "Z": self.flag_z,
-                "C": self.flag_c,
-                "V": self.flag_v,
-                "T": self.thumb_mode,
-            },
-        }
-
-    def save_register_dump(self, dump: dict, filename: str = None) -> str:
-        """
-        Save register dump to JSON file.
-
-        Args:
-            dump: Register dump dictionary
-            filename: Optional filename (without extension)
-
-        Returns:
-            Path to saved file
-        """
-        import json
-        import os
-
-        dump_dir = os.environ.get("GBATOPY_DUMP_DIR", ".")
-        os.makedirs(dump_dir, exist_ok=True)
-
-        if filename is None:
-            filename = f"registers_{dump.get('timestamp', 'unknown')}"
-
-        filepath = os.path.join(dump_dir, f"{filename}.json")
-        with open(filepath, "w") as f:
-            json.dump(dump, f, indent=2)
-
-        return filepath
 
 
 class RegisterDump:

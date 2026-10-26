@@ -64,6 +64,13 @@ class Memory:
         _ap[6] = 0x00; _ap[7] = 0x01  # BG2PD = 0x0100 (dmy = 256)
         self._affine_params = _array.array('B', _ap)
 
+        # BG3 affine registers live in MMIO (0x04000030-0x0400003F) and are
+        # read directly by _read_affine_bg3_params(). mGBA initializes them to
+        # identity on reset (io.c:287-290). Without this, BG3 in Mode 2 maps
+        # every pixel to texture (0,0) → solid color.
+        self.io[0x30] = 0x00; self.io[0x31] = 0x01  # BG3PA = 0x0100
+        self.io[0x36] = 0x00; self.io[0x37] = 0x01  # BG3PD = 0x0100
+
         self.rom: Optional[bytearray] = None
         self.rom_size: int = 0
         self.rom_mirror_size: int = MemoryMap.ROM_MAX_SIZE
@@ -80,6 +87,7 @@ class Memory:
         self._dma: Optional[object] = None
         self._apu: Optional[object] = None
         self._timers: Optional[object] = None
+        self._serial: Optional[object] = None
         self._input: Optional[object] = None
         self._interrupts: Optional[object] = None
 
@@ -114,6 +122,9 @@ class Memory:
 
     def attach_timers(self, timers):
         self._timers = timers
+
+    def attach_serial(self, serial):
+        self._serial = serial
 
     def attach_input(self, inp):
         self._input = inp
@@ -552,6 +563,65 @@ class Memory:
 
     def read_u16(self, addr: int) -> int:
         addr &= 0xFFFFFFFF
+        page = addr >> 24
+
+        # IO — preserve _dispatch_mmio_read for correctness
+        if page == 0x04:
+            offset = addr - MemoryMap.IO_START
+            result = self._dispatch_mmio_read(addr)
+            if result is not None:
+                self.open_bus = result & 0xFF
+                lo = result & 0xFF
+            else:
+                lo = self.io[offset]
+                self.open_bus = lo
+            result_hi = self._dispatch_mmio_read(addr + 1)
+            if result_hi is not None:
+                hi = result_hi & 0xFF
+            else:
+                hi = self.io[offset + 1] if (offset + 1) < len(self.io) else lo
+            return lo | (hi << 8)
+
+        # ROM — instruction fetches and lookup tables
+        if 0x08 <= page <= 0x0D:
+            rom_addr = self._get_rom_addr(addr)
+            if 0 <= rom_addr < self.rom_size and rom_addr + 2 <= self.rom_size:
+                return self.rom[rom_addr] | (self.rom[rom_addr + 1] << 8)
+            # fall through to fallback
+
+        # IWRAM — stack variables
+        if page == 0x03:
+            offset = addr & 0x00007FFF
+            return self.iwram[offset] | (self.iwram[offset + 1] << 8)
+
+        # EWRAM — heap data
+        if page == 0x02:
+            offset = addr & 0x0003FFFF
+            return self.ewram[offset] | (self.ewram[offset + 1] << 8)
+
+        # VRAM — tile/pixel data
+        if page == 0x06:
+            offset = addr & 0x0001FFFF
+            if offset >= MemoryMap.VRAM_SIZE:
+                offset -= MemoryMap.VRAM_SIZE
+            return self.vram[offset] | (self.vram[offset + 1] << 8)
+
+        # Palette RAM
+        if page == 0x05:
+            offset = addr & 0x000003FF
+            return self.palette[offset] | (self.palette[offset + 1] << 8)
+
+        # OAM
+        if page == 0x07:
+            offset = addr & 0x000003FF
+            return self.oam[offset] | (self.oam[offset + 1] << 8)
+
+        # BIOS
+        if page == 0x00:
+            offset = addr & 0x00003FFF
+            return self.bios[offset] | (self.bios[offset + 1] << 8)
+
+        # Fallback for unmapped addresses — use original path
         mapped = self._map_address(addr)
         if MemoryMap.IO_START <= mapped <= MemoryMap.IO_END:
             lo = self.read_u8(mapped)
@@ -559,12 +629,100 @@ class Memory:
             return lo | (hi << 8)
         buf, start = self._buffer_for_addr(mapped, _mapped=True)
         if buf:
-            return int.from_bytes(buf[start:start + 2], 'little')
-        return int.from_bytes(self.rom[addr - 0x08000000:(addr - 0x08000000) + 2], 'little')
+            return buf[start] | (buf[start + 1] << 8)
+        return self.rom[addr - 0x08000000] | (self.rom[addr - 0x08000000 + 1] << 8)
     
     def read_u32(self, addr: int) -> int:
         """Read 32-bit unsigned value"""
         addr &= 0xFFFFFFFF
+        page = addr >> 24
+
+        # IO — preserve _dispatch_mmio_read for correctness
+        if page == 0x04:
+            offset = addr - MemoryMap.IO_START
+            b0 = self._dispatch_mmio_read(addr)
+            if b0 is not None:
+                self.open_bus = b0 & 0xFF
+                lo = b0 & 0xFF
+            else:
+                lo = self.io[offset]
+                self.open_bus = lo
+            b1 = self._dispatch_mmio_read(addr + 1)
+            if b1 is not None:
+                hi = b1 & 0xFF
+            else:
+                hi = self.io[offset + 1] if (offset + 1) < len(self.io) else lo
+            b2 = self._dispatch_mmio_read(addr + 2)
+            if b2 is not None:
+                b2_val = b2 & 0xFF
+            else:
+                b2_val = self.io[offset + 2] if (offset + 2) < len(self.io) else lo
+            b3 = self._dispatch_mmio_read(addr + 3)
+            if b3 is not None:
+                b3_val = b3 & 0xFF
+            else:
+                b3_val = self.io[offset + 3] if (offset + 3) < len(self.io) else lo
+            return lo | (hi << 8) | (b2_val << 16) | (b3_val << 24)
+
+        # ROM — instruction fetches and lookup tables
+        if 0x08 <= page <= 0x0D:
+            rom_addr = self._get_rom_addr(addr)
+            if 0 <= rom_addr < self.rom_size and rom_addr + 4 <= self.rom_size:
+                return (self.rom[rom_addr] | (self.rom[rom_addr + 1] << 8) |
+                        (self.rom[rom_addr + 2] << 16) | (self.rom[rom_addr + 3] << 24))
+            # fall through to fallback
+
+        # IWRAM — stack variables
+        if page == 0x03:
+            offset = addr & 0x00007FFF
+            if offset + 4 <= len(self.iwram):
+                return (self.iwram[offset] | (self.iwram[offset + 1] << 8) |
+                        (self.iwram[offset + 2] << 16) | (self.iwram[offset + 3] << 24))
+            # fall through to fallback
+
+        # EWRAM — heap data
+        if page == 0x02:
+            offset = addr & 0x0003FFFF
+            if offset + 4 <= len(self.ewram):
+                return (self.ewram[offset] | (self.ewram[offset + 1] << 8) |
+                        (self.ewram[offset + 2] << 16) | (self.ewram[offset + 3] << 24))
+            # fall through to fallback
+
+        # VRAM — tile/pixel data
+        if page == 0x06:
+            offset = addr & 0x0001FFFF
+            if offset >= MemoryMap.VRAM_SIZE:
+                offset -= MemoryMap.VRAM_SIZE
+            if offset + 4 <= len(self.vram):
+                return (self.vram[offset] | (self.vram[offset + 1] << 8) |
+                        (self.vram[offset + 2] << 16) | (self.vram[offset + 3] << 24))
+            # fall through to fallback
+
+        # Palette RAM
+        if page == 0x05:
+            offset = addr & 0x000003FF
+            if offset + 4 <= len(self.palette):
+                return (self.palette[offset] | (self.palette[offset + 1] << 8) |
+                        (self.palette[offset + 2] << 16) | (self.palette[offset + 3] << 24))
+            # fall through to fallback
+
+        # OAM
+        if page == 0x07:
+            offset = addr & 0x000003FF
+            if offset + 4 <= len(self.oam):
+                return (self.oam[offset] | (self.oam[offset + 1] << 8) |
+                        (self.oam[offset + 2] << 16) | (self.oam[offset + 3] << 24))
+            # fall through to fallback
+
+        # BIOS
+        if page == 0x00:
+            offset = addr & 0x00003FFF
+            if offset + 4 <= len(self.bios):
+                return (self.bios[offset] | (self.bios[offset + 1] << 8) |
+                        (self.bios[offset + 2] << 16) | (self.bios[offset + 3] << 24))
+            # fall through to fallback
+
+        # Fallback for unmapped addresses — use original path
         mapped = self._map_address(addr)
         if MemoryMap.IO_START <= mapped <= MemoryMap.IO_END:
             b0 = self.read_u8(mapped)
@@ -574,7 +732,8 @@ class Memory:
             return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
         buf, off = self._buffer_for_addr(mapped, _mapped=True)
         if buf is not None and off + 4 <= len(buf):
-            return int.from_bytes(buf[off:off + 4], 'little')
+            return (buf[off] | (buf[off + 1] << 8) |
+                    (buf[off + 2] << 16) | (buf[off + 3] << 24))
         b0 = self.read_u8(mapped)
         b1 = self.read_u8(mapped + 1)
         b2 = self.read_u8(mapped + 2)
@@ -701,9 +860,6 @@ class Memory:
         while _ms < self.rom_size:
             _ms <<= 1
         self.rom_mirror_size = max(_ms, 1)
-
-        if self.rom_size >= 4:
-            self.iwram[0:4] = self.rom[0:4]
 
     def get_io_register(self, offset: int) -> int:
         if 0 <= offset < MemoryMap.IO_SIZE:

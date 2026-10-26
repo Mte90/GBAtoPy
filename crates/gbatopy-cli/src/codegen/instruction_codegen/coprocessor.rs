@@ -173,9 +173,15 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     } else {
                         "0".to_string()
                     };
+                    // SMULL sign-extends operands; UMULL is unsigned
+                    let mul_expr = if base_opcode == "SMULL" {
+                        format!("int({}) * int({})", rm, rs)
+                    } else {
+                        format!("{} * {}", rm, rs)
+                    };
                     return Some(format!(
-                        "result = {} * {}; registers[{}] = result & 0xFFFFFFFF; registers[{}] = (result >> 32) & 0xFFFFFFFF",
-                        rm, rs, rlo, rhi
+                        "result = {}; registers[{}] = result & 0xFFFFFFFF; registers[{}] = (result >> 32) & 0xFFFFFFFF",
+                        mul_expr, rlo, rhi
                     ));
                 }
             }
@@ -489,7 +495,21 @@ mod tests {
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
-        assert!(code.contains("result = registers[2] * registers[3]"));
+        // SMULL must sign-extend operands using int() before multiplying
+        assert!(code.contains("result = int(registers[2]) * int(registers[3])"));
+    }
+
+    #[test]
+    fn test_generate_smull_sign_extension() {
+        // Verify SMULL generates code that sign-extends operands
+        // This test ensures negative values are properly handled
+        let inst = make_inst("SMULL", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2), Operand::Register(3)]);
+        let result = generate(&inst);
+        assert!(result.is_some());
+        let code = result.unwrap();
+        // The generated Python code must use int() for sign-extension
+        assert!(code.contains("int(registers[2])"));
+        assert!(code.contains("int(registers[3])"));
     }
 
     // === Edge cases ===

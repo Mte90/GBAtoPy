@@ -343,7 +343,7 @@ impl RegisterTracker {
 
 #[derive(Debug, Default)]
 pub struct CfgBuilder {
-    pub instruction_addresses: Vec<u32>,
+    pub instruction_addresses: HashSet<u32>,
     pub branch_targets: HashSet<u32>,
     pub mode_map: Vec<(u32, ArmMode)>,
     register_tracker: RegisterTracker,
@@ -372,6 +372,17 @@ struct BfsPassCtx<'a> {
 }
 
 impl CfgBuilder {
+    /// Maximum reachable addresses before graceful degradation.
+    /// If exceeded, the transpiler emits fallback-only Python (no dispatch table).
+    /// A 16MB ROM has at most ~4M ARM instructions or ~8M Thumb instructions;
+    /// 200K reachable is generous for real code but stops data explosion.
+    pub const MAX_REACHABLE_ADDRESSES: usize = 200_000;
+
+    /// Check if the address count exceeds the graceful degradation threshold.
+    pub fn is_address_count_excessive(&self) -> bool {
+        self.instruction_addresses.len() > Self::MAX_REACHABLE_ADDRESSES
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -409,28 +420,6 @@ impl CfgBuilder {
 
         const MAX_INSTRUCTIONS: usize = 500_000;
 
-        // TEMP: check data_addresses for 0x080000C8
-        eprintln!(
-            "DATA_CHECK: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8u32)
-        );
-        eprintln!(
-            "DATA_CHECK: data_addresses has {} entries",
-            data_addresses.len()
-        );
-        // Print all entries near 0x080000C0-0x080000D0
-        for a in &data_addresses {
-            if *a >= 0x080000C0 && *a <= 0x080000D0 {
-                eprintln!("DATA_CHECK: found entry 0x{:08X}", a);
-            }
-        }
-
-        // Main BFS pass
-        eprintln!("  CFG: main pass starting...");
-        eprintln!(
-            "PRE_BFS: 0x080000C8 in data_addresses={}",
-            data_addresses.contains(&0x080000C8)
-        );
         let main_count = self.bfs_pass(BfsPassCtx {
             queue: &mut to_visit,
             own_visited: &mut visited,
@@ -921,7 +910,7 @@ impl CfgBuilder {
                         // This looks like a basic block! Add as branch target.
                         let target_addr = addr;
                         self.branch_targets.insert(target_addr);
-                        self.instruction_addresses.push(target_addr);
+                        self.instruction_addresses.insert(target_addr);
                         self.mode_map.push((target_addr, ArmMode::Thumb));
                         heuristic_targets.push(target_addr);
                     }
@@ -1355,13 +1344,6 @@ impl CfgBuilder {
             data_addresses.contains(&0x080000C4u32)
         );
 
-        self.instruction_addresses.sort();
-        self.instruction_addresses.dedup();
-        if self.instruction_addresses.contains(&0x0800010A) {
-            eprintln!("  CFG: 0x0800010A is in instruction_addresses!");
-        } else {
-            eprintln!("  CFG: 0x0800010A is NOT in instruction_addresses!");
-        }
         self.mode_map.sort();
         self.mode_map.dedup();
     }
@@ -1654,17 +1636,19 @@ impl CfgBuilder {
                 }
             } else if opcode == "BX" || opcode == "BLX" {
                 if let Some(Operand::Register(rn)) = operands.first() {
-                    // Record this register for the post-processing sweep.
-                    self.bx_registers.insert(*rn);
-                    if let Some(target) = self.register_tracker.get(*rn) {
-                        // Indirect branch (BX Rm / BLX Rm): the register value is known via tracking.
-                        // The target address has bit 0 as the Thumb-mode indicator.
-                        // If bit 0 is set → Thumb mode, if clear → ARM mode.
-                        if target & 1 == 1 {
-                            // Thumb mode target: normalize by clearing bit 0
-                            targets.push(target & !1);
-                        } else {
-                            // ARM mode target: use as-is (already 4-byte aligned)
+                    if *rn == 15 {
+                        // BX PC: ARM7TDMI pipeline value (addr + 2*instr_width).
+                        // Bit 0 is always 0 (aligned), so bfs_pass decodes as ARM.
+                        let pipeline_target = addr + 2 * instr_width;
+                        targets.push(pipeline_target);
+                    } else {
+                        // Record this register for the post-processing sweep.
+                        self.bx_registers.insert(*rn);
+                        if let Some(target) = self.register_tracker.get(*rn) {
+                            // Push the raw value with bit 0 intact. bfs_pass reads
+                            // bit 0 to select ARM vs Thumb mode, then normalizes the
+                            // address. Clearing bit 0 here would hide the Thumb flag
+                            // and cause Thumb code to be decoded as ARM.
                             targets.push(target);
                         }
                     }
@@ -1675,7 +1659,7 @@ impl CfgBuilder {
         targets
     }
 
-    pub fn get_reachable_addresses(&self) -> &[u32] {
+    pub fn get_reachable_addresses(&self) -> &HashSet<u32> {
         &self.instruction_addresses
     }
 
@@ -1699,6 +1683,8 @@ impl CfgBuilder {
             label,
             report_progress,
         } = ctx;
+        // Snapshot of initial queue contents (seed addresses)
+        let initial_seeds: HashSet<u32> = queue.iter().map(|(a, _)| *a).collect();
         // Cut fall-through after this many consecutive non-branch instructions.
         // Real Thumb code branches every ~10-20 instructions; audio/graphic data
         // decoded as Thumb produces thousands of consecutive valid-looking
@@ -1731,19 +1717,22 @@ impl CfgBuilder {
             // looks_like_data_soft's 32-instruction valid-run check causes false
             // positives on short ARM functions. Thumb mode now also uses
             // looks_like_data_safe to match the F140 ARM fix pattern.
-            if is_data_address(
-                addr,
-                current_mode,
-                data_addresses,
-                rom,
-                arm_decoder,
-                thumb_decoder,
-            ) || (matches!(current_mode, ArmMode::Thumb)
-                && looks_like_data_safe(rom, addr, current_mode, arm_decoder, thumb_decoder))
-                || (matches!(current_mode, ArmMode::Arm)
+            // Skip seed addresses from data heuristic — they are explicitly designated as code entry points
+            if !initial_seeds.contains(&addr) {
+                if is_data_address(
+                    addr,
+                    current_mode,
+                    data_addresses,
+                    rom,
+                    arm_decoder,
+                    thumb_decoder,
+                ) || (matches!(current_mode, ArmMode::Thumb)
                     && looks_like_data_safe(rom, addr, current_mode, arm_decoder, thumb_decoder))
-            {
-                continue;
+                    || (matches!(current_mode, ArmMode::Arm)
+                        && looks_like_data_safe(rom, addr, current_mode, arm_decoder, thumb_decoder))
+                {
+                    continue;
+                }
             }
 
             // Skip if already visited in own set or shared set
@@ -1912,7 +1901,7 @@ impl CfgBuilder {
             ) || (current_mode == ArmMode::Arm
                 && has_uniform_rare_condition_code(rom, addr));
             if !is_data {
-                self.instruction_addresses.push(addr);
+                self.instruction_addresses.insert(addr);
                 self.mode_map.push((addr, current_mode));
             }
             let targets =
@@ -2001,7 +1990,7 @@ impl CfgBuilder {
                 // If code explicitly jumps to an address, it must be in the dispatch table.
                 // Data heuristics only apply to fall-through, not to explicit branches.
                 if !self.instruction_addresses.contains(&target) {
-                    self.instruction_addresses.push(target);
+                    self.instruction_addresses.insert(target);
                     self.mode_map.push((target, target_mode));
                 }
                 // Cross-mode guard for branch targets: prevent targeting addresses
