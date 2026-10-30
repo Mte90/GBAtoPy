@@ -103,13 +103,13 @@ def main():
         epilog="""
 Examples:
   # Validate a single golden file
-  python3 scripts/verify/validate_golden.py scripts/screenshot/golden/hello.png
+  python3 scripts/verify/validate_golden.py test-reports/goldens/hello.png
 
   # Validate a single file with ROM name for context
-  python3 scripts/verify/validate_golden.py scripts/screenshot/golden/hello.png hello
+  python3 scripts/verify/validate_golden.py test-reports/goldens/hello.png hello
 
   # Validate all goldens in a directory
-  python3 scripts/verify/validate_golden.py --batch scripts/screenshot/golden/
+  python3 scripts/verify/validate_golden.py --batch test-reports/goldens/
 
 Exit codes:
   0 — all goldens valid

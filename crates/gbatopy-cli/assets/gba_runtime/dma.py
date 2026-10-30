@@ -37,10 +37,10 @@ DMA_DST_CTRL_MASK   = 0x0060  # bits 6-5
 
 DMA_CHANNEL_SPACING = 0x0C
 
-DMA0_SRC_ADDR = 0x040000B0
-DMA1_SRC_ADDR = 0x040000BC
-DMA2_SRC_ADDR = 0x040000C8
-DMA3_SRC_ADDR = 0x040000D4
+DMA0_SRC_ADDR = 0x040000B0  # GBATEK §12.2: DMA0SAD
+DMA1_SRC_ADDR = 0x040000BC  # GBATEK §12.2: DMA1SAD (channel spacing 0x0C)
+DMA2_SRC_ADDR = 0x040000C8  # GBATEK §12.2: DMA2SAD
+DMA3_SRC_ADDR = 0x040000D4  # GBATEK §12.2: DMA3SAD
 
 # DMA_OFFSET[] = { +1, -1, 0, +1 } — matches mGBA dma.c
 # Indexed by SrcControl/DestControl value:
@@ -107,11 +107,14 @@ class DMAChannel:
         return 0x040000B0 + (self.channel_id * DMA_CHANNEL_SPACING)
 
     def read_from_memory(self):
+        """Load DMA registers (GBATEK §12.2: SAD, DAD, DCNT)."""
         b = self._base() - 0x04000000
         new_control = self.mem.io[b+10] | (self.mem.io[b+11] << 8)
         new_enabled = (new_control & DMA_ENABLE) != 0
 
         if new_enabled and not self.enabled:
+            # GBATEK §12.5: Address writeback — SAD/DAD updated after transfer
+            # On REPEAT+reload (DestControl=3), DAD reloads to original value
             self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
             self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)
             self.count = self.mem.io[b+8] | (self.mem.io[b+9] << 8)
@@ -209,6 +212,12 @@ class DMA:
         return _DMA_OFFSET.get(ctrl, 0) * width
 
     def _do_transfer(self, ch: DMAChannel):
+        """GBATEK §12.3: Control register bits (ENABLE=15, IRQ=14, Timing=12-13, etc.).
+        
+        GBATEK §12.4: HBlank DMA fires at start of HBlank, runs during visible period.
+        GBATEK §12.4: VBlank DMA fires at start of VBlank.
+        GBATEK §12.5: ENABLE bit cleared on completion for non-repeat transfers.
+        """
         if ch.busy:
             return
 
@@ -263,6 +272,8 @@ class DMA:
             src += src_step
             dst += dst_step
 
+        # GBATEK §12.5: Address writeback after transfer completes
+        # DestControl=3 (increment/reload) resets DAD to original on repeat
         if ch.is_repeat() and dst_ctrl == 3:
             ch.dst_addr = orig_dst
         else:
@@ -279,15 +290,12 @@ class DMA:
             if ch.is_repeat() and dst_ctrl == 3:
                 ch.dst_addr = orig_dst
         else:
-            ch.control &= ~DMA_ENABLE  # Clear only enable bit, preserve other control bits
+            # GBATEK §12.3: ENABLE bit (15) cleared on completion (non-repeat)
+            ch.control &= ~DMA_ENABLE
             ch.enabled = False
             ch.count = 0
-            # Write back to memory.io
-            b = ch._base() - 0x04000000
-            self.mem.io[b+8] = ch.count & 0xFF
-            self.mem.io[b+9] = (ch.count >> 8) & 0xFF
-            self.mem.io[b+10] = ch.control & 0xFF
-            self.mem.io[b+11] = (ch.control >> 8) & 0xFF
+
+        ch.write_to_memory()
 
         ch.busy = False
         ch.pending = False
@@ -306,11 +314,10 @@ class DMA:
                     self._do_transfer(ch)
 
     def _do_transfer_single(self, ch: DMAChannel):
-        """Transfer one unit, advance src/dst, keep channel enabled.
-
-        Per GBATEK, HBlank/VBlank DMA with the Repeat bit transfers a single
-        unit per trigger (not the full count at once). The channel stays enabled
-        until count is exhausted, then reloads if Repeat is set or disables.
+        """GBATEK §12.4: HBlank/VBlank DMA single-unit transfer per trigger.
+        
+        Repeat bit enables repeated transfers; channel stays enabled until
+        count exhausted, then reloads (DestControl=3) or disables.
         """
         if ch.busy:
             return
@@ -377,6 +384,7 @@ class DMA:
             self._interrupts.dma_irq(ch.channel_id)
 
     def vblank_fire(self):
+        """GBATEK §12.4: VBlank DMA fires at start of VBlank (timing=01)."""
         for ch in self.channels:
             ch.read_from_memory()
             if not ch.enabled or ch.busy:
@@ -385,6 +393,10 @@ class DMA:
                 self._do_transfer(ch)
 
     def hblank_fire(self, vcount: int = 0):
+        """GBATEK §12.4: HBlank DMA fires at start of HBlank (timing=10).
+        
+        Transfer runs during visible period of next scanline.
+        """
         for ch in self.channels:
             ch.read_from_memory()
             if not ch.enabled or ch.busy:
@@ -402,11 +414,10 @@ class DMA:
                 ch.pending = False
 
     def timer_trigger_fire(self, timer_id: int):
-        """Fire DMA transfer triggered by timer overflow.
+        """GBATEK §12.4: Timer-triggered DMA (timing=11, special mode).
         
-        When a timer overflows, any DMA channel with timing mode set to
-        timer-triggered (mode 3, special) for that timer ID will perform
-        a full-count burst transfer.
+        Timer overflow triggers full-count burst for channels with
+        timing mode 3 (special) matched to the timer ID.
         """
         if timer_id < 0 or timer_id > 3:
             return
@@ -421,6 +432,7 @@ class DMA:
                 ch.pending = False
 
     def fifo_a_empty_fire(self):
+        """GBATEK §12.4: DMA1 special mode — FIFO A empty trigger."""
         ch = self.channels[1]
         ch.read_from_memory()
         if ch.enabled and not ch.busy and ch.is_special() and ch.pending:
@@ -428,6 +440,7 @@ class DMA:
             ch.pending = False
 
     def fifo_b_empty_fire(self):
+        """GBATEK §12.4: DMA2 special mode — FIFO B empty trigger."""
         ch = self.channels[2]
         ch.read_from_memory()
         if ch.enabled and not ch.busy and ch.is_special() and ch.pending:

@@ -20,7 +20,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRAMES=10
 WORKERS=4
 ROM_NAME=""
-OUTPUT_DIR="scripts/screenshot/golden"
+OUTPUT_DIR="test-reports/goldens"
 MGBA_BIN="$PROJECT_ROOT/mgba/build/sdl/mgba"
 ROMS_DIR="$PROJECT_ROOT/test_roms/roms"
 
@@ -86,7 +86,7 @@ capture_one() {
     local rom="$1"
     local rom_stem
     rom_stem=$(basename "$rom" .gba)
-    local output="$OUTPUT_DIR/golden_${rom_stem}_frame_${FRAMES}.png"
+    local output="$OUTPUT_DIR/${rom_stem}_f${FRAMES}.png"
     local lua_file="$TMPDIR/${rom_stem}.lua"
 
     cat > "$lua_file" << LUAEOF

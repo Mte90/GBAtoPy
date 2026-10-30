@@ -668,17 +668,12 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     }
                 }
 
-                // Writeback: save original base if it's in the register list
-                if do_writeback && base_in_list {
-                    code.push_str(&format!("_orig_base = registers[{}]\n", base_reg));
-                }
-                // IA/IB → base + n*4; DA/DB → base - n*4
-                if do_writeback {
-                    let base_expr = if base_in_list {
-                        "_orig_base"
-                    } else {
-                        &format!("registers[{}]", base_reg)
-                    };
+                // Writeback: on ARM7TDMI, LDM with base in the register list —
+                // the loaded value takes priority over the base update (DDI 0029E 3.13).
+                // Skip writeback; the load already set the correct value.
+                // For STM, stores don't modify registers, so registers[base_reg] is original.
+                if do_writeback && !(is_load && base_in_list) {
+                    let base_expr = format!("registers[{}]", base_reg);
                     let final_addr = if is_increment {
                         format!("{} + {}", base_expr, num_regs * 4)
                     } else {
@@ -1485,8 +1480,12 @@ mod tests {
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert!(code.contains("_orig_base = registers[13]"));
-        assert!(code.contains("registers[13] = _orig_base + 12"));
+        // ARM7TDMI (DDI 0029E 3.13): LDM with base in the register list —
+        // the loaded value takes priority over the base update. No writeback.
+        assert!(!code.contains("_orig_base"));
+        assert!(code.contains("registers[13] = memory.read_u32(addr)"));
+        assert!(!code.contains("registers[13] = registers[13]"));
+        assert!(!code.contains("registers[13] = _orig_base"));
     }
 
     #[test]

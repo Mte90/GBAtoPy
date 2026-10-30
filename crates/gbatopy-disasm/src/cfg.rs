@@ -10,10 +10,13 @@ use crate::{AddressingMode, ArmMode, Operand};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Detects instructions that write to R15 (PC), making them indirect branches.
-/// This covers LDM with R15 in register list (POP {PC}) — the instruction
-/// loads PC from the stack, so execution does NOT fall through to the next
-/// address. The CFG must not add the fall-through as reachable code.
+/// This covers:
+/// - LDM with R15 in register list (POP {PC}) — the instruction loads PC from
+///   the stack, so execution does NOT fall through to the next address.
+/// - LDR pc, [rn, #imm] — ARM interworking veneer / indirect jump. Loading
+///   into PC is an unconditional branch; fall-through must be blocked.
 pub fn writes_to_pc(opcode: &str, operands: &[Operand]) -> bool {
+    // LDMIA/LDMFD with R15 in register list (POP {PC})
     if opcode.starts_with("LDM") {
         for op in operands {
             if let Operand::MemoryAddress {
@@ -25,6 +28,13 @@ pub fn writes_to_pc(opcode: &str, operands: &[Operand]) -> bool {
                     return true;
                 }
             }
+        }
+    }
+    // LDR pc, [rn, #imm] — ARM interworking veneer / indirect jump.
+    // Loading into PC is an unconditional branch; fall-through must be blocked.
+    if opcode.starts_with("LDR") {
+        if let Some(Operand::Register(rd)) = operands.first() {
+            return *rd == 15;
         }
     }
     false
@@ -93,6 +103,10 @@ fn decode_is_valid_code(
                 rom[rom_offset + 2],
                 rom[rom_offset + 3],
             ]);
+            // Condition 0xF (NV) is UNPREDICTABLE in ARMv4T — no valid code uses it
+            if (word >> 28) == 0xF {
+                return false;
+            }
             arm_decoder.decode(word, addr).0
         }
         ArmMode::Thumb => {
@@ -299,9 +313,9 @@ fn has_uniform_rare_condition_code(rom: &[u8], addr: u32) -> bool {
 fn looks_like_data_safe(
     rom: &[u8],
     addr: u32,
-    _mode: ArmMode,
-    _arm_decoder: &ArmDecoder,
-    _thumb_decoder: &ThumbDecoder,
+    mode: ArmMode,
+    arm_decoder: &ArmDecoder,
+    thumb_decoder: &ThumbDecoder,
 ) -> bool {
     if has_long_zero_run(rom, addr, 16) {
         return true;
@@ -309,6 +323,50 @@ fn looks_like_data_safe(
     if has_repeated_pattern(rom, addr) {
         return true;
     }
+
+    // Check for invalid SWI numbers — data that decodes as SWI with out-of-range numbers
+    let rom_offset = (addr - 0x08000000) as usize;
+    if rom_offset + 4 > rom.len() {
+        return false; // Out of bounds — treat as code to avoid blocking BFS
+    }
+
+    match mode {
+        ArmMode::Thumb => {
+            // Thumb SWI: 0xDFxx where xx is the SWI number
+            // GBA BIOS only has SWI numbers 0x00-0x2F (48 handlers)
+            let halfword = u16::from_le_bytes([rom[rom_offset], rom[rom_offset + 1]]);
+            if (halfword >> 8) == 0xDF {
+                let swi_num = halfword & 0xFF;
+                if swi_num > 0x2F {
+                    return true; // Invalid SWI number = data
+                }
+            }
+        }
+        ArmMode::Arm => {
+            // ARM SWI: opcode=0xF (any condition) → (word & 0x0F000000) == 0x0F000000
+            // SWI number is in bits 16-23
+            let word = u32::from_le_bytes([
+                rom[rom_offset],
+                rom[rom_offset + 1],
+                rom[rom_offset + 2],
+                rom[rom_offset + 3],
+            ]);
+            if (word & 0x0F000000) == 0x0F000000 {
+                let swi_num = (word >> 16) & 0xFF;
+                if swi_num > 0x2F {
+                    return true; // Invalid SWI number = data
+                }
+            }
+        }
+    }
+
+    // Require a run of valid instruction decodes — real code has long valid
+    // runs; data that decodes as 1-2 valid halfwords but breaks down shortly
+    // after is data, not code.
+    if !decode_is_valid_code_run(rom, addr, mode, 4, arm_decoder, thumb_decoder) {
+        return true;
+    }
+
     false
 }
 
@@ -644,8 +702,11 @@ impl CfgBuilder {
                 continue;
             }
 
-            // Validate as code in the selected mode
+            // Validate as code in the selected mode AND reject data-as-code
             if !decode_is_valid_code(rom, target_addr, target_mode, &arm_decoder, &thumb_decoder) {
+                continue;
+            }
+            if looks_like_data_soft(rom, target_addr, target_mode, &arm_decoder, &thumb_decoder) {
                 continue;
             }
 
@@ -1144,14 +1205,15 @@ impl CfgBuilder {
                 } else {
                     ArmMode::Arm
                 };
-                if decode_is_valid_code_run(
-                    rom,
-                    blob_target,
-                    blob_mode,
-                    8,
-                    &arm_decoder,
-                    &thumb_decoder,
-                ) && self.branch_targets.insert(blob_target)
+                if !looks_like_data_soft(rom, blob_target, blob_mode, &arm_decoder, &thumb_decoder)
+                    && decode_is_valid_code_run(
+                        rom,
+                        blob_target,
+                        blob_mode,
+                        8,
+                        &arm_decoder,
+                        &thumb_decoder,
+                    ) && self.branch_targets.insert(blob_target)
                 {
                     iwram_entry_targets.push((blob_target, blob_mode));
                 }
@@ -1269,38 +1331,54 @@ impl CfgBuilder {
         const ARM_PROLOGUE_SCAN_START: usize = 0x100; // Skip vector table
         const ARM_PROLOGUE_SCAN_END: usize = 0x80000; // Limit to first 512 KB of ROM
         const ARM_PROLOGUE_MAX_TARGETS: usize = 20; // Very strict limit
-        for off in (ARM_PROLOGUE_SCAN_START..rom.len().saturating_sub(3)).step_by(4) {
-            if off >= ARM_PROLOGUE_SCAN_END {
-                break;
-            }
+        let mut off = ARM_PROLOGUE_SCAN_START;
+        while off < rom.len().saturating_sub(3) && off < ARM_PROLOGUE_SCAN_END {
             if arm_prologue_targets.len() >= ARM_PROLOGUE_MAX_TARGETS {
                 break;
             }
-            let word = u32::from_le_bytes([rom[off], rom[off + 1], rom[off + 2], rom[off + 3]]);
-            // STMFD SP!, {..., LR} = 0xE92Dxxxx where bit 14 (LR in reg list) MUST be set
-            // Mask: top 16 bits = 0xE92D, bit 14 of low 16 bits = 0x4000
-            if (word & 0xFFFF0000) == 0xE92D0000 && (word & 0x00004000) != 0 {
-                let target: u32 = 0x08000000 + off as u32;
-                if self.branch_targets.contains(&target) {
-                    continue;
+            // Probe up to 4 instructions for STMFD SP!, {..., LR} (0xE92Dxxxx, bit 14 set).
+            // Some ARM functions start with a conditional early-return guard
+            // (LDR + CMP + BXcc LR) before the STMFD prologue — a first-instruction-
+            // only scan misses these and drops initialization code.
+            let mut stmfd_pos: Option<usize> = None;
+            for i in 0..4usize {
+                let probe = off + i * 4;
+                if probe + 4 > rom.len() {
+                    break;
                 }
-                // Require valid code run AND reject if looks like data (audio/graphics)
-                if decode_is_valid_code_run(
-                    rom,
-                    target,
-                    ArmMode::Arm,
-                    16,
-                    &arm_decoder,
-                    &thumb_decoder,
-                ) && !looks_like_data_soft(
-                    rom,
-                    target,
-                    ArmMode::Arm,
-                    &arm_decoder,
-                    &thumb_decoder,
-                ) && self.branch_targets.insert(target)
-                {
-                    arm_prologue_targets.push((target, ArmMode::Arm));
+                let word = u32::from_le_bytes([rom[probe], rom[probe + 1], rom[probe + 2], rom[probe + 3]]);
+                if (word & 0xFFFF0000) == 0xE92D0000 && (word & 0x00004000) != 0 {
+                    stmfd_pos = Some(i);
+                    break;
+                }
+            }
+            match stmfd_pos {
+                Some(i) => {
+                    let target: u32 = 0x08000000 + off as u32;
+                    if !self.branch_targets.contains(&target) {
+                        if decode_is_valid_code_run(
+                            rom,
+                            target,
+                            ArmMode::Arm,
+                            16,
+                            &arm_decoder,
+                            &thumb_decoder,
+                        ) && !looks_like_data_soft(
+                            rom,
+                            target,
+                            ArmMode::Arm,
+                            &arm_decoder,
+                            &thumb_decoder,
+                        ) && self.branch_targets.insert(target)
+                        {
+                            arm_prologue_targets.push((target, ArmMode::Arm));
+                        }
+                    }
+                    // Skip past the STMFD to avoid re-detecting from a later offset
+                    off += (i + 1) * 4;
+                }
+                None => {
+                    off += 4;
                 }
             }
         }
@@ -1692,9 +1770,11 @@ impl CfgBuilder {
         // long straight-line runs (memcpy loops, LDR/STR sequences) are kept
         // reachable via explicit branch targets and BL fall-through, not by
         // inflating this limit.
-        const MAX_CONSECUTIVE_NON_BRANCH: usize = 32;
+        const MAX_CONSECUTIVE_NON_BRANCH: usize = 16;
         let mut count = 0;
         let mut consecutive_non_branch: usize;
+        let mut total_fallthrough_pushes: usize = 0;
+        const FALLTHROUGH_BUDGET: usize = 50_000;
 
         while let Some((addr, current_mode)) = queue.pop() {
             // Each queue item is the start of a new basic block; reset the
@@ -1788,6 +1868,19 @@ impl CfgBuilder {
                     self.branch_targets.len()
                 );
             }
+            
+            // Global address budget: if we've already collected too many reachable
+            // addresses, stop the BFS. This catches CFG explosion from compressed/
+            // encrypted data sections that decode as valid but meaningless instructions.
+            const GLOBAL_ADDRESS_BUDGET: usize = 180_000;
+            if self.instruction_addresses.len() >= GLOBAL_ADDRESS_BUDGET {
+                eprintln!(
+                    "  CFG {} global address budget ({}) reached, stopping",
+                    label, GLOBAL_ADDRESS_BUDGET
+                );
+                break;
+            }
+            
             if count >= max_instructions {
                 eprintln!("  CFG {} safety limit reached, stopping", label);
                 break;
@@ -1914,7 +2007,6 @@ impl CfgBuilder {
             // Reset on any control flow. BL_PREFIX is part of a BL call pair
             // (BL_PREFIX + BL_SUFFIX); reset here so the pair isn't penalized.
             if is_uncond_branch
-                || !targets.is_empty()
                 || opcode_str == "BL"
                 || opcode_str == "BLX"
                 || opcode_str == "BL_PREFIX"
@@ -1963,7 +2055,9 @@ impl CfgBuilder {
                     && next_rom_offset < rom.len()
                     && !next_is_data
                     && !next_cross_mode_conflict
+                    && total_fallthrough_pushes < FALLTHROUGH_BUDGET
                 {
+                    total_fallthrough_pushes += 1;
                     queue.push((next_addr, current_mode));
                 }
             }

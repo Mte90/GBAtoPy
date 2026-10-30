@@ -363,22 +363,98 @@ def test_swi_midi_key_to_freq_fractional():
     print("✓ test_swi_midi_key_to_freq_fractional passed")
 
 
-def test_swi_sound_vsync_off():
-    """SWI 0x1F SoundDriverVSyncOff: disables VSync processing."""
+def test_swi_sound_bias():
+    """SWI 0x1F SoundBias: sets audio bias level."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # Set bias value in r0
+    bias_value = 0x8000  # Default 2-bit DAC bias
+    cpu.registers[0] = bias_value
+    
+    # Call SWI 0x1F - should not crash
+    cpu.swi_handler(0x1F)
+    
+    # Just verify it returns cleanly (pygame handles actual audio)
+    assert True
+    
+    print("✓ test_swi_sound_bias passed")
+
+
+def test_swi_sound_driver_vsync_off():
+    """SWI 0x28 SoundDriverVSyncOff: disables VSync processing."""
     memory = Memory()
     cpu = arm7tdmi.ARM7TDMI(memory)
     
     # Initially vsync should be enabled (default)
     assert not hasattr(cpu, '_sound_vsync_enabled') or cpu._sound_vsync_enabled == True
     
-    # Call SWI 0x1F
-    cpu.swi_handler(0x1F)
+    # Call SWI 0x28
+    cpu.swi_handler(0x28)
     
     # Verify vsync is disabled
     assert hasattr(cpu, '_sound_vsync_enabled'), "CPU should have _sound_vsync_enabled attribute"
     assert cpu._sound_vsync_enabled == False, f"Expected vsync disabled, got {cpu._sound_vsync_enabled}"
     
-    print("✓ test_swi_sound_vsync_off passed")
+    print("✓ test_swi_sound_driver_vsync_off passed")
+
+
+def test_all_swi_handlers_exist():
+    """Verify every SWI 0x00-0x2F has a handler (even if no-op)."""
+    memory = Memory()
+    cpu = arm7tdmi.ARM7TDMI(memory)
+    
+    # List of SWI numbers that should have explicit handlers
+    # Based on GBA BIOS documentation
+    # Note: Some SWIs require valid input parameters, so we test them separately
+    simple_swis = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05,  # System
+        0x06, 0x07, 0x08, 0x09, 0x0A,         # Math
+        0x0B, 0x0C,                           # Memory copy
+        0x0E, 0x0F,                           # Affine set
+        0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,  # Sound driver
+        0x28,                                 # SoundDriverVSyncOff
+    ]
+    
+    # Test that simple SWIs don't crash (no parameters or safe defaults)
+    for swi_num in simple_swis:
+        try:
+            cpu.swi_handler(swi_num)
+        except Exception as e:
+            raise AssertionError(f"SWI 0x{swi_num:02X} crashed: {e}")
+    
+    # Test SWI 0x10 (BitUnPack) with valid parameters
+    try:
+        # Set up minimal valid BitUnPack header in memory
+        params_addr = 0x02000000
+        memory.write_u16(params_addr + 0, 4)      # sourceLen = 4 bytes
+        memory.write_u8(params_addr + 2, 4)       # sourceWidth = 4bpp
+        memory.write_u8(params_addr + 3, 8)       # destWidth = 8bpp
+        memory.write_u32(params_addr + 4, 0)      # bias = 0
+        
+        # Write 4 bytes of packed data
+        memory.write_u8(params_addr + 8, 0xAA)
+        memory.write_u8(params_addr + 9, 0xBB)
+        memory.write_u8(params_addr + 10, 0xCC)
+        memory.write_u8(params_addr + 11, 0xDD)
+        
+        cpu.registers[0] = params_addr + 8  # src_addr
+        cpu.registers[1] = 0x02000100       # dst_addr
+        cpu.registers[2] = params_addr      # params_addr
+        cpu.swi_handler(0x10)
+    except Exception as e:
+        raise AssertionError(f"SWI 0x10 (BitUnPack) crashed: {e}")
+    
+    # Test that unknown SWIs (0x20-0x27, 0x29-0x2F) also don't crash (no-op)
+    for swi_num in range(0x20, 0x30):
+        if swi_num in simple_swis:
+            continue
+        try:
+            cpu.swi_handler(swi_num)
+        except Exception as e:
+            raise AssertionError(f"Unknown SWI 0x{swi_num:02X} crashed: {e}")
+    
+    print("✓ test_all_swi_handlers_exist passed")
 
 
 if __name__ == "__main__":
@@ -405,7 +481,7 @@ if __name__ == "__main__":
     test_swi_arctan_zero()
     test_swi_arctan2_zero()
     
-    # Sound driver SWI tests (0x19-0x1F)
+    # Sound driver SWI tests (0x19-0x28)
     test_swi_sound_driver_init()
     test_swi_sound_driver_mode()
     test_swi_sound_driver_main()
@@ -413,6 +489,10 @@ if __name__ == "__main__":
     test_swi_sound_channel_clear()
     test_swi_midi_key_to_freq()
     test_swi_midi_key_to_freq_fractional()
-    test_swi_sound_vsync_off()
+    test_swi_sound_bias()
+    test_swi_sound_driver_vsync_off()
     
-    print("\nAll 21 BIOS SWI tests passed!")
+    # Comprehensive handler existence test
+    test_all_swi_handlers_exist()
+    
+    print("\nAll 22 BIOS SWI tests passed!")

@@ -562,6 +562,37 @@ python3 scripts/verify/compare_screenshots.py -s /tmp/rom_mgba.png /tmp/rom_tran
 - `0x06004000`: VRAM Tile Data
 - `0x06000800`: VRAM Tile Map
 
+## Common Pitfalls — Golden Screenshots
+
+### Wrong Golden Path
+
+**Goldens MUST be in `test-reports/goldens/`**. The generation script previously wrote to `scripts/screenshot/golden/` — that path is dead. Always verify after generating:
+```bash
+ls -la test-reports/goldens/<rom>.png
+```
+
+### Corrupted Goldens
+
+If 100+ goldens share the same MD5, they are corrupted (black-screen artifacts). Check with:
+```bash
+md5sum test-reports/goldens/*.png | awk '{print $1}' | sort | uniq -c | sort -rn
+```
+Regenerate with `python3 scripts/generate_goldens.py`.
+
+### Golden Overwriting
+
+Fixers have been observed overwriting goldens with transpiled output to fake 0% diff results. Always verify golden MD5 ≠ transpiled MD5 before trusting a PASS result:
+```bash
+md5sum test-reports/goldens/<rom>.png /tmp/<rom>.py
+```
+
+### Golden Size Validation
+
+Goldens <200B are segfault artifacts from broken mGBA setup, NOT valid reference images. Before comparing, always check:
+```bash
+ls -la test-reports/goldens/<rom>.png  # Must be >200B
+```
+
 ## Tips
 
 1. Always compare against mGBA golden screenshot

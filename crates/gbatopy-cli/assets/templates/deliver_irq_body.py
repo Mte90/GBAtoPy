@@ -19,9 +19,13 @@
                 if _any_pending:
                     _cpu_halted = False
                     _halt_reason = None
+                    _ime_live = (memory.io[0x208] | (memory.io[0x209] << 8)) & 0x0001
+                    if not _ime_live and _swi_caller_pc is not None:
+                        registers[15] = _swi_caller_pc
+                        _swi_caller_pc = None
         # Do NOT return early if CPU was just woken up - continue to deliver the IRQ
         if _irq_return_pc is not None:
-            _bx_lr_return = (registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC))
+            _bx_lr_return = (registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFF) or registers[15] == ((_irq_return_pc + 4) & 0xFFFFFFFC) or registers[15] == ((_irq_return_pc + 2) & 0xFFFFFFFF))
             if registers[15] != _irq_return_pc and not _bx_lr_return:
                 return
             _resume_pc = _irq_return_pc

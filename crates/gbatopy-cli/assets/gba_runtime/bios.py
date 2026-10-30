@@ -98,8 +98,16 @@ class BIOS:
         """
         src = self.memory.read_bytes(src_addr, 102400)
 
-        if len(src) < 4 or src[0] != 0x10:
-            return 0
+        if len(src) < 4:
+            raise RuntimeError(
+                f"LZ77 decompression failed: source data too short "
+                f"(src_addr=0x{src_addr:08X}, len={len(src)}, need >=4)"
+            )
+        if src[0] != 0x10:
+            raise RuntimeError(
+                f"LZ77 decompression failed: invalid magic byte "
+                f"(src_addr=0x{src_addr:08X}, got 0x{src[0]:02X}, expected 0x10)"
+            )
 
         remaining = src[1] | (src[2] << 8) | (src[3] << 16)
         src_pos = 4
@@ -162,7 +170,10 @@ class BIOS:
         # mGBA assumes the 0x20 signature is correct; only validate length.
         # Header byte is 0x20 | (bits & 0xF), so src[0] is e.g. 0x28 for 8-bit symbols.
         if len(src) < 5:
-            return 0
+            raise RuntimeError(
+                f"Huffman decompression failed: source data too short "
+                f"(src_addr=0x{src_addr:08X}, len={len(src)}, need >=5)"
+            )
 
         header = src[0] | (src[1] << 8) | (src[2] << 16) | (src[3] << 24)
         remaining = header >> 8
@@ -170,12 +181,18 @@ class BIOS:
         if bits == 0:
             bits = 8
         if 32 % bits or bits == 1:
-            return 0
+            raise RuntimeError(
+                f"Huffman decompression failed: invalid bits-per-symbol "
+                f"(src_addr=0x{src_addr:08X}, bits={bits})"
+            )
 
         tree_size = (src[4] << 1) + 1
         tree_nodes = src[5:5 + tree_size]
         if len(tree_nodes) == 0:
-            return 0
+            raise RuntimeError(
+                f"Huffman decompression failed: empty tree nodes "
+                f"(src_addr=0x{src_addr:08X}, tree_size={tree_size})"
+            )
 
         data_start = 5 + tree_size
         src_pos = data_start
@@ -207,7 +224,10 @@ class BIOS:
 
                 if is_terminal:
                     if terminal_idx >= len(tree_nodes):
-                        return 0
+                        raise RuntimeError(
+                            f"Huffman decompression failed: tree index out of bounds "
+                            f"(src_addr=0x{src_addr:08X}, terminal_idx={terminal_idx}, tree_len={len(tree_nodes)})"
+                        )
                     read_bits = tree_nodes[terminal_idx]
                     block |= (read_bits & ((1 << bits) - 1)) << bits_seen
                     bits_seen += bits
@@ -224,7 +244,10 @@ class BIOS:
                 else:
                     n_pointer = next_ptr + (1 if is_right else 0)
                     if n_pointer >= len(tree_nodes):
-                        return 0
+                        raise RuntimeError(
+                            f"Huffman decompression failed: tree pointer out of bounds "
+                            f"(src_addr=0x{src_addr:08X}, n_pointer={n_pointer}, tree_len={len(tree_nodes)})"
+                        )
                     node = tree_nodes[n_pointer]
 
                 bitstream = (bitstream << 1) & 0xFFFFFFFF
@@ -238,8 +261,16 @@ class BIOS:
         """Run-Length decompression (SWI 0x14/0x15). Header: [0x30][size:u24]."""
         src = self.memory.read_bytes(src_addr, 102400)
 
-        if len(src) < 4 or src[0] != 0x30:
-            return 0
+        if len(src) < 4:
+            raise RuntimeError(
+                f"RL decompression failed: source data too short "
+                f"(src_addr=0x{src_addr:08X}, len={len(src)}, need >=4)"
+            )
+        if src[0] != 0x30:
+            raise RuntimeError(
+                f"RL decompression failed: invalid magic byte "
+                f"(src_addr=0x{src_addr:08X}, got 0x{src[0]:02X}, expected 0x30)"
+            )
 
         expanded_size = src[1] | (src[2] << 8) | (src[3] << 16)
         src_pos = 4

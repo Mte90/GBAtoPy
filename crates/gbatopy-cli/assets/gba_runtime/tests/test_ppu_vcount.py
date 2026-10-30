@@ -119,20 +119,25 @@ def test_dispstat_vblank_bit():
 
 
 def test_dispstat_hblank_bit():
-    """Test that DISPSTAT bit 1 (HBlank) is always set."""
+    """Test that DISPSTAT bit 1 (HBlank) is 0 in the scanline-based model.
+
+    In this model, CPU code runs between step_scanline() calls — conceptually
+    the visible period where HBlank=0. ROMs that poll DISPSTAT & 3 to wait for
+    HBlank=0 (e.g. lyc_midline) require this. Setting HBlank=1 unconditionally
+    causes infinite polling loops (regression in 1d300c6, reverted in 48a6efd).
+    """
     memory = Memory()
     memory._interrupts = MockInterrupts()
     memory._dma = MockDMA()
     ppu = PPU(memory)
-    
-    # HBlank bit should be 1 on all scanlines
+
     for vcount in range(228):
         ppu.step_scanline()
         dispstat = memory.io[4] | (memory.io[5] << 8)
         hblank_bit = (dispstat >> 1) & 0x0001
-        assert hblank_bit == 1, \
-            f"Scanline {vcount}: HBlank bit should be 1, got {hblank_bit}"
-    
+        assert hblank_bit == 0, \
+            f"Scanline {vcount}: HBlank bit should be 0 in scanline model, got {hblank_bit}"
+
     print("✓ test_dispstat_hblank_bit passed")
 
 

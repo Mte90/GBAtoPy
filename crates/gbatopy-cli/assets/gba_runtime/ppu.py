@@ -2258,8 +2258,8 @@ class PPU:
                 x_float = float(mx)
                 y_float = float(my)
 
-                source_x = sx_bg2 + (x_float * dx_bg2)
-                source_y = sy_bg2 + (x_float * dy_bg2)
+                source_x = sx_bg2 + (x_float * dx_bg2) + (y_float * dmx_bg2)
+                source_y = sy_bg2 + (x_float * dy_bg2) + (y_float * dmy_bg2)
 
                 tx = int(source_x) >> 8
                 ty = int(source_y) >> 8
@@ -2322,8 +2322,8 @@ class PPU:
                 x_float = float(mx)
                 y_float = float(my)
 
-                source_x = sx_bg3 + (x_float * dx_bg3)
-                source_y = sy_bg3 + (x_float * dy_bg3)
+                source_x = sx_bg3 + (x_float * dx_bg3) + (y_float * dmx_bg3)
+                source_y = sy_bg3 + (x_float * dy_bg3) + (y_float * dmy_bg3)
 
                 tx = int(source_x) >> 8
                 ty = int(source_y) >> 8

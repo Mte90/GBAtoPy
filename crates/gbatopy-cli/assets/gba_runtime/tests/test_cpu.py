@@ -146,7 +146,7 @@ def test_reset_sets_sp():
     """reset sets SP to IWRAM top (0x03007F00)."""
     cpu, _ = make_cpu(with_memory=False)
     cpu.reset(0x08000000)
-    assert cpu.registers[13] == 0x03007F00
+    assert cpu.registers[13] == 0x03007F00  # Initial CPU SP, separate from codegen _user_sys_bank
 
 
 # ============================================================================
@@ -335,8 +335,8 @@ def test_switch_mode_usr():
     """Switch to User mode (0x10) and verify SP/LR banked."""
     cpu, _ = make_cpu()
     
-    # Set SP/LR in System mode
-    cpu.registers[13] = 0x03007F00
+    # Set SP/LR in System mode (0x03007FE0 = GBA BIOS default for high stacks)
+    cpu.registers[13] = 0x03007FE0
     cpu.registers[14] = 0x08000100
     
     # Switch to User mode
@@ -345,7 +345,7 @@ def test_switch_mode_usr():
     
     # Switch back to System mode - values should be saved
     cpu._switch_mode(0x1F)
-    assert cpu.banked_sp_lr[0x10]['sp'] == 0x03007F00
+    assert cpu.banked_sp_lr[0x10]['sp'] == 0x03007FE0
     assert cpu.banked_sp_lr[0x10]['lr'] == 0x08000100
 
 
@@ -360,7 +360,7 @@ def test_switch_mode_fiq():
     cpu.registers[10] = 0x33333333
     cpu.registers[11] = 0x44444444
     cpu.registers[12] = 0x55555555
-    cpu.registers[13] = 0x03007F00
+    cpu.registers[13] = 0x03007F00  # FIQ SP stays at 0x03007F00
     cpu.registers[14] = 0x08000100
     
     # Switch to IRQ mode
@@ -372,7 +372,7 @@ def test_switch_mode_fiq():
     assert cpu.banked_sp_lr[0x11]['r10'] == 0x33333333
     assert cpu.banked_sp_lr[0x11]['r11'] == 0x44444444
     assert cpu.banked_sp_lr[0x11]['r12'] == 0x55555555
-    assert cpu.banked_sp_lr[0x11]['sp'] == 0x03007F00
+    assert cpu.banked_sp_lr[0x11]['sp'] == 0x03007F00  # FIQ keeps 0x03007F00
     assert cpu.banked_sp_lr[0x11]['lr'] == 0x08000100
 
 
@@ -381,12 +381,12 @@ def test_switch_mode_irq():
     cpu, _ = make_cpu()
     
     cpu._switch_mode(0x12)
-    cpu.registers[13] = 0x03007FE0
+    cpu.registers[13] = 0x03007FA0
     cpu.registers[14] = 0x08000200
     
     cpu._switch_mode(0x13)
     
-    assert cpu.banked_sp_lr[0x12]['sp'] == 0x03007FE0
+    assert cpu.banked_sp_lr[0x12]['sp'] == 0x03007FA0
     assert cpu.banked_sp_lr[0x12]['lr'] == 0x08000200
 
 

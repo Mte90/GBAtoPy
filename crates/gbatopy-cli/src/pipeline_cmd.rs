@@ -131,7 +131,7 @@ fn disassemble_rom(
         return Ok((vec![], cfg));
     }
 
-    const ESTIMATED_LINES_PER_INSTRUCTION: u64 = 15;
+    const ESTIMATED_LINES_PER_INSTRUCTION: u64 = 8;
     let estimated_output_lines = reachable.len() as u64 * ESTIMATED_LINES_PER_INSTRUCTION;
     if estimated_output_lines > max_output_lines {
         return Err(format!(

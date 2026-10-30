@@ -21,7 +21,7 @@ PROJECT_ROOT="$(pwd)"
 
 # --- Paths ---
 ROMS_DIR="$PROJECT_ROOT/test_roms/roms"
-GOLDEN_DIR="$PROJECT_ROOT/scripts/screenshot/golden"
+GOLDEN_DIR="$PROJECT_ROOT/test-reports/goldens"
 LUA_SCRIPT="$PROJECT_ROOT/scripts/screenshot/screenshot.lua"
 MGBA_BIN="$PROJECT_ROOT/mgba/build/sdl/mgba"
 
@@ -133,7 +133,7 @@ capture_golden() {
     local rom_path="$1"
     local frame="$2"
     local rom_base=$(basename "$rom_path" .gba)
-    local output_path="$GOLDEN_DIR/golden_${rom_base}_frame_${frame}"
+    local output_path="$GOLDEN_DIR/${rom_base}_f${frame}"
     
     # Set environment for this capture
     export GBATOPY_SCREENSHOT_PATH="$output_path"

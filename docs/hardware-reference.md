@@ -69,6 +69,18 @@ This is a **transpiler**, not an emulator with approximate behavior. The generat
 - Mode 5: 160x128 bitmap — implemented
 - Windows, blend, mosaic: implemented and verified
 
+### Mode 2 VRAM Layout
+
+With `BG2CNT` char base block (bits 3-2) = 0 and screen base block (bits 12-8) = 1:
+
+| Region | VRAM Offset | Contents |
+|--------|-------------|----------|
+| 0x06000000 | 0x0000 | Tile data (char block 0) |
+| 0x06000800 | 0x0800 | Tilemap (screen block 1) |
+| 0x06001000 | 0x1000 | Tilemap (screen block 2) |
+
+When debugging Mode 2 rendering, probe the **tilemap** at `VRAM[screen_block × 0x800]`, not the tile data at `VRAM[0]`. The tilemap entry at the sampled texel coordinate determines which palette index is rendered. With zero affine (BG2PA=BG2PB=BG2PC=BG2PD=0), all pixels sample texel (0,0), so the tilemap entry at offset 0x800 determines the entire screen color.
+
 ## Memory Map
 
 | Region | Start | End | Size | Notes |

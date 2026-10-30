@@ -2,7 +2,7 @@
 """Batch golden screenshot generator using mGBA.
 
 Captures golden screenshots for all (or selected) test ROMs at specified frame counts.
-Screenshots are saved to scripts/screenshot/golden/ with the naming convention:
+Screenshots are saved to test-reports/goldens/ with the naming convention:
   golden_<rom_name>_frame_<N>.png
 
 Usage:
@@ -22,7 +22,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ROMS_DIR = PROJECT_ROOT / "test_roms" / "roms"
-GOLDEN_DIR = PROJECT_ROOT / "scripts" / "screenshot" / "golden"
+GOLDEN_DIR = PROJECT_ROOT / "test-reports" / "goldens"
 LUA_SCRIPT = PROJECT_ROOT / "scripts" / "screenshot" / "screenshot.lua"
 MGBA_BIN = PROJECT_ROOT / "mgba" / "build" / "sdl" / "mgba"
 
@@ -30,11 +30,16 @@ MGBA_BIN = PROJECT_ROOT / "mgba" / "build" / "sdl" / "mgba"
 def capture_golden(rom_path, frame, mgba_bin, timeout=120):
     """Capture a single golden screenshot. Returns (success, error_msg)."""
     rom_base = rom_path.stem  # e.g. "hello" from "hello.gba"
-    output_path = GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}"
-    output_png = str(output_path) + ".png"
+    # Primary output: <rom>.png (highest priority in run_tests.py lookup)
+    primary_path = GOLDEN_DIR / f"{rom_base}.png"
+    # Secondary output: <rom>_f<N>.png (second priority in run_tests.py lookup)
+    secondary_path = GOLDEN_DIR / f"{rom_base}_f{frame}.png"
+    
+    # Use primary path for GBATOPY_SCREENSHOT_PATH
+    output_path = str(primary_path)[:-4]  # Remove .png extension for env var
 
     env = os.environ.copy()
-    env["GBATOPY_SCREENSHOT_PATH"] = str(output_path)
+    env["GBATOPY_SCREENSHOT_PATH"] = output_path
     env["GBATOPY_TARGET_FRAME"] = str(frame)
     env["SDL_VIDEODRIVER"] = "offscreen"
     env["SDL_AUDIODRIVER"] = "dummy"
@@ -51,6 +56,10 @@ def capture_golden(rom_path, frame, mgba_bin, timeout=120):
 
         # Check result
         if result.returncode == 0:
+            # Also copy to secondary path for compatibility
+            if primary_path.exists():
+                import shutil
+                shutil.copy(primary_path, secondary_path)
             return True, None
         else:
             return False, result.stderr.strip() or "Unknown error"

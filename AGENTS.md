@@ -101,6 +101,9 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 7. **One-shot verification** — `./scripts/verify/verify_rom.sh <rom> --no-golden` transpiles, runs, compares in one step.
 8. **Verify subagent claims** — always check their work manually.
 8a. **Commit messages for codegen/runtime fixes must include verification evidence** — a commit that claims "X now works" must show the exact command and output that proves it. Format: `Verified: <command> → <result>`. Example: `Verified: python3 /tmp/pong.py --headless --screenshot /tmp/pong.png → 2424 bytes, 44.79% diff`. A commit without evidence is an unverified claim — do not trust it, re-verify before building on it.
+8b. **PASS status expires** — a ROM marked PASS in `docs/reference/test-roms.md` is only valid if verified with the current binary. PASS labels accumulated across sessions are UNVERIFIED until re-tested. After any fix to shared code (dispatch, PPU, DMA, memory, codegen, IRQ handling), a canary regression on ONE ROM is necessary but NOT sufficient — run the full 91-ROM L3 sweep (`python3 scripts/run_tests.py --level 3 --parallel 4`) before declaring the session's work done. The canary catches obvious regressions; only the full sweep confirms no PASS regressed silently.
+8c. **Periodic full re-verification** — even when no shared code changed, if the last full L3 sweep was more than 5 sessions ago, re-run it. Stale PASS = unverified. Document the last full sweep date in `docs/reference/test-roms.md` header.
+8d. **PASS claims must cite evidence** — each PASS row in `docs/reference/test-roms.md` should note the last verification date (or commit hash). A PASS with no recent evidence is treated as INCONCLUSIVE.
 
 ### Output Discipline
 9. **Transpiled Python output goes to `/tmp/`** — NEVER inside the project directory. Project holds only source, templates, scripts, docs.
@@ -161,6 +164,8 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
   - Codebase recon → `@explorer` | External docs → `@librarian` | Architecture → `@oracle`
   - Bounded implementation → `@fixer` | Image analysis → `@observer` | Git/lint/test → `@fast-generic`
   - Track task IDs, reconcile on return, never block on a subagent.
+
+34a. **Parallel investigation is the default, not the exception** — when two or more problems need investigation (failing ROMs, codegen bugs, rendering issues, root-cause analysis), dispatch ALL of them as parallel subagent lanes in a SINGLE message. Do NOT serialize investigations one after another. Do NOT wait for one investigation to finish before launching the next. The orchestrator's operating premise is maximum parallelism: every independent problem gets its own subagent, fired simultaneously. Serializing investigations wastes wall-clock time and is a process error, not a style choice. If the problems are independent (no shared write scope), they MUST be dispatched in parallel. Only serialize when one investigation's result is a precondition for the next.
 
 ### ROM Failure Policy
 35. **ZERO-SKIP policy** — every ROM must PASS or FAIL, never SKIP. SKIP is forbidden. When a ROM would be skipped (timeout, OOM, missing golden), treat as FAIL and dispatch a subagent to root-cause and fix it.

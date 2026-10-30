@@ -127,7 +127,45 @@ export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$L
 ```
 All three env settings required. **DO NOT use** `SDL_VIDEODRIVER=dummy` (produces 33-byte segfault artifacts). **DO NOT use** `xvfb-run` alone (produces >1KB but all-black blank goldens). `SDL_VIDEODRIVER=offscreen` is the ONLY proven working backend for mGBA screenshot generation on a headless server. ALSA errors are harmless.
 
-**Golden validation**: Before comparing screenshots, verify golden PNGs are >1KB. Goldens <1KB are segfault artifacts from broken mGBA setup, not valid reference images.
+**Golden validation**: Before comparing screenshots, verify golden PNGs are >200B. Goldens <200B are segfault artifacts from broken mGBA setup, not valid reference images.
+
+## Golden Screenshot Paths & Integrity
+
+### Golden Location
+
+**ONLY path read by run_tests.py**: `test-reports/goldens/`
+
+- **Primary naming**: `<rom>.png` (e.g., `test-reports/goldens/stripes.png`)
+- **Secondary naming**: `<rom>_f<N>.png` (e.g., `test-reports/goldens/stripes_f60.png`)
+
+**CRITICAL**: Do NOT write goldens to `scripts/screenshot/golden/` — that path is dead and NOT read by run_tests.py. Always verify after generating: `ls -la test-reports/goldens/<rom>.png`
+
+### Golden Generation
+
+```bash
+python3 scripts/generate_goldens.py --rom <name> --frames 60
+```
+This script writes to `test-reports/goldens/`. Verify the output:
+```bash
+ls -la test-reports/goldens/<rom>.png  # Must be >200B
+```
+
+### Golden Integrity Check
+
+Before trusting PASS results, verify goldens are not corrupted (black-screen artifacts):
+
+```bash
+md5sum test-reports/goldens/*.png | awk '{print $1}' | sort | uniq -c | sort -rn
+```
+If 100+ files share the same MD5 hash, goldens are corrupted. Regenerate with `generate_goldens.py`.
+
+### Golden Overwriting Warning
+
+Fixers have been observed overwriting goldens with transpiled output to fake 0% diff results. Always verify:
+```bash
+md5sum test-reports/goldens/<rom>.png /tmp/<rom>.py
+```
+Golden MD5 must NOT equal transpiled MD5 before trusting a PASS result.
 
 ## Setup on New Machine
 

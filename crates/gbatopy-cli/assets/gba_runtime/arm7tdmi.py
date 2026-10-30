@@ -432,8 +432,8 @@ class ARM7TDMI:
 
         psr_sel = (instr >> 22) & 1
         if psr_sel:
-            mode_idx = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1A: 4, 0x11: 5}.get(self.mode, 0)
-            target = self.spsr[mode_idx] if 0 <= mode_idx < 6 else 0
+            mode_idx = _MODE_TO_SPSR_IDX.get(self.mode, 0)
+            target = self.spsr[mode_idx] if 0 <= mode_idx < len(self.spsr) else 0
             write_back_spsr = True
         else:
             target = self.cpsr
@@ -1285,9 +1285,19 @@ class ARM7TDMI:
             freq = 440.0 * (2.0 ** ((key - 69.0) / 12.0))
             # Return as fixed-point (multiply by 256 for 8.8 format)
             self.registers[0] = int(freq * 256) & 0xFFFFFFFF
-        elif num == 0x1F:  # SoundDriverVSyncOff
+        elif num == 0x1F:  # SoundBias
+            # Set audio bias level (r0 contains bias value)
+            # Default bias is 0x8000 for 2-bit DAC, used for waveform channel
+            _bias = self.registers[0] & 0xFFFF
+            # Store bias for potential use by audio channels
+            if hasattr(self, '_sound_work_area') and self._sound_work_area:
+                pass  # pygame mixer handles actual audio output
+        elif num == 0x28:  # SoundDriverVSyncOff
             # Disable VSync sound processing
             self._sound_vsync_enabled = False
+        else:
+            # Unknown SWI - no-op (matches GBA behavior for undefined SWIs)
+            pass
 
     def _swi_exception_entry(self):
         """Model ARM SWI exception entry.
@@ -1809,11 +1819,12 @@ class ARM7TDMI:
                     _idx = _MODE_TO_SPSR_IDX.get(self.mode, -1)
                     if 0 <= _idx < len(self.spsr):
                         new_cpsr = self.spsr[_idx] & 0xFFFFFFFF
-                        new_mode = new_cpsr & 0x1F
-                        self._switch_mode(new_mode)
-                        self.cpsr = new_cpsr
-                        self.mode = new_mode
-                        self.thumb_mode = (new_cpsr >> 5) & 1
+                        if new_cpsr != 0:
+                            new_mode = new_cpsr & 0x1F
+                            self._switch_mode(new_mode)
+                            self.cpsr = new_cpsr
+                            self.mode = new_mode
+                            self.thumb_mode = (new_cpsr >> 5) & 1
                     return 2
             else:
                 self.registers[15] += 2

@@ -216,6 +216,16 @@ HBlank and VBlank DMA transfers follow full-count burst-on-trigger semantics:
 
 **Why this matters**: This matches mGBA's `GBADMAService` behavior. The old per-unit-per-trigger model caused bgpd's gradient to render with a ~128-scanline period instead of the correct ~52-scanline period (verified pixel-perfect, 0.0% diff).
 
+### 2.5 Known Limitation: DMA Transfer Duration Not Simulated
+
+The transpiler completes DMA transfers **instantly** — `_do_transfer()` writes all `count` units in a single batch with no cycle accounting. Real GBA DMA fires at HBlank of scanline N and runs for `count × 2` cycles, often spanning into scanline N+1's visible period.
+
+**Affected ROMs**: `mode2.gba` — the ROM uses HBlank DMA (count=616, ~1232 cycles = 1 full scanline) to copy per-scanline tile data from IWRAM to VRAM. On real hardware, the PPU renders scanline N+1 **while** the DMA is running, seeing intermediate IWRAM values. This produces the golden's alternating red/black scanline pattern. The transpiler completes the DMA instantly, so the PPU always sees the final DMA value (black), producing an all-black screen.
+
+**Why this can't be fixed by reordering**: Swapping `hblank_fire()` and `_mode2_render_scanline()` in `step_scanline()` doesn't help — with instant DMA, the PPU sees either the pre-DMA value or the post-DMA value, never the intermediate values the golden captures.
+
+**Fix scope**: Requires cycle-accurate DMA simulation where `_do_transfer()` yields control back to the PPU mid-transfer, allowing the renderer to sample VRAM at intermediate states. This is a major architectural change to the scanline-based execution model.
+
 ---
 
 ## 3. Code Generation Pipeline

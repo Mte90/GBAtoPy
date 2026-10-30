@@ -127,9 +127,9 @@ else
 fi
 
 # --- Build transpiler ---
-echo "Checking transpiler build..."
+echo "Checking build freshness..."
 cd "${PROJECT_ROOT}"
-if ! cargo build --release -p gbatopy-cli --quiet 2>&1 | tail -1; then
+if ! bash "${SCRIPT_DIR}/ensure_fresh_build.sh"; then
     echo "Error: Failed to build transpiler" >&2
     exit 1
 fi

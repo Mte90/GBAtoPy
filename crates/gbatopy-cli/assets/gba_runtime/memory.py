@@ -71,6 +71,8 @@ class Memory:
         self.io[0x30] = 0x00; self.io[0x31] = 0x01  # BG3PA = 0x0100
         self.io[0x36] = 0x00; self.io[0x37] = 0x01  # BG3PD = 0x0100
 
+        self._mgba_debug_enabled = False
+
         self.rom: Optional[bytearray] = None
         self.rom_size: int = 0
         self.rom_mirror_size: int = MemoryMap.ROM_MAX_SIZE
@@ -561,13 +563,29 @@ class Memory:
             out.append(self.read_u8(addr + i))
         return bytes(out)
 
+    def _read_mgba_debug_u16(self, addr):
+        """Handle 16-bit reads from mGBA debug register space (0x04FFF000-0x04FFFFFF)."""
+        if addr == 0x04FFF780:
+            return 0x1DEA if self._mgba_debug_enabled else 0
+        return 0
+
+    def _write_mgba_debug_u16(self, addr, value):
+        """Handle 16-bit writes to mGBA debug register space (0x04FFF000-0x04FFFFFF)."""
+        if addr == 0x04FFF780:
+            if value == 0xC0DE:
+                self._mgba_debug_enabled = True
+
     def read_u16(self, addr: int) -> int:
         addr &= 0xFFFFFFFF
         page = addr >> 24
 
+        # mGBA debug registers — must intercept before standard I/O mapping
+        if 0x04FFF000 <= addr <= 0x04FFFFFF:
+            return self._read_mgba_debug_u16(addr)
+
         # IO — preserve _dispatch_mmio_read for correctness
         if page == 0x04:
-            offset = addr - MemoryMap.IO_START
+            offset = (addr - MemoryMap.IO_START) & 0x000003FF
             result = self._dispatch_mmio_read(addr)
             if result is not None:
                 self.open_bus = result & 0xFF
@@ -637,9 +655,15 @@ class Memory:
         addr &= 0xFFFFFFFF
         page = addr >> 24
 
+        # mGBA debug registers
+        if 0x04FFF000 <= addr <= 0x04FFFFFF:
+            lo = self._read_mgba_debug_u16(addr)
+            hi = self._read_mgba_debug_u16(addr + 2)
+            return lo | (hi << 16)
+
         # IO — preserve _dispatch_mmio_read for correctness
         if page == 0x04:
-            offset = addr - MemoryMap.IO_START
+            offset = (addr - MemoryMap.IO_START) & 0x000003FF
             b0 = self._dispatch_mmio_read(addr)
             if b0 is not None:
                 self.open_bus = b0 & 0xFF
@@ -803,6 +827,12 @@ class Memory:
     def write_u16(self, addr: int, value: int):
         addr &= 0xFFFFFFFF
         value &= 0xFFFF
+
+        # mGBA debug registers
+        if 0x04FFF000 <= addr <= 0x04FFFFFF:
+            self._write_mgba_debug_u16(addr, value)
+            return
+
         mapped_addr = self._map_address(addr)
         if 0x04000020 <= mapped_addr <= 0x0400002E and mapped_addr % 2 == 0:
             base = MemoryMap.IO_START + 0x20
@@ -822,8 +852,14 @@ class Memory:
     def write_u32(self, addr: int, value: int):
         addr &= 0xFFFFFFFF
         value &= 0xFFFFFFFF
-        mapped_addr = self._map_address(addr)
 
+        # mGBA debug registers
+        if 0x04FFF000 <= addr <= 0x04FFFFFF:
+            self._write_mgba_debug_u16(addr, value & 0xFFFF)
+            self._write_mgba_debug_u16(addr + 2, (value >> 16) & 0xFFFF)
+            return
+
+        mapped_addr = self._map_address(addr)
         if MemoryMap.IO_START <= mapped_addr <= MemoryMap.IO_END:
             # GBA MMIO registers are 16-bit. A 32-bit write is split into two
             # 16-bit writes: lower 16 bits to the base register, upper 16 bits

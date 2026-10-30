@@ -386,8 +386,8 @@ def test_user_mode_register_bank():
     cpu._switch_mode(0x10)
     assert cpu.mode == 0x10
     
-    # Set SP and LR in user mode
-    cpu.registers[13] = 0x03007F00
+    # Set SP and LR in user mode (0x03007FE0 = GBA BIOS default)
+    cpu.registers[13] = 0x03007FE0
     cpu.registers[14] = 0x08000100
     
     # Switch to system mode - should share the same bank
@@ -396,7 +396,7 @@ def test_user_mode_register_bank():
     
     # Switch back to user mode - values should persist
     cpu._switch_mode(0x10)
-    assert cpu.registers[13] == 0x03007F00
+    assert cpu.registers[13] == 0x03007FE0
     assert cpu.registers[14] == 0x08000100
 
 
@@ -411,7 +411,7 @@ def test_fiq_mode_register_bank():
     cpu.registers[10] = 0x33333333
     cpu.registers[11] = 0x44444444
     cpu.registers[12] = 0x55555555
-    cpu.registers[13] = 0x03007F00  # FIQ SP
+    cpu.registers[13] = 0x03007F00  # FIQ SP stays at 0x03007F00
     cpu.registers[14] = 0x08000100  # FIQ LR
     
     # Switch to IRQ mode
@@ -420,7 +420,7 @@ def test_fiq_mode_register_bank():
     # FIQ registers should be saved
     assert cpu.banked_sp_lr[0x11]['r8'] == 0x11111111
     assert cpu.banked_sp_lr[0x11]['r9'] == 0x22222222
-    assert cpu.banked_sp_lr[0x11]['sp'] == 0x03007F00
+    assert cpu.banked_sp_lr[0x11]['sp'] == 0x03007F00  # FIQ keeps 0x03007F00
     assert cpu.banked_sp_lr[0x11]['lr'] == 0x08000100
     
     # Switch back to FIQ mode - values should be restored
@@ -437,19 +437,19 @@ def test_irq_mode_register_bank():
     
     # Set IRQ banked registers
     cpu._switch_mode(0x12)
-    cpu.registers[13] = 0x03007FE0  # IRQ SP
+    cpu.registers[13] = 0x03007FA0  # IRQ SP
     cpu.registers[14] = 0x08000200  # IRQ LR
     
     # Switch to SVC mode
     cpu._switch_mode(0x13)
     
     # IRQ registers should be saved
-    assert cpu.banked_sp_lr[0x12]['sp'] == 0x03007FE0
+    assert cpu.banked_sp_lr[0x12]['sp'] == 0x03007FA0
     assert cpu.banked_sp_lr[0x12]['lr'] == 0x08000200
     
     # Switch back to IRQ mode - values should be restored
     cpu._switch_mode(0x12)
-    assert cpu.registers[13] == 0x03007FE0
+    assert cpu.registers[13] == 0x03007FA0
     assert cpu.registers[14] == 0x08000200
 
 

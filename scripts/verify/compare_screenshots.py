@@ -269,7 +269,7 @@ def main():
     parser.add_argument(
         "--golden-dir", "-g",
         type=Path,
-        default=Path("scripts/screenshot/golden"),
+        default=Path("test-reports/goldens"),
         help="Directory containing golden screenshots"
     )
     parser.add_argument(

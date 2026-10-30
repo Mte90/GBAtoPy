@@ -48,16 +48,21 @@ VISUAL_TEST_TYPES = {"ScreenshotMgba", "ScreenshotGolden"}
 
 
 def load_test_types():
-    """Load test_type for each ROM from config. Returns dict: rom_filename -> test_type."""
+    """Load test_type for each ROM from config. Returns dict: rom_filename -> test_type.
+    
+    Keys by rom_path (actual filename) instead of name to handle Rust-agb ROMs
+    where name='agb_combo' but rom_path='combo.gba'. Dead entries (name mismatch
+    to non-existent files) become harmless — they just never match a ROM on disk.
+    """
     types = {}
     if not TEST_CONFIG_PATH.exists():
         return types
     with open(TEST_CONFIG_PATH, "rb") as f:
         cfg = tomllib.load(f)
     for test in cfg.get("tests", []):
-        name = test.get("name", "")
-        if name:
-            types[f"{name}.gba"] = test.get("test_type", "Smoke")
+        rom_path = test.get("rom_path", "")
+        if rom_path:
+            types[rom_path] = test.get("test_type", "Smoke")
     return types
 
 
@@ -125,19 +130,22 @@ def sweep_artifacts():
 def build_transpiler():
     """Build the transpiler once before running tests."""
     sweep_artifacts()
-    print("Building gbatopy-cli (release)...")
+    print("Checking build freshness...")
+    ensure_fresh_script = PROJECT_ROOT / "scripts" / "verify" / "ensure_fresh_build.sh"
     result = subprocess.run(
-        ["cargo", "build", "--release", "-p", "gbatopy-cli"],
+        ["bash", str(ensure_fresh_script)],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         timeout=600,
     )
     if result.returncode != 0:
-        print("ERROR: Build failed")
+        print("ERROR: Build freshness check failed")
         print(result.stderr[-2000:])
         sys.exit(1)
-    print(f"Build complete: {GBATOPY_BIN}")
+    # Print the script's summary output
+    print(result.stdout)
+    print(f"Build verified: {GBATOPY_BIN}")
     print()
 
 

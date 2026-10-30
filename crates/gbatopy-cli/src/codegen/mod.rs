@@ -231,8 +231,8 @@ pub fn generate_python_code(
 
     code.push_str("registers[15] = 0x08000000\n");
     code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
-    code.push_str("_user_sys_bank = {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}\n");
-    code.push_str("banked_sp_lr = {0x10: {'sp': 0x03007FA0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x1F: _user_sys_bank, 0x11: {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0x03007FE0, 'lr': 0}, 0x13: {'sp': 0x03007FE0, 'lr': 0}, 0x17: {'sp': 0x03007FE0, 'lr': 0}, 0x1B: {'sp': 0x03007F00, 'lr': 0}}\n");
+    code.push_str("_user_sys_bank = {'sp': 0x03007FE0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}\n");
+    code.push_str("banked_sp_lr = {0x10: {'sp': 0x03007FA0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x1F: _user_sys_bank, 0x11: {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0x03007FA0, 'lr': 0}, 0x13: {'sp': 0x03007FE0, 'lr': 0}, 0x17: {'sp': 0x03007FE0, 'lr': 0}, 0x1B: {'sp': 0x03007F00, 'lr': 0}}\n");
     code.push_str("\ndef _switch_mode(new_mode):\n");
     code.push_str("    old_mode = cpsr.get('mode', 0x1F)\n");
     code.push_str("    if new_mode == old_mode:\n");
@@ -907,6 +907,15 @@ pub fn generate_python_code(
     code.push_str("dispatch_table_thumb = {\n");
     for &(addr, mode) in &non_nop_addrs {
         if mode != ArmMode::Thumb {
+            continue;
+        }
+        // Skip odd-address Thumb entries: they are disassembler artifacts
+        // (mid-instruction bytes decoded as separate functions). Thumb
+        // instructions are 2-byte aligned, so odd addresses can't be real
+        // function entry points. Without this check, even and odd addresses
+        // collide on the same dispatch key (addr >> 1), and the odd entry
+        // silently overwrites the even (correct) entry in the Python dict.
+        if addr & 1 != 0 {
             continue;
         }
         let idx = (addr - base_addr) >> 1;

@@ -349,7 +349,7 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
             _cpu_halted = True
             _halt_reason = 'unmapped_pc'
             break
-        if irq_return_pc is not None and (_pc == irq_return_pc or _pc == ((irq_return_pc + 4) & 0xFFFFFFFF) or _pc == ((irq_return_pc + 4) & 0xFFFFFFFC)):
+        if irq_return_pc is not None and (_pc == irq_return_pc or _pc == ((irq_return_pc + 4) & 0xFFFFFFFF) or _pc == ((irq_return_pc + 4) & 0xFFFFFFFC) or _pc == ((irq_return_pc + 2) & 0xFFFFFFFF)):
             break
         # Check for ROM dispatch table lookup
         if 0x08000000 <= _pc < 0x0A000000:
