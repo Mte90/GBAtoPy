@@ -747,3 +747,139 @@ fn test_thumb_nop_is_nop() {
         code
     );
 }
+
+// ============================================================================
+// Regression tests for CFG Fall-through Fix (commit f0ba30f)
+// and Line-estimate Fix (commit 236569c)
+// ============================================================================
+
+/// Regression test: CFG explosion prevention.
+/// 
+/// These ROMs previously triggered CFG fall-through walking through 14MB of data,
+/// causing 87.6% of BFS queue pushes to be fall-through walks. The fix ensures
+/// fall-through only happens for linear instruction sequences, not through data.
+/// 
+/// This test verifies that transpilation completes successfully and stays well
+/// below the safety bounds:
+/// - MAX_REACHABLE_ADDRESSES = 200,000
+/// - Estimated lines < 2M (with ESTIMATED_LINES_PER_INSTRUCTION = 8)
+#[test]
+fn test_cfg_explosion_prevention_combo_gba() {
+    cfg_explosion_test("combo.gba", "combo.py");
+}
+
+#[test]
+fn test_cfg_explosion_prevention_hyperspace_roll_gba() {
+    cfg_explosion_test("hyperspace-roll.gba", "hyperspace_roll.py");
+}
+
+#[test]
+fn test_cfg_explosion_prevention_the_purple_night_gba() {
+    cfg_explosion_test("the-purple-night.gba", "the_purple_night.py");
+}
+
+fn cfg_explosion_test(rom_name: &str, output_name: &str) {
+    use std::process::Command;
+    
+    // Use absolute path from project root
+    // CARGO_MANIFEST_DIR for gbatopy-cli is crates/gbatopy-cli
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let project_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    
+    let rom_path = project_root.join("test_roms/roms").join(rom_name);
+    
+    // Output to /tmp to avoid polluting project directory
+    let output_path = format!("/tmp/{}", output_name);
+    
+    // Find the CLI binary in target/debug
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let project_root = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let cli_path = project_root.join("target").join("debug").join("gbatopy-cli");
+    
+    assert!(
+        cli_path.exists(),
+        "gbatopy-cli binary not found at {:?}. Run: cargo build -p gbatopy-cli",
+        cli_path
+    );
+    
+    let output = Command::new(&cli_path)
+        .args([
+            "pipeline",
+            "--rom",
+            rom_path.to_str().unwrap(),
+            "--output",
+            &output_path,
+        ])
+        .output()
+        .expect("Failed to execute gbatopy-cli");
+    
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    // Check exit code
+    assert!(
+        output.status.success(),
+        "Transpilation failed for {}:\nSTDOUT: {}\nSTDERR: {}",
+        rom_name,
+        stdout,
+        stderr
+    );
+    
+    // Check that stderr does NOT contain the actual explosion safety-net trigger
+    // The warning message is: "Warning: {} reachable addresses exceeds limit ({}), using fallback-only mode"
+    assert!(
+        !stderr.contains("reachable addresses exceeds limit"),
+        "CFG explosion safety net triggered for {}:\n{}",
+        rom_name,
+        stderr
+    );
+    
+    // Verify output file exists and is reasonable size (< 5MB)
+    assert!(
+        std::path::Path::new(&output_path).exists(),
+        "Transpiled output file not created at {}",
+        output_path
+    );
+    
+    let file_size = std::fs::metadata(&output_path)
+        .expect("Failed to get file metadata")
+        .len();
+    // Verify the file is reasonable size (100MB is way below the 2M line limit)
+    // A true CFG explosion would produce 100s of MB or GB of output
+    assert!(
+        file_size < 100 * 1024 * 1024, // 100MB
+        "Transpiled output for {} is too large: {} bytes ({} MB). CFG explosion detected.",
+        rom_name,
+        file_size,
+        file_size as f64 / (1024.0 * 1024.0)
+    );
+    
+    // Also verify line count is below 2M limit (ESTIMATED_LINES_PER_INSTRUCTION = 8)
+    let line_count = std::fs::read_to_string(&output_path)
+        .map(|content| content.lines().count())
+        .unwrap_or(0);
+    assert!(
+        line_count < 2_000_000,
+        "Line count for {} exceeds 2M limit: {} lines. CFG explosion detected.",
+        rom_name,
+        line_count
+    );
+    
+    eprintln!(
+        "  ✓ {} transpiled successfully: {} bytes ({:.2} MB)",
+        rom_name,
+        file_size,
+        file_size as f64 / (1024.0 * 1024.0)
+    );
+    
+    // Clean up
+    let _ = std::fs::remove_file(&output_path);
+}

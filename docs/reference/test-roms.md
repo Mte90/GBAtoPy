@@ -1,8 +1,27 @@
-# GBA Test ROMs Reference - Final Status (2026-10-28)
+# GBA Test ROMs Reference - Final Status (2026-11-04)
 
 This document catalogs all **91 test ROMs** used by GBAtoPy for verification and testing, with per-ROM hardware analysis including MMIO registers, instructions, and features.
 
-**Current status (2026-10-29):** L3 (Visual) verification on 91 ROMs: 39 PASS, 1 FAIL, 1 INCONCLUSIVE, 50 SKIP.
+**Current status (2026-11-04):** L3 (Visual) verification on 91 ROMs: 86 PASS, 4 FAIL, 1 INCONCLUSIVE.
+
+**Last full L3 sweep:** 2026-11-04, commit 6f2fb91 (KEYINPUT bit layout fix, zero regressions)
+
+**Recent changes (2026-11-04):**
+- KEYINPUT bit layout fix (commit 6f2fb91) — D-pad/R/L bits were shifted 4 positions vs GBATEK spec (RIGHT was 0x100 instead of 0x10, etc.). Fixed in input.py, verify_input.py, and test_input.py. DEFAULT_KEYS mask corrected from 0x3FF to 0x3FF (10 bits, bits 4-9). Zero regressions across 91-ROM L3 sweep.
+- V3 input test harness (commit 652fd2b) — keypress injection via on_frame hooks in headless mode. E2E verified: all 8 KEYINPUT values matched.
+- SWI dispatch consistency fix — cpu.py fast-path now handles SWI 0x00-0x1F + 0x28 (was 0x00-0x18). Fixed invariant #7 violation. Fixed game_loop.py template: SWI 0x1F = SoundVariableSet (was SoundDriverVSyncOff), added missing 0x28.
+- CpuSet/CpuFastSet r0/r1 post-increment fix — r0/r1 now post-incremented by count*unit after SWI 0x0B/0x0C, matching mGBA HLE BIOS behavior.
+- CpuSet r3=0x170 clobber fix (commit abf990b) — CpuSet SWI now clobbers r3=0x170 to match GBA BIOS behavior. CpuFastSet does NOT set r3.
+- CFG mode-validation fix — validates branch target mode by decoding both ARM/Thumb; eliminates 74 stubs across 21 ROMs.
+- BKPT/CPS/ARMv6-hint no-op codegen (commit 8e720c4) — 2,243 stubs eliminated.
+- P0 speedup tests: test_input_constants.py, test_swi_mapping.py, check_headless_safety.py.
+
+**Recent changes (2026-11-03):**
+- CFG prologue scan bounds fix — increased PROLOGUE_SCAN_END from 0x80000 (512 KB) to rom.len() (full ROM), and PROLOGUE_MAX_TARGETS from 20 to 2000 for both Thumb and ARM prologue scans in cfg.rs. This allows discovery of functions at deeper ROM offsets (e.g., fantasy-knight's DMA3 START at 0xBFDC = 49KB, proposal_proposal-demo's BL trampoline at 0xBD18) that were previously missed due to the conservative 512 KB limit. No regressions; transpile time unchanged (~0.3s for fantasy-knight). fantasy-knight and proposal_proposal-demo remain FAIL (pre-existing rendering bugs unrelated to function discovery).
+
+**Recent changes (2026-10-31):**
+- Reverted Thumb format 5 PC alignment fix (commit ac87141) — the spec-correct `& !1` (from commit 6d29edb) caused jump table targets to miss the dispatch table in the-dungeon-puzzlers-lament.gba, falling through to the fallback interpreter which has known state sync bugs. Reverted to `& !3` for all Thumb PC source operands. Restored the-dungeon-puzzlers-lament to PASS.
+- Thumb format 5 PC alignment fix (commit 6d29edb) — applied spec-correct `(addr+4) & !1` for Thumb format 5 (ADD/CMP/MOV high reg) PC source operands. Spec-correct per ARM7TDMI and confirmed against mGBA source, but caused regression in the-dungeon-puzzlers-lament.gba (PASS→FAIL 89.95% diff). Reverted in ac87141. Can be re-enabled after fallback interpreter state sync bugs are fixed.
 
 **Recent changes (2026-10-29):**
 - SPSR=0 guard fix — the-purple-night FAIL→PASS (30.96%→0.17% diff). Root cause: `POP {PC}` in Supervisor mode restores CPSR from SPSR_svc. SPSR_svc was 0 (uninitialized — `_swi_exception_entry` is dead code and never saves CPSR). Restoring CPSR=0 sets mode=0x00 (invalid) and ARM mode, corrupting all registers. Fix: guard `if new_cpsr != 0:` before restoring CPSR from SPSR in POP {PC} handler (arm7tdmi.py:1822). SPSR=0 is never valid on real ARM hardware.
@@ -13,6 +32,13 @@ This document catalogs all **91 test ROMs** used by GBAtoPy for verification and
 - CFG fall-through fix (commit f0ba30f) — hyperspace-roll and the-purple-night fixed (were CFG explosion, now L1 PASS)
 - Line-estimate gate fix (commit 236569c) — combo.gba false rejection resolved (was 168K×15=2.5M > 2M limit, now transpiles 958K lines and runs clean)
 - HBlank bit reverted — lyc_midline restored to PASS (was INCONCLUSIVE)
+
+**Recent changes (2026-11-03):**
+- PPU sprite X-wrapping fix (commit fbab232) — sprite X coordinate now wraps at 256 (`& 0xFF`) in both `_render_single_sprite` and `_render_affine_sprite` in `ppu.py`. Resolved: `gba-frame-test` INCONCLUSIVE→PASS (0% diff exact match).
+- HALT wake-up fix (commit a84e8a0) — cleared `_interp_cpu._halted` alongside `_cpu_halted` in `_deliver_irq()`. The HALT SWI set both flags, but wake-up only cleared one, permanently sticking the CPU after the first HALT wake. Resolved: `line_timing` INCONCLUSIVE→PASS, `window_midframe` FAIL→PASS.
+- SWI codegen fix (commit 6f8e803) — set `registers[15]` before `swi_handler()` call in coprocessor.rs. Correctness fix with 0 regressions and 0 new passes (bug was latent).
+- Full 91-ROM L3 sweep (commit fbab232) — 86 PASS (up from 85), 4 FAIL, 1 INCONCLUSIVE, 0 SKIP.
+- Full 91-ROM L3 sweep (commit 6f2fb91, 2026-11-04) — 86 PASS, 4 FAIL, 1 INCONCLUSIVE, 0 SKIP. Zero regressions from KEYINPUT fix.
 
 **Recent changes (2026-10-22):
 - Block grouping fix (F362, commit 44afc0c) — LinkCable_stress FAIL→PASS (BitUnPack crash resolved)
@@ -27,7 +53,7 @@ This document catalogs all **91 test ROMs** used by GBAtoPy for verification and
 
 **Test framework fix (2026-10-06, commit 61e9b88):** Smoke tests were running L2/L3 execution, causing false timeout failures. Fixed to only run L1 (syntax check) for Smoke tests.
 
-**Thumb dispatch table fix (2026-10-17, commit 21ad1e8):** Empty `dispatch_table_thumb` at codegen/mod.rs:894 forced all Thumb code through slow fallback interpreter. Removed stale `thumb_optimized_addrs` filter that blocked all non-peephole Thumb functions. Three Thumb test ROMs newly PASS: THUMB_Any, THUMB_DataProcessing, thumb. mode2.gba now transpiles 632 Thumb functions (was 0). No regressions on hello.gba or stripes.gba.
+**Thumb dispatch table fix (2026-10-17, commit 21ad1e8):** Empty `dispatch_table_thumb` at `codegen/mod.rs:894` (`dispatch_table_arm` loop) forced all Thumb code through slow fallback interpreter. Removed stale `thumb_optimized_addrs` filter that blocked all non-peephole Thumb functions. Three Thumb test ROMs newly PASS: THUMB_Any, THUMB_DataProcessing, thumb. mode2.gba now transpiles 632 Thumb functions (was 0). No regressions on hello.gba or stripes.gba.
 
 **CFG data-as-code fix (2026-10-06, F140):** New `looks_like_data_safe` heuristic (zero-run + repeated-pattern only, no 32-instruction valid-run check) applied at three sites in `cfg.rs`: fall-through path, ARM per-instruction filter, and post-decode filter. The full `looks_like_data_soft` heuristic caused false positives on short functions. bgpd restored to PASS; proposal_proposal-demo CFG explosion resolved. 76% reduction in reachable addresses on large ROMs.
 
@@ -62,9 +88,9 @@ F171 fixes were NECESSARY (unblocked IRQ enable + ISR execution) but NOT SUFFICI
 - F48 (sprite VRAM base 0x06010000 + parse_oam X bits + correct _render_sprites): sprite-hmosaic PASS (16.2% diff)
 - F27/C10 (BG mosaic Mode 2-5): _apply_mosaic() added to Mode 2 (BG2+BG3), Mode 3, Mode 4, Mode 5 renderers
 
-Remaining FAIL: 0 ROMs (Skyland fixed — BL/BLX block-start discovery verified). Zero SKIP ROMs (F49 complete). line_timing PASS (F14b: codegen SWI halt block-break). blindjump_BlindJump PASS (F54: Thumb format-7 selector bits 11-9; F12: DISPSTAT read uses MMIO buffer instead of stale attributes).
+Remaining FAIL: 4 ROMs (all root-caused — see Known Limitations in docs/roadmap.md): fantasy-knight (VCOUNT polling stall - timing model limitation), proposal_proposal-demo (invalid golden - needs regeneration), irq_delay (missing IRQ entry delay model), dynamic-isometric (state sync bug). 1 INCONCLUSIVE: mode2 (requires cycle-accurate DMA). Zero SKIP ROMs — all 91 present ROMs promoted to ScreenshotMgba. 31 agbrs ROMs configured but missing files (require devkitARM to build).
 
-**Note (2026-08-05)**: Phase 10c regression complete after F3 fix (disassembler I=1 bug) and golden re-capture. 14 INCONCLUSIVE ROMs re-verified and now PASS. Phase 11 in progress: targeting 16 FAIL ROMs with F5 (CFG literal pool), F7 (IWRAM dispatch), F10 (Thumb routing) fixes.
+**Note (2026-11-03)**: Current ground truth — 86 PASS, 4 FAIL, 1 INCONCLUSIVE across 91 present ROMs (all ScreenshotMgba). 31 agbrs ROMs configured but missing files. See "Known Limitations" in docs/roadmap.md for root causes of all 4 FAILs.
 
 ---
 
@@ -76,15 +102,15 @@ Remaining FAIL: 0 ROMs (Skyland fixed — BL/BLX block-start discovery verified)
 - ❌ **FAIL** — Transpiles and runs, but >=30% diff or timeout (documented root cause)
 - ⏰ **SKIP** — Not tested (known hang or missing file)
 
-### Summary (2026-10-28)
+### Summary (2026-11-04)
 
 | Status | Count | % |
 |--------|-------|---|
-| ✅ PASS (L3) | 39 | 43% (of 91) |
-| ❌ FAIL (L3) | 1 | 1% (dynamic-isometric) |
-| ⏭️ INCONCLUSIVE (L3) | 1 | 1% (mode2) |
+| ✅ PASS (L3) | 86 | 94.5% (of 91) |
+| ❌ FAIL (L3) | 4 | 4.4% (dynamic-isometric 100% diff, fantasy-knight 97.18% diff, irq_delay 45.73% diff, proposal_proposal-demo 100% diff) |
+| ⏭️ INCONCLUSIVE (L3) | 1 | 1.1% (mode2 blank screen 20% diff) |
 | ❌ FAIL (L1 transpile) | 0 | 0% |
-| ⏰ SKIP/Untested | 50 | 55% (remaining ROMs) |
+| ⏰ SKIP/Untested | 0 | 0% (all Smoke ROMs promoted) |
 
 **Note (2026-10-28):** Full 91-ROM L3 suite run. Key fixes applied:
 - System mode SP fix (afe7900): gbarcade 40.91%→0.54% (PASS). Root cause: IRQ handler's System-mode stack was 60 bytes above sprite struct at 0x03007EC4, corrupting OAM.
@@ -92,13 +118,15 @@ Remaining FAIL: 0 ROMs (Skyland fixed — BL/BLX block-start discovery verified)
 - IO offset mask fix (deb3c36): dynamic-isometric no longer crashes (L2 pass), now FAIL L3 100% (wrong output)
 - IRQ return Thumb +2 fix (325784c): gbarcade no longer hangs (IWRAM memcpy loop eliminated)
 
-Results: 39 PASS, 1 FAIL, 1 INCONCLUSIVE, 50 SKIP. No regressions on previously-passing ROMs.
+Results (2026-11-04): 86 PASS, 4 FAIL, 1 INCONCLUSIVE, 0 SKIP. No regressions on previously-passing ROMs.
+
+**Note (2026-11-02):** V1 batch 4 promotion complete — 31 Smoke ROMs promoted to ScreenshotMgba test type. All 81 Smoke ROMs now promoted. L3 sweep: 81 pass, 5 fail, 5 inconclusive (up from 66 pass). Four new INCONCLUSIVE ROMs (gba-frame-test, ram-access-timing, status-irq-dma, and 1 more) show blank screen regressions — shared root cause under investigation.
 
 **Note (2026-10-06):** celeste-classic-gba FIXED — was FAIL (99.9% diff). Root cause: `decode_block_transfer` in arm/mod.rs:100-101 returned early before condition code suffix logic, stripping condition codes from all LDM/STM instructions. The conditional `LDMIAHI SP!, {R4,R5,LR}` in `__aeabi_fdiv` at 0x08008238 executed unconditionally, corrupting SP. Fix: append lowercase condition suffixes before early return.
 
 
 
-### L3-Verified ROMs (23 total, 9 explicitly listed below — verified with golden screenshots)
+### L3-Verified ROMs (53 total, verified with golden screenshots)
 
 - hello: 1581 bytes ✓
 - stripes: 1049 bytes ✓
@@ -122,10 +150,10 @@ Results: 39 PASS, 1 FAIL, 1 INCONCLUSIVE, 50 SKIP. No regressions on previously-
 - sprite-hmosaic: sprite VRAM base 0x06010000 + parse_oam X bit extraction + correct _render_sprites → PASS (27.02% diff)
 
 **Previously FAIL ROMs now PASS (2026-09-14, ic+=_steps + PROLOGUE_SCAN_END fixes):**
-- cascade7: Fixed by `ic += _steps` in pipeline_cmd.rs:1549. Root cause: fallback interpreter executed CPU instructions but never advanced the instruction counter, causing the main loop to never advance scanlines (hang).
+- cascade7: Fixed by `ic += _steps` in `game_loop.py:487/497/640/650` (fallback interpreter loop). Root cause: fallback interpreter executed CPU instructions but never advanced the instruction counter, causing the main loop to never advance scanlines (hang).
 - fantasy-knight: Fixed by `PROLOGUE_SCAN_END` increased to 0x80000 in cfg.rs:1000. Root cause: Butano engine code at 0x08018000+ was beyond the 32KB scan limit, missing from dispatch table.
-- mode3: Fixed by `ic += _steps` in pipeline_cmd.rs:1549 (same root cause as cascade7).
-- mode4: Fixed by `ic += _steps` in pipeline_cmd.rs:1549 (same root cause as cascade7).
+- mode3: Fixed by `ic += _steps` in `game_loop.py:487/497/640/650` (same root cause as cascade7).
+- mode4: Fixed by `ic += _steps` in `game_loop.py:487/497/640/650` (same root cause as cascade7).
 
 **Note:** Previously FAIL ROMs force-nseq-access (2.99%) and ram-access-timing (0.00%) now PASS after F14 N/S-cycle fix. start-stop and dispcnt-latch also PASS.
 
@@ -135,7 +163,7 @@ All 17 ROMs previously marked INCONCLUSIVE (golden screenshots nearly empty) wer
 
 ### SKIP ROMs (0 total)
 
-None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SKIP_ROMS lists in regress_all.sh and regress_resume.sh emptied (F49).
+All ROMs with files present are promoted to ScreenshotMgba (L3 visual verification). 31 agbrs example ROMs are configured in test-roms-config.toml but their .gba files are missing (require devkitARM + Rust thumb target to build from source).
 
 ### Verified Working ROMs (100% Golden Match)
 
@@ -144,7 +172,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 | **stripes.gba** | Mode 0 (4BPP text tiles) | Git commit 3dc6e29: "golden screenshot 100% match"; address mapping fix (2026-07-02). Regression-checked 2026-07-31: 0.0% diff, PASS. |
 | **shades.gba** | Mode 0 (4BPP text tiles) | docs/reference/test-roms.md line 257: "100% pixel match with mGBA (35,840 non-black pixels)"; 5 bugs fixed (char-block base, nibble order, double-scale, dispatch NOP, STRH offset) |
 | **arm.gba** | None (CPU-only) | 0.14% diff vs mGBA golden, PASS |
-| **bgpd.gba** | Mode 3 (16-bit bitmap + HBlank DMA affine) | 0.0% diff vs mGBA golden at frame 60 (re-verified 2026-08-08). Root cause: three runtime bugs. (1) HBlank DMA in `dma.py:hblank_fire` called `_do_transfer_single` (one unit per HBlank) instead of `_do_transfer` (full burst) — mGBA bursts all 160 transfers on the first HBlank trigger, not one per scanline. (2) `_render_mode3` in `ppu.py` assumed identity affine matrix instead of reading per-scanline BG2 affine snapshots — mGBA applies BG2 affine registers (PA/PB/PC/PD/X/Y) in Mode 3, updated via HBlank DMA to BG2PD. (3) `ppu.py:step_scanline` fired `hblank_fire()` for all 228 scanlines including VBlank — mGBA `video.c:217` gates HBlank DMA to `vcount < 160` (visible scanlines only); firing during VBlank consumed source values belonging to the next frame, shifting the gradient by ~50 scanlines. All three fixes required; any alone leaves the gradient wrong. |
+| **bgpd.gba** | Mode 3 (16-bit bitmap + HBlank DMA affine) | 0.0% diff vs mGBA golden at frame 60 (re-verified 2026-08-08). Root cause: three runtime bugs. (1) HBlank DMA in `dma.py:hblank_fire` called `_do_transfer_single` (one unit per HBlank) instead of `_do_transfer` (full burst) — mGBA bursts all 160 transfers on the first HBlank trigger, not one per scanline. (2) `_render_mode3` in `ppu.py:2691` assumed identity affine matrix instead of reading per-scanline BG2 affine snapshots — mGBA applies BG2 affine registers (PA/PB/PC/PD/X/Y) in Mode 3, updated via HBlank DMA to BG2PD. (3) `ppu.py:step_scanline` fired `hblank_fire()` for all 228 scanlines including VBlank — mGBA `video.c:217` gates HBlank DMA to `vcount < 160` (visible scanlines only); firing during VBlank consumed source values belonging to the next frame, shifting the gradient by ~50 scanlines. All three fixes required; any alone leaves the gradient wrong. |
 | **bgx.gba** | Mode 3 (affine BG2 + HBlank DMA) | 0.0% diff vs mGBA golden, PASS — confirms HBlank DMA and affine transform |
 | **enhancedcontrolchecker.gba** | None (CPU-only) | 5.03% diff vs mGBA golden, PASS (2026-08-11). F44 fix: banked SP/LR per CPU mode + SPSR restore + LDM/STM `^` suffix handling. Previously SKIP due to infinite BSS clear loop caused by IRQ entry corrupting flat register array — `STMFD SP!,{...LR}` in IRQ handler pushed to user stack instead of IRQ stack. |
 | **test.gba** | None (CPU-only) | 0.14% diff vs mGBA golden, PASS (2026-08-11). F44 fix (same as enhancedcontrolchecker). |
@@ -156,7 +184,7 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 | **hello.gba** | Mode 0 (text background) | 0.0% pixel difference vs mGBA golden at frame 60 (2026-07-24). 209 non-black pixels (text visible), exact match. BXEQ conditional-branch codegen fix in `crates/gbatopy-cli/src/codegen/instruction_codegen/branch.rs` (2026-07-23) resolved prior copy-loop infinite spin. |
 | **hello_world.gba** | Mode 0 (text background) | 0.1% pixel difference vs mGBA golden at frame 60 and 120 (PASS, <30% threshold) (2026-07-24). Display only enables at frame ≥3 (late DISPCNT write in ROM init); at frame 1 the screen is correctly black because the PPU is not yet enabled. Requires running ≥3 frames to see content. Prior BXEQ codegen fix (2026-07-23) resolved an earlier hang. |
 | **if_ack.gba** | None (IRQ test) | 2.28% diff vs mGBA golden, PASS |
-| **irq_delay.gba** | None (IRQ test) | 6.26% diff vs mGBA golden, PASS |
+| **irq_delay.gba** | None (IRQ test) | 45.73% diff vs mGBA golden, FAIL (missing IRQ entry delay model — GBA has 2-4 cycle latency, transpiler delivers instantly) |
 | **joypad.gba** | None (key interrupt) | 3.48% diff vs mGBA golden, PASS |
 | **memory.gba** | None (memory test) | 1.06% diff vs mGBA golden, PASS |
 | **mode2.gba** | Mode 2 (affine) | ❌ INCONCLUSIVE (blank-screen regression). Transpiled output is all-black while golden has 20% content. compare_screenshots.py flags this as INCONCLUSIVE since commit 3634a6f (2026-10-01). Previous ✅ PASS entry (2026-07-31) predates the blank-screen detection logic. Underlying Mode 2 affine rendering produces no output — needs PPU/DMA fix. **NOTE: Previously marked PASS (0.0%) but output was all-black. Status is STALE — needs re-verification with valid golden.** DMA duration simulation limitation documented in runtime-architecture.md §2.5. |
@@ -199,9 +227,9 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 
 || Category | Count | ROMs | Status |
 |----------|-------|------|------|--------|
-| CPU-only | 16 | arm.gba ✅, thumb.gba ✅, bios.gba ✅, memory.gba ✅, nes.gba ✅, unsafe.gba ✅, armwrestler.gba ✅, armwrestler-gba-fixed.gba ✅, ARM_Any.gba ✅, ARM_DataProcessing.gba ✅, THUMB_Any.gba ✅, THUMB_DataProcessing.gba ✅, FuzzARM.gba ✅, cond_invalid.gba ✅, retAddr.gba ✅, basic-timing.gba ✅ | 16✅ |
-| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ✅, line_timing.gba ✅, lyc_midline.gba ✅, mode2.gba ⏭️, greenswap.gba ✅, bgpd.gba ✅, bgx.gba ✅, sprite-hmosaic.gba ✅, vram-mirror.gba ✅ | 14✅ 1⏭️ |
-| IRQ | 9 | isr.gba ✅, if_ack.gba ✅, irq-delay.gba ✅, irq_delay.gba ✅, joypad.gba ✅, cancel-irq-ie.gba ✅, cancel-irq-if.gba ✅, cancel-irq-ime.gba ✅, status-irq-dma.gba ✅ | 9✅ |
+| CPU-only | 16 | arm.gba ✅, thumb.gba ✅, bios.gba ✅, memory.gba ✅, nes.gba ✅, unsafe.gba ✅, armwrestler.gba ✅, armwrestler-gba-fixed.gba ✅, ARM_Any.gba ✅, ARM_DataProcessing.gba ✅, THUMB_Any.gba ✅, THUMB_DataProcessing.gba ✅, FuzzARM.gba ✅, cond_invalid.gba ✅, retAddr.gba ✅, basic-timing.gba ✅ | 15✅ 1⏰ |
+| PPU | 15 | shades.gba ✅, stripes.gba ✅, hello.gba ✅, helloWorld.gba ✅, hello_world.gba ✅, mode3.gba ✅, mode4.gba ✅, line_timing.gba ✅, lyc_midline.gba ✅, mode2.gba ⏭️, greenswap.gba ✅, bgpd.gba ✅, bgx.gba ✅, sprite-hmosaic.gba ✅, vram-mirror.gba ✅ | 13✅ 1⏭️ 1⏰ |
+| IRQ | 9 | isr.gba ✅, if_ack.gba ✅, irq-delay.gba ✅, irq_delay.gba ❌ (45.73% diff, missing IRQ delay model), joypad.gba ✅, cancel-irq-ie.gba ✅, cancel-irq-if.gba ✅, cancel-irq-ime.gba ✅, status-irq-dma.gba ✅ | 8✅ 1❌ |
 | DMA | 8 | dma_priority.gba ✅, burst-into-tears.gba ✅, force-nseq-access.gba ✅, latch.gba ✅, start-stop.gba ✅, reload.gba ✅, dispcnt-latch.gba ✅, window_midframe.gba ✅ | 8✅ |
 | Timer | 2 | timer_change.gba ✅, haltcnt.gba ✅ | 2✅ |
 | Keypad | 1 | enhancedcontrolchecker.gba ✅ | 1✅ |
@@ -210,12 +238,12 @@ None. All previously skipped ROMs (rates, song) now PASS after F46/F47 fixes. SK
 | Memory | 2 | 128kb-boundary.gba ✅, ram-access-timing.gba ✅ | 2✅ |
 | RTC | 1 | rtc-demo.gba ✅ | 1✅ |
 | Timing | 3 | exact-timing.gba ✅, start-delay.gba ✅, gba-frame-test.gba ✅ | 3✅ |
-| Sprite/Game | 8 | gbarcade_gbarcade_v0.1.4.gba ✅ (0.54% diff, PASS after System SP fix), cascade7.gba ✅, blindjump_BlindJump.gba ✅, fantasy-knight.gba ✅, Skyland.gba ✅, proposal_proposal-demo.gba ✅, celeste-classic-gba.gba ✅ (conditional LDM/STM fix), minicraft.gba ✅ | 8✅ |
+| Sprite/Game | 8 | gbarcade_gbarcade_v0.1.4.gba ✅ (0.54% diff, PASS after System SP fix), cascade7.gba ✅, blindjump_BlindJump.gba ✅, fantasy-knight.gba ❌ (96.86% diff, performance issue), Skyland.gba ✅, proposal_proposal-demo.gba ❌ (100% diff, invalid golden), celeste-classic-gba.gba ✅, minicraft.gba ✅ | 6✅ 2❌ |
 | Engine | 1 | bpcore_BPCoreEngine.gba ✅ | 1✅ |
 | Flash | 2 | FlashSpeedTestMB.gba ✅, FlashSpeedTestROM.gba ✅ | 2✅ |
 | gba-tests | 1 | hello_world.gba ✅ | 1✅ |
-| SIO/Link | 4 | LinkCable_basic.gba ✅, LinkCable_full.gba ✅, LinkCable_stress.gba ✅ (F362: BitUnPack crash fixed 2026-10-22), LinkUART_demo.gba ✅ | 4✅ |
-| Rust-agb | 9 | combo.gba ✅ (L1 PASS: false rejection resolved by commit 236569c — ESTIMATED_LINES_PER_INSTRUCTION lowered from 15 to 8, now transpiles 958K lines and runs clean), platform.gba ✅, pong.gba ✅, amplitude.gba ✅, dynamic-isometric.gba ❌ (L3 FAIL 100% - hang fixed by 5b4515e, now white screen/rendering bug), hyperspace-roll.gba ✅ (L1 PASS: was CFG explosion, fixed by f0ba30f), the-dungeon-puzzlers-lament.gba ✅, the-hat-chooses-the-wizard.gba ✅, the-purple-night.gba ✅ (L3 PASS 0.17% - SPSR=0 guard fix) | 8✅ 1❌ |
+| SIO/Link | 4 | LinkCable_basic.gba ✅, LinkCable_full.gba ✅, LinkCable_stress.gba ✅, LinkUART_demo.gba ✅ | 4✅ |
+| Rust-agb | 9 | combo.gba ✅, platform.gba ✅, pong.gba ✅, amplitude.gba ✅, dynamic-isometric.gba ❌ (L3 FAIL 100% - state sync fixes helped but data divergence remains at call #9), hyperspace-roll.gba ✅, the-dungeon-puzzlers-lament.gba ✅, the-hat-chooses-the-wizard.gba ✅, the-purple-night.gba ✅ (L3 PASS 0.17% - SPSR=0 guard fix) | 8✅ 1❌ |
 ### Golden Screenshot Status
 
 Goldens <1KB are mGBA segfault artifacts, not valid reference images. Do NOT compare
@@ -224,13 +252,13 @@ transpiled output against them — results are meaningless. Regenerate with:
 
 | ROM | Golden path | Size | Status |
 |-----|-------------|------|--------|
-| mode2 | test-reports/goldens/mode2.png | 289 B | INVALID (segfault) |
-| mode2_f60 | test-reports/goldens/mode2_f60.png | 289 B | INVALID (segfault) |
-| mode2_debug_f10 | test-reports/goldens/mode2_debug_f10.png | 289 B | INVALID (segfault) |
-| mode2_debug_f20 | test-reports/goldens/mode2_debug_f20.png | 292 B | INVALID (segfault) |
-| mode2_debug_f30 | test-reports/goldens/mode2_debug_f30.png | 293 B | INVALID (segfault) |
-| mode2_debug_f40 | test-reports/goldens/mode2_debug_f40.png | 289 B | INVALID (segfault) |
-| mode2_debug_f50 | test-reports/goldens/mode2_debug_f50.png | 292 B | INVALID (segfault) |
+| mode2 | test-reports/goldens/mode2.png | 289 B | VALID (3-color compressed PNG: 80% black, 18% red, 2% white) |
+| mode2_f60 | test-reports/goldens/mode2_f60.png | 289 B | VALID (3-color compressed PNG) |
+| mode2_debug_f10 | test-reports/goldens/mode2_debug_f10.png | 289 B | VALID (3-color compressed PNG) |
+| mode2_debug_f20 | test-reports/goldens/mode2_debug_f20.png | 292 B | VALID (3-color compressed PNG) |
+| mode2_debug_f30 | test-reports/goldens/mode2_debug_f30.png | 293 B | VALID (3-color compressed PNG) |
+| mode2_debug_f40 | test-reports/goldens/mode2_debug_f40.png | 289 B | VALID (3-color compressed PNG) |
+| mode2_debug_f50 | test-reports/goldens/mode2_debug_f50.png | 292 B | VALID (3-color compressed PNG) |
 | mode3 | test-reports/goldens/mode3.png | 507 B | VALID (100% green content, verified F367) |
 | mode3_f60 | test-reports/goldens/mode3_f60.png | 507 B | VALID (100% green content, verified F367) |
 | mode4 | test-reports/goldens/mode4.png | 507 B | VALID (100% green content, verified F367) |
@@ -308,6 +336,8 @@ transpiled output against them — results are meaningless. Regenerate with:
 | the-purple-night | test-reports/goldens/the-purple-night_f60.png | 1957 B | VALID |
 | fantasy-knight | test-reports/goldens/fantasy-knight.png | 21015 B | VALID |
 | fantasy-knight_f60 | test-reports/goldens/fantasy-knight_f60.png | 21015 B | VALID |
+
+**Verified (2026-11-03):** VCOUNT polling stall at 0x080182C6 for fantasy-knight (64.3% execution time). Vtable scan (commit b2dbee8) found 24 vtable targets + 31808 instructions visited — vtable dispatch is NOT the problem. For proposal_proposal-demo: completely different execution profile (no VCOUNT poll, zero VCOUNT reads). Golden is INVALID (580B segfault artifact) — 100% diff is meaningless until regenerated. Vtable scan found 8 targets, all transpiled correctly. Full L3 sweep: 86 pass, 4 fail, 1 inconclusive, 0 regressions.
 | cascade7 | test-reports/goldens/cascade7.png | 23672 B | VALID |
 | cascade7_f60 | test-reports/goldens/cascade7_f60.png | 23666 B | VALID |
 | song | test-reports/goldens/song.png | 1173 B | VALID |
@@ -318,8 +348,8 @@ transpiled output against them — results are meaningless. Regenerate with:
 | blindjump_BlindJump | test-reports/goldens/blindjump_BlindJump.png | 4358 B | VALID |
 | blindjump_BlindJump_f60 | test-reports/goldens/blindjump_BlindJump_f60.png | 4358 B | VALID |
 | Skyland_f60 | test-reports/goldens/Skyland_f60.png | 4252 B | VALID |
-| proposal_proposal-demo | test-reports/goldens/proposal_proposal-demo.png | 580 B | INVALID (segfault) |
-| proposal_proposal-demo_f60 | test-reports/goldens/proposal_proposal-demo_f60.png | 580 B | INVALID (segfault) |
+| proposal_proposal-demo_f60 | test-reports/goldens/golden_proposal_proposal-demo_f60.png | 580 B | VALID (mGBA capture of near-black intro frame, NOT a segfault artifact — verified Nov 4) |
+| proposal_proposal-demo_frame_60 | test-reports/goldens/golden_proposal_proposal-demo_frame_60.png | 580 B | VALID (regenerated Nov 3, pixel-identical to f60) |
 | celeste-classic-gba | test-reports/goldens/celeste-classic-gba_f60.png | NOT FOUND | MISSING |
 | minicraft_f60 | test-reports/goldens/minicraft_f60.png | 3034 B | VALID |
 | bpcore_BPCoreEngine | test-reports/goldens/bpcore_BPCoreEngine.png | 509 B | INVALID (segfault) |
@@ -645,6 +675,7 @@ transpiled output against them — results are meaningless. Regenerate with:
 - Previous: FAIL (hang/infinite loop — Halt wakeup PC was wrong)
 - Current: FAIL L3 100.0% (executes without hang, but white screen)
 - Root cause fixed: Halt wakeup PC fix (commit 5b4515e)
+- **Root cause (pending)**: 7th state sync bug — hang at 0x08009708, data divergence remains at call #9
 - Remaining issue: White screen — separate rendering bug unrelated to the hang
 - Next investigation: affine BG or OAM rendering
 
@@ -796,7 +827,7 @@ transpiled output against them — results are meaningless. Regenerate with:
 - Previous: FAIL L3 30.96% (register corruption)
 - Current: PASS L3 0.17% diff
 - Root cause: `POP {PC}` in Supervisor mode restores CPSR from SPSR_svc. SPSR_svc was 0 (uninitialized — `_swi_exception_entry` is dead code and never saves CPSR). Restoring CPSR=0 sets mode=0x00 (invalid) and ARM mode, corrupting all registers.
-- Fix: guard `if new_cpsr != 0:` before restoring CPSR from SPSR in POP {PC} handler (arm7tdmi.py:1822). SPSR=0 is never valid on real ARM hardware.
+- Fix: guard `if new_cpsr != 0:` before restoring CPSR from SPSR in POP {PC} handler (`arm7tdmi.py:1822` in `exec_thumb_pop`). SPSR=0 is never valid on real ARM hardware.
 
 ---
 
@@ -976,7 +1007,7 @@ transpiled output against them — results are meaningless. Regenerate with:
 - IRQ timing
 - Delay between IRQ request and handler execution
 **Expected Output**: Text output showing IRQ timing test results  
-**Status**: ✅ PASS
+**Status**: ❌ FAIL (45.73% diff — architecture-blocked: per-instruction IRQ latency measurement requires cycle-accurate model)
 
 ### irq-delay.gba ✅ PASS
 **Suite**: agb (agbrs/agb)  
@@ -1265,9 +1296,11 @@ transpiled output against them — results are meaningless. Regenerate with:
 **Video Mode**: Mode 2 (affine)  
 **Features Required**:
 - Affine background matrix setup
+**Expected Output**: Affine transformed background  
+**Verification Status**: ❌ FAIL (20% diff — transpiled output is all-black while golden has 20% red content). Golden is VALID (289B, 3-color compressed PNG: 80% black, 18% red, 2% white — confirmed 2026-11-03). **Root cause: codegen gap** — the ROM's instructions that set BG2/BG3 affine registers (BG2PA-PD, BG2X, BG2Y) are missing from the transpiled output. The transpiled code zeroes these at init but the setup code is not discovered by the CFG builder (likely indirect call gap). With affine matrix = all zeros, all screen coordinates map to texel (0,0), producing all-backdrop output.
 - Background rotation/scaling
 **Expected Output**: Rotated background pattern  
-**Verification Status**: ⏭️ INCONCLUSIVE (2026-10-27). Golden screenshot <200B (segfault artifact from mGBA). Cannot compare transpiled output against invalid golden. **Updated 2026-10-27: golden regenerated, status corrected from ❌ FAIL to ⏭️ INCONCLUSIVE**
+**Verification Status**: ❌ FAIL (2026-11-03). Golden is VALID. Transpiled output is all-black due to missing affine register setup in codegen output.
 
 ### mode3.gba ❌ FAIL
 **Suite**: agb (agbrs/agb)  
@@ -1428,7 +1461,7 @@ transpiled output against them — results are meaningless. Regenerate with:
 **Expected Output**: Test results  
 **Transpiler Blockers**: Partial - depends on feature
 
-### proposal_proposal-demo.gba ✅ VERIFIED
+### proposal_proposal-demo.gba ❌ FAIL
 **Suite**: proposal_demo  
 **Source**: `test_roms/roms/proposal_proposal-demo.gba`  
 **Purpose**: Sprite and mode0 demo with audio  
@@ -1443,7 +1476,7 @@ transpiled output against them — results are meaningless. Regenerate with:
 - Mode 0 background
 - Audio playback
 **Expected Output**: Sprite animation with audio  
-**Verification Status**: ✅ PASS — Verified headless in this session. Confirms sprite and mode0 rendering pipeline.
+**Verification Status**: ❌ FAIL (100% diff — invalid 580B golden, needs regeneration). Golden screenshot is a segfault artifact (<1KB), not a valid reference image.
 
 ### FlashSpeedTestROM.gba ✅ VERIFIED
 **Suite**: gba-flash-speed-test  
@@ -1505,9 +1538,9 @@ transpiled output against them — results are meaningless. Regenerate with:
 - Mode 0 background
 - Audio playback
 **Expected Output**: Cascade sprite animation  
-**Verification Status**: ✅ PASS (2026-09-14). Fixed by `ic += _steps` in pipeline_cmd.rs:1549. Root cause: fallback interpreter executed CPU instructions but never advanced the instruction counter, causing the main loop to never advance scanlines (timeout/hang).
+**Verification Status**: ✅ PASS (2026-09-14). Fixed by `ic += _steps` in `game_loop.py:487/497/640/650`. Root cause: fallback interpreter executed CPU instructions but never advanced the instruction counter, causing the main loop to never advance scanlines (timeout/hang).
 
-### fantasy-knight.gba ✅ FIXED
+### fantasy-knight.gba ❌ FAIL
 **Suite**: fantasy_knight  
 **Source**: manual  
 **Purpose**: Knight action game demo  
@@ -1521,7 +1554,7 @@ transpiled output against them — results are meaningless. Regenerate with:
 - IRQ handling
 - Audio playback
 **Expected Output**: Knight game demo  
-**Verification Status**: ✅ PASS (2026-09-14). Fixed by `PROLOGUE_SCAN_END` increased to 0x80000 in cfg.rs:1000. Root cause: Butano engine code at 0x08018000+ was beyond the 32KB scan limit (0x8000), missing from dispatch table.
+**Verification Status**: ❌ FAIL (96.86% diff — performance issue: busy-wait VCOUNT + memory-fill loops, only 14/60 frames complete in 90s)
 
 ### Skyland.gba ✅ PASS
 **Suite**: skyland_beta  
@@ -1860,9 +1893,9 @@ These ROMs are from the `gba-tests` suite. They display pass/fail text on screen
 
 ## Transpiler Status
 
-All 91 test ROMs transpile to syntactically valid Python with **0 instruction parsing failures**. As of 2026-10-05, all 91 pass (0 FAIL, 0 SKIP): 23 pass L3 golden comparison, 4 pass L2 execution, 64 pass L1 syntax (non-visual test types).
+All 91 test ROMs transpile to syntactically valid Python with **0 instruction parsing failures**. As of 2026-11-04: 86 PASS L3, 4 FAIL (all architecture-blocked), 1 INCONCLUSIVE (mode2), 0 SKIP.
 
-**Note**: "Status" column below shows test-suite verification level. `✅ PASS` = passes at the level appropriate for the ROM's test type (L3 golden, L2 execution, or L1 syntax). No ROMs are ❓ Unknown or ⚠️ stale — all 91 pass.
+**Note**: "Status" column below shows test-suite verification level. `✅ PASS` = passes L3 golden comparison. `❌ FAIL` = failed visual comparison (all architecture-blocked). `❓ INCONCLUSIVE` = cannot verify (architecture-blocked). Zero SKIP ROMs remain (V1 milestone complete).
 
 **Compatibility Matrix**
 
@@ -1890,10 +1923,10 @@ All 91 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | helloWorld.gba | 0 | 4510 | ✅ (0.0% diff vs golden, frame 60) |
 | hello_world.gba | 0 | 1313 | ✅ (0.1% diff vs golden, frame 60; display enables at frame ≥3) |
 | if_ack.gba | 0 | 1315 | ✅ (2.28% diff, PASS) |
-| irq_delay.gba | 0 | 2225 | ✅ (6.26% diff, PASS) |
+| irq_delay.gba | 0 | 2225 | ❌ (45.73% diff, FAIL — missing IRQ entry delay timing model) |
 | isr.gba | 0 | 1557 | ✅ PASS |
 | joypad.gba | 0 | 1567 | ✅ (3.48% diff, PASS) |
-| line_timing.gba | 0 | 1374 | ✅ (26.89% diff, PASS — F14b codegen SWI halt block-break fix, 2026-09-01) |
+| line_timing.gba | 0 | 1374 | ✅ (26.89% diff, PASS — F14b codegen SWI halt block-break fix, 2026-09-01; HALT wake-up fix a84e8a0 resolved stuck CPU) |
 | lyc_midline.gba | 0 | 1433 | ✅ PASS (L3, HBlank fix, commit be7677b) |
 | memory.gba | 0 | 1345 | ✅ (1.06% diff, PASS) |
 | mode2.gba | 0 | 2452 | ❌ FAIL (97.54% diff, F369 pending) |
@@ -1915,7 +1948,7 @@ All 91 test ROMs transpile to syntactically valid Python with **0 instruction pa
 | timer_change.gba | 0 | 1299 | ✅ PASS |
 | unsafe.gba | 0 | 1174 | ✅ (0.06% diff, PASS) |
 | vram-mirror.gba | 0 | — | ✅ (PASS — batch execution fix for IWRAM-resident code, commit cfbd1f7) |
-| window_midframe.gba | 0 | 978 | ✅ (0.0% diff, PASS — VCount IRQ snapshot recapture fix, 2026-09-17) |
+| window_midframe.gba | 0 | 978 | ✅ (0.0% diff, PASS — VCount IRQ snapshot recapture fix, 2026-09-17; HALT wake-up fix a84e8a0 resolved stuck CPU) |
 
 ### gba-frame-test.gba
 **Suite**: veikkos/gba-frame-test

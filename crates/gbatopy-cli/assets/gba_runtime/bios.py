@@ -509,3 +509,89 @@ class BIOS:
             bytes_written += (2 if is_16bit else 1)
         
         return bytes_written
+
+    # Sound driver SWI handlers (0x19-0x1F, 0x28)
+    # These are stubs/no-ops since pygame.mixer handles actual audio
+    
+    def swi_sound_driver_init(self, work_area_ptr: int):
+        """SoundDriverInit (SWI 0x19): Initialize sound driver.
+        
+        Input: R0 = sound work area pointer
+        No return value.
+        """
+        # Store work area pointer for later use
+        self._sound_work_area = work_area_ptr
+
+    def swi_sound_driver_mode(self, mode: int):
+        """SoundDriverMode (SWI 0x1A): Set sound driver mode.
+        
+        Input: R0 = mode flags
+        No return value.
+        """
+        # Store mode for later use
+        self._sound_mode = mode
+
+    def swi_sound_driver_main(self):
+        """SoundDriverMain (SWI 0x1B): Main sound driver processing.
+        
+        No input/return. Called each frame to process sound.
+        pygame.mixer handles actual audio mixing.
+        """
+        # Minimal processing - pygame handles actual mixing
+        pass
+
+    def swi_sound_driver_vsync(self):
+        """SoundDriverVSync (SWI 0x1C): VBlank sound processing.
+        
+        No input/return. Called on VBlank to update sound.
+        pygame.mixer handles actual audio.
+        """
+        # Called on VBlank - pygame handles audio
+        pass
+
+    def swi_sound_channel_clear(self):
+        """SoundChannelClear (SWI 0x1D): Clear all sound channels.
+        
+        No input/return. Clears all sound channels.
+        No-op since we use pygame.
+        """
+        # No-op - pygame manages channels
+        pass
+
+    def swi_midi_key_to_freq(self, voice_ptr: int, key_fixed: int) -> int:
+        """MidiKey2Freq (SWI 0x1E): Convert MIDI key to frequency.
+        
+        Input: R0 = voice pointer (unused for math)
+               R1 = MIDI key number in 8.8 fixed-point format
+        Returns: frequency in 8.8 fixed-point format
+        
+        Formula: freq = 440.0 * 2^((key - 69) / 12)
+        where key 69 = A4 = 440 Hz
+        """
+        # Convert fixed-point (8.8 format) to float
+        key = key_fixed / 256.0
+        
+        # Calculate frequency using standard formula
+        freq = 440.0 * (2.0 ** ((key - 69.0) / 12.0))
+        
+        # Return as fixed-point (multiply by 256 for 8.8 format)
+        return int(freq * 256) & 0xFFFFFFFF
+
+    def swi_sound_variable_set(self, command: int, value: int):
+        """SoundVariableSet (SWI 0x1F): Set sound driver variable.
+        
+        Input: R0 = command/var index
+               R1 = value to set
+        No return value.
+        """
+        # Store variable for potential use
+        # pygame mixer handles actual audio output
+        pass
+
+    def swi_sound_driver_vsync_off(self):
+        """SoundDriverVSyncOff (SWI 0x28): Disable VBlank sound processing.
+        
+        No input/return. Disables automatic VSync sound updates.
+        """
+        # Disable vsync processing
+        self._sound_vsync_enabled = False

@@ -683,7 +683,11 @@ class CPU:
             self.registers[15] = 0x08000000
         elif num == 0x01:  # RegisterRamReset
             flags = self.registers[0]
-            self.memory.write_u16(0x04000000, 0x0080)
+            # Per GBA spec: bit 7 (0x80) means "reset display registers"
+            # When set, DISPCNT should be reset to 0x0000 (NOT 0x0080)
+            # When not set, DISPCNT should NOT be touched
+            if flags & 0x80:
+                self.memory.write_u16(0x04000000, 0x0000)
             if flags & 0x01:
                 for addr in range(0x02000000, 0x02040000, 4):
                     self.memory.write_u32(addr, 0)
@@ -837,9 +841,26 @@ class CPU:
         elif num == 0x0B:  # CpuSet
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_cpuset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
+                self.registers[3] = 0x170  # Match official BIOS clobbered r3
+                _cs_fill = bool(self.registers[2] & 0x01000000)
+                _cs_32bit = bool(self.registers[2] & 0x04000000)
+                _cs_count = self.registers[2] & 0x001FFFFF
+                if _cs_32bit:
+                    if _cs_fill:
+                        self.registers[0] = (self.registers[0] + 4) & 0xFFFFFFFF
+                    else:
+                        self.registers[0] = (self.registers[0] + _cs_count * 4) & 0xFFFFFFFF
+                    self.registers[1] = (self.registers[1] + _cs_count * 4) & 0xFFFFFFFF
         elif num == 0x0C:  # CpuFastSet - CRITICAL: initializes IWRAM
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_cpufastset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
+                _cfs_fill = bool(self.registers[2] & 0x01000000)
+                _cfs_count = self.registers[2] & 0x001FFFFF
+                if _cfs_fill:
+                    self.registers[1] = (self.registers[1] + _cfs_count * 4) & 0xFFFFFFFF
+                else:
+                    self.registers[0] = (self.registers[0] + _cfs_count * 4) & 0xFFFFFFFF
+                    self.registers[1] = (self.registers[1] + _cfs_count * 4) & 0xFFFFFFFF
         elif num == 0x0E:  # BgAffineSet
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_bg_affine_set(self.registers[0], self.registers[1], self.registers[2], self.registers[3])
@@ -884,6 +905,32 @@ class CPU:
         elif num == 0x18:  # Diff16bitUnFilter
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=True)
+        elif num == 0x19:  # SoundDriverInit
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_init(self.registers[0])
+        elif num == 0x1A:  # SoundDriverMode
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_mode(self.registers[0])
+        elif num == 0x1B:  # SoundDriverMain
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_main()
+        elif num == 0x1C:  # SoundDriverVSync
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_vsync()
+        elif num == 0x1D:  # SoundChannelClear
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_channel_clear()
+        elif num == 0x1E:  # MidiKey2Freq
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.registers[0] = self.bios.swi_midi_key_to_freq(
+                    self.registers[0], self.registers[1]
+                )
+        elif num == 0x1F:  # SoundVariableSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_variable_set(self.registers[0], self.registers[1])
+        elif num == 0x28:  # SoundDriverVSyncOff
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_vsync_off()
         # Unknown SWI: no-op (graceful handling)
 
     def _arm_halfword_transfer(self, opcode: int) -> bool:

@@ -230,7 +230,7 @@ pub fn generate_python_code(
     code.push('\n');
 
     code.push_str("registers[15] = 0x08000000\n");
-    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
+    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 'q': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_fiq': 0, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
     code.push_str("_user_sys_bank = {'sp': 0x03007FE0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}\n");
     code.push_str("banked_sp_lr = {0x10: {'sp': 0x03007FA0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x1F: _user_sys_bank, 0x11: {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0x03007FA0, 'lr': 0}, 0x13: {'sp': 0x03007FE0, 'lr': 0}, 0x17: {'sp': 0x03007FE0, 'lr': 0}, 0x1B: {'sp': 0x03007F00, 'lr': 0}}\n");
     code.push_str("\ndef _switch_mode(new_mode):\n");
@@ -256,9 +256,9 @@ pub fn generate_python_code(
     code.push_str("    _m = {0x11: 'spsr_fiq', 0x12: 'spsr_irq', 0x13: 'spsr_svc', 0x17: 'spsr_abt', 0x1B: 'spsr_und', 0x1F: 'spsr_sys'}\n");
     code.push_str("    return cpsr.get(_m.get(mode, 'spsr_irq'), 0) & 0xFFFFFFFF\n");
     code.push_str("\ndef _cpsr_to_int(c):\n");
-    code.push_str("    return ((c['n'] & 1) << 31) | ((c['z'] & 1) << 30) | ((c['c'] & 1) << 29) | ((c['v'] & 1) << 28) | ((c['i'] & 1) << 7) | ((c['f'] & 1) << 6) | ((c['t'] & 1) << 5) | (c['mode'] & 0x1F)\n");
+    code.push_str("    return ((c['n'] & 1) << 31) | ((c['z'] & 1) << 30) | ((c['c'] & 1) << 29) | ((c['v'] & 1) << 28) | ((c.get('q', 0) & 1) << 27) | ((c['i'] & 1) << 7) | ((c['f'] & 1) << 6) | ((c['t'] & 1) << 5) | (c['mode'] & 0x1F)\n");
     code.push_str("\ndef _cpsr_from_int(c, val):\n");
-    code.push_str("    c['n'] = (val >> 31) & 1; c['z'] = (val >> 30) & 1; c['c'] = (val >> 29) & 1; c['v'] = (val >> 28) & 1; c['i'] = (val >> 7) & 1; c['f'] = (val >> 6) & 1; c['t'] = (val >> 5) & 1; c['mode'] = val & 0x1F\n");
+    code.push_str("    c['n'] = (val >> 31) & 1; c['z'] = (val >> 30) & 1; c['c'] = (val >> 29) & 1; c['v'] = (val >> 28) & 1; c['q'] = (val >> 27) & 1; c['i'] = (val >> 7) & 1; c['f'] = (val >> 6) & 1; c['t'] = (val >> 5) & 1; c['mode'] = val & 0x1F\n");
     code.push_str(
         "\n_MODE_TO_SPSR_IDX = {0x10: 0, 0x1F: 1, 0x13: 2, 0x17: 3, 0x1B: 4, 0x11: 5, 0x12: 6}\n",
     );

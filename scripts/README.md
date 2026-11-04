@@ -20,17 +20,21 @@ scripts/
 ├── setup/
 │   ├── download_roms.sh       ← Downloads test ROMs from GitHub
 │   └── download_test_roms.sh  ← Wrapper for downloading GBA test ROMs
-├── verify/
-│   ├── verify_rom.sh                ← One-shot ROM verification: transpile + run + compare
-│   ├── compare_screenshots.py       ← Golden screenshot comparison (mGBA vs transpiled)
-│   ├── compare_audio.py             ← Golden audio comparison (WAV diff)
-│   ├── coverage_tracker.py          ← Track test coverage across ROMs
-│   ├── ewram_dump_verify.py         ← Verify EWRAM dump binary format
-│   ├── validate_golden.py           ← Detect mGBA segfault artifacts in goldens
-│   ├── verify_subagent_claim.py     ← Verify subagent claims about files/commands
-│   └── test_verify_subagent_claim.py ← Pytest tests for verify_subagent_claim.py
+ ├── verify/
+ │   ├── verify_rom.sh                ← One-shot ROM verification: transpile + run + compare
+ │   ├── verify_input.sh              ← Input register verification: inject keypresses + verify KEYINPUT
+ │   ├── verify_input.py              ← Python implementation of input verification
+ │   ├── compare_screenshots.py       ← Golden screenshot comparison (mGBA vs transpiled)
+ │   ├── compare_audio.py             ← Golden audio comparison (WAV diff)
+ │   ├── coverage_tracker.py          ← Track test coverage across ROMs
+ │   ├── ewram_dump_verify.py         ← Verify EWRAM dump binary format
+ │   ├── validate_golden.py           ← Detect mGBA segfault artifacts in goldens
+ │   ├── verify_subagent_claim.py     ← Verify subagent claims about files/commands
+ │   ├── test_keys.txt                ← Example key sequence file for input verification
+ │   └── test_verify_subagent_claim.py ← Pytest tests for verify_subagent_claim.py
 ├── ci/
 │   └── visual_tests.sh        ← CI visual test script for ci-fixtures ROMs (L3 comparison)
+├── check_swi_dispatch.py      ← SWI dispatch consistency checker (invariant #7)
 └── check/
     ├── preflight.sh           ← Run all enforcement checks at once (pre-commit ready)
     ├── no-skip.sh             ← Enforce AGENTS.md rule #26: zero SKIP ROMs
@@ -40,6 +44,45 @@ scripts/
 ```
 
 ## Test Scripts
+
+### `tests/test_cfg_regression.py` — CFG Explosion Regression Test
+
+**Purpose:** Verify that the CFG (Control Flow Graph) builder doesn't "explode" by following linear data walks and producing 50K+ reachable addresses.
+
+**Background:** The CFG builder had a bug where it would traverse data regions as if they were code, creating a massive number of basic blocks. The fix introduced:
+- A global fall-through budget (50K addresses max)
+- Max consecutive invalid instructions limit (16)
+
+**What it tests:**
+- ✅ Transpilation completes successfully (no hang, no crash)
+- ✅ Transpilation completes in reasonable time (< 60 seconds per ROM)
+- ✅ Output is valid Python (compiles with `py_compile`)
+- ✅ Function count is reasonable (< 50K functions)
+
+**Test ROMs:** combo.gba, hyperspace-roll.gba, the-purple-night.gba (complex ROMs that would trigger CFG explosion)
+
+**Usage:**
+```bash
+# Run all CFG regression tests
+python3 -m pytest tests/test_cfg_regression.py -v
+
+# Run a single ROM test
+python3 -m pytest tests/test_cfg_regression.py::test_cfg_does_not_explode[combo.gba] -v
+
+# With verbose output showing timing and function counts
+python3 -m pytest tests/test_cfg_regression.py -v -s
+```
+
+**Expected output:**
+```
+combo.gba: PASS (transpile_time=2.11s, functions=48,455)
+hyperspace-roll.gba: PASS (transpile_time=1.22s, functions=39,035)
+the-purple-night.gba: PASS (transpile_time=1.06s, functions=27,656)
+```
+
+**Location:** `tests/test_cfg_regression.py`
+
+---
 
 ### `run_tests.py` — Unified 3-Level Test Runner
 
@@ -75,6 +118,10 @@ python3 scripts/run_tests.py --workers 8
 
 # Custom frame count for execution
 python3 scripts/run_tests.py --level 2 --frame 120
+
+# Extended stability testing (300 frames)
+python3 scripts/run_tests.py --level 2 --frames 300
+python3 scripts/run_tests.py --level 2 --long-run  # convenience flag for 300 frames
 
 # Save JSON report to specific path
 python3 scripts/run_tests.py --level 3 --json test-reports/report.json
@@ -389,6 +436,80 @@ Total: 5 | PASS: 3 | FAIL: 1 | SKIP: 1
 ---
 
 ## Verification Scripts
+
+### `verify_input.py` — Input Register Verification
+
+**Purpose:** Inject programmed keypresses into transpiled ROMs and verify the KEYINPUT register (0x04000130) returns the expected values.
+
+**What it does:**
+- ✅ Parse a key sequence file (frame-based button injection)
+- ✅ Generate a hook script that injects input at specified frames via `input_instance.update_keys()`
+- ✅ Log KEYINPUT register reads to a file for verification
+- ✅ Transpile the ROM using the Rust CLI
+- ✅ Run the transpiled ROM with the hook script
+- ✅ Verify that KEYINPUT reads match expected values
+- ✅ Report PASS/FAIL with detailed frame-by-frame results
+
+**Key sequence file format:**
+```text
+# Comment
+0: START
+10: (none)
+20: A,B
+30: A,B,C
+```
+
+Valid buttons: `A`, `B`, `START`, `SELECT`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `R`, `L`
+`(none)` or empty = all keys released
+
+**Usage:**
+```bash
+# Via shell wrapper
+bash scripts/verify/verify_input.sh helloWorld --keys=scripts/verify/test_keys.txt --frames=40
+
+# Direct Python invocation
+python3 scripts/verify/verify_input.py helloWorld --keys=test_keys.txt --frames=40
+
+# With screenshot output
+python3 scripts/verify/verify_input.py stripes --keys=complex_keys.txt --frames=120 --screenshot=/tmp/stripes.png
+```
+
+**Output files:**
+- `/tmp/<rom>_input_hook.py` — Generated hook script
+- `/tmp/<rom>_keyinput.log` — KEYINPUT register read log
+
+**Example output:**
+```
+Parsing key sequence from scripts/verify/test_keys.txt...
+✓ Found 8 injection points
+Generating hook script...
+✓ Hook script: /tmp/helloWorld_input_hook.py
+Transpiling helloWorld.gba...
+✓ Transpiled: /tmp/gba_helloWorld.py
+Running with 40 frames...
+✓ Execution complete
+Parsing KEYINPUT log...
+✓ Found 12 KEYINPUT reads
+Verifying KEYINPUT values...
+
+==================================================
+VERIFICATION RESULTS
+==================================================
+✓ Frame 0: expected 0x3F7, read 0x3F7 at frame 0
+✓ Frame 5: expected 0x3FF, read 0x3FF at frame 5
+✓ Frame 10: expected 0x3FE, read 0x3FE at frame 10
+...
+
+PASS: All KEYINPUT values match expected
+```
+
+**Exit codes:**
+- `0` — PASS (all KEYINPUT values match expected)
+- `1` — FAIL (mismatch or error)
+
+**Example key sequence file:** See `scripts/verify/test_keys.txt`
+
+---
 
 ### `verify_rom.sh` — One-Shot ROM Verification
 

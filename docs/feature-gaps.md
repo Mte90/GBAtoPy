@@ -85,7 +85,7 @@ Audit of unimplemented or partially implemented GBA features in the runtime (`cr
 
 ## 6. Mode 1 Rendering (runtime)
 
-**State:** FUNCTIONAL but unverified — `_render_mode1` at `ppu.py:1727-1936` (210 lines).
+**State:** FUNCTIONAL but unverified — `_render_mode1` at `ppu.py:1902` (Mode 1 text+affine rendering).
 
 **Implemented:**
 - BG0/BG1 text-mode rendering with tile cache, 4BPP/8BPP, palette, priority (lines 1808-1847)
@@ -106,7 +106,7 @@ Audit of unimplemented or partially implemented GBA features in the runtime (`cr
 
 ## 7. Mode 5 Rendering (runtime)
 
-**State:** Implemented correctly — `_render_mode5` at `ppu.py:2407-2473` (67 lines).
+**State:** Implemented correctly — `_render_mode5` at `ppu.py:3016` (160x128 bitmap with backdrop fill).
 
 **Implemented:**
 - 160x128 16-bit bitmap via affine BG2 (lines 2431-2432, 2445-2470)
@@ -123,7 +123,7 @@ Audit of unimplemented or partially implemented GBA features in the runtime (`cr
 
 - `REG_BLDWIN = 0x04000056` was defined in `ppu.py:485-486` (duplicate definition) and also aliased as `REG_DISPSTAT2` at line 489. Address 0x04000056 is not a standard GBA register per GBATEK — the correct brightness register is `REG_BLDY` at 0x04000054, and blend control is `REG_BLDCNT` at 0x04000050. This constant was unused by any blend logic. **Status: ✅ REMOVED (F260, commit 7ca05ab).**
 - `REG_MOSAIC_EXT = 0x040000F4` (`ppu.py:492`) was a non-standard alias with no GBATEK basis. The address 0x040000F4 is outside the 1KB MMIO range (0x04000000-0x040003FF). Mosaic is configured solely via `REG_MOSAIC` at 0x0400004C. This constant was referenced in `_write_register` and `_read_register` handlers. **Status: ✅ REMOVED (F260, commit 7ca05ab).**
-- Initialization order: `_read_registers()` (ppu.py:1320-1396) reads registers in the following sequence: DISPCNT → DISPSTAT → BGxCNT/BGxHOFS/BGxVOFS → WIN0H/WIN1H/WIN0V/WIN1V/WININ/WINOUT → MOSAIC → BLDCNT/BLDALPHA/BLDY. This order is correct and matches hardware expectations: display mode must be established before rendering, window geometry must be read before window hit-tests, and affine parameters are captured per-scanline in `step_scanline()` before DMA fires.
+- Initialization order: `_read_registers()` at `ppu.py:1367` reads registers in the following sequence: DISPCNT → DISPSTAT → BGxCNT/BGxHOFS/BGxVOFS → WIN0H/WIN1H/WIN0V/WIN1V/WININ/WINOUT → MOSAIC → BLDCNT/BLDALPHA/BLDY. This order is correct and matches hardware expectations: display mode must be established before rendering, window geometry must be read before window hit-tests, and affine parameters are captured per-scanline in `step_scanline()` before DMA fires.
 
 ---
 

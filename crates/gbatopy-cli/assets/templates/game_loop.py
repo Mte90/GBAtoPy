@@ -64,7 +64,10 @@ def swi_handler(swi_field):
         registers[15] = 0x08000000
     elif swi_num == 0x01:  # RegisterRamReset
         flags = registers[0] & 0xFF
-        memory.write_u16(0x04000000, 0x0080)
+        # Per GBA spec: bit 7 (0x80) means "reset display registers"
+        # When set, DISPCNT resets to 0x0000 (NOT 0x0080). When not set, DISPCNT untouched.
+        if flags & 0x80:
+            memory.write_u16(0x04000000, 0x0000)
         if flags & 0x01:
             for addr in range(0x02000000, 0x02040000, 4):
                 memory.write_u32(addr, 0)
@@ -154,10 +157,17 @@ def swi_handler(swi_field):
             memory.write_u16(0x04000204, 0)
             memory.write_u16(0x04000200, 0)
     elif swi_num == 0x02:  # Halt — wakes on ANY enabled IRQ
+        _irq_obj = getattr(memory, '_interrupts', None)
+        if _irq_obj is not None and (_irq_obj.if_reg & _irq_obj.ie_reg):
+            return
         _swi_lr = registers[14]
         _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
         _cpu_halted = True
         _halt_reason = "any"
+        # Also set CPU's internal flag for consistency with fallback interpreter
+        if '_interp_cpu' in globals() and _interp_cpu is not None:
+            _interp_cpu._halted = True
+            _interp_cpu._halt_reason = "any"
         return
     elif swi_num == 0x03:  # Stop — low-power mode, treat as Halt
         _swi_lr = registers[14]
@@ -221,8 +231,25 @@ def swi_handler(swi_field):
         registers[0] = int(val ** 0.5) & 0xFFFFFFFF
     elif swi_num == 0x0B:  # CpuSet
         arm7tdmi_instance.bios.swi_cpuset(registers[0], registers[1], registers[2], registers[2])
+        registers[3] = 0x170  # Match official BIOS clobbered r3
+        _cs_fill = bool(registers[2] & 0x01000000)
+        _cs_32bit = bool(registers[2] & 0x04000000)
+        _cs_count = registers[2] & 0x001FFFFF
+        if _cs_32bit:
+            if _cs_fill:
+                registers[0] = (registers[0] + 4) & 0xFFFFFFFF
+            else:
+                registers[0] = (registers[0] + _cs_count * 4) & 0xFFFFFFFF
+            registers[1] = (registers[1] + _cs_count * 4) & 0xFFFFFFFF
     elif swi_num == 0x0C:  # CpuFastSet
         arm7tdmi_instance.bios.swi_cpufastset(registers[0], registers[1], registers[2], registers[2])
+        _cfs_fill = bool(registers[2] & 0x01000000)
+        _cfs_count = registers[2] & 0x001FFFFF
+        if _cfs_fill:
+            registers[1] = (registers[1] + _cfs_count * 4) & 0xFFFFFFFF
+        else:
+            registers[0] = (registers[0] + _cfs_count * 4) & 0xFFFFFFFF
+            registers[1] = (registers[1] + _cfs_count * 4) & 0xFFFFFFFF
     elif swi_num == 0x09:  # ArcTan
         registers[0] = arm7tdmi_instance.bios.swi_arctan(registers[0]) & 0xFFFF
     elif swi_num == 0x0A:  # ArcTan2
@@ -285,7 +312,10 @@ def swi_handler(swi_field):
         key = key_fixed / 256.0
         freq = 440.0 * (2.0 ** ((key - 69.0) / 12.0))
         registers[0] = int(freq * 256) & 0xFFFFFFFF
-    elif swi_num == 0x1F:  # SoundDriverVSyncOff
+    elif swi_num == 0x1F:  # SoundVariableSet
+        # Set sound variable - no-op (pygame handles audio)
+        pass
+    elif swi_num == 0x28:  # SoundDriverVSyncOff
         # Disable VSync sound processing
         global _sound_vsync_enabled
         _sound_vsync_enabled = False
@@ -302,13 +332,14 @@ def _sync_state_to_cpu(registers, cpsr):
     _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x13, 2)] = cpsr.get('spsr_svc', 0) & 0xFFFFFFFF
     _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x17, 3)] = cpsr.get('spsr_abt', 0) & 0xFFFFFFFF
     _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1B, 4)] = cpsr.get('spsr_und', 0) & 0xFFFFFFFF
+    _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x11, 5)] = cpsr.get('spsr_fiq', 0) & 0xFFFFFFFF
     _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1F, 1)] = cpsr.get('spsr_sys', 0) & 0xFFFFFFFF
     _interp_cpu.thumb_mode = bool(cpsr.get('t', 0))
     for _m, _b in banked_sp_lr.items():
         if _m in _interp_cpu.banked_sp_lr:
             _ib = _interp_cpu.banked_sp_lr[_m]
             _ib['sp'] = _b['sp']; _ib['lr'] = _b['lr']
-            if _m == 0x11:
+            if _m in (0x10, 0x1F, 0x11):
                 _ib['r8'] = _b.get('r8', 0); _ib['r9'] = _b.get('r9', 0)
                 _ib['r10'] = _b.get('r10', 0); _ib['r11'] = _b.get('r11', 0)
                 _ib['r12'] = _b.get('r12', 0)
@@ -322,12 +353,13 @@ def _sync_state_from_cpu(registers, cpsr):
     cpsr['spsr_svc'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x13, 2)] & 0xFFFFFFFF
     cpsr['spsr_abt'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x17, 3)] & 0xFFFFFFFF
     cpsr['spsr_und'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1B, 4)] & 0xFFFFFFFF
+    cpsr['spsr_fiq'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x11, 5)] & 0xFFFFFFFF
     cpsr['spsr_sys'] = _interp_cpu.spsr[_MODE_TO_SPSR_IDX.get(0x1F, 1)] & 0xFFFFFFFF
     for _m, _ib in _interp_cpu.banked_sp_lr.items():
         if _m in banked_sp_lr:
             _b = banked_sp_lr[_m]
             _b['sp'] = _ib['sp']; _b['lr'] = _ib['lr']
-            if _m == 0x11:
+            if _m in (0x10, 0x1F, 0x11):
                 _b['r8'] = _ib.get('r8', 0); _b['r9'] = _ib.get('r9', 0)
                 _b['r10'] = _ib.get('r10', 0); _b['r11'] = _ib.get('r11', 0)
                 _b['r12'] = _ib.get('r12', 0)
@@ -337,6 +369,8 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
     global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
     _sync_state_to_cpu(registers, cpsr)
     _step_count = 0
+    # Yield every 10 steps to allow IRQ delivery (AGENTS.md §1 invariant #1)
+    _YIELD_INTERVAL = 10
     while _step_count < max_steps:
         _pc = _interp_cpu.registers[15]
         if not (0x02000000 <= _pc < 0x02040000
@@ -368,6 +402,9 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
         _old_pc = _pc
         _interp_cpu.step()
         _step_count += 1
+        # Yield periodically to allow IRQ delivery
+        if _step_count > 0 and _step_count % _YIELD_INTERVAL == 0:
+            break
         # Dynamic dispatch table expansion for indirect calls
         # When BX Rm or BLX Rm executes, the new PC may not be in the dispatch table
         _new_pc = _interp_cpu.registers[15]
@@ -391,7 +428,7 @@ def _interp_fallback(registers, cpsr, max_steps=2000, irq_return_pc=None):
     _sync_state_from_cpu(registers, cpsr)
     return _step_count
 
-def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, max_instrs=10000000, pc_trace=None, trace_n=0, audio_capture=None, watch_reg=None, dump_at=None):
+def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale=1, max_instrs=10000000, pc_trace=None, trace_n=0, audio_capture=None, watch_reg=None, dump_at=None, hook_file=None):
     global _cpu_halted
     speed_ratio, calibrated_delay, cycles_per_second, gba_hz = calibrate_gba_timing()
     def ror(v, a):
@@ -427,6 +464,18 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     _instr_per_frame = instr_per_scanline * 228
     _max_inner_stalls = max(50, instr_per_scanline // 2)
     __DELIVER_IRQ_BODY__
+    hook_manager = HookManager() if hook_file else None
+    if hook_file:
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("hook_script", hook_file)
+            hook_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(hook_module)
+            if hasattr(hook_module, 'setup_hooks'):
+                hook_module.setup_hooks(hook_manager)
+                print(f"Hooks loaded from: {hook_file}")
+        except Exception as e:
+            print(f"Warning: Failed to load hooks from {hook_file}: {e}", file=sys.stderr)
     _load_sram()
     _dt_arm = dispatch_table_arm
     _dt_thumb = dispatch_table_thumb
@@ -439,7 +488,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
             _inner_stalls = 0
             _inner_ic_start = ic
             while (ic - _inner_ic_start) < instr_per_scanline:
-                if _cpu_halted or ic >= mi:
+                if _cpu_halted or getattr(_interp_cpu, '_halted', False) or ic >= mi:
                     break
                 pc = registers[15]
                 if _trace_file:
@@ -509,6 +558,8 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
         if _audio_buf is not None:
             _audio_buf.extend(apu_instance._generate_samples(_audio_synth_per_frame))
         fc += 1
+        if hook_manager and hook_manager.has_hooks():
+            hook_manager.notify_frame(fc)
     if screenshot_path:
         import pygame
         surf = ppu_instance.get_surface()
@@ -571,26 +622,27 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
     running = True
     fc = 0; mi = max_instrs; ic = 0
     while running and ic < mi and fc < (frame_limit or 10000):
-        for e in pygame.event.get():
-            if e.type == pygame.QUIT: running = False
-            # Handle save state hotkeys: F5=save, F8=load
-            elif e.type == pygame.KEYDOWN:
-                if e.key == pygame.K_F5 and save_state_mgr:
-                    # Save state to default file or provided path
-                    save_path = save_state if save_state else "save_state.json"
-                    print(f"Saving state to: {save_path}")
-                    if save_state_mgr.save(save_path):
-                        print(f"State saved successfully")
-                    else:
-                        print(f"Warning: Failed to save state to {save_path}", file=sys.stderr)
-                elif e.key == pygame.K_F8 and save_state_mgr:
-                    # Load state from default file or provided path
-                    load_path = load_state if load_state else "save_state.json"
-                    print(f"Loading state from: {load_path}")
-                    if save_state_mgr.load(load_path):
-                        print(f"State loaded successfully")
-                    else:
-                        print(f"Warning: Failed to load state from {load_path}", file=sys.stderr)
+        if not headless:
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT: running = False
+                # Handle save state hotkeys: F5=save, F8=load
+                elif e.type == pygame.KEYDOWN:
+                    if e.key == pygame.K_F5 and save_state_mgr:
+                        # Save state to default file or provided path
+                        save_path = save_state if save_state else "save_state.json"
+                        print(f"Saving state to: {save_path}")
+                        if save_state_mgr.save(save_path):
+                            print(f"State saved successfully")
+                        else:
+                            print(f"Warning: Failed to save state to {save_path}", file=sys.stderr)
+                    elif e.key == pygame.K_F8 and save_state_mgr:
+                        # Load state from default file or provided path
+                        load_path = load_state if load_state else "save_state.json"
+                        print(f"Loading state from: {load_path}")
+                        if save_state_mgr.load(load_path):
+                            print(f"State loaded successfully")
+                        else:
+                            print(f"Warning: Failed to load state from {load_path}", file=sys.stderr)
         # Execute instructions for this frame, stepping PPU scanlines
         # Each scanline: run a batch of instructions, then advance VCount + fire HBlank DMA
         target_cycles_per_frame = int(gba_hz / 60.0)
@@ -762,8 +814,6 @@ if __name__ == "__main__":
             _unsupported.append("--dump-memory")
         if args.dump_region:
             _unsupported.append("--dump-region")
-        if args.hook_file:
-            _unsupported.append("--hook-file")
         if args.load_state:
             _unsupported.append("--load-state")
         if args.save_state:
@@ -782,6 +832,7 @@ if __name__ == "__main__":
             audio_capture=args.audio_capture,
             watch_reg=args.watch_reg,
             dump_at=args.dump_at,
+            hook_file=args.hook_file,
         )
     else:
         frames = run_with_pygame(

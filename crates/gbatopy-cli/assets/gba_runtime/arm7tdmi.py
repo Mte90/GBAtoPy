@@ -888,11 +888,9 @@ class ARM7TDMI:
             else:
                 addr = base - 4 * (n_regs - 1)
 
+        base_in_list = (reg_list & (1 << rn)) != 0
+
         if is_load:
-            # Save original base if it's in the register list (ARM rule: writeback uses original base)
-            base_in_list = (reg_list & (1 << rn)) != 0
-            if w_bit and base_in_list:
-                _orig_base = base
             _has_pc = bool(reg_list & (1 << 15))
             for i in range(16):
                 if reg_list & (1 << i):
@@ -907,20 +905,17 @@ class ARM7TDMI:
                 if reg_list & (1 << i):
                     if s_bit:
                         val = self._read_user_reg(i)
+                        if i == 15:
+                            val = (val + 8) & 0xFFFFFFFF
                     else:
                         val = self._operand(i)
                     self.memory.write_u32(addr, val & 0xFFFFFFFF)
                     addr += 4
 
-        if w_bit:
-            # ARM LDM rule: if base is in list and not the only register, writeback uses original base
-            # If base IS the only register, writeback is UNPREDICTABLE (we use original base)
-            if is_up:
-                writeback_base = _orig_base if (is_load and base_in_list) else base
-                self.registers[rn] = (writeback_base + n_regs * 4) & 0xFFFFFFFF
-            else:
-                writeback_base = _orig_base if (is_load and base_in_list) else base
-                self.registers[rn] = (writeback_base - n_regs * 4) & 0xFFFFFFFF
+        # ARM7TDMI LDM: when base register is in the load list, the loaded value wins — skip writeback
+        if w_bit and not (is_load and base_in_list):
+            offset = n_regs * 4
+            self.registers[rn] = ((base + offset) if is_up else (base - offset)) & 0xFFFFFFFF
 
         if not (is_load and (reg_list & (1 << 15))):
             self.registers[15] += 4
@@ -1044,7 +1039,11 @@ class ARM7TDMI:
             self.registers[15] = 0x08000000
         elif num == 0x01:  # RegisterRamReset
             flags = self.registers[0]
-            self.memory.write_u16(0x04000000, 0x0080)
+            # Per GBA spec: bit 7 (0x80) means "reset display registers"
+            # When set, DISPCNT should be reset to 0x0000 (NOT 0x0080)
+            # When not set, DISPCNT should NOT be touched
+            if flags & 0x80:
+                self.memory.write_u16(0x04000000, 0x0000)
             if flags & 0x01:
                 for addr in range(0x02000000, 0x02040000, 4):
                     self.memory.write_u32(addr, 0)
@@ -1206,9 +1205,26 @@ class ARM7TDMI:
         elif num == 0x0B:  # CpuSet
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_cpuset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
+                self.registers[3] = 0x170  # Match official BIOS clobbered r3
+                _cs_fill = bool(self.registers[2] & 0x01000000)
+                _cs_32bit = bool(self.registers[2] & 0x04000000)
+                _cs_count = self.registers[2] & 0x001FFFFF
+                if _cs_32bit:
+                    if _cs_fill:
+                        self.registers[0] = (self.registers[0] + 4) & 0xFFFFFFFF
+                    else:
+                        self.registers[0] = (self.registers[0] + _cs_count * 4) & 0xFFFFFFFF
+                    self.registers[1] = (self.registers[1] + _cs_count * 4) & 0xFFFFFFFF
         elif num == 0x0C:  # CpuFastSet
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_cpufastset(self.registers[0], self.registers[1], self.registers[2], self.registers[2])
+                _cfs_fill = bool(self.registers[2] & 0x01000000)
+                _cfs_count = self.registers[2] & 0x001FFFFF
+                if _cfs_fill:
+                    self.registers[1] = (self.registers[1] + _cfs_count * 4) & 0xFFFFFFFF
+                else:
+                    self.registers[0] = (self.registers[0] + _cfs_count * 4) & 0xFFFFFFFF
+                    self.registers[1] = (self.registers[1] + _cfs_count * 4) & 0xFFFFFFFF
         elif num == 0x0E:  # BgAffineSet
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_bg_affine_set(self.registers[0], self.registers[1], self.registers[2], self.registers[3])
@@ -1254,47 +1270,31 @@ class ARM7TDMI:
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_diff_unfilter(self.registers[0], self.registers[1], is_16bit=True)
         elif num == 0x19:  # SoundDriverInit
-            # Store sound driver work area pointer (r0) for later use
-            self._sound_work_area = self.registers[0]
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_init(self.registers[0])
         elif num == 0x1A:  # SoundDriverMode
-            # Store sound driver mode (r0)
-            self._sound_mode = self.registers[0]
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_mode(self.registers[0])
         elif num == 0x1B:  # SoundDriverMain
-            # Main sound driver processing - minimal implementation
-            # Since pygame.mixer handles actual audio, just update state
-            if hasattr(self, '_sound_work_area') and self._sound_work_area:
-                # Read work area pointer and do minimal processing
-                pass  # pygame handles actual mixing
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_main()
         elif num == 0x1C:  # SoundDriverVSync
-            # VBlank sound processing - trigger pending sound updates
-            if hasattr(self, '_sound_work_area') and self._sound_work_area:
-                pass  # Called on VBlank, pygame handles audio
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_vsync()
         elif num == 0x1D:  # SoundChannelClear
-            # Clear sound channels - no-op since we use pygame
-            pass
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_channel_clear()
         elif num == 0x1E:  # MidiKey2Freq
-            # Convert MIDI key to frequency
-            # r0 = sound work area (unused for math)
-            # r1 = MIDI key number (fixed-point with 8-bit fractional part)
-            # Formula: freq = 440 * 2^((key - 69) / 12)
-            # GBA uses fixed-point: key has 8-bit fractional part
-            key_fixed = self.registers[1]
-            # Convert fixed-point (8.8 format) to float
-            key = key_fixed / 256.0
-            # Calculate frequency: 440 * 2^((key - 69) / 12)
-            freq = 440.0 * (2.0 ** ((key - 69.0) / 12.0))
-            # Return as fixed-point (multiply by 256 for 8.8 format)
-            self.registers[0] = int(freq * 256) & 0xFFFFFFFF
-        elif num == 0x1F:  # SoundBias
-            # Set audio bias level (r0 contains bias value)
-            # Default bias is 0x8000 for 2-bit DAC, used for waveform channel
-            _bias = self.registers[0] & 0xFFFF
-            # Store bias for potential use by audio channels
-            if hasattr(self, '_sound_work_area') and self._sound_work_area:
-                pass  # pygame mixer handles actual audio output
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.registers[0] = self.bios.swi_midi_key_to_freq(
+                    self.registers[0], self.registers[1]
+                )
+        elif num == 0x1F:  # SoundVariableSet
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_variable_set(self.registers[0], self.registers[1])
         elif num == 0x28:  # SoundDriverVSyncOff
-            # Disable VSync sound processing
-            self._sound_vsync_enabled = False
+            if hasattr(self, 'bios') and self.bios is not None:
+                self.bios.swi_sound_driver_vsync_off()
         else:
             # Unknown SWI - no-op (matches GBA behavior for undefined SWIs)
             pass

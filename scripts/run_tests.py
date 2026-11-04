@@ -371,10 +371,15 @@ def main():
     parser.add_argument("--filter", type=str, help="Filter ROMs by name substring")
     parser.add_argument("--workers", type=int, default=None, help="Parallel workers (alias for --parallel)")
     parser.add_argument("--parallel", type=int, default=None, help="Parallel workers (default: 1 = serial)")
-    parser.add_argument("--frame", type=int, default=60, help="Frame count for execution")
+    parser.add_argument("--frame", "--frames", type=int, default=60, help="Frame count for execution (default: 60)")
+    parser.add_argument("--long-run", action="store_true", help="Convenience flag: sets --frames 300 for extended stability testing")
     parser.add_argument("--json", type=Path, help="Save JSON report to this path")
     parser.add_argument("--no-build", action="store_true", help="Skip building transpiler")
     args = parser.parse_args()
+
+    # --long-run convenience flag overrides frame count to 300
+    if args.long_run:
+        args.frame = 300
 
     # --parallel takes precedence; --workers is alias for backward compat
     # Default is 1 (serial) if neither flag is set

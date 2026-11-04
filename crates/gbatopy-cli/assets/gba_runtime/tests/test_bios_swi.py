@@ -235,9 +235,9 @@ def test_swi_sound_driver_init():
     # Call SWI 0x19
     cpu.swi_handler(0x19)
     
-    # Verify work area was stored
-    assert hasattr(cpu, '_sound_work_area'), "CPU should have _sound_work_area attribute"
-    assert cpu._sound_work_area == work_area, f"Expected work area {hex(work_area)}, got {hex(cpu._sound_work_area)}"
+    # Verify work area was stored via BIOS
+    assert hasattr(cpu.bios, '_sound_work_area'), "BIOS should have _sound_work_area attribute"
+    assert cpu.bios._sound_work_area == work_area, f"Expected work area {hex(work_area)}, got {hex(cpu.bios._sound_work_area)}"
     
     print("✓ test_swi_sound_driver_init passed")
 
@@ -254,9 +254,9 @@ def test_swi_sound_driver_mode():
     # Call SWI 0x1A
     cpu.swi_handler(0x1A)
     
-    # Verify mode was stored
-    assert hasattr(cpu, '_sound_mode'), "CPU should have _sound_mode attribute"
-    assert cpu._sound_mode == mode, f"Expected mode {hex(mode)}, got {hex(cpu._sound_mode)}"
+    # Verify mode was stored via BIOS
+    assert hasattr(cpu.bios, '_sound_mode'), "BIOS should have _sound_mode attribute"
+    assert cpu.bios._sound_mode == mode, f"Expected mode {hex(mode)}, got {hex(cpu.bios._sound_mode)}"
     
     print("✓ test_swi_sound_driver_mode passed")
 
@@ -265,9 +265,6 @@ def test_swi_sound_driver_main():
     """SWI 0x1B SoundDriverMain: minimal processing, no crash."""
     memory = Memory()
     cpu = arm7tdmi.ARM7TDMI(memory)
-    
-    # Set up work area first
-    cpu._sound_work_area = 0x03005000
     
     # Call SWI 0x1B - should not crash
     cpu.swi_handler(0x1B)
@@ -282,9 +279,6 @@ def test_swi_sound_driver_vsync():
     """SWI 0x1C SoundDriverVSync: VBlank processing, no crash."""
     memory = Memory()
     cpu = arm7tdmi.ARM7TDMI(memory)
-    
-    # Set up work area first
-    cpu._sound_work_area = 0x03005000
     
     # Call SWI 0x1C - should not crash
     cpu.swi_handler(0x1C)
@@ -363,14 +357,16 @@ def test_swi_midi_key_to_freq_fractional():
     print("✓ test_swi_midi_key_to_freq_fractional passed")
 
 
-def test_swi_sound_bias():
-    """SWI 0x1F SoundBias: sets audio bias level."""
+def test_swi_sound_variable_set():
+    """SWI 0x1F SoundVariableSet: sets sound driver variable."""
     memory = Memory()
     cpu = arm7tdmi.ARM7TDMI(memory)
     
-    # Set bias value in r0
-    bias_value = 0x8000  # Default 2-bit DAC bias
-    cpu.registers[0] = bias_value
+    # Set command and value in r0 and r1
+    command = 0x0001  # Example command
+    value = 0x0080    # Example value
+    cpu.registers[0] = command
+    cpu.registers[1] = value
     
     # Call SWI 0x1F - should not crash
     cpu.swi_handler(0x1F)
@@ -378,7 +374,121 @@ def test_swi_sound_bias():
     # Just verify it returns cleanly (pygame handles actual audio)
     assert True
     
-    print("✓ test_swi_sound_bias passed")
+    print("✓ test_swi_sound_variable_set passed")
+
+
+def test_bios_sound_driver_init():
+    """BIOS.swi_sound_driver_init: stores work area pointer."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    work_area = 0x03005000
+    bios.swi_sound_driver_init(work_area)
+    
+    assert bios._sound_work_area == work_area
+    print("✓ test_bios_sound_driver_init passed")
+
+
+def test_bios_sound_driver_mode():
+    """BIOS.swi_sound_driver_mode: stores mode value."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    mode = 0x0003
+    bios.swi_sound_driver_mode(mode)
+    
+    assert bios._sound_mode == mode
+    print("✓ test_bios_sound_driver_mode passed")
+
+
+def test_bios_sound_driver_main():
+    """BIOS.swi_sound_driver_main: no-op, no crash."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    bios.swi_sound_driver_main()  # Should not crash
+    assert True
+    print("✓ test_bios_sound_driver_main passed")
+
+
+def test_bios_sound_driver_vsync():
+    """BIOS.swi_sound_driver_vsync: no-op, no crash."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    bios.swi_sound_driver_vsync()  # Should not crash
+    assert True
+    print("✓ test_bios_sound_driver_vsync passed")
+
+
+def test_bios_sound_channel_clear():
+    """BIOS.swi_sound_channel_clear: no-op, no crash."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    bios.swi_sound_channel_clear()  # Should not crash
+    assert True
+    print("✓ test_bios_sound_channel_clear passed")
+
+
+def test_bios_midi_key_to_freq():
+    """BIOS.swi_midi_key_to_freq: convert MIDI key to frequency."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    # Test case 1: MIDI key 69 = A4 = 440 Hz
+    key_69 = 69 * 256  # 69.0 in fixed-point
+    result = bios.swi_midi_key_to_freq(0, key_69)
+    expected_440 = int(440.0 * 256)
+    assert abs(result - expected_440) < 100, f"Key 69: expected ~{expected_440}, got {result}"
+    
+    # Test case 2: MIDI key 81 = A5 = 880 Hz
+    key_81 = 81 * 256
+    result = bios.swi_midi_key_to_freq(0, key_81)
+    expected_880 = int(880.0 * 256)
+    assert abs(result - expected_880) < 100, f"Key 81: expected ~{expected_880}, got {result}"
+    
+    # Test case 3: MIDI key 60 = C4 ≈ 261.63 Hz
+    key_60 = 60 * 256
+    result = bios.swi_midi_key_to_freq(0, key_60)
+    expected_c4 = int(261.63 * 256)
+    assert abs(result - expected_c4) < 200, f"Key 60: expected ~{expected_c4}, got {result}"
+    
+    print("✓ test_bios_midi_key_to_freq passed")
+
+
+def test_bios_midi_key_to_freq_fractional():
+    """BIOS.swi_midi_key_to_freq: fractional key values."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    # Key 69.5
+    key_69_5 = 17792  # 69.5 * 256
+    result = bios.swi_midi_key_to_freq(0, key_69_5)
+    expected = int(440.0 * (2.0 ** (0.5 / 12.0)) * 256)
+    assert abs(result - expected) < 200, f"Key 69.5: expected ~{expected}, got {result}"
+    
+    print("✓ test_bios_midi_key_to_freq_fractional passed")
+
+
+def test_bios_sound_variable_set():
+    """BIOS.swi_sound_variable_set: no-op, no crash."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    bios.swi_sound_variable_set(0x0001, 0x0080)  # Should not crash
+    assert True
+    print("✓ test_bios_sound_variable_set passed")
+
+
+def test_bios_sound_driver_vsync_off():
+    """BIOS.swi_sound_driver_vsync_off: disables VSync."""
+    memory = Memory()
+    bios = BIOS(memory)
+    
+    bios.swi_sound_driver_vsync_off()
+    assert bios._sound_vsync_enabled == False
+    print("✓ test_bios_sound_driver_vsync_off passed")
 
 
 def test_swi_sound_driver_vsync_off():
@@ -386,15 +496,12 @@ def test_swi_sound_driver_vsync_off():
     memory = Memory()
     cpu = arm7tdmi.ARM7TDMI(memory)
     
-    # Initially vsync should be enabled (default)
-    assert not hasattr(cpu, '_sound_vsync_enabled') or cpu._sound_vsync_enabled == True
-    
     # Call SWI 0x28
     cpu.swi_handler(0x28)
     
-    # Verify vsync is disabled
-    assert hasattr(cpu, '_sound_vsync_enabled'), "CPU should have _sound_vsync_enabled attribute"
-    assert cpu._sound_vsync_enabled == False, f"Expected vsync disabled, got {cpu._sound_vsync_enabled}"
+    # Verify vsync is disabled via BIOS
+    assert hasattr(cpu.bios, '_sound_vsync_enabled'), "BIOS should have _sound_vsync_enabled attribute"
+    assert cpu.bios._sound_vsync_enabled == False, f"Expected vsync disabled, got {cpu.bios._sound_vsync_enabled}"
     
     print("✓ test_swi_sound_driver_vsync_off passed")
 
@@ -481,7 +588,7 @@ if __name__ == "__main__":
     test_swi_arctan_zero()
     test_swi_arctan2_zero()
     
-    # Sound driver SWI tests (0x19-0x28)
+    # Sound driver SWI tests (0x19-0x28) - CPU handler tests
     test_swi_sound_driver_init()
     test_swi_sound_driver_mode()
     test_swi_sound_driver_main()
@@ -489,10 +596,21 @@ if __name__ == "__main__":
     test_swi_sound_channel_clear()
     test_swi_midi_key_to_freq()
     test_swi_midi_key_to_freq_fractional()
-    test_swi_sound_bias()
+    test_swi_sound_variable_set()
     test_swi_sound_driver_vsync_off()
+    
+    # BIOS method tests (direct calls)
+    test_bios_sound_driver_init()
+    test_bios_sound_driver_mode()
+    test_bios_sound_driver_main()
+    test_bios_sound_driver_vsync()
+    test_bios_sound_channel_clear()
+    test_bios_midi_key_to_freq()
+    test_bios_midi_key_to_freq_fractional()
+    test_bios_sound_variable_set()
+    test_bios_sound_driver_vsync_off()
     
     # Comprehensive handler existence test
     test_all_swi_handlers_exist()
     
-    print("\nAll 22 BIOS SWI tests passed!")
+    print("\nAll 31 BIOS SWI tests passed!")

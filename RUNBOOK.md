@@ -9,6 +9,14 @@ cargo build --release
 ```
 Must produce 0 errors, 0 warnings.
 
+### When to rebuild
+
+**Runtime .py files** (`crates/gbatopy-cli/assets/gba_runtime/*.py` — ppu.py, arm7tdmi.py, input.py, memory.py, cpu.py, bios.py, dma.py, timers.py, apu.py, etc.) are **read from disk at transpile time** (see `codegen/mod.rs:55-103`). Changes take effect immediately — **no `cargo build` needed**.
+
+**Template .py files** (`crates/gbatopy-cli/assets/templates/game_loop.py`, `deliver_irq_body.py`) are **embedded via `include_str!`** in the Rust binary. Changes require `cargo build` to take effect.
+
+**Rust source** (`.rs` files) always requires `cargo build`.
+
 ## Transpile a Single ROM
 
 ```bash
@@ -24,7 +32,12 @@ Transpiled `.py` files go to `/tmp/`, never the project directory.
 | **Execution** | `python3 stripes.py --headless --frame=60` | ✅ Script runs | ❌ Correct graphics/audio |
 | **Visual** | `compare_screenshots.py` | ✅ Pixel-perfect match with mGBA | Requires manual golden screenshot |
 
-**Key Rule:** `run-all-tests.sh` only checks Python syntax. For full graphics/audio verification, use `compare_screenshots.py`.
+**When to use which:**
+- `run-all-tests.sh` — quick syntax check after codegen changes (fast, no graphics)
+- `python3 scripts/run_tests.py --level 3 --rom <name>` — single-ROM visual verification (default for debugging)
+- `python3 scripts/run_tests.py --level 3 --parallel 4` — full 91-ROM regression sweep (after shared-code fixes)
+
+**Key Rule:** `run-all-tests.sh` only checks Python syntax. For full graphics/audio verification, use `compare_screenshots.py` or `run_tests.py --level 3`.
 
 ## One-Shot ROM Verification
 
@@ -166,6 +179,27 @@ Fixers have been observed overwriting goldens with transpiled output to fake 0% 
 md5sum test-reports/goldens/<rom>.png /tmp/<rom>.py
 ```
 Golden MD5 must NOT equal transpiled MD5 before trusting a PASS result.
+
+## Orchestrator Decision Flow
+
+> **Run this checklist at EVERY work boundary: task completion, subagent return, or todo state change.**
+> This is the operational form of AGENTS.md rules 41-44. Skipping it is a project rule violation.
+
+**Before writing your next reply, in this exact order:**
+
+1. **Count pending todos.** If <3 pending → run work discovery loop (AGENTS.md §27) NOW. Do not write a reply until you have ≥3 pending OR have proven steps 1-9 of §27 yield zero new work.
+
+2. **Scan your draft reply for stall phrases.** Delete any of: `Continue?`, `anything else?`, `should I proceed?`, `let me know`, `next step?`. If the todo list is non-empty, replace the phrase with a dispatch of the next todo. (AGENTS.md rule 41)
+
+3. **Count ready-to-dispatch independent todos.** If ≥2 → dispatch ALL in one message (multiple `task` calls in a single response). Never serialize independent lanes. (AGENTS.md rule 42)
+
+4. **Check running subagents.** If any subagent is still running AND you have other ready work → dispatch that work now, in parallel. Do not wait for the running subagent to finish before starting independent work. (AGENTS.md rule 44)
+
+5. **Check if the just-completed task was a codegen fix.** If yes → dispatch full L3 sweep automatically. Build → canary → full sweep → commit is ONE autonomous cycle, no user checkpoint. (AGENTS.md rule 43, 4a)
+
+6. **Update `todowrite`** with completed/in_progress/pending states before the reply leaves.
+
+---
 
 ## Setup on New Machine
 

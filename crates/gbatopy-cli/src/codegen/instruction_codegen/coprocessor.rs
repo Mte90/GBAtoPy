@@ -34,28 +34,54 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
     let opcode_upper = base_opcode.to_uppercase();
 
     // Handle conditional variants like COPROCESSORge, COPROCESSORne, etc.
-    // ARM7TDMI has no system coprocessor; coprocessor instructions indicate
-    // either data-decoded-as-code (CFG bug) or an undefined instruction trap.
+    // ARM7TDMI has no coprocessor — these are data-decoded-as-code (CFG bug)
+    // or undefined instruction traps. NOP is the correct behavior.
     if opcode_upper.starts_with("COPROCESSOR") {
-        return Some(
-            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
-        );
+        return Some("pass  # coprocessor op — NOP on ARM7TDMI (no coprocessor)".to_string());
     }
 
-    if base_opcode == "MRC" || base_opcode == "MCR" {
-        return Some(
-            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
-        );
+    // MRC: Move to ARM register from Coprocessor (P15)
+    // Format: MRC{cond} P15, opcode1, Rd, CRn, CRm, opcode2
+    // On GBA: CP15 reads typically return 0 (no cache/TCM present)
+    if base_opcode == "MRC" {
+        // Extract destination register from operands
+        // Operands should be: [Register(rd), Immediate(opcode1), Immediate(crn), Immediate(crm), Immediate(opcode2)]
+        // But disassembler may encode as generic COPROCESSOR with empty operands
+        // For now, generate code that reads CP15 register and returns 0
+        // The Rd register is typically the first register operand if present
+        let rd = if let Some(Operand::Register(reg)) = ops.first() {
+            *reg
+        } else {
+            // Fallback: assume r0 as destination (common pattern)
+            0
+        };
+        return Some(format!("registers[{}] = 0  # MRC from CP15 returns 0 (no cache)", rd));
+    }
+
+    // MCR: Move to Coprocessor from ARM register (P15)
+    // Format: MCR{cond} P15, opcode1, Rd, CRn, CRm, opcode2
+    // On GBA: CP15 writes are no-ops (cache config doesn't affect execution)
+    if base_opcode == "MCR" {
+        // MCR to CP15 is a no-op on GBA - cache configuration has no effect
+        return Some("pass  # MCR to CP15 is no-op (no cache)".to_string());
     }
     if base_opcode == "LDC" || base_opcode == "STC" {
-        return Some(
-            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
-        );
+        return Some("pass  # LDC/STC — NOP on ARM7TDMI (no coprocessor)".to_string());
     }
     if base_opcode == "CDP" {
-        return Some(
-            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
-        );
+        return Some("pass  # CDP — NOP on ARM7TDMI (no coprocessor)".to_string());
+    }
+    if base_opcode == "BKPT" {
+        return Some("pass  # BKPT — no debugger, NOP".to_string());
+    }
+    if base_opcode == "CPS" {
+        return Some("pass  # CPS — ARMv6, NOP on ARM7TDMI".to_string());
+    }
+    if matches!(
+        base_opcode,
+        "SEV" | "WFE" | "WFI" | "ISB" | "YIELD" | "DSB" | "DMB"
+    ) {
+        return Some("pass  # ARMv6 hint — NOP on ARM7TDMI".to_string());
     }
     if base_opcode == "SWI" || base_opcode == "SVC" {
         let swi_num = match ops.first() {
@@ -63,8 +89,8 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
             _ => 0,
         };
         return Some(format!(
-            "swi_handler({:#X})\nif _cpu_halted:\n    return",
-            swi_num
+            "registers[15] = {:#X}\nswi_handler({:#X})\nif _cpu_halted:\n    return",
+            inst.address, swi_num
         ));
     }
     if base_opcode == "MSR" {
@@ -104,24 +130,18 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     code.push_str(&format!("cpsr['v'] = ({} >> 28) & 1", source));
                 }
                 if code.is_empty() {
-                    code.push_str(
-                        "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)",
-                    );
+                    code.push_str("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)");
                 }
                 return Some(code);
             }
         }
-        return Some(
-            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
-        );
+        return Some("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string());
     }
     if base_opcode == "MRS" {
         if let Some(Operand::Register(rd)) = ops.first() {
             return Some(format!("registers[{}] = ((cpsr['n'] << 31) | (cpsr['z'] << 30) | (cpsr['c'] << 29) | (cpsr['v'] << 28) | (cpsr['f'] << 6) | (cpsr['i'] << 7) | (cpsr['t'] << 5) | cpsr['mode']) & 0xFFFFFFFF", rd));
         }
-        return Some(
-            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
-        );
+        return Some("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string());
     }
     if base_opcode == "NOP" {
         return Some("pass  # NOP".to_string());
@@ -257,62 +277,66 @@ mod tests {
 
     // === generate() tests for coprocessor instructions ===
     #[test]
-    fn test_generate_copro_always_fallback() {
+    fn test_generate_copro_always_nop() {
         let inst = make_inst("COPROCESSOR", vec![]);
         let result = generate(&inst);
         assert!(result.is_some());
-        assert!(result.unwrap().contains("_interp_fallback"));
+        assert!(result.unwrap().contains("pass"));
     }
 
     #[test]
-    fn test_generate_copro_conditional_fallback() {
+    fn test_generate_copro_conditional_nop() {
         // Use mixed case: uppercase opcode + lowercase condition (e.g., "COPROCESSORge")
         let inst = make_inst("COPROCESSORge", vec![]);
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
-        assert!(code.contains("_interp_fallback"));
+        assert!(code.contains("pass"));
         assert!(code.contains("if cpsr_check('GE')"));
     }
 
     #[test]
     fn test_generate_mrc_fallback() {
-        let inst = make_inst("MRC", vec![Operand::Immediate(0)]);
+        let inst = make_inst("MRC", vec![Operand::Register(0)]);
         let result = generate(&inst);
         assert!(result.is_some());
-        assert!(result.unwrap().contains("_interp_fallback"));
+        let code = result.unwrap();
+        assert!(code.contains("registers[0] = 0"));
+        assert!(code.contains("MRC from CP15"));
     }
 
     #[test]
     fn test_generate_mcr_fallback() {
-        let inst = make_inst("MCR", vec![Operand::Immediate(0)]);
+        let inst = make_inst("MCR", vec![Operand::Register(0)]);
         let result = generate(&inst);
         assert!(result.is_some());
-        assert!(result.unwrap().contains("_interp_fallback"));
+        let code = result.unwrap();
+        assert!(code.contains("pass"));
+        assert!(code.contains("MCR to CP15"));
     }
 
     #[test]
-    fn test_generate_ldc_fallback() {
+    fn test_generate_ldc_nop() {
         let inst = make_inst("LDC", vec![Operand::Immediate(0)]);
         let result = generate(&inst);
         assert!(result.is_some());
-        assert!(result.unwrap().contains("_interp_fallback"));
+        assert!(result.unwrap().contains("pass"));
     }
 
     #[test]
-    fn test_generate_stc_fallback() {
+    fn test_generate_stc_nop() {
         let inst = make_inst("STC", vec![Operand::Immediate(0)]);
         let result = generate(&inst);
         assert!(result.is_some());
-        assert!(result.unwrap().contains("_interp_fallback"));
+        assert!(result.unwrap().contains("pass"));
     }
 
     #[test]
-    fn test_generate_cdp_fallback() {
+    fn test_generate_cdp_nop() {
         let inst = make_inst("CDP", vec![Operand::Immediate(0)]);
         let result = generate(&inst);
         assert!(result.is_some());
-        assert!(result.unwrap().contains("_interp_fallback"));
+        assert!(result.unwrap().contains("pass"));
     }
 
     // === SWI/SVC tests ===

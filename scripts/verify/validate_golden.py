@@ -35,8 +35,12 @@ def validate_golden(path: str) -> tuple[bool, str]:
         
     Validation logic:
         - File must exist
-        - File size must be >= 200 bytes
-        - Files < 200 bytes are considered mGBA segfault artifacts
+        - File size must be >= 200 bytes (segfault artifacts are typically 33-507B)
+        - PNG signature must be present (\\x89PNG\\r\\n\\x1a\\n)
+        - IHDR chunk must show 240x160 dimensions (GBA screen)
+        
+    This distinguishes valid small PNGs (e.g., 580B near-black frames) from
+    segfault artifacts that happen to be >200B.
     """
     filepath = Path(path)
     
@@ -51,7 +55,41 @@ def validate_golden(path: str) -> tuple[bool, str]:
             f"INVALID: {path} is {size}B — segfault artifact (<{GOLDEN_SIZE_THRESHOLD}B threshold)"
         )
     
-    return (True, f"VALID: {path} is {size}B")
+    with open(filepath, "rb") as f:
+        header = f.read(26)
+    
+    if len(header) < 26:
+        return (
+            False,
+            f"INVALID: {path} is {size}B but has truncated header ({len(header)}B read) — not a valid PNG"
+        )
+    
+    PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+    if header[:8] != PNG_SIGNATURE:
+        return (
+            False,
+            f"INVALID: {path} is {size}B but has no PNG signature — not a PNG file"
+        )
+    
+    import struct
+    ihdr_length = struct.unpack(">I", header[8:12])[0]
+    ihdr_type = header[12:16]
+    if ihdr_type != b"IHDR" or ihdr_length != 13:
+        return (
+            False,
+            f"INVALID: {path} is {size}B but IHDR chunk is malformed (type={ihdr_type!r}, len={ihdr_length})"
+        )
+    
+    width = struct.unpack(">I", header[16:20])[0]
+    height = struct.unpack(">I", header[20:24])[0]
+    
+    if width != 240 or height != 160:
+        return (
+            False,
+            f"INVALID: {path} is {size}B but dimensions are {width}x{height} — expected 240x160 (GBA screen)"
+        )
+    
+    return (True, f"VALID: {path} is {size}B, 240x160 PNG")
 
 
 def validate_batch(dir_path: str) -> tuple[int, int, list[tuple[str, bool, str]]]:

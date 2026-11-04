@@ -1,4 +1,4 @@
-use gbatopy_disasm::{operand::ShiftAmount, operand::ShiftType, DecodedInstruction, Operand};
+use gbatopy_disasm::{operand::ShiftAmount, operand::ShiftType, ArmMode, DecodedInstruction, Operand};
 
 /// ARM: PC = instruction_address + 8 (pipeline offset)
 const ARM_PC_OFFSET: u32 = 8;
@@ -142,7 +142,8 @@ fn operand_to_expr(op: &Operand) -> String {
 }
 
 /// Replace R15 (PC) **source** operands with the computed PC value as an Immediate.
-/// ARM: PC = instruction_address + 8. Thumb: PC = (instruction_address + 4) & !3.
+/// ARM: PC = instruction_address + 8.
+/// Thumb: PC = (addr + 4) & !3 (word-aligned for literal pool).
 /// The destination register (ops[0] for instructions with Rd) is never replaced.
 fn resolve_pc_operands(ops: &[Operand], inst: &DecodedInstruction, base_opcode: &str) -> Vec<Operand> {
     let pc_val = if inst.mode == gbatopy_disasm::ArmMode::Thumb {
@@ -183,11 +184,11 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     let ops = resolve_pc_operands(&inst.operands, inst, base_opcode);
 
     let code = match base_opcode {
-        "MOV" => generate_mov(&ops, inst.sets_flags),
+        "MOV" => generate_mov(&ops, inst.sets_flags, inst.mode),
         "MVN" => generate_mvn(&ops, inst.sets_flags),
         "ADD" | "ADC" => generate_add(&ops, base_opcode, inst.sets_flags),
         "SUB" | "SBC" | "RSB" | "RSC" => generate_sub(&ops, base_opcode, inst.sets_flags),
-        "AND" | "EOR" | "ORR" | "BIC" => generate_logic(&ops, base_opcode, inst.sets_flags),
+        "AND" | "EOR" | "ORR" | "BIC" => generate_logic(&ops, base_opcode, inst.sets_flags, inst.mode),
         "LSL" | "LSR" | "ASR" | "ROR" => generate_shift(&ops, base_opcode, inst.sets_flags),
         "CLZ" => generate_clz(&ops),
         "CMP" => generate_cmp(&ops),
@@ -220,7 +221,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     Some(code)
 }
 
-fn generate_mov(ops: &[Operand], sets_flags: bool) -> Option<String> {
+fn generate_mov(ops: &[Operand], sets_flags: bool, mode: ArmMode) -> Option<String> {
     if !ops.is_empty() {
         if let Operand::Register(rd) = ops[0] {
             if rd == 15 {
@@ -239,7 +240,8 @@ fn generate_mov(ops: &[Operand], sets_flags: bool) -> Option<String> {
                 }
                 if ops.len() >= 2 {
                     if let Operand::Register(rn) = &ops[1] {
-                        return Some(format!("registers[15] = registers[{}] & 0xFFFFFFFC", rn));
+                        let mask = if mode == ArmMode::Thumb { "0xFFFFFFFE" } else { "0xFFFFFFFC" };
+                        return Some(format!("registers[15] = registers[{}] & {}", rn, mask));
                     }
                 }
             }
@@ -456,7 +458,7 @@ fn generate_sub(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
     None
 }
 
-fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String> {
+fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool, mode: ArmMode) -> Option<String> {
     if ops.len() >= 2 {
         if let Operand::Register(rd) = ops[0] {
             if rd == 15 && sets_flags {
@@ -487,9 +489,10 @@ fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
                             Operand::Immediate(i) => *i,
                             _ => 0,
                         };
+                        let mask = if mode == ArmMode::Thumb { "0xFFFFFFFE" } else { "0xFFFFFFFC" };
                         return Some(format!(
-                            "registers[15] = (registers[{}] | {}) & 0xFFFFFFFC",
-                            rn_reg, imm
+                            "registers[15] = (registers[{}] | {}) & {}",
+                            rn_reg, imm, mask
                         ));
                     }
                 }
@@ -1512,6 +1515,40 @@ mod tests {
         // PC should be resolved to address + 8 = 0x08000008 = 134217736 (decimal)
         // The operand_to_expr function formats immediates as decimal
         assert!(code.contains("134217736"), "Expected PC value 134217736 (0x08000008) in: {}", code);
+    }
+
+    #[test]
+    fn test_generate_add_pc_source_thumb() {
+        // Test Thumb-mode PC resolution: PC = (address + 4) & !3 (word-aligned)
+        // Reverted from & !1 to & !3 to restore jump table dispatch for some ROMs
+        
+        // Case 1: address mod 4 == 2 (where & !1 and & !3 differ)
+        // address = 0x08008F0A, (address + 4) = 0x08008F0E
+        // & !3 = 0x08008F0C = 134254348 (reverted value)
+        let inst = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(15)],
+            false,
+            ArmMode::Thumb,
+            0x08008F0A,
+        );
+        let code = generate(&inst).unwrap();
+        // 0x08008F0C = 134254348 (decimal) - the reverted value
+        assert!(code.contains("134254348"), "Expected PC value 134254348 (0x08008F0C) for Thumb addr mod 4 == 2 in: {}", code);
+        
+        // Case 2: address mod 4 == 0 (no difference between & !1 and & !3)
+        // address = 0x08000000, (address + 4) = 0x08000004
+        // & !3 = 0x08000004
+        let inst2 = make_inst(
+            "ADD",
+            vec![Operand::Register(0), Operand::Register(1), Operand::Register(15)],
+            false,
+            ArmMode::Thumb,
+            0x08000000,
+        );
+        let code2 = generate(&inst2).unwrap();
+        // 0x08000004 = 134217732 (decimal)
+        assert!(code2.contains("134217732"), "Expected PC value 134217732 (0x08000004) for Thumb addr mod 4 == 0 in: {}", code2);
     }
 
     // === Conditional execution tests ===

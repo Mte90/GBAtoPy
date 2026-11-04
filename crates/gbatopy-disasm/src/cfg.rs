@@ -49,7 +49,21 @@ fn literal_pool_addr(opcode: &str, operands: &[Operand], addr: u32, mode: ArmMod
     }
     match mode {
         ArmMode::Thumb => {
+            // Thumb LDR PC-relative: LDR Rd, [PC, #imm]
+            // Produces Operand::MemoryAddress { base: 15, offset: ImmediateOffset(offset), .. }
             if operands.len() == 2 {
+                if let Operand::MemoryAddress {
+                    base: 15,
+                    offset: AddressingMode::ImmediateOffset(off),
+                    ..
+                } = &operands[1]
+                {
+                    // PC for Thumb is addr + 4, aligned to 4 bytes
+                    let pc = (addr.wrapping_add(4)) & !3;
+                    let literal = pc.wrapping_add(*off as u32);
+                    return Some(literal);
+                }
+                // Also handle Operand::Immediate for other LDR variants
                 if let Operand::Immediate(target) = &operands[1] {
                     return Some(*target);
                 }
@@ -722,8 +736,7 @@ impl CfgBuilder {
         for addr in (0x080000C1..0x08010000).step_by(2) {
             scan_count += 1;
 
-            if indirect_targets.len() >= 500 {
-                // Stricter limit
+            if indirect_targets.len() >= INDIRECT_TARGET_LIMIT {
                 eprintln!("  CFG: indirect target limit reached ({}), stopping scan after checking {} addresses", indirect_targets.len(), scan_count);
                 break;
             }
@@ -808,6 +821,189 @@ impl CfgBuilder {
                 indirect_count
             );
         }
+
+        // Post-indirect-pass fixpoint sweep: resolve LDR-literal × BX-register pairs
+        // that were only discovered during the indirect-pass. The sweeps at lines 512
+        // and 682 run before the indirect-pass, so they miss pairs where the LDR and
+        // BX are in code only reachable via indirect branch.
+        let mut fixpoint_iterations = 0;
+        const MAX_FIXPOINT_ITERATIONS: usize = 10;
+        loop {
+            fixpoint_iterations += 1;
+            if fixpoint_iterations > MAX_FIXPOINT_ITERATIONS {
+                eprintln!("  CFG: post-indirect sweep hit max iterations ({})", MAX_FIXPOINT_ITERATIONS);
+                break;
+            }
+
+            let mut new_targets: Vec<(u32, ArmMode)> = Vec::new();
+            for (rn, value) in &self.ldr_literals {
+                if !self.bx_registers.contains(rn) {
+                    continue;
+                }
+                let target_addr = *value & !1;
+                let target_mode = if *value & 1 == 1 {
+                    ArmMode::Thumb
+                } else {
+                    ArmMode::Arm
+                };
+                let in_rom = (0x08000000..=0x08FFFFFF).contains(&target_addr);
+                let in_iwram = (0x03000000..=0x03007FFF).contains(&target_addr);
+                if !in_rom && !in_iwram {
+                    continue;
+                }
+                if self.branch_targets.contains(&target_addr)
+                    || self.instruction_addresses.contains(&target_addr)
+                {
+                    continue;
+                }
+                if !decode_is_valid_code(rom, target_addr, target_mode, &arm_decoder, &thumb_decoder) {
+                    continue;
+                }
+                if looks_like_data_soft(rom, target_addr, target_mode, &arm_decoder, &thumb_decoder) {
+                    continue;
+                }
+                new_targets.push((target_addr, target_mode));
+                self.branch_targets.insert(target_addr);
+            }
+
+            if new_targets.is_empty() {
+                eprintln!("  CFG: post-indirect sweep iteration {} found no new targets, done", fixpoint_iterations);
+                break;
+            }
+
+            eprintln!(
+                "  CFG: post-indirect sweep iteration {} found {} new targets, running mini-pass",
+                fixpoint_iterations, new_targets.len()
+            );
+
+            let mut mini_queue: Vec<(u32, ArmMode)> = new_targets;
+            let mut mini_visited: HashSet<(u32, ArmMode)> = HashSet::new();
+            const POST_SWEEP_MAX_INSTRUCTIONS: usize = 100_000;
+            self.bfs_pass(BfsPassCtx {
+                queue: &mut mini_queue,
+                own_visited: &mut mini_visited,
+                shared_visited: Some(&visited),
+                data_addresses: &mut data_addresses,
+                rom,
+                arm_decoder: &arm_decoder,
+                thumb_decoder: &thumb_decoder,
+                max_instructions: POST_SWEEP_MAX_INSTRUCTIONS,
+                label: "post-indirect-sweep",
+                report_progress: false,
+            });
+        }
+
+        // C++ vtable scan: scan ROM for arrays of function pointers (vtables).
+        // C++ games (Butano engine) store vtables in ROM as arrays of Thumb
+        // function pointers (0x08xxxxxx with bit 0 set). These are copied to
+        // EWRAM at runtime and called via LDR Rm,[EWRAM] + BLX Rm. The CFG
+        // builder cannot track the copy (memcpy uses register-to-register moves
+        // for parameters), so we scan ROM directly for vtable patterns.
+        //
+        // Gating criteria (validated against known-passing ROMs):
+        // - >=8 consecutive 4-byte values in ROM range with bit 0 set (Thumb)
+        // - >=50% unique entries within the run (eliminates repeated data)
+        // - All pointer targets must land within the actual ROM bytes
+        // - Each target must decode as valid Thumb code
+        eprintln!("  CFG: scanning ROM for C++ vtable patterns...");
+        let mut vtable_targets: Vec<(u32, ArmMode)> = Vec::new();
+        const VTABLE_MIN_ENTRIES: usize = 8;
+        const VTABLE_MAX_TARGETS: usize = 5000;
+
+        let rom_end = 0x08000000u32 + rom.len() as u32;
+
+        let mut vtable_offset = 0;
+        while vtable_offset + 4 * VTABLE_MIN_ENTRIES <= rom.len()
+            && vtable_targets.len() < VTABLE_MAX_TARGETS
+        {
+            let mut run_values: Vec<u32> = Vec::new();
+            let mut scan_off = vtable_offset;
+            while scan_off + 4 <= rom.len() {
+                let value = u32::from_le_bytes([
+                    rom[scan_off],
+                    rom[scan_off + 1],
+                    rom[scan_off + 2],
+                    rom[scan_off + 3],
+                ]);
+                let target = value & !1u32;
+                if value >= 0x08000001 && target < rom_end && (value & 1) == 1 {
+                    run_values.push(value);
+                    scan_off += 4;
+                } else {
+                    break;
+                }
+            }
+
+            if run_values.len() >= VTABLE_MIN_ENTRIES {
+                let unique: std::collections::HashSet<u32> =
+                    run_values.iter().copied().collect();
+                if unique.len() * 2 >= run_values.len() {
+                    for value in &run_values {
+                        let target_addr = value & !1u32;
+                        if self.branch_targets.contains(&target_addr)
+                            || self.instruction_addresses.contains(&target_addr)
+                        {
+                            continue;
+                        }
+                        if !decode_is_valid_code(
+                            rom,
+                            target_addr,
+                            ArmMode::Thumb,
+                            &arm_decoder,
+                            &thumb_decoder,
+                        ) {
+                            continue;
+                        }
+                        if looks_like_data_soft(
+                            rom,
+                            target_addr,
+                            ArmMode::Thumb,
+                            &arm_decoder,
+                            &thumb_decoder,
+                        ) {
+                            continue;
+                        }
+                        vtable_targets.push((target_addr, ArmMode::Thumb));
+                        self.branch_targets.insert(target_addr);
+                    }
+                }
+            }
+
+            vtable_offset = if run_values.is_empty() {
+                vtable_offset + 4
+            } else {
+                vtable_offset + run_values.len() * 4
+            };
+        }
+
+        eprintln!(
+            "  CFG: found {} vtable branch targets (limit: {})",
+            vtable_targets.len(),
+            VTABLE_MAX_TARGETS
+        );
+
+        if !vtable_targets.is_empty() {
+            let mut vtable_queue: Vec<(u32, ArmMode)> = vtable_targets;
+            let mut vtable_visited: HashSet<(u32, ArmMode)> = HashSet::new();
+            const VTABLE_MAX_INSTRUCTIONS: usize = 100_000;
+            let vtable_count = self.bfs_pass(BfsPassCtx {
+                queue: &mut vtable_queue,
+                own_visited: &mut vtable_visited,
+                shared_visited: Some(&visited),
+                data_addresses: &mut data_addresses,
+                rom,
+                arm_decoder: &arm_decoder,
+                thumb_decoder: &thumb_decoder,
+                max_instructions: VTABLE_MAX_INSTRUCTIONS,
+                label: "vtable-pass",
+                report_progress: false,
+            });
+            eprintln!(
+                "  CFG: vtable-pass complete, {} instructions visited",
+                vtable_count
+            );
+        }
+
         if self.instruction_addresses.len() <= 15_000 {
             // Heuristic scan: look for common interrupt handler patterns
             // GBA interrupt handlers often start with:
@@ -1249,22 +1445,23 @@ impl CfgBuilder {
 
         // Scan ROM for Thumb function prologues (PUSH {..., LR} = 0xB5xx).
         // Each is a potential function entry point not reachable via direct branch.
-        // Very conservative: only scan first 32 KB, max 20 targets, require LR bit.
+        // Scan full ROM for function prologues. MAX_REACHABLE_ADDRESSES provides graceful degradation.
         eprintln!("  CFG: scanning for Thumb function prologues...");
         let mut prologue_targets: Vec<(u32, ArmMode)> = Vec::new();
-        const PROLOGUE_SCAN_START: usize = 0x100; // Skip vector table
-        const PROLOGUE_SCAN_END: usize = 0x80000; // Limit to first 512 KB of ROM
-        const PROLOGUE_MAX_TARGETS: usize = 20; // Very strict limit
-        for off in (PROLOGUE_SCAN_START..rom.len().saturating_sub(1)).step_by(2) {
-            if off >= PROLOGUE_SCAN_END {
+        let prologue_scan_start: usize = 0x100; // Skip vector table
+        let prologue_scan_end: usize = rom.len(); // Scan full ROM
+        let prologue_max_targets: usize = 2000; // Increased from 20 to catch indirect-call-only functions
+        for off in (prologue_scan_start..rom.len().saturating_sub(1)).step_by(2) {
+            if off >= prologue_scan_end {
                 break;
             }
-            if prologue_targets.len() >= PROLOGUE_MAX_TARGETS {
+            if prologue_targets.len() >= prologue_max_targets {
                 break;
             }
             let hw = u16::from_le_bytes([rom[off], rom[off + 1]]);
-            // PUSH {r0-r7, lr} = 0xB5xx where bit 7 of low byte indicates LR is pushed
-            if (hw & 0xFF00) == 0xB500 && (hw & 0x0080) != 0 {
+            // PUSH {r0-r7, lr} = 0xB5xx where bit 8 (0x0100) = LR in register list.
+            // (hw & 0xFF00) == 0xB500 confirms bit 8 is set (LR pushed).
+            if (hw & 0xFF00) == 0xB500 && (hw & 0x00FF) != 0 {
                 let target: u32 = 0x08000000 + off as u32;
                 if self.branch_targets.contains(&target) {
                     continue;
@@ -1325,15 +1522,15 @@ impl CfgBuilder {
 
         // Scan ROM for ARM function prologues (STMFD SP!, {..., LR} = 0xE92Dxxxx).
         // Each is a potential function entry point not reachable via direct branch.
-        // Very conservative: same bounds as Thumb scan, max 20 targets, require LR bit.
+        // Scan full ROM for ARM function prologues. Same limits as Thumb scan.
         eprintln!("  CFG: scanning for ARM function prologues...");
         let mut arm_prologue_targets: Vec<(u32, ArmMode)> = Vec::new();
-        const ARM_PROLOGUE_SCAN_START: usize = 0x100; // Skip vector table
-        const ARM_PROLOGUE_SCAN_END: usize = 0x80000; // Limit to first 512 KB of ROM
-        const ARM_PROLOGUE_MAX_TARGETS: usize = 20; // Very strict limit
-        let mut off = ARM_PROLOGUE_SCAN_START;
-        while off < rom.len().saturating_sub(3) && off < ARM_PROLOGUE_SCAN_END {
-            if arm_prologue_targets.len() >= ARM_PROLOGUE_MAX_TARGETS {
+        let arm_prologue_scan_start: usize = 0x100; // Skip vector table
+        let arm_prologue_scan_end: usize = rom.len(); // Scan full ROM
+        let arm_prologue_max_targets: usize = 2000; // Increased from 20 to catch indirect-call-only functions
+        let mut off = arm_prologue_scan_start;
+        while off < rom.len().saturating_sub(3) && off < arm_prologue_scan_end {
+            if arm_prologue_targets.len() >= arm_prologue_max_targets {
                 break;
             }
             // Probe up to 4 instructions for STMFD SP!, {..., LR} (0xE92Dxxxx, bit 14 set).
@@ -2001,6 +2198,63 @@ impl CfgBuilder {
                 self.extract_branch_targets(&opcode_str, &operands, addr, instr_width.into());
             self.track_register_values(&opcode_str, &operands, addr, current_mode, rom);
 
+            // SWI CpuSet (0x0B) / CpuFastSet (0x0C): extract function pointers
+            // from vtable data copied from ROM to EWRAM. C++ engines (Butano)
+            // copy vtables via CpuSet, then call functions through them.
+            // Reading the source ROM data discovers function pointers and adds
+            // them as CFG branch targets.
+            if opcode_str == "SWI" {
+                if let Some(Operand::Immediate(swi_num)) = operands.first() {
+                    let sn = *swi_num as u8;
+                    if sn == 0x0B || sn == 0x0C {
+                        if let Some(src) = self.register_tracker.get(0) {
+                            if (0x08000000..0x0A000000).contains(&src) {
+                                let src_offset = (src - 0x08000000) as usize;
+                                let max_entries = self
+                                    .register_tracker
+                                    .get(2)
+                                    .map(|c| ((c & 0x1FFFFF) as usize).min(1024))
+                                    .unwrap_or(256);
+                                if src_offset + max_entries * 4 <= rom.len() {
+                                    for i in 0..max_entries {
+                                        let off = src_offset + i * 4;
+                                        let value = u32::from_le_bytes([
+                                            rom[off],
+                                            rom[off + 1],
+                                            rom[off + 2],
+                                            rom[off + 3],
+                                        ]);
+                                        if (0x08000000..0x0A000000).contains(&(value & !1)) {
+                                            let target_mode = if value & 1 == 1 {
+                                                ArmMode::Thumb
+                                            } else {
+                                                ArmMode::Arm
+                                            };
+                                            let target = if target_mode == ArmMode::Thumb {
+                                                value & !1
+                                            } else {
+                                                value & !3
+                                            };
+                                            if !self.instruction_addresses.contains(&target) {
+                                                self.instruction_addresses.insert(target);
+                                                self.mode_map.push((target, target_mode));
+                                            }
+                                            if !own_visited.contains(&(target, target_mode))
+                                                && shared_visited
+                                                    .is_none_or(|s| !s.contains(&(target, target_mode)))
+                                            {
+                                                queue.push((target, target_mode));
+                                            }
+                                            self.branch_targets.insert(target);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let is_uncond_branch =
                 opcode_str == "B" || opcode_str == "BX" || writes_to_pc(&opcode_str, &operands);
 
@@ -2074,6 +2328,34 @@ impl CfgBuilder {
                     }
                 } else {
                     current_mode
+                };
+                // Validate the guessed mode by decoding the target. If the guessed
+                // mode produces UNKNOWN/UNDEFINED but the other mode decodes valid,
+                // switch to the valid mode. If neither decodes, skip — it is data.
+                let target_mode = if decode_is_valid_code(
+                    rom,
+                    if target_mode == ArmMode::Thumb { raw_target & !1 } else { raw_target & !3 },
+                    target_mode,
+                    arm_decoder,
+                    thumb_decoder,
+                ) {
+                    target_mode
+                } else {
+                    let other_mode = match target_mode {
+                        ArmMode::Arm => ArmMode::Thumb,
+                        ArmMode::Thumb => ArmMode::Arm,
+                    };
+                    if decode_is_valid_code(
+                        rom,
+                        if other_mode == ArmMode::Thumb { raw_target & !1 } else { raw_target & !3 },
+                        other_mode,
+                        arm_decoder,
+                        thumb_decoder,
+                    ) {
+                        other_mode
+                    } else {
+                        continue;
+                    }
                 };
                 let target = if target_mode == ArmMode::Thumb {
                     raw_target & !1

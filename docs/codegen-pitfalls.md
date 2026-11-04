@@ -111,15 +111,15 @@ Catalogue of codegen bugs fixed across sessions.
 ## 16. Thumb PUSH/POP codegen gap (F287)
 
 **Symptom:** 335 stubs in cascade7 ROM (67.1% of remaining stubs).
-**Root cause:** Thumb PUSH/POP opcodes have no codegen handler at all. Codegen LDM/STM handler at `load_store.rs:577-689` requires `Operand::MemoryAddress` with `AddressingMode::Multi`, but Thumb disassembler emits flat register lists.
-**Status:** NOT YET FIXED.
+**Root cause:** Thumb PUSH/POP opcodes have no codegen handler at all. Codegen LDM/STM handler at `codegen/instruction_codegen/load_store.rs:577-696` requires `Operand::MemoryAddress` with `AddressingMode::Multi`, but Thumb disassembler emits flat register lists.
+**Status:** ✅ FIXED (commit c3ec69e).
 **Files:** crates/gbatopy-disasm/src/thumb/mod.rs, crates/gbatopy-cli/src/codegen/instruction_codegen/load_store.rs
 
 ## 17. Thumb LDMIA/STMIA codegen gap (F288)
 
 **Symptom:** 111 stubs in cascade7 ROM (22.2% of remaining stubs).
 **Root cause:** Thumb LDMIA/STMIA opcodes match codegen's `starts_with("LDM") || starts_with("STM")` pattern, but Thumb disassembler emits `ops[0]` as `Register`, codegen expects `MemoryAddress`.
-**Status:** NOT YET FIXED.
+**Status:** ✅ FIXED (commit c3ec69e).
 **Files:** crates/gbatopy-disasm/src/thumb/mod.rs, crates/gbatopy-cli/src/codegen/instruction_codegen/load_store.rs
 
 ## 18. Per-Scanline Affine Parameter Snapshots (PPU)
@@ -128,3 +128,14 @@ Catalogue of codegen bugs fixed across sessions.
 **Root cause:** _render_mode3/4/5 read affine parameters directly from live registers once per frame, ignoring per-scanline HBlank DMA updates.
 **Fix:** step_scanline() captures BG2PA/PB/PC/PD/X/Y into _bg2_affine_snapshots[vcount] before DMA fires. _render_mode3/4/5 read from snapshots, falling back to live read if snapshot is None. step_scanline() takes a capture_snapshot=True flag (main loop=True, fallback=False).
 **Files:** crates/gbatopy-cli/assets/gba_runtime/ppu.py
+
+## 19. EWRAM vtable dispatch resolution gap (CFG Builder) — RESOLVED
+
+**Symptom:** Butano C++ engine ROMs (fantasy-knight, proposal_proposal-demo) failed L3 visual verification.
+**Root cause (ORIGINAL):** Butano copies vtables from ROM to EWRAM via CpuSet SWI, then dispatches virtual functions via `LDR Rm,[EWRAM addr] + BLX Rm`. The CFG builder only resolved indirect calls via LDR-literal × BX pairs. It could not resolve targets loaded from EWRAM.
+**Fix (commit b2dbee8):** Vtable scan implemented — CFG builder now discovers vtable targets through EWRAM. Verified: fantasy-knight has 24 vtable targets discovered + 31808 instructions visited; proposal_proposal-demo has 8 vtable targets. All targets are correctly transpiled.
+**Status:** ✅ FIXED (commit b2dbee8). Vtable dispatch is NO LONGER the problem.
+**Actual remaining issues (2026-11-03):**
+- **fantasy-knight**: VCOUNT polling stall at 0x080182C6 (64.3% execution time). Timing model limitation: 1 instr = 1 cycle makes VCOUNT advance 3x slower than real hardware. See F377 in WORKPLAN.md.
+- **proposal_proposal-demo**: Invalid golden (580B segfault artifact). Completely different execution profile: no VCOUNT poll loop, memory zero-fill at 54.8% + IWRAM calls at 17.3% are top time consumers. Needs golden regeneration. See F378 in WORKPLAN.md.
+**Files:** crates/gbatopy-disasm/src/cfg.rs (indirect call resolution), crates/gbatopy-cli/src/codegen/ (SWI CpuSet tracking).

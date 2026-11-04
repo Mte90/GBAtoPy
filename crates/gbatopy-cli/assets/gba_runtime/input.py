@@ -7,16 +7,16 @@ GBA_KEYS = {
     "B": 0x02,  # bit 1
     "SELECT": 0x04,  # bit 2
     "START": 0x08,  # bit 3
-    "RIGHT": 0x100,  # bit 8
-    "LEFT": 0x200,  # bit 9
-    "UP": 0x400,  # bit 10
-    "DOWN": 0x800,  # bit 11
-    "R": 0x1000,  # bit 12
-    "L": 0x2000,  # bit 13
+    "RIGHT": 0x10,  # bit 4
+    "LEFT": 0x20,  # bit 5
+    "UP": 0x40,  # bit 6
+    "DOWN": 0x80,  # bit 7
+    "R": 0x100,  # bit 8
+    "L": 0x200,  # bit 9
 }
 
 # Keyboard to GBA button mapping
-# Arrow keys -> DPAD (bits 8-11), Z -> A, S -> B, Enter -> Start, Space -> Select
+# Arrow keys -> DPAD (bits 4-7), Z -> A, S -> B, Enter -> Start, Space -> Select
 KEYBOARD_MAP = {
     "z": "A",
     "s": "B",
@@ -31,8 +31,8 @@ KEYBOARD_MAP = {
 }
 
 # Default value when no keys pressed (all bits = 1, meaning released)
-# 14 bits (0-13) = 0x3FFF
-DEFAULT_KEYS = 0x3FFF
+# 10 bits (0-9) = 0x3FF
+DEFAULT_KEYS = 0x3FF
 
 
 class Input:
@@ -98,7 +98,7 @@ class Input:
         keys = pygame.key.get_pressed()
 
         # Start with all keys released (bits = 1)
-        key_state = DEFAULT_KEYS  # 0x3FFF = all released
+        key_state = DEFAULT_KEYS  # 0x3FF = all released
 
         # Check each mapped key
         for py_key_name, gba_key_name in KEYBOARD_MAP.items():
@@ -116,7 +116,7 @@ class Input:
         Returns:
             16-bit integer representing GBA KEYINPUT register.
             Bits are active low: 0 = pressed, 1 = released.
-            0x3FFF (14 bits) = no keys pressed
+            0x3FF (10 bits) = no keys pressed
         """
         return self._keys_pressed
 
@@ -156,7 +156,7 @@ class Input:
         l=False,
     ):
         """Update GBA input from boolean arguments."""
-        self._keys_pressed = 0x3FFF  # All not pressed
+        self._keys_pressed = DEFAULT_KEYS  # All not pressed
         if a:
             self._keys_pressed &= ~GBA_KEYS["A"]
         if b:
@@ -184,9 +184,9 @@ KEY_A = 0x01  # bit 0
 KEY_B = 0x02  # bit 1
 KEY_SELECT = 0x04  # bit 2
 KEY_START = 0x08  # bit 3
-KEY_RIGHT = 0x100  # bit 8
-KEY_LEFT = 0x200  # bit 9
-KEY_UP = 0x400  # bit 10
-KEY_DOWN = 0x800  # bit 11
-KEY_R = 0x1000  # bit 12
-KEY_L = 0x2000  # bit 13
+KEY_RIGHT = 0x10  # bit 4
+KEY_LEFT = 0x20  # bit 5
+KEY_UP = 0x40  # bit 6
+KEY_DOWN = 0x80  # bit 7
+KEY_R = 0x100  # bit 8
+KEY_L = 0x200  # bit 9

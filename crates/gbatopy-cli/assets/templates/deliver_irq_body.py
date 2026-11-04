@@ -14,11 +14,17 @@
                 if (_irq.if_reg & (1 << 0)) and (_irq.ie_reg & (1 << 0)) and ime_live:
                     _cpu_halted = False
                     _halt_reason = None
+                    if '_interp_cpu' in globals() and _interp_cpu is not None:
+                        _interp_cpu._halted = False
+                        _interp_cpu._halt_reason = None
             elif _halt_reason == "any":
                 _any_pending = _irq.if_reg & _irq.ie_reg
                 if _any_pending:
                     _cpu_halted = False
                     _halt_reason = None
+                    if '_interp_cpu' in globals() and _interp_cpu is not None:
+                        _interp_cpu._halted = False
+                        _interp_cpu._halt_reason = None
                     _ime_live = (memory.io[0x208] | (memory.io[0x209] << 8)) & 0x0001
                     if not _ime_live and _swi_caller_pc is not None:
                         registers[15] = _swi_caller_pc

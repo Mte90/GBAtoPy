@@ -37,11 +37,13 @@ Transpiler output:   /tmp/<romname>.py  (NEVER in project dir)
 | [RUNBOOK.md](RUNBOOK.md) | Build, test, verify, debug commands — copy-pasteable |
 | [docs/hardware-reference.md](docs/hardware-reference.md) | CPU, display, memory map, PPU modes — single source of truth |
 | [docs/runtime-architecture.md](docs/runtime-architecture.md) | PPU scanline & DMA architecture, `_map_address()` |
+| [docs/apu-architecture.md](docs/apu-architecture.md) | APU channels, registers, mixer, threading, codegen integration |
 | [docs/how-debug.md](docs/how-debug.md) | Systematic debug workflow + known bug classes |
 | [docs/codegen-pitfalls.md](docs/codegen-pitfalls.md) | Documented codegen bug classes (see file for count) |
 | [docs/roadmap.md](docs/roadmap.md) | Full implementation status and strategy |
 | [docs/reference/test-roms.md](docs/reference/test-roms.md) | Per-ROM pass/fail matrix |
 | [WORKPLAN.md](WORKPLAN.md) | Source of truth for pending work — read at session start |
+| [docs/ghidra-reference.md](docs/ghidra-reference.md) | Ghidra static analysis oracle — cross-validation workflow |
 
 ## Transpiler Output Requirements
 
@@ -81,9 +83,7 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 6. **All memory regions must be zero-initialized at construction.** `memory.py` must use `[0] * SIZE` for VRAM, Palette RAM, OAM, IWRAM, EWRAM. Debug patterns like `[(i%256) for i in range(SIZE)]` left in production cause uninitialized tiles to decode to non-zero palette indices → black screens.
    **Codegen:** must NOT emit pre-loading code that writes ROM-extracted data into VRAM/palette at init. The asset extractor's `is_valid_4bpp_tile` heuristic is too loose (accepts ARM code as tiles) — do not trust it. VRAM/palette start zeroed on real hardware.
 7. **All instruction/SWI dispatch tables must be single-source.** Two SWI dispatchers existed (cpu.py:_arm_swi with 4 handlers, arm7tdmi.py:swi_handler with 24). The fast-path CPU silently dropped CpuSet/CpuFastSet. There must be ONE dispatch table for SWI instructions, shared by both the fast-path and fallback interpreters.
-8. **PPU `forced_blank` must track DISPCNT bit 7 live.** `ppu.py` maintains `self.forced_blank` as the authoritative field; code that reads `self.dispcnt & 0x0080` uses a stale cached value (initialized to 0x0480 at line 519, never updated). This caused a GLOBAL white-screen regression — every ROM rendered blank. All forced-blank checks must read `self.forced_blank`, not `self.dispcnt`.
-
-## Non-Negotiable Rules
+8. **PPU `forced_blank` must track DISPCNT bit 7 live.** `ppu.py` maintains `self.forced_blank` as the authoritative field; code that reads `self.dispcnt & 0x0080` uses a stale cached value (initialized to 0x0480 and never updated). This caused a GLOBAL white-screen regression — every ROM rendered blank. All forced-blank checks must read `self.forced_blank`, not `self.dispcnt`.
 
 ## Non-Negotiable Rules
 
@@ -101,9 +101,9 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 7. **One-shot verification** — `./scripts/verify/verify_rom.sh <rom> --no-golden` transpiles, runs, compares in one step.
 8. **Verify subagent claims** — always check their work manually.
 8a. **Commit messages for codegen/runtime fixes must include verification evidence** — a commit that claims "X now works" must show the exact command and output that proves it. Format: `Verified: <command> → <result>`. Example: `Verified: python3 /tmp/pong.py --headless --screenshot /tmp/pong.png → 2424 bytes, 44.79% diff`. A commit without evidence is an unverified claim — do not trust it, re-verify before building on it.
-8b. **PASS status expires** — a ROM marked PASS in `docs/reference/test-roms.md` is only valid if verified with the current binary. PASS labels accumulated across sessions are UNVERIFIED until re-tested. After any fix to shared code (dispatch, PPU, DMA, memory, codegen, IRQ handling), a canary regression on ONE ROM is necessary but NOT sufficient — run the full 91-ROM L3 sweep (`python3 scripts/run_tests.py --level 3 --parallel 4`) before declaring the session's work done. The canary catches obvious regressions; only the full sweep confirms no PASS regressed silently.
-8c. **Periodic full re-verification** — even when no shared code changed, if the last full L3 sweep was more than 5 sessions ago, re-run it. Stale PASS = unverified. Document the last full sweep date in `docs/reference/test-roms.md` header.
-8d. **PASS claims must cite evidence** — each PASS row in `docs/reference/test-roms.md` should note the last verification date (or commit hash). A PASS with no recent evidence is treated as INCONCLUSIVE.
+8b. **PASS status expires and must cite evidence** — a ROM marked PASS in `docs/reference/test-roms.md` is only valid if verified with the current binary. (1) After any fix to shared code (dispatch, PPU, DMA, memory, codegen, IRQ handling), run the full 91-ROM L3 sweep (`python3 scripts/run_tests.py --level 3 --parallel 4`) before declaring the session's work done — a canary on one ROM is necessary but not sufficient. (2) Even with no shared-code change, re-run the full sweep if the last one was more than 5 sessions ago; document the last sweep date in the test-roms.md header. (3) Each PASS row must cite the last verification date or commit hash; a PASS with no recent evidence is INCONCLUSIVE.
+8c. **Verify subagent code-pattern claims by reading the cited line** — before acting on any subagent's claim about a code pattern, read the cited file:line with `read` or `aft_zoom` and confirm the pattern exists as described. (Explorers have hallucinated code patterns that don't exist at the cited locations.)
+8d. **ROM regression testing MUST use the test script** — never run manual transpile+execute with custom `--max-instrs`/`--timeout` for regression testing. The script `scripts/run_tests.py --level 3 --rom <name>` has correct parameters baked in (10M instructions, 90s timeout, correct golden paths at `test-reports/goldens/`). Subagents fabricating pixel-diff results with wrong parameters (e.g., 210K instructions instead of 10M) is a recurring failure mode. Goldens are at `test-reports/goldens/golden_{rom_base}_frame_{N}.png` (typically frame 60), NOT `test_roms/goldens/`.
 
 ### Output Discipline
 9. **Transpiled Python output goes to `/tmp/`** — NEVER inside the project directory. Project holds only source, templates, scripts, docs.
@@ -115,14 +115,10 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 13. **Debug workflow** — modify generated Python first to verify a fix, then apply to Rust codegen.
 14. **Use built-in debug flags** — `--pc-trace=FILE`, `--trace-n=N`, `--max-instrs=N`. Do not inject `print(f"PC={...}")`. See [RUNBOOK.md](RUNBOOK.md) and `docs/how-debug.md`.
 15. **Goldens must be validated before comparison** — a golden screenshot <200B (typically 33 bytes) is a segfault artifact from mGBA, not a real golden. Always check `ls -la` on golden PNGs before running compare_screenshots.py. Correct mGBA headless setup: `export SDL_VIDEODRIVER=offscreen` + `export SDL_AUDIODRIVER=dummy` + `export LD_LIBRARY_PATH="$PROJECT_ROOT/mgba/build:$PROJECT_ROOT/mgba/build/sdl:$LD_LIBRARY_PATH"`. Do NOT use `SDL_VIDEODRIVER=dummy` (causes 33-byte segfault artifacts). Do NOT use `xvfb-run` alone (produces >200B but all-black blank goldens). `SDL_VIDEODRIVER=offscreen` is the only proven working backend for mGBA screenshot generation on a headless server.
-16. **Golden screenshots must be validated as >200B before comparison** — a golden <200B is a segfault artifact, not a real reference image. Comparing transpiled output against a broken golden produces meaningless results. Always `ls -la` the golden first.
 17. **Debug probes must flush** — `print(..., flush=True)` BEFORE any `os._exit(0)`; the runtime exits hard, bypassing buffer flush.
-18. **Never add step_scanline to memory reads** — see invariant #3. PPU stepping is exclusively in the main loop.
-19. **Fallback interpreter is pure CPU** — see invariant #1.
 20. **Check known bug classes first** — consult the known bug classes in `docs/how-debug.md` (codegen, runtime, and Thumb-disassembler/codegen-mismatch classes). Run `python3 -m pytest crates/gbatopy-cli/assets/gba_runtime/tests/test_dispatch_audit.py` first.
 21. **Check dispatch table completeness** — NOP block bug may skip initialization code.
 22. **Verify STRH/LDRH offsets** — disassembler may use wrong bit field (bits 7-3 vs bits 3-0).
-22a. **Verify explorer code-pattern claims by reading the cited line** — an explorer hallucinated a NOP-detection mask `(opcode & 0xFF000000) == 0xEA000000` at emitter_arm.rs:609; grep found no such pattern. Before acting on any subagent's claim about a code pattern, read the cited file:line with `read` or `aft_zoom` and confirm the pattern exists as described.
 
 ### Work Management
 23. **Autonomous todo creation** — when you discover work (new bug, stale doc, missing test, done WORKPLAN item, regression risk, flagged follow-up), IMMEDIATELY create a `todowrite` entry. Review at every work boundary and prune irrelevant items.
@@ -147,6 +143,12 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 
 28. **Keep at least 3 pending todos** — at any work boundary, if fewer than 3 pending todos remain, run the work discovery loop (27) before continuing. Always have a visible backlog of upcoming work.
 
+---
+
+## AI Orchestrator Operating Rules
+
+> Rules 29-40 govern how the orchestrator agent operates (context management, delegation, parallelization). They are not GBA project rules.
+
 ### Context Management (Avoid Compaction Death Spirals)
 
 29. **DELEGATE ALL EXECUTION** — orchestrator NEVER runs: `cargo build`, `gbatopy transpile`, `python3 <rom>.py`, `python3 -m pytest`, or any command producing >2KB output. These ALWAYS go to a fixer/explorer subagent. Orchestrator only runs: `git status`/`diff`/`log`, `ls`, `wc -l`, `grep -c`, `head -5`, `tail -5`, and context tools (`ctx_reduce`/`ctx_memory`/`todowrite`/`aft_safety`). If you need a build or transpile result, dispatch a subagent and read only the final summary via `task_result`. Violating this rule is the #1 cause of compaction death spirals.
@@ -155,7 +157,7 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 
 31. **ONE-DROP RULE** — if ANY tool output is dropped/compacted even once, STOP. Do NOT retry the same call. Delegate all subsequent build/verify/diagnose work to a fresh subagent. One drop = death spiral already started. Subagent results survive compaction better than bash output.
 
-32. **MEMORY UNDER 40** — deduplicate/merge/archive project memory at every work boundary (todo completion, session start, phase transition). Scan for: (1) duplicates → merge, (2) contradictions → resolve and archive one, (3) stale entries → archive. Known contradictions: #47 vs #51 (`max_inner_stalls` 10 vs 10000), #50 vs #61 (bgpd "never DMA" vs "can enable DMA"), #22 vs #23 (duplicate affine BG2 write dispatch), #30/#69/#70/#73/#75 (five entries all saying "snapshot before DMA" — merge to one). Every memory entry costs ~100 bytes on every turn — 80 entries = 8KB of permanent overhead.
+32. **MEMORY UNDER 40** — deduplicate/merge/archive project memory at every work boundary (todo completion, session start, phase transition). Scan for: (1) duplicates → merge, (2) contradictions → resolve and archive one, (3) stale entries → archive. Every memory entry costs ~100 bytes on every turn — 80 entries = 8KB of permanent overhead.
 
 33. **SUBAGENT HANDOFF** — subagents stop at ~70% context, write a summary of progress to `/tmp/<task-name>-handoff.txt` (what was done, what remains, files modified with line numbers, exact next step), and return it as their final message. Orchestrator launches a fresh subagent with the handoff as starting context. Never let a subagent run until its context is fully saturated.
 
@@ -181,94 +183,26 @@ Established after multi-session debugging. Violating reintroduces solved bugs. F
 
 40. **Implement P0 speedups before resuming feature work** — after the friction analysis, if any P0 speedup item (≤2hr effort, prevents a failure mode observed this cycle) is unimplemented, implement it BEFORE moving to the next feature/bug work. The session does not end while unimplemented P0 speedups remain from the current commit's friction analysis. A friction point observed twice across sessions becomes a structural fix (script, lint rule, or AGENTS.md rule), not a repeated manual workaround — promote it per global §17.
 
+### Autonomous Continuation Enforcement
+
+> Rules 41-46 are MECHANICAL rules, not guidelines. They have explicit violation signals. The operational checklist form is in `RUNBOOK.md` § "Orchestrator Decision Flow" — run that checklist at every work boundary. These rules exist because rules 27-28 were being ignored in practice.
+
+41. **NO permission-seeking when work is queued** — if the todo list has ≥1 pending item, dispatch it. Never ask "Continue?" / "anything else?" / "should I proceed?" / "let me know" when there is queued work. Valid pause reasons are ONLY: (a) a destructive operation needing confirmation (global §2), (b) genuine ambiguity requiring one clarifying question (global §6), (c) ALL todos are genuinely blocked and rule 27 yielded zero new work. "Waiting for inspiration" is not a valid pause. **Violation signal:** any reply containing "Continue?" / "anything else?" / "should I proceed?" while ≥1 pending todo exists.
+
+42. **Batch dispatch all independent ready todos** — when ≥2 todos are ready-to-dispatch (no shared write scope, no dependency on each other's results), emit ALL `task` calls in a SINGLE message. Never dispatch one, wait for it, then dispatch the next. If only 1 todo is ready but 3 are pending, dispatch the 1 and use the wait time to run rule 27 and refill the queue. **Violation signal:** a partial dispatch (1 of N ready todos) in a single turn, followed later by another dispatch of an independent todo.
+
+43. **Codegen changes need zero user approval** — rule 4a means literally: apply fix → build → canary regression (one ROM) → full L3 sweep (91 ROMs) → commit, ALL in one autonomous cycle. No "should I apply this codegen fix?" checkpoint. The canary result is the only gate: pass → proceed to full sweep; fail → debug. The full sweep result is the next gate: pass → commit; fail → debug. Never ask the user to approve a codegen change mid-cycle. **Violation signal:** any "should I proceed with this codegen fix?" / "ok to apply?" message for a codegen change.
+
+44. **Never idle-wait on a subagent** — when a subagent is running and you have other ready work, dispatch it in parallel. If you have NO other ready work, use the wait time to: (a) run rule 27 work discovery, (b) read code/docs to prepare the next dispatch brief, (c) reconcile completed subagent results, (d) update WORKPLAN.md/test-roms.md. Stopping to "wait for results" when there is preparable work is a process error. **Violation signal:** a reply that says "waiting for subagent X" while ≥1 ready todo exists undisturbed.
+
+45. **One comprehensive probe per investigation round, never incremental serial probes** — when investigating a runtime bug (blank screen, hang, wrong render), the first probe dispatched must capture ALL relevant signals in a single run: registers at the decision point, DMA channel configurations (all 4 channels: source/dest/count/control), VRAM/palette/OAM write counts, IRQ delivery (VBlank/HBlank), HALT enter/exit transitions, and the specific register or flag the bug hypothesis depends on. Do NOT dispatch a probe that captures one signal, read the result, then dispatch a second probe for the next signal — each probe round is minutes of wall-clock. If two probe angles are independent, dispatch them as parallel subagent lanes in ONE message per rule 34a; never run probe-1, read result, then probe-2. A probe that returns "need to also check X" is a defective probe — the brief must enumerate every signal to capture up front. **Violation signal:** three or more sequential fixer/explorer calls on the same ROM, each adding one new probe, when one call with a comprehensive probe brief would have surfaced the root cause.
+
+46. **Refresh queue every 4 completed todos** — after every 4 todos marked completed in the opencode `todowrite`, run the rule 27 work discovery loop, then import any new tasks discovered into `todowrite` and add new `F<N>` entries to `WORKPLAN.md`. This keeps the backlog from running dry mid-session and ensures WORKPLAN.md and todowrite stay synchronized. **Violation signal:** fewer than 3 pending todos remain in `todowrite` without a fresh work-discovery pass having run, OR a work-discovery pass that finds new work but does not import it into `todowrite`.
+
 ## Zero Tolerance for Stubs
 
 Applies to **generated Python output** and **runtime templates** in `crates/gbatopy-cli/assets/gba_runtime/` and `templates/`. See global §30.1 for the full rule. Markers: `pass`, `return 0`, `return None`, `NotImplementedError`, `TODO:`, empty bodies, `print()`-only functions.
 
 ## Ghidra Static Analysis Oracle
 
-Ghidra 12.1.4 is installed at `/opt/ghidra/ghidra_12.1.4_PUBLIC` and used as a **static analysis oracle** — ground truth for cross-validating the transpiler's static analysis (function discovery, basic-block boundaries, instruction decode).
-
-### When to Use Ghidra
-
-| Scenario | Command | Purpose |
-|----------|---------|---------|
-| Function discovery cross-check | `scripts/ghidra/ghidra_functions.sh <rom>` | Import ROM and compare Ghidra's symbol table vs our dispatch table — every missing function is a CFG bug |
-| Instruction decode oracle | `scripts/ghidra/ghidra_decode.sh <rom> <addr>` | When debugging a bit-field extraction bug, compare our decode vs Ghidra's disassembly |
-| Basic block cross-check | `scripts/ghidra/ghidra_blocks.sh <rom>` | Diff basic-block boundaries — catches fall-through and cross-mode bugs |
-| Timeout/hang root cause | `scripts/ghidra/ghidra_decompile.sh <rom> <addr>` | Decompile the hang loop to understand what the ROM is waiting on |
-
-### Ghidra Helper Scripts
-
-All scripts in `scripts/ghidra/`:
-- `ghidra_functions.sh <rom>` — imports ROM and provides instructions for symbol table extraction
-- `ghidra_decode.sh <rom> <addr>` — provides guidance for disassembling at an address
-- `ghidra_blocks.sh <rom>` — provides guidance for basic block analysis
-- `ghidra_decompile.sh <rom> <addr>` — provides guidance for decompiling a function
-
-See `scripts/ghidra/README.md` for detailed usage.
-
-### GBA Processor Configuration
-
-GBA uses ARM7TDMI (ARMv4T, big-endian byte order for ROM):
-- **Processor:** `ARM:BE:32:v4t`
-- **Base address:** `0x08000000`
-- **Entry point:** `0x08000000`
-- The GBA has mixed ARM/Thumb code — Ghidra tracks mode per function, which is exactly the cross-mode validation we need
-
-### Cross-Validation Workflow
-
-When debugging a static analysis bug (missing function, wrong basic block, instruction decode error):
-
-1. **Import ROM with Ghidra:**
-   ```bash
-   ./scripts/ghidra/ghidra_functions.sh <rom_name>
-   ```
-
-2. **Open in Ghidra GUI:**
-   ```bash
-   ghidraRun
-   # Open project at /tmp/ghidra-projects/gbatopy
-   ```
-
-3. **Compare Symbol Table vs transpiler's dispatch table:**
-   - Ghidra: View > Symbol Table
-   - Transpiler: `gbatopy transpile <rom> --print-dispatch 2>/dev/null | grep '^FUNC'`
-   - Every symbol in Ghidra but not in ours is a missing function = CFG bug
-   - Every symbol in ours but not in Ghidra's is a false positive = heuristic over-reach
-
-4. **For instruction decode bugs:**
-   - Navigate to address in Ghidra GUI
-   - Compare Ghidra's disassembly with transpiler output
-   - Identify bit-field extraction errors
-
-This replaces manual disassembly and guesswork with ground-truth comparison.
-
-### Installation
-
-Ghidra is installed at `$GHIDRA_HOME/ghidra_12.1.4_PUBLIC` (or `/opt/ghidra` by default). Requires JDK 21+. The `analyzeHeadless` binary is at `$GHIDRA_HOME/ghidra_12.1.4_PUBLIC/support/analyzeHeadless`.
-
-**Test verification:**
-```bash
-"${GHIDRA_HOME:-/opt/ghidra}"/ghidra_12.1.4_PUBLIC/support/analyzeHeadless /tmp/test testProj \
-  -import "${PROJECT_ROOT:-$(pwd)}/test_roms/roms/hello.gba" \
-  -processor ARM:BE:32:v4t \
-  2>&1 | grep -E "Total Time|Analysis succeeded"
-```
-
-Expected output: `Total Time   1 secs` and `Analysis succeeded`.
-
-**To reinstall:**
-```bash
-cd /tmp
-wget https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/Ghidra_12.1.4_PUBLIC_20250205.zip
-unzip Ghidra_12.1.4_PUBLIC_20250205.zip -d /opt/
-ln -sf /opt/ghidra_12.1.4_PUBLIC /opt/ghidra
-```
-
-### Limitations
-
-Ghidra's headless mode in version 12.1.4 has limited scripting support (PyGhidra/Jython not available). For full automation:
-- Use the Ghidra GUI interactively
-- Or port scripts to Java
-- Or use alternative tools like `arm-none-eabi-objdump` for simple disassembly
+Ghidra is used as a static analysis oracle for cross-validating the transpiler's static analysis. See [docs/ghidra-reference.md](docs/ghidra-reference.md) for setup, helper scripts, and cross-validation workflow.

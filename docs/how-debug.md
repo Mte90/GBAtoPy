@@ -1,5 +1,7 @@
 # GBA ROM Debug Skill
 
+Last updated: 2026-10-30
+
 ## Overview
 
 This skill helps debug GBA ROM transpilation issues by systematically comparing transpiled output against mGBA golden screenshots.
@@ -373,11 +375,11 @@ Before deep debugging, verify these common failure modes. They have caused the m
 **Known instances**: `MOV R14, R15` wrote PC without +8 → wrong return address; LDR PC-relative ignored immediate offset.
 **Check**: Any codegen path that reads `registers[15]` must add the pipeline offset before use.
 
-### Class 4: Thumb disassembler/codegen mismatch ⚠️ PARTIALLY FIXED (F270, F289)
+### Class 4: Thumb disassembler/codegen mismatch ✅ FIXED (F270, F287, F288, F289)
 
 **Symptom**: Thumb load/store instructions silently stubbed as `pass` — 3933 stubs in cascade7 before fix, 508 after.
 **Root cause**: Thumb disassembler emits flat operand lists (`[Register, Immediate]` or `[Register, Register, ...]`) but the codegen handlers only match `Operand::MemoryAddress`.
-**Fix**: F270 converted formats 6-11 to emit `Operand::MemoryAddress`. F289 fixed SWI extraction shift bug at `coprocessor.rs:62`. F287 (PUSH/POP) and F288 (LDMIA/STMIA) remain unfixed.
+**Fix**: F270 converted formats 6-11 to emit `Operand::MemoryAddress`. F287 fixed Thumb PUSH/POP codegen. F288 fixed Thumb LDMIA/STMIA codegen. F289 fixed SWI extraction shift bug at `coprocessor.rs:62`.
 **Check**: Always run `gbatopy transpile <rom> 2>&1 | grep -c "unhandled"` to count stubs before debugging a ROM's behavior.
 **Files**: `crates/gbatopy-disasm/src/thumb/mod.rs`, `crates/gbatopy-cli/src/codegen/instruction_codegen/load_store.rs`, `crates/gbatopy-disasm/src/coprocessor.rs`
 
@@ -492,7 +494,7 @@ Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets
 
 ## Common Issues
 
-### Issue 1: Wrong Immediate Offsets in STRH/LDRH
+### Issue 1: Wrong Immediate Offsets in STRH/LDRH ✅ FIXED
 
 **Symptom**: STRH/LDRH write to wrong addresses (e.g., `registers[1] + 22` instead of `registers[1] + 0`)
 **Root Cause**: Disassembler combines wrong bit fields for half-word immediate offset
@@ -502,21 +504,20 @@ Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets
 **Fix**: Check `crates/gbatopy-disasm/src/arm/mod.rs` - STRH/LDRH use bits 11-8 (high 4) and bits 3-0 (low 4), NOT bits 7-3
 **Verification**: Binary encoding check - bits 3-0 should match expected offset
 
-### Issue 2: Missing Functions in Dispatch Table (NOP Block Bug)
+### Issue 2: Missing Functions in Dispatch Table (NOP Block Bug) ✅ FIXED
 
 **Symptom**: Code jumps over initialization, registers have wrong values, loops skipped
 **Root Cause**: Pipeline marks blocks as "NOP" and skips them in dispatch table
 **Check**: Search dispatch table for missing addresses - `grep -n "0x0000040" rom.py`
 **Fix**: Check `pipeline_cmd.rs` NOP detection logic - blocks with only PC advances are wrongly marked as NOP
-**Workaround**: Manually add missing functions to dispatch table in generated Python
 **Verification**: Execution trace shows PC jumping over setup code
 
-### Issue 3: Loop Not Executing (Stall Detection)
+### Issue 3: Loop Not Executing (Stall Detection) ✅ FIXED
 
 **Symptom**: Only first loop completes, VRAM/tiles not written, frame renders too early
 **Root Cause**: Fixed `max_inner_stalls = 10` breaks loops after 10 iterations
 **Check**: Execution trace shows `Stalled at PC=...` after few iterations
-**Permanent Fix**: Changed from fixed value 10 to dynamic `max(50, instr_per_scanline // 2)` ≈ 616 in game_loop.py:337
+**Permanent Fix**: Changed from fixed value 10 to dynamic `max(50, instr_per_scanline // 2)` ≈ 616 in `game_loop.py` (fallback interpreter budget).
 **Verification**: Trace shows loop completing all iterations (e.g., 32 iterations for tile loop)
 
 ### Issue 4: Frame Rendering Too Early

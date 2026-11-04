@@ -115,6 +115,9 @@ if [[ "$NO_GOLDEN" == true ]] && [[ -f "${GOLDEN_PNG}" ]]; then
 else
     echo "Generating golden screenshot with mGBA..."
     cd "${PROJECT_ROOT}"
+    export SDL_VIDEODRIVER=offscreen
+    export SDL_AUDIODRIVER=dummy
+    export LD_LIBRARY_PATH="${PROJECT_ROOT}/mgba/build:${PROJECT_ROOT}/mgba/build/sdl:${LD_LIBRARY_PATH}"
     GBATOPY_SCREENSHOT_PATH="${TEMP_GOLDEN%.*}" "${MGBA_PATH}" -S "${SCREENSHOT_LUA}" "${ROM_PATH}"
     
     if [[ ! -f "${TEMP_GOLDEN}" ]]; then

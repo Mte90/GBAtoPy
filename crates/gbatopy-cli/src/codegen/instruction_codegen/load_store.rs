@@ -658,9 +658,17 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                         }
                     } else {
                         if has_s_bit {
-                            code.push_str(&format!("memory.write_u32(addr, _read_user_reg({}))\n", reg));
+                            if reg == 15 {
+                                code.push_str("memory.write_u32(addr, (_read_user_reg(15) + 8) & 0xFFFFFFFF)\n");
+                            } else {
+                                code.push_str(&format!("memory.write_u32(addr, _read_user_reg({}))\n", reg));
+                            }
                         } else {
-                            code.push_str(&format!("memory.write_u32(addr, registers[{}])\n", reg));
+                            if reg == 15 {
+                                code.push_str("memory.write_u32(addr, (registers[15] + 8) & 0xFFFFFFFF)\n");
+                            } else {
+                                code.push_str(&format!("memory.write_u32(addr, registers[{}])\n", reg));
+                            }
                         }
                     }
                     if i < num_regs - 1 {

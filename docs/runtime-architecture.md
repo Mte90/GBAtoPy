@@ -610,6 +610,303 @@ PC = 0x08000008 → idx = 2
 
 ---
 
+## 7. Supporting Runtime Modules
+
+### 7.1 ROM Handling — `rom.py`
+
+**Purpose**: Loads and parses GBA ROM files, extracting header information (title, game code, maker code, entry point).
+
+**Key Classes**:
+- `ROM`: Represents a loaded ROM image with header parsing
+  - `load(path: str) -> None`: Loads a .gba file from disk
+  - `get_header() -> dict`: Returns parsed header fields
+  - `data` (property): Raw ROM bytes
+  - `title` (property): Game title (12 bytes, null-padded)
+  - `game_code` (property): 4-character game code
+  - `maker_code` (property): 2-character maker code
+  - `entry_point` (property): ARM branch instruction address
+  - `read_bytes(offset, length) -> bytes`: Read raw ROM bytes
+
+**ROM Header Parsing** (lines 44-66):
+- Entry point at offset 0x00 (4 bytes)
+- Nintendo logo at 0x04 (156 bytes)
+- Title at 0xA0 (12 bytes, ASCII)
+- Game code at 0xAC (4 bytes)
+- Maker code at 0xB0 (2 bytes)
+- ROM size code at 0xB4 (1 byte)
+
+**Integration**: Used by the transpiler CLI to validate ROM files and extract metadata before disassembly. Not embedded in transpiled output.
+
+---
+
+### 7.2 Real-Time Clock — `rtc.py`
+
+**Purpose**: Implements the S-3511A RTC chip used in Pokemon Gold/Silver, Mario Artist, and other GBA games with real-time clock functionality.
+
+**Key Classes**:
+- `RTC`: Real-time clock implementation
+  - `__init__(memory, state_file="rtc_state.json")`: Initializes with MMIO registration
+  - `update_time()`: Updates time based on elapsed real time
+  - `get_time_string() -> str`: Returns HH:MM:SS format
+  - `get_date_string() -> str`: Returns YYYY-MM-DD format
+  - `detect_rtc(rom_data) -> bool`: Auto-detects RTC usage in ROM
+  - `create_rtc(memory, rom_data, state_file) -> Optional[RTC]`: Factory function
+
+**RTC Commands** (lines 30-41):
+- `0x6E`: Read status register 1
+- `0x6A`: Read status register 2
+- `0x66`: Read time data (seconds/minutes/hours)
+- `0x62`: Read date data (day/month/year)
+- `0x80`: Write time data
+- `0x82`: Write date data
+- `0xA0`: Write status register
+
+**MMIO Registers** (lines 32-38):
+- `REG_RTC_SI` (0x04000134): Serial input
+- `REG_RTC_SO` (0x04000136): Serial output
+- `REG_RTC_SCK` (0x04000138): Serial clock
+- `REG_RTC_CS` (0x0400013C): Chip select
+
+**Design Decisions**:
+- Uses BCD format for time/date storage (lines 234-258)
+- Persists state to JSON file for continuity across runs (lines 404-428)
+- Tracks elapsed time via timestamps rather than frame counting (lines 285-300)
+- Auto-detection via known game identifiers (lines 439-472)
+
+**Integration**: Registered with memory system via `register_mmio()` (lines 88-99). Called by transpiler when ROM uses RTC hardware.
+
+---
+
+### 7.3 Serial Communication — `serial.py`
+
+**Purpose**: Implements GBA serial communication (SIO) for multiplayer and UART modes.
+
+**Key Classes**:
+- `Serial`: Serial I/O controller
+  - `write_register(addr, value)`: Write to SIO registers
+  - `read_register(addr) -> int`: Read from SIO registers
+  - `attach_interrupts(interrupts)`: Connect to interrupt controller
+  - `step()`: Advance serial state (called each frame)
+
+**SIO Registers** (lines 2-10):
+- `REG_SIOCNT` (0x04000128/0x0400012C): Control register
+- `REG_SIODATA8` (0x0400012A): 8-bit data
+- `REG_SIOMULTI0-3` (0x04000120-0x04000126): Multiplayer data
+
+**Modes Supported**:
+- Mode 0: UART (simple 8-bit transfer)
+- Mode 1: Multiplayer (4-player)
+
+**Transfer Semantics**:
+- Transfer starts when SIOCNT bit 7 transitions 0→1 (lines 54-63)
+- Transfer completes on next `step()` call (lines 98-101)
+- IRQ fired if SIOCNT bit 14 enabled (lines 85-93)
+
+**Integration**: Registered with MMIO dispatch in memory system. `attach_interrupts()` connects to `interrupts.py` for serial IRQ callbacks.
+
+---
+
+### 7.4 Save State — `save_state.py`
+
+**Purpose**: Provides complete emulator state serialization/deserialization using JSON format for human readability.
+
+**Key Classes**:
+- `SaveState`: Full emulator state persistence
+  - `__init__(cpu, memory, ppu, apu, dma, timers, interrupts, input_state)`: Initialize with component references
+  - `save(filepath) -> bool`: Save state to JSON file
+  - `load(filepath) -> bool`: Load state from JSON file
+
+**State Components Saved** (lines 48-67):
+- CPU: registers, CPSR, SPsR, mode, thumb_mode, running, cycles
+- Memory: EWRAM, IWRAM, IO, palette, VRAM, OAM, SRAM
+- PPU: display controls, BG registers, affine params, windows, framebuffer
+- APU: 4 channels, FIFO buffers, wave RAM, master volume
+- DMA: 4 channels (src_addr, dst_addr, control, enabled)
+- Timers: 4 timers (count, control, reload)
+- Interrupts: IE, IF, IME registers, pending flags
+- Input: key_input, key_cnt
+
+**Versioning** (line 6): `VERSION = 1` for future compatibility
+
+**Integration**: Used by transpiler output for save/load state functionality. Components must expose serializable attributes.
+
+---
+
+### 7.5 Hook System — `hooks.py`
+
+**Purpose**: Zero-overhead debugging and tracing system for instruction execution, memory access, and frame callbacks.
+
+**Key Classes**:
+- `HookManager`: Manages debugging hooks
+  - `on_instruction(addr, callback)`: Register instruction execution hook
+  - `on_write(addr, callback)`: Register memory write hook
+  - `on_read(addr, callback)`: Register memory read hook
+  - `on_frame(callback)`: Register frame callback
+  - `add_breakpoint(addr)`: Add execution breakpoint
+  - `remove_breakpoint(addr)`: Remove breakpoint
+  - `enable_step_mode(enabled)`: Single-step execution
+  - `check_hooks(pc, event_type)`: Check and execute hooks
+  - `has_hooks() -> bool`: Fast check if any hooks registered
+
+**Hook Types** (lines 17-120):
+1. **Instruction hooks**: Called with PC when specific address executes
+2. **Write hooks**: Called with (addr, value) on memory write
+3. **Read hooks**: Called with addr, returns value to use
+4. **Frame hooks**: Called with frame number after each render
+5. **Breakpoints**: Pause execution at specific PC
+6. **Step mode**: Pause after every instruction
+
+**Zero-Overhead Design** (line 33): `_has_any_hooks` flag updated when hooks added/removed, allowing fast-path skip when no hooks registered.
+
+**Integration**: Called from memory read/write paths and main loop. Breakpoints return `True` from `check_hooks()` to halt execution.
+
+---
+
+### 7.6 Exception Types — `exceptions.py`
+
+**Purpose**: Defines custom exception hierarchy for GBA runtime errors.
+
+**Exception Classes** (lines 1-22):
+- `GameError`: Base exception for all GBA runtime errors
+- `GBARuntimeError`: General runtime error
+- `InvalidRom` / `InvalidROMError`: ROM validation failures
+- `InvalidAddress`: Invalid memory address access
+
+**Usage Pattern**: Exceptions are raised for recoverable errors (invalid ROM format, out-of-bounds access) rather than crashes. Allows graceful error handling in transpiler and runtime.
+
+**Integration**: Imported by `rom.py` for header validation, `memory.py` for address bounds checking.
+
+---
+
+### 7.7 Numba JIT — `numba.py`
+
+**Purpose**: Optional Numba JIT acceleration for performance-critical code paths.
+
+**Key Functions**:
+- `set_numba_enabled(enabled: bool)`: Enable/disable Numba JIT
+
+**Implementation** (lines 1-10):
+- Tries to import `numba.njit` and `numba.prange`
+- Falls back to `None` if numba not installed
+- `_HAS_NUMBA` flag tracks availability
+- `_NUMBA_ENABLED` runtime flag controls usage
+
+**Design Decision**: Optional dependency — transpiler output works without numba. When available, can accelerate hot loops (PPU rendering, DMA transfers).
+
+**Integration**: Checked before applying `@njit` decorators in generated code. Disabled by default, enabled via `--numba` CLI flag.
+
+---
+
+### 7.8 Oracle Assets — `oracle_assets.py`
+
+**Purpose**: Runtime asset extraction via oracle trace monitoring — tracks VRAM/OAM/palette writes during execution to extract game assets.
+
+**Key Classes**:
+- `OracleAssetTracker`: Asset tracking from runtime traces
+  - `track_vram_write(addr, data, size)`: Track VRAM write (tiles, tilemaps, framebuffer)
+  - `track_palette_write(addr, data, size)`: Track palette write
+  - `track_oam_write(addr, data)`: Track sprite (OAM) write
+  - `load_oracle_trace(trace_path)`: Load JSON trace and extract writes
+  - `extract_assets_from_trace() -> Dict`: Extract complete asset data
+  - `generate_python_assets(output_path, assets)`: Generate Python assets file
+
+**VRAM Regions Tracked** (lines 25-41):
+- 0x06000000-0x06003FFF: Tile data (16KB)
+- 0x06004000-0x06007FFF: Tile data (16KB)
+- 0x06008000-0x0600BFFF: BG0/1 tilemaps
+- 0x0600C000-0x0600FFFF: BG2/3 tilemaps
+- 0x06010000-0x06017FFF: Framebuffer (bitmap modes)
+
+**Asset Extraction Pipeline**:
+1. Load oracle trace JSON with memory write events
+2. Categorize writes by region (VRAM, palette, OAM)
+3. Extract tiles, palettes, sprites into structured format
+4. Generate Python file with embedded asset data
+
+**Integration**: Used with oracle test framework to extract assets from reference execution. Output feeds into transpiler asset embedding.
+
+---
+
+### 7.9 Asset Extraction — `assets.py`
+
+**Purpose**: Static asset extraction from GBA ROMs — decompresses and identifies tiles, palettes, tilemaps, and sprites.
+
+**Key Classes**:
+- `AssetType`: Enum for asset types (TILE_4BPP, TILE_8BPP, PALETTE, TILEMAP, SPRITE, COMPRESSED)
+- `AssetExtractor`: ROM asset extraction
+  - `decompress_lz77(data) -> bytes`: LZ77 decompression (method 0x10)
+  - `decompress_huffman(data) -> bytes`: Huffman decompression (method 0x11)
+  - `decompress_rle(data) -> bytes`: RLE decompression (method 0x12)
+  - `extract_palette(addr, num_colors) -> List[Tuple[int,int,int]]`: Extract 15-bit colors
+  - `extract_tile_4bpp(addr, tile_num) -> bytes`: Extract 32-byte 4BPP tile
+  - `extract_tile_8bpp(addr, tile_num) -> bytes`: Extract 64-byte 8BPP tile
+  - `scan_rom_for_assets(rom_data) -> Dict`: Scan ROM for asset regions
+  - `detect_asset_type(data) -> AssetType`: Detect type from raw data
+  - `find_palette_in_rom(rom_data) -> Optional[int]`: Locate palette in ROM
+  - `load_assets(assets_dir, ppu) -> bool`: Load assets into PPU
+
+**Compression Formats** (lines 21-220):
+- **LZ77** (0x10): 24-bit decompressed size, flag bytes with 8-bit runs
+- **Huffman** (0x11): 32-bit decompressed size, tree-based decoding
+- **RLE** (0x12): 32-bit decompressed size, run-length encoding
+
+**Asset Detection Heuristics** (lines 319-393):
+- **Palette**: Valid 15-bit BGR555 colors (bits 15=0, 10-14≤31, 5-9≤31, 0-4≤31)
+- **4BPP tiles**: 32-byte chunks, 16-255 unique bytes
+- **8BPP tiles**: 64-byte chunks, >32 unique bytes
+- **Tilemaps**: 2-byte entries, tile index ≤1023
+
+**Integration**: Used by transpiler during Stage 2 (asset extraction). Embeds extracted assets into generated Python output (lines 627-713 in pipeline_cmd.rs).
+
+---
+
+## 8. Quick Reference
+
+### 8.1 Memory Map (Absolute Addresses)
+
+```
+0x00000000-0x00003FFF  BIOS (16KB)
+0x02000000-0x0203FFFF  EWRAM (256KB)
+0x03000000-0x03007FFF  IWRAM (32KB)
+0x04000000-0x040003FF  IO (1KB)
+0x05000000-0x050003FF  Palette (1KB)
+0x06000000-0x06017FFF  VRAM (96KB)
+0x07000000-0x070003FF  OAM (1KB)
+0x08000000-0x09FFFFFF  ROM (32MB)
+0x0E000000-0x0E00FFFF  SRAM (64KB)
+```
+
+### 8.2 Relative Address Mapping
+
+```
+0x00000-0x0FFFF  → MMIO (0x04000000)
+0x10000-0x37FFF  → VRAM (0x06000000)
+0x40000-0x403FF  → Palette (0x05000000)
+0x60000-0x603FF  → OAM (0x07000000)
+```
+
+### 8.3 Key Functions
+
+| Function | Purpose |
+|----------|---------|
+| `_map_address(addr)` | Convert relative → absolute |
+| `read_u8/16/32(addr)` | Read from memory |
+| `write_u8/16/32(addr, value)` | Write to memory |
+| `_dispatch_hal_write(addr, value)` | Route MMIO writes |
+| `func_map[idx]` | Dispatch to basic block |
+
+---
+
+**Document Version**: 1.2  
+**Last Updated**: 2026-11-04  
+**Maintained By**: GBAtoPy Core Team
+
+**Changelog**:
+- v1.2 (2026-11-04): Added Section 7 documenting 9 supporting runtime modules: rom.py, rtc.py, serial.py, save_state.py, hooks.py, exceptions.py, numba.py, oracle_assets.py, assets.py. Updated version and changelog.
+- v1.1 (2026-07-30): Added Section 2 documenting PPU scanline architecture, affine parameter snapshots, fallback interpreter contract, instruction-counted main loop, and DMA single-unit semantics. Updated Section 1.4 to clarify that memory reads/writes do not advance scanlines. Renumbered subsequent sections.
+
+---
+
 ## 7. Debugging Checklist
 
 ### 7.1 Visual Issues
@@ -689,9 +986,10 @@ PC = 0x08000008 → idx = 2
 
 ---
 
-**Document Version**: 1.1  
-**Last Updated**: 2026-07-30  
+**Document Version**: 1.2  
+**Last Updated**: 2026-11-04  
 **Maintained By**: GBAtoPy Core Team
 
 **Changelog**:
+- v1.2 (2026-11-04): Added Section 7 documenting 9 supporting runtime modules: rom.py, rtc.py, serial.py, save_state.py, hooks.py, exceptions.py, numba.py, oracle_assets.py, assets.py. Updated version and changelog.
 - v1.1 (2026-07-30): Added Section 2 documenting PPU scanline architecture, affine parameter snapshots, fallback interpreter contract, instruction-counted main loop, and DMA single-unit semantics. Updated Section 1.4 to clarify that memory reads/writes do not advance scanlines. Renumbered subsequent sections.

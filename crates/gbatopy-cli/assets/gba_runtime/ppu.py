@@ -234,7 +234,7 @@ class PPU:
             return
         
         y = sprite["y"]
-        x = sprite["x"]
+        x = sprite["x"] & 0xFF
         width = sprite["width"]
         height = sprite["height"]
         tile_num = sprite["tile_num"]
@@ -346,7 +346,7 @@ class PPU:
             sprite: Sprite dictionary with rotate_scale=True
         """
         y = sprite["y"]
-        x = sprite["x"]
+        x = sprite["x"] & 0xFF
         width = sprite["width"]
         height = sprite["height"]
         tile_num = sprite["tile_num"]
@@ -535,7 +535,7 @@ class PPU:
         self.display_frame_select = 0
         self.hblank_interval_free = False
         self.obj_character_vram_mapping = False
-        self.forced_blank = False
+        self.forced_blank = True  # Match dispcnt init value 0x0480 (bit 7 = forced blank ON)
         self.bg0_enable = True
         self.bg1_enable = True
         self.bg2_enable = True

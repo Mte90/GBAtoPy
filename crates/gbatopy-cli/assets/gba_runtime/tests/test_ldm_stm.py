@@ -277,6 +277,68 @@ class TestARMBlockTransfer(unittest.TestCase):
         self.assertEqual(self.memory.read_u32(base), 0xDEAD)
         self.assertEqual(self.cpu.registers[0], base + 4)
 
+    # ---- Base register in load list (ARM7TDMI rule: loaded value wins) ----
+
+    def test_ldmia_base_in_list_loaded_value_wins(self):
+        """LDMIA R0!, {R0, R1}: R0 is in the load list. Loaded value wins over writeback."""
+        base = 0x02000100
+        self.cpu.registers[0] = base
+        self.memory.write_u32(base + 0, 0xDEADBEEF)
+        self.memory.write_u32(base + 4, 0x12345678)
+
+        self.cpu.exec_block_transfer(ldmia(0, 0b0011))
+
+        self.assertEqual(self.cpu.registers[0], 0xDEADBEEF)
+        self.assertEqual(self.cpu.registers[1], 0x12345678)
+
+    # ---- PC (R15) in STM register list: must store PC+8 ----
+
+    def test_stmia_pc_stores_pc_plus_8(self):
+        """STMIA R0!, {R15}: stores (R15 + 8) & 0xFFFFFFFF due to ARM pipeline offset."""
+        base = 0x02000100
+        pc_value = 0x08000020  # Some instruction address
+        self.cpu.registers[0] = base
+        self.cpu.registers[15] = pc_value
+
+        self.cpu.exec_block_transfer(stmia(0, (1 << 15)))
+
+        # ARM7TDMI spec: when R15 is in STM list, store (R15 + 8)
+        expected_pc_stored = (pc_value + 8) & 0xFFFFFFFF
+        self.assertEqual(self.memory.read_u32(base), expected_pc_stored)
+        self.assertEqual(self.cpu.registers[0], base + 4)  # writeback
+
+    def test_stmdb_pc_stores_pc_plus_8(self):
+        """STMDB R0!, {R15}: stores (R15 + 8) & 0xFFFFFFFF due to ARM pipeline offset."""
+        base = 0x02000100
+        pc_value = 0x08000040
+        self.cpu.registers[0] = base
+        self.cpu.registers[15] = pc_value
+
+        self.cpu.exec_block_transfer(stmdb(0, (1 << 15)))
+
+        # ARM7TDMI spec: when R15 is in STM list, store (R15 + 8)
+        expected_pc_stored = (pc_value + 8) & 0xFFFFFFFF
+        self.assertEqual(self.memory.read_u32(base - 4), expected_pc_stored)
+        self.assertEqual(self.cpu.registers[0], base - 4)  # writeback
+
+    def test_stmia_multiple_regs_with_pc(self):
+        """STMIA R0!, {R1, R3, R15}: R15 stores PC+8, others store register values."""
+        base = 0x02000200
+        pc_value = 0x08000060
+        self.cpu.registers[0] = base
+        self.cpu.registers[1] = 0x1111
+        self.cpu.registers[3] = 0x3333
+        self.cpu.registers[15] = pc_value
+
+        self.cpu.exec_block_transfer(stmia(0, (1 << 1) | (1 << 3) | (1 << 15)))
+
+        # R1 → base+0, R3 → base+4, R15 → base+8 (with +8 offset)
+        self.assertEqual(self.memory.read_u32(base + 0), 0x1111)
+        self.assertEqual(self.memory.read_u32(base + 4), 0x3333)
+        expected_pc_stored = (pc_value + 8) & 0xFFFFFFFF
+        self.assertEqual(self.memory.read_u32(base + 8), expected_pc_stored)
+        self.assertEqual(self.cpu.registers[0], base + 12)
+
 
 class TestThumbBlockTransfer(unittest.TestCase):
 
