@@ -79,17 +79,20 @@ impl FeatureFlags {
                         base: _, offset, ..
                     } => {
                         if let AddressingMode::ImmediateOffset(off) = offset {
-                            let addr = *off as u32;
-                            if (AUDIO_START..=AUDIO_END).contains(&addr) {
+                            // Offset is relative to base register; GBA code
+                            // uses 0x04000000 as IO base, so add it to
+                            // get the full MMIO address for range checks.
+                            let io_addr = (*off as u32) + 0x04000000;
+                            if (AUDIO_START..=AUDIO_END).contains(&io_addr) {
                                 flags.audio = true;
                             }
-                            if (IRQ_START..=IRQ_END).contains(&addr) {
+                            if (IRQ_START..=IRQ_END).contains(&io_addr) {
                                 flags.irq = true;
                             }
-                            if (TIMERS_START..=TIMERS_END).contains(&addr) {
+                            if (TIMERS_START..=TIMERS_END).contains(&io_addr) {
                                 flags.timers = true;
                             }
-                            if (DMA_START..=DMA_END).contains(&addr) {
+                            if (DMA_START..=DMA_END).contains(&io_addr) {
                                 flags.dma = true;
                             }
                         }

@@ -29,9 +29,11 @@ scripts/
  │   ├── coverage_tracker.py          ← Track test coverage across ROMs
  │   ├── ewram_dump_verify.py         ← Verify EWRAM dump binary format
  │   ├── validate_golden.py           ← Detect mGBA segfault artifacts in goldens
- │   ├── verify_subagent_claim.py     ← Verify subagent claims about files/commands
- │   ├── test_keys.txt                ← Example key sequence file for input verification
- │   └── test_verify_subagent_claim.py ← Pytest tests for verify_subagent_claim.py
+  │   ├── verify_subagent_claim.py     ← Verify subagent claims about files/commands
+  │   ├── test_keys.txt                ← Example key sequence file for input verification
+  │   └── test_verify_subagent_claim.py ← Pytest tests for verify_subagent_claim.py
+  │   ├── verify_pass_counts.py        ← Compare sweep report JSON against documented PASS counts
+  │   └── perf_canary.sh               ← Performance canary: test frame 10 vs frame 60 execution
 ├── ci/
 │   └── visual_tests.sh        ← CI visual test script for ci-fixtures ROMs (L3 comparison)
 ├── check_swi_dispatch.py      ← SWI dispatch consistency checker (invariant #7)

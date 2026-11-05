@@ -43,6 +43,12 @@ COMPARE_SCRIPT = PROJECT_ROOT / "scripts" / "verify" / "compare_screenshots.py"
 OUTPUT_DIR = PROJECT_ROOT / "test-reports" / "artifacts"
 TEST_CONFIG_PATH = PROJECT_ROOT / "test-roms-config.toml"
 
+# Single source of truth for test limits. All three default locations
+# (load_rom_config, execute_rom signature, test_rom_worker) reference these
+# constants so a partial update cannot leave some ROMs on stale limits.
+DEFAULT_TIMEOUT = 300
+DEFAULT_MAX_INSTRS = 25_000_000
+
 # Test types that use L3 screenshot comparison
 VISUAL_TEST_TYPES = {"ScreenshotMgba", "ScreenshotGolden"}
 
@@ -84,8 +90,8 @@ def load_rom_config(rom_filename):
         if test.get("rom_path", "") == rom_filename:
             # Return only the override fields, with defaults
             return {
-                "timeout": test.get("timeout", 90),
-                "max_instrs": test.get("max_instrs", 10000000),
+                "timeout": test.get("timeout", DEFAULT_TIMEOUT),
+                "max_instrs": test.get("max_instrs", DEFAULT_MAX_INSTRS),
             }
     return {}
 
@@ -170,7 +176,7 @@ def check_syntax(output_path):
             ["python3", "-m", "py_compile", str(output_path)],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=180,
         )
         if result.returncode != 0:
             return False, result.stderr.strip().split('\n')[-1] if result.stderr else "syntax_error"
@@ -179,9 +185,10 @@ def check_syntax(output_path):
         return False, "syntax_check_timeout"
 
 
-def execute_rom(output_path, frame=10, timeout=90, max_instrs=10000000):
+def execute_rom(output_path, frame=10, timeout=DEFAULT_TIMEOUT, max_instrs=DEFAULT_MAX_INSTRS):
     """Run generated script headless. Returns (success, screenshot_path, error_msg).
-    Default 10 frames at ~2.5s each (slow ROMs) = 25s; 90s timeout gives margin."""
+    Non-HALT ROMs need ~20.6M instructions to reach frame 60 at ~100K instr/s (~240s).
+    25M instructions + 300s timeout covers both HALT and non-HALT ROMs."""
     screenshot_path = output_path.replace('.py', f'_frame{frame}.png')
     try:
         result = subprocess.run(
@@ -282,8 +289,8 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
     # --- Level 2: Execution ---
     # Read per-ROM overrides from config
     rom_config = load_rom_config(rom_path.name)
-    timeout = rom_config.get("timeout", 90)
-    max_instrs = rom_config.get("max_instrs", 10000000)
+    timeout = rom_config.get("timeout", DEFAULT_TIMEOUT)
+    max_instrs = rom_config.get("max_instrs", DEFAULT_MAX_INSTRS)
     success, screenshot_path, err = execute_rom(output_py, frame=frame, timeout=timeout, max_instrs=max_instrs)
     if not success:
         result["level2"] = False

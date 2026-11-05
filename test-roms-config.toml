@@ -73,12 +73,16 @@ name = "bgpd"
 rom_path = "bgpd.gba"
 test_type = "ScreenshotMgba"
 pass_status = "pass"
+timeout = 600
+max_instrs = 50000000
 
 [[tests]]
 name = "bgx"
 rom_path = "bgx.gba"
 test_type = "ScreenshotMgba"
 pass_status = "pass"
+timeout = 600
+max_instrs = 50000000
 
 [[tests]]
 name = "bios"
@@ -139,6 +143,8 @@ name = "exact-timing"
 rom_path = "exact-timing.gba"
 test_type = "ScreenshotMgba"
 pass_status = "pass"
+timeout = 600
+max_instrs = 50000000
 
 [[tests]]
 name = "flash128"

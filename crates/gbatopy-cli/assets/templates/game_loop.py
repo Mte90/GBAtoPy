@@ -157,11 +157,15 @@ def swi_handler(swi_field):
             memory.write_u16(0x04000204, 0)
             memory.write_u16(0x04000200, 0)
     elif swi_num == 0x02:  # Halt — wakes on ANY enabled IRQ
-        _irq_obj = getattr(memory, '_interrupts', None)
-        if _irq_obj is not None and (_irq_obj.if_reg & _irq_obj.ie_reg):
-            return
         _swi_lr = registers[14]
         _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
+        # Clear enabled IF bits so the next IRQ can wake the CPU.
+        # Without this, a stale IF from a previous VBlank causes _deliver_irq()
+        # to clear _cpu_halted on every scanline, creating a 1-scanline-per-HALT
+        # spin-loop instead of halting until the next VBlank.
+        _irq_obj = getattr(memory, '_interrupts', None)
+        if _irq_obj is not None:
+            _irq_obj.if_reg &= ~(_irq_obj.ie_reg)
         _cpu_halted = True
         _halt_reason = "any"
         # Also set CPU's internal flag for consistency with fallback interpreter

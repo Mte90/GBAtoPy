@@ -549,6 +549,10 @@ class PPU:
             mode = dispcnt & 0x7
             if mode <= 5:
                 self.mode = mode
+            self.display_frame_select = (dispcnt >> 4) & 1
+            self.hblank_interval_free = bool((dispcnt >> 5) & 1)
+            self.obj_character_vram_mapping = bool((dispcnt >> 6) & 1)
+            self.forced_blank = bool((dispcnt >> 7) & 1)
             self.bg0_enable = bool(dispcnt & 0x0100)
             self.bg1_enable = bool(dispcnt & 0x0200)
             self.bg2_enable = bool(dispcnt & 0x0400)
@@ -556,7 +560,7 @@ class PPU:
             self.obj_enable = bool(dispcnt & 0x1000)
         self.win1_enable = False
         self.obj_window_enable = False
-        self.dispcnt = 0x0480  # GBA hardware default: force blank ON (bit 7)
+        self.dispcnt = dispcnt if self.memory else 0x0480
         self._obj_window_rects = []
         
         # Cache for VRAM/palette data (updated each frame for JIT)
