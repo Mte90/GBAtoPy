@@ -1039,11 +1039,8 @@ class ARM7TDMI:
             self.registers[15] = 0x08000000
         elif num == 0x01:  # RegisterRamReset
             flags = self.registers[0]
-            # Per GBA spec: bit 7 (0x80) means "reset display registers"
-            # When set, DISPCNT should be reset to 0x0000 (NOT 0x0080)
-            # When not set, DISPCNT should NOT be touched
-            if flags & 0x80:
-                self.memory.write_u16(0x04000000, 0x0000)
+            # Per mGBA bios.c:38: DISPCNT = 0x0080 (forced blank) unconditionally
+            self.memory.write_u16(0x04000000, 0x0080)
             if flags & 0x01:
                 for addr in range(0x02000000, 0x02040000, 4):
                     self.memory.write_u32(addr, 0)
@@ -1157,22 +1154,16 @@ class ARM7TDMI:
                     return
             self._halted = True
             self._halt_reason = 'any'
-        elif num == 0x02:  # Halt
-            self._halted = True
-            self._halt_reason = 'any'
         elif num == 0x05:  # VBlankIntrWait — wake on VBlank IRQ only
             self._swi_lr = self.registers[14]
+            # Per HLE BIOS: set IME=1, clear IF.0, halt. IE.0/DISPSTAT.3 managed by game ROM.
             if hasattr(self, 'memory') and hasattr(self.memory, '_interrupts') and self.memory._interrupts is not None:
                 ic = self.memory._interrupts
                 ic.ime_reg |= 0x0001
                 self.memory.io[0x208] = ic.ime_reg & 0xFF
                 self.memory.io[0x209] = (ic.ime_reg >> 8) & 0xFF
-                ic.ie_reg |= 0x0001
                 ic.if_reg &= ~0x0001
                 ic._enabled_mask = ic.ie_reg
-                # Set DISPSTAT.3 so step_scanline fires vblank_irq()
-                _ds = self.memory.read_u16(0x04000004)
-                self.memory.write_u16(0x04000004, _ds | 0x0008)
             self._halted = True
             self._halt_reason = 'vblank'
         elif num == 0x06:  # Div
@@ -1225,6 +1216,8 @@ class ARM7TDMI:
                 else:
                     self.registers[0] = (self.registers[0] + _cfs_count * 4) & 0xFFFFFFFF
                     self.registers[1] = (self.registers[1] + _cfs_count * 4) & 0xFFFFFFFF
+        elif num == 0x0D:  # GetBiosChecksum - returns 0xBAAE187B in R0
+            self.registers[0] = 0xBAAE187B
         elif num == 0x0E:  # BgAffineSet
             if hasattr(self, 'bios') and self.bios is not None:
                 self.bios.swi_bg_affine_set(self.registers[0], self.registers[1], self.registers[2], self.registers[3])

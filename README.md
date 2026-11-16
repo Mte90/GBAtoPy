@@ -1,7 +1,7 @@
 # GBAtoPy
 
 [![License](https://img.shields.io/badge/License-MIT%20v1-blue.svg)](https://spdx.org/licenses/MIT.html#licenseText)
-[![Tests](https://img.shields.io/badge/tests-91%2F91%20PASS%20(100%25)-brightgreen.svg)](docs/reference/test-roms.md)
+[![Tests](https://img.shields.io/badge/tests-88%2F91%20PASS-brightgreen.svg)](docs/reference/test-roms.md)
 [![Status](https://img.shields.io/badge/status-In%20Development-yellow.svg)](docs/roadmap.md)
 
 GBAtoPy is a **transpiler** (a Rust CLI) that converts Game Boy Advance ROMs (`.gba`) into standalone Python files that run with [pygame](https://www.pygame.org/). The output is human-readable, modifiable Python source code that, when executed, reproduces the game's behavior. It is **NOT an emulator** — the goal is a `.py` file you can open, read, and edit.
@@ -20,20 +20,20 @@ Project is in active development. The transpilation pipeline works end-to-end; p
 |-------|--------|
 | Transpile to Python (0 instruction decode failures) | 91/91 |
 | Smoke test (transpile + syntax check) | 91/91 |
-| Visually verified vs mGBA golden (<30% pixel difference) | 91/91 |
-| Known failures (smoke or visual) | 0/91 |
+| Visually verified vs mGBA golden (<30% pixel difference) | 88/91 |
+| Known failures (smoke or visual) | 2/91 |
 | Runtime hangs (IRQ/DMA/timer paths) | 0/91 |
-| SKIP (corrupt ROM or OOM) | 0/91 |
+| SKIP (corrupt ROM or OOM) | 1/91 |
 
-**Pass rate: 100%** (91 PASS, 0 FAIL, 0 SKIP)
+**Pass rate: 96.7%** (88 PASS, 2 FAIL, 1 INCONCLUSIVE)
 
 All previously SKIP/timeout ROMs now PASS: `helloAudio`, `rates`, `song`, `sprite-hmosaic`.
 
 ### What works
 
 - **CPU core** — ARM7TDMI: ARM mode (~160 unique opcodes) and Thumb mode (~60 unique opcodes), CPSR flag tracking, all 16 condition codes, global register propagation.
-- **BIOS SWI handlers** — 13 BIOS SWI handlers (Halt, Div, Sqrt, CpuSet/CpuFastSet, LZ77/Huffman/RLE decompression, ArcTan, ObjAffineSet, BgAffineSet, and more).
-- **PPU rendering** — Mode 0 (4BPP text tiles) verified on `shades`, `hello`, `helloWorld`, `hello_world`; Mode 2 (affine) verified on `mode2`; Mode 3 (16-bit bitmap) verified on `stripes`, `mode3`, `bgx`; Mode 4 (8BPP bitmap) verified on `mode4`.
+- **BIOS SWI handlers** — 32 BIOS SWI handlers (Halt, Div, Sqrt, CpuSet/CpuFastSet, LZ77/Huffman/RLE decompression, ArcTan, ObjAffineSet, BgAffineSet, and more).
+- **PPU rendering** — Mode 0 (4BPP text tiles) verified on `shades`, `hello`, `helloWorld`, `hello_world`; Mode 2 (affine) INCONCLUSIVE on `mode2` (DMA timing); Mode 3 (16-bit bitmap) verified on `stripes`, `mode3`, `bgx`; Mode 4 (8BPP bitmap) verified on `mode4`.
 - **Interrupt system** — VBlank/HBlank/VCount dispatch, timer IRQs (0-3), DMA IRQs, keypad IRQ, IE/IF/IME handling with ARM/Thumb mode switching.
 - **DMA** — 4 channels with all trigger modes; HBlank DMA verified via `bgx`.
 - **Timers** — 0-3 with prescaler (1/64/256/1024) and cascade mode.

@@ -1272,9 +1272,13 @@ class PPU:
         return value / 256.0
 
     def _fixed_8_8_to_float(self, value: int) -> float:
-        """Convert 8.8 fixed point to float"""
-        if value & 0x800000:
-            value = value - 0x1000000
+        """Convert 8.8 fixed point to float.
+
+        BG2X/BG2Y/BG3X/BG3Y are already sign-extended from 28 bits by the
+        write handler. This function must NOT re-extend: Python negative
+        ints have infinite leading 1 bits, so `value & 0x800000` is always
+        true for negative values, causing double sign-extension.
+        """
         return value / 256.0
 
     def _s178_to_float(self, value: int) -> float:
@@ -1624,17 +1628,14 @@ class PPU:
         # line_timing) sees the correct elapsed count when it wakes from HALT.
         irq = self.memory._interrupts
         if irq is not None:
-            if self.vcount == self.screen_height and (dispstat & 0x0008):
-                irq.vblank_irq()
+            if self.vcount == self.screen_height:
+                irq.if_reg |= 1 << irq.IRQ_VBLANK
                 self.memory.io[0x202] = irq.if_reg & 0xFF
                 self.memory.io[0x203] = (irq.if_reg >> 8) & 0xFF
+                if dispstat & 0x0008:
+                    irq.vblank_irq()
             if (dispstat & 0x0004) and (dispstat & 0x0020):
                 irq.vcounter_irq()
-        if self.vblank:
-            import sys
-            mod = sys.modules.get("generated_rom")
-            if mod is not None:
-                mod.z = 1
     
         # PRE-populate snapshot for the NEXT scanline (after vcount increment).
         next_vcount = self.vcount
@@ -2066,53 +2067,51 @@ class PPU:
                             tx &= 1023
                             ty &= 1023
                     elif tx < 0 or ty < 0:
-                        continue
-                    
-                    bg_size = self.bg_size[2]
-                    affine_bg_sizes = {0: (128, 128), 1: (256, 256), 2: (512, 512), 3: (1024, 1024)}
-                    bg_width, bg_height = affine_bg_sizes[bg_size]
-                    
-                    if tx >= bg_width or ty >= bg_height:
-                        continue
+                        tx = -1
+                    else:
+                        bg_size = self.bg_size[2]
+                        affine_bg_sizes = {0: (128, 128), 1: (256, 256), 2: (512, 512), 3: (1024, 1024)}
+                        bg_width, bg_height = affine_bg_sizes[bg_size]
+                        if tx >= bg_width or ty >= bg_height:
+                            tx = -1
 
-                    # Read tilemap
-                    screen_block = bg_screen_block[2]
-                    tilemap_base = 0x06000000 + (screen_block * 0x0800)
-                    tilemap_x = tx // 8
-                    tilemap_y = ty // 8
-                    
-                    # Affine BG: 8-bit tilemap entries, 1-byte stride
-                    affine_tilemap_widths = {0: 16, 1: 32, 2: 64, 3: 128}
-                    tilemap_width = affine_tilemap_widths[bg_size]
-                    tilemap_index = tilemap_y * tilemap_width + tilemap_x
-                    tilemap_addr = tilemap_base + tilemap_index
-                    
-                    try:
-                        tilemap_entry = self.memory.read_u8(tilemap_addr)
-                    except (IndexError, KeyError, ValueError) as e:
-                        if _DEBUG_PPU:
-                            raise RuntimeError(f"PPU error at affine BG2 tilemap tx={tx} ty={ty}: {e}") from e
-                        continue
+                    if tx >= 0:
+                        # Read tilemap
+                        screen_block = bg_screen_block[2]
+                        tilemap_base = 0x06000000 + (screen_block * 0x0800)
+                        tilemap_x = tx // 8
+                        tilemap_y = ty // 8
+                        
+                        # Affine BG: 8-bit tilemap entries, 1-byte stride
+                        affine_tilemap_widths = {0: 16, 1: 32, 2: 64, 3: 128}
+                        tilemap_width = affine_tilemap_widths[bg_size]
+                        tilemap_index = tilemap_y * tilemap_width + tilemap_x
+                        tilemap_addr = tilemap_base + tilemap_index
+                        
+                        try:
+                            tilemap_entry = self.memory.read_u8(tilemap_addr)
+                        except (IndexError, KeyError, ValueError) as e:
+                            if _DEBUG_PPU:
+                                raise RuntimeError(f"PPU error at affine BG2 tilemap tx={tx} ty={ty}: {e}") from e
+                        else:
+                            tile_index = tilemap_entry & 0xFF
+                            pixel_x = int(tx) % 8
+                            pixel_y = int(ty) % 8
+                            pixel_index = pixel_y * 8 + pixel_x
 
-                    tile_index = tilemap_entry & 0xFF
-                    pixel_x = int(tx) % 8
-                    pixel_y = int(ty) % 8
-                    pixel_index = pixel_y * 8 + pixel_x
+                            palette_indices = get_tile(tile_index, bg_char_block[2], bg_bpp8[2])
+                            if pixel_index < len(palette_indices):
+                                color_idx = palette_indices[pixel_index]
 
-                    palette_indices = get_tile(tile_index, bg_char_block[2], bg_bpp8[2])
-                    if pixel_index >= len(palette_indices):
-                        continue
-                    color_idx = palette_indices[pixel_index]
-
-                    if bg_priority[2] < best_priority:
-                        # Save previous color as second target (it was underneath)
-                        if best_color is not None:
-                            self.second_target_framebuffer[y][x] = best_color
-                            self.second_target_layer[y][x] = best_bg
-                        best_priority = bg_priority[2]
-                        # Affine BGs use palette 0 for 4BPP, direct index for 8BPP
-                        best_color = palette_colors[color_idx]
-                        best_bg = 2
+                                if bg_priority[2] < best_priority:
+                                    # Save previous color as second target (it was underneath)
+                                    if best_color is not None:
+                                        self.second_target_framebuffer[y][x] = best_color
+                                        self.second_target_layer[y][x] = best_bg
+                                    best_priority = bg_priority[2]
+                                    # Affine BGs use palette 0 for 4BPP, direct index for 8BPP
+                                    best_color = palette_colors[color_idx]
+                                    best_bg = 2
 
                 if best_color is not None:
                     row_fb[x] = best_color
@@ -2217,7 +2216,7 @@ class PPU:
 
         dx_bg3, dmx_bg3, dy_bg3, dmy_bg3, _, _, overflow_bg3 = self._read_affine_bg3_params()
 
-        bg_enabled = self._mode2_bg_enabled
+        bg_enabled = [False, False, self.bg2_enable, self.bg3_enable]
         bg_priority = self._mode2_bg_priority
         bg_char_block = self._mode2_bg_char_block
         bg_screen_block = self._mode2_bg_screen_block

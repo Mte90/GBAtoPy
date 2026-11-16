@@ -12,9 +12,17 @@ from ppu import PPU
 
 
 class MockInterrupts:
-    def vblank_irq(self): pass
-    def hblank_irq(self): pass
-    def vcounter_irq(self): pass
+    IRQ_VBLANK = 0
+    IRQ_HBLANK = 1
+    IRQ_VCOUNTER = 2
+
+    def __init__(self):
+        self.if_reg = 0
+        self.ie_reg = 0
+        self.ime = 0
+        self.vblank_irq = lambda: None
+        self.hblank_irq = lambda: None
+        self.vcounter_irq = lambda: None
 
 
 class MockDMA:

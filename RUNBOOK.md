@@ -75,7 +75,7 @@ The generated runtime supports these flags — use them, do not inject `print()`
 |------|---------|
 | `--pc-trace=FILE` | Write PC trace to file |
 | `--trace-n=N` | Trace N instructions |
-| `--max-instrs=N` | Max instructions (default 1M; use `--max-instrs=10000000` for tight IWRAM poll loops like bgpd) |
+| `--max-instrs=N` | Max instructions (default 10,000,000 (10M); use `--max-instrs=10000000` for tight IWRAM poll loops like bgpd) |
 | `--headless` | No window |
 | `--frame=N` | Run N frames then exit |
 | `--screenshot=PATH` | Save screenshot to PATH |
@@ -148,10 +148,9 @@ All three env settings required. **DO NOT use** `SDL_VIDEODRIVER=dummy` (produce
 
 **ONLY path read by run_tests.py**: `test-reports/goldens/`
 
-- **Primary naming**: `<rom>.png` (e.g., `test-reports/goldens/stripes.png`)
-- **Secondary naming**: `<rom>_f<N>.png` (e.g., `test-reports/goldens/stripes_f60.png`)
+- **Canonical naming**: `golden_{rom_base}_frame_{N}.png` (e.g., `test-reports/goldens/golden_stripes_frame_60.png`)
 
-**CRITICAL**: Do NOT write goldens to `scripts/screenshot/golden/` — that path is dead and NOT read by run_tests.py. Always verify after generating: `ls -la test-reports/goldens/<rom>.png`
+**CRITICAL**: Do NOT write goldens to `scripts/screenshot/golden/` — that path is dead and NOT read by run_tests.py. Always verify after generating: `ls -la test-reports/goldens/golden_<rom>_frame_60.png`
 
 ### Golden Generation
 
@@ -160,7 +159,7 @@ python3 scripts/generate_goldens.py --rom <name> --frames 60
 ```
 This script writes to `test-reports/goldens/`. Verify the output:
 ```bash
-ls -la test-reports/goldens/<rom>.png  # Must be >200B
+ls -la test-reports/goldens/golden_<rom>_frame_60.png  # Must be >200B
 ```
 
 ### Golden Integrity Check

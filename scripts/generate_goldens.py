@@ -30,13 +30,11 @@ MGBA_BIN = PROJECT_ROOT / "mgba" / "build" / "sdl" / "mgba"
 def capture_golden(rom_path, frame, mgba_bin, timeout=120):
     """Capture a single golden screenshot. Returns (success, error_msg)."""
     rom_base = rom_path.stem  # e.g. "hello" from "hello.gba"
-    # Primary output: <rom>.png (highest priority in run_tests.py lookup)
-    primary_path = GOLDEN_DIR / f"{rom_base}.png"
-    # Secondary output: <rom>_f<N>.png (second priority in run_tests.py lookup)
-    secondary_path = GOLDEN_DIR / f"{rom_base}_f{frame}.png"
+    # Canonical output: golden_{rom_base}_frame_{N}.png (matches run_tests.py lookup)
+    output_path_real = GOLDEN_DIR / f"golden_{rom_base}_frame_{frame}.png"
     
-    # Use primary path for GBATOPY_SCREENSHOT_PATH
-    output_path = str(primary_path)[:-4]  # Remove .png extension for env var
+    # Use output path for GBATOPY_SCREENSHOT_PATH (without .png extension)
+    output_path = str(output_path_real)[:-4]  # Remove .png extension for env var
 
     env = os.environ.copy()
     env["GBATOPY_SCREENSHOT_PATH"] = output_path
@@ -56,11 +54,11 @@ def capture_golden(rom_path, frame, mgba_bin, timeout=120):
 
         # Check result
         if result.returncode == 0:
-            # Also copy to secondary path for compatibility
-            if primary_path.exists():
-                import shutil
-                shutil.copy(primary_path, secondary_path)
-            return True, None
+            # Verify the output file was created
+            if output_path_real.exists():
+                return True, None
+            else:
+                return False, f"Output file not created: {output_path_real}"
         else:
             return False, result.stderr.strip() or "Unknown error"
     except subprocess.TimeoutExpired:

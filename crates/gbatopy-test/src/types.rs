@@ -72,7 +72,6 @@ impl TestResult {
         }
     }
 
-
     pub fn is_fail(&self) -> bool {
         matches!(self.status, TestStatus::Fail | TestStatus::Error)
     }

@@ -208,7 +208,14 @@ impl ThumbDecoder {
         let imm8 = (hw & 0xFF) as u32;
         (
             "LDR".to_string(),
-            vec![self.reg(rd), crate::Operand::MemoryAddress { base: 15, offset: crate::operand::AddressingMode::ImmediateOffset((imm8 << 2) as i32), writeback: false }],
+            vec![
+                self.reg(rd),
+                crate::Operand::MemoryAddress {
+                    base: 15,
+                    offset: crate::operand::AddressingMode::ImmediateOffset((imm8 << 2) as i32),
+                    writeback: false,
+                },
+            ],
             false,
         )
     }
@@ -231,7 +238,14 @@ impl ThumbDecoder {
         };
         (
             name.to_string(),
-            vec![self.reg(rd), crate::Operand::MemoryAddress { base: rb, offset: crate::operand::AddressingMode::RegisterOffset(ro), writeback: false }],
+            vec![
+                self.reg(rd),
+                crate::Operand::MemoryAddress {
+                    base: rb,
+                    offset: crate::operand::AddressingMode::RegisterOffset(ro),
+                    writeback: false,
+                },
+            ],
             false,
         )
     }
@@ -245,7 +259,14 @@ impl ThumbDecoder {
         let name = if l_bit != 0 { "LDR" } else { "STR" };
         (
             name.to_string(),
-            vec![self.reg(rd), crate::Operand::MemoryAddress { base: rn, offset: crate::operand::AddressingMode::ImmediateOffset(offset as i32), writeback: false }],
+            vec![
+                self.reg(rd),
+                crate::Operand::MemoryAddress {
+                    base: rn,
+                    offset: crate::operand::AddressingMode::ImmediateOffset(offset as i32),
+                    writeback: false,
+                },
+            ],
             false,
         )
     }
@@ -258,7 +279,14 @@ impl ThumbDecoder {
         let name = if l_bit != 0 { "LDRB" } else { "STRB" };
         (
             name.to_string(),
-            vec![self.reg(rd), crate::Operand::MemoryAddress { base: rn, offset: crate::operand::AddressingMode::ImmediateOffset(imm5 as i32), writeback: false }],
+            vec![
+                self.reg(rd),
+                crate::Operand::MemoryAddress {
+                    base: rn,
+                    offset: crate::operand::AddressingMode::ImmediateOffset(imm5 as i32),
+                    writeback: false,
+                },
+            ],
             false,
         )
     }
@@ -272,7 +300,14 @@ impl ThumbDecoder {
         let name = if l_bit != 0 { "LDRH" } else { "STRH" };
         (
             name.to_string(),
-            vec![self.reg(rd), crate::Operand::MemoryAddress { base: rn, offset: crate::operand::AddressingMode::ImmediateOffset(offset as i32), writeback: false }],
+            vec![
+                self.reg(rd),
+                crate::Operand::MemoryAddress {
+                    base: rn,
+                    offset: crate::operand::AddressingMode::ImmediateOffset(offset as i32),
+                    writeback: false,
+                },
+            ],
             false,
         )
     }
@@ -284,7 +319,14 @@ impl ThumbDecoder {
         let name = if l_bit != 0 { "LDR" } else { "STR" };
         (
             name.to_string(),
-            vec![self.reg(rd), crate::Operand::MemoryAddress { base: 13, offset: crate::operand::AddressingMode::ImmediateOffset(imm8 as i32), writeback: false }],
+            vec![
+                self.reg(rd),
+                crate::Operand::MemoryAddress {
+                    base: 13,
+                    offset: crate::operand::AddressingMode::ImmediateOffset(imm8 as i32),
+                    writeback: false,
+                },
+            ],
             false,
         )
     }
@@ -325,7 +367,7 @@ impl ThumbDecoder {
         (name.to_string(), vec![self.reg(rd), self.reg(rm)], false)
     }
 
-        fn format_14_push_pop(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
+    fn format_14_push_pop(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
         let l_bit = (hw >> 11) & 1;
         let r_flag = (hw >> 8) & 1;
         let rlist = hw & 0xFF;
@@ -361,7 +403,7 @@ impl ThumbDecoder {
         )
     }
 
-        fn format_15_multiple(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
+    fn format_15_multiple(&self, hw: u16) -> (String, Vec<crate::Operand>, bool) {
         let l_bit = (hw >> 11) & 1;
         let rb = ((hw >> 8) & 0x7) as u8;
         let rlist = hw & 0xFF;
@@ -636,7 +678,7 @@ mod tests {
         let dec = ThumbDecoder::new();
         let (mnem, _ops, flags) = dec.decode(0x4000, 0x08000000);
         assert_eq!(mnem, "AND");
-        assert!(!flags);
+        assert!(flags);
     }
 
     #[test]
@@ -771,11 +813,20 @@ mod tests {
     fn test_all_cond_branches() {
         let dec = ThumbDecoder::new();
         let conditions = vec![
-            (0xD000, "BEQ"), (0xD100, "BNE"), (0xD200, "BCS"),
-            (0xD300, "BCC"), (0xD400, "BMI"), (0xD500, "BPL"),
-            (0xD600, "BVS"), (0xD700, "BVC"), (0xD800, "BHI"),
-            (0xD900, "BLS"), (0xDA00, "BGE"), (0xDB00, "BLT"),
-            (0xDC00, "BGT"), (0xDD00, "BLE"),
+            (0xD000, "BEQ"),
+            (0xD100, "BNE"),
+            (0xD200, "BCS"),
+            (0xD300, "BCC"),
+            (0xD400, "BMI"),
+            (0xD500, "BPL"),
+            (0xD600, "BVS"),
+            (0xD700, "BVC"),
+            (0xD800, "BHI"),
+            (0xD900, "BLS"),
+            (0xDA00, "BGE"),
+            (0xDB00, "BLT"),
+            (0xDC00, "BGT"),
+            (0xDD00, "BLE"),
         ];
         for (hw, expected) in conditions {
             let (mnem, _ops, _flags) = dec.decode(hw, 0x08000000);

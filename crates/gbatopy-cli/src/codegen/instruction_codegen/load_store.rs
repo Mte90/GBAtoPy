@@ -642,17 +642,22 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     if is_load {
                         if reg == 15 && has_s_bit {
                             // LDM ... {PC}^ : exception return — load PC and restore CPSR from SPSR.
-                            code.push_str("registers[15] = memory.read_u32(addr)\n");
+                            code.push_str("registers[15] = memory.read_u32(addr) & 0xFFFFFFFE\n");
                             code.push_str("_new_cpsr = _spsr_for_mode(cpsr['mode'])\n");
                             code.push_str("_old_mode = cpsr['mode']\n");
                             code.push_str("_cpsr_from_int(cpsr, _new_cpsr)\n");
                             code.push_str("_switch_mode(cpsr['mode'])\n");
                         } else if has_s_bit {
-                            code.push_str(&format!("_write_user_reg({}, memory.read_u32(addr))\n", reg));
+                            code.push_str(&format!(
+                                "_write_user_reg({}, memory.read_u32(addr))\n",
+                                reg
+                            ));
                         } else if reg == 15 && inst.mode == gbatopy_disasm::ArmMode::Thumb {
                             code.push_str("_pc_val = memory.read_u32(addr)\n");
                             code.push_str("cpsr['t'] = _pc_val & 1\n");
                             code.push_str("registers[15] = _pc_val & 0xFFFFFFFE\n");
+                        } else if reg == 15 {
+                            code.push_str("registers[15] = memory.read_u32(addr) & 0xFFFFFFFE\n");
                         } else {
                             code.push_str(&format!("registers[{}] = memory.read_u32(addr)\n", reg));
                         }
@@ -661,13 +666,21 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                             if reg == 15 {
                                 code.push_str("memory.write_u32(addr, (_read_user_reg(15) + 8) & 0xFFFFFFFF)\n");
                             } else {
-                                code.push_str(&format!("memory.write_u32(addr, _read_user_reg({}))\n", reg));
+                                code.push_str(&format!(
+                                    "memory.write_u32(addr, _read_user_reg({}))\n",
+                                    reg
+                                ));
                             }
                         } else {
                             if reg == 15 {
-                                code.push_str("memory.write_u32(addr, (registers[15] + 8) & 0xFFFFFFFF)\n");
+                                code.push_str(
+                                    "memory.write_u32(addr, (registers[15] + 8) & 0xFFFFFFFF)\n",
+                                );
                             } else {
-                                code.push_str(&format!("memory.write_u32(addr, registers[{}])\n", reg));
+                                code.push_str(&format!(
+                                    "memory.write_u32(addr, registers[{}])\n",
+                                    reg
+                                ));
                             }
                         }
                     }
@@ -785,7 +798,9 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gbatopy_disasm::{operand::AddressingMode, ArmMode, Condition, DecodedInstruction, Operand};
+    use gbatopy_disasm::{
+        operand::AddressingMode, ArmMode, Condition, DecodedInstruction, Operand,
+    };
 
     fn make_inst(
         opcode: &str,
@@ -823,10 +838,7 @@ mod tests {
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(
-            code,
-            "registers[0] = memory.read_u32(registers[1] + 16)"
-        );
+        assert_eq!(code, "registers[0] = memory.read_u32(registers[1] + 16)");
     }
 
     #[test]
@@ -845,10 +857,7 @@ mod tests {
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(
-            code,
-            "registers[0] = memory.read_u32(registers[1] - 8)"
-        );
+        assert_eq!(code, "registers[0] = memory.read_u32(registers[1] - 8)");
     }
 
     #[test]
@@ -957,10 +966,7 @@ mod tests {
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(
-            code,
-            "memory.write_u32(registers[1] + 24, registers[0])"
-        );
+        assert_eq!(code, "memory.write_u32(registers[1] + 24, registers[0])");
     }
 
     #[test]
@@ -1185,7 +1191,7 @@ mod tests {
         );
         let code = generate(&inst).unwrap();
         assert!(code.contains("registers[4] = memory.read_u32(addr)"));
-        assert!(code.contains("registers[15] = memory.read_u32(addr)"));
+        assert!(code.contains("registers[15] = memory.read_u32(addr) & 0xFFFFFFFE"));
     }
 
     // === STM tests ===
@@ -1261,7 +1267,9 @@ mod tests {
         );
         let code = generate(&inst).unwrap();
         assert!(code.contains("temp = memory.read_u16(registers[1] + 8)"));
-        assert!(code.contains("registers[0] = (temp << 16) >> 16"));
+        assert!(code.contains(
+            "registers[0] = ((temp - 0x10000) if (temp & 0x8000) else temp) & 0xFFFFFFFF"
+        ));
     }
 
     // === LDRSB tests ===
@@ -1282,7 +1290,8 @@ mod tests {
         );
         let code = generate(&inst).unwrap();
         assert!(code.contains("temp = memory.read_u8(registers[1] + 4)"));
-        assert!(code.contains("registers[0] = (temp << 24) >> 24"));
+        assert!(code
+            .contains("registers[0] = ((temp - 0x100) if (temp & 0x80) else temp) & 0xFFFFFFFF"));
     }
 
     // === SWP tests ===
@@ -1327,7 +1336,14 @@ mod tests {
     fn test_generate_ldr_conditional_eq() {
         let inst = make_inst(
             "LDRge",
-            vec![Operand::Register(0), Operand::MemoryAddress { base: 1, offset: AddressingMode::ImmediateOffset(4), writeback: false }],
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(4),
+                    writeback: false,
+                },
+            ],
             ArmMode::Arm,
             0x08000000,
         );
@@ -1340,7 +1356,14 @@ mod tests {
     fn test_generate_str_conditional_ne() {
         let inst = make_inst(
             "STRne",
-            vec![Operand::Register(0), Operand::MemoryAddress { base: 1, offset: AddressingMode::ImmediateOffset(4), writeback: false }],
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 1,
+                    offset: AddressingMode::ImmediateOffset(4),
+                    writeback: false,
+                },
+            ],
             ArmMode::Arm,
             0x08000000,
         );
@@ -1417,10 +1440,7 @@ mod tests {
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(
-            code,
-            "registers[0] = memory.read_u32(registers[1] + 0)"
-        );
+        assert_eq!(code, "registers[0] = memory.read_u32(registers[1] + 0)");
     }
 
     #[test]

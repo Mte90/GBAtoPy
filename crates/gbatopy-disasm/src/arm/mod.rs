@@ -742,7 +742,10 @@ impl ArmDecoder {
         };
 
         (
-            format!("{}{}{}{}", prefix, suffix_mode, writeback_suffix, cond_suffix),
+            format!(
+                "{}{}{}{}",
+                prefix, suffix_mode, writeback_suffix, cond_suffix
+            ),
             vec![op],
             s_bit,
         )

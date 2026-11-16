@@ -4,9 +4,7 @@
 // for better testability and code organization.
 // ============================================================================
 
-use gbatopy_disasm::{
-    operand::AddressingMode, operand::Operand, ArmMode, DecodedInstruction,
-};
+use gbatopy_disasm::{operand::AddressingMode, operand::Operand, ArmMode, DecodedInstruction};
 use std::collections::{HashMap, HashSet};
 
 /// Returns true for ARM conditional branch mnemonics (BEQ, BNE, BCS, etc.).
@@ -79,8 +77,7 @@ pub(crate) fn writes_r15(inst: &DecodedInstruction) -> bool {
     // Store instructions: first operand is a source, not a destination.
     // STM* covers STMFD, STMIA, STMDB, STMDA, STMEA, STMED, STMFA, STMIB,
     // and their '!' (writeback) variants. PUSH is the Thumb alias.
-    let is_store =
-        matches!(op, "STR" | "STRH" | "STRB" | "STRD" | "PUSH") || op.starts_with("STM");
+    let is_store = matches!(op, "STR" | "STRH" | "STRB" | "STRD" | "PUSH") || op.starts_with("STM");
     // Comparison instructions: only set flags, no Rd write.
     let is_comparison = matches!(op, "CMP" | "CMN" | "TST" | "TEQ");
 
@@ -331,9 +328,7 @@ pub(crate) fn detect_memset_loop_pattern(
 }
 
 /// Helper: extract BL/BLX targets from a function's instructions
-pub(crate) fn extract_bl_targets(
-    func_instructions: &[&DecodedInstruction],
-) -> Vec<(u64, ArmMode)> {
+pub(crate) fn extract_bl_targets(func_instructions: &[&DecodedInstruction]) -> Vec<(u64, ArmMode)> {
     let mut targets = Vec::new();
     let mut lr_value: Option<u64> = None; // Track LR (r14) for BL_PREFIX/BL_SUFFIX
 
@@ -399,7 +394,6 @@ pub(crate) fn extract_bl_targets(
     targets
 }
 
-
 // ============================================================================
 // Unit Tests
 // ============================================================================
@@ -407,7 +401,9 @@ pub(crate) fn extract_bl_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gbatopy_disasm::{operand::ShiftAmount, operand::ShiftType, ArmMode, Condition, DecodedInstruction, Operand};
+    use gbatopy_disasm::{
+        operand::ShiftAmount, operand::ShiftType, ArmMode, Condition, DecodedInstruction, Operand,
+    };
 
     fn make_inst(
         opcode: &str,
@@ -489,7 +485,11 @@ mod tests {
     fn test_is_conditional_non_branch_addne() {
         let inst = make_inst(
             "ADDne",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(5)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(5),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -601,18 +601,21 @@ mod tests {
     fn test_writes_r15_ldm_pc() {
         let inst = make_inst(
             "LDMIA",
-            vec![Operand::Register(13), Operand::MemoryAddress {
-                base: 13,
-                offset: gbatopy_disasm::operand::AddressingMode::Multi {
+            vec![
+                Operand::Register(13),
+                Operand::MemoryAddress {
                     base: 13,
-                    registers: vec![0, 1, 15],
-                    increment: true,
-                    pre_index: true,
+                    offset: gbatopy_disasm::operand::AddressingMode::Multi {
+                        base: 13,
+                        registers: vec![0, 1, 15],
+                        increment: true,
+                        pre_index: true,
+                        writeback: false,
+                        s_bit: false,
+                    },
                     writeback: false,
-                    s_bit: false,
                 },
-                writeback: false,
-            }],
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -711,11 +714,14 @@ mod tests {
     fn test_reads_r15_shifted_r15() {
         let inst = make_inst(
             "ADD",
-            vec![Operand::Register(0), Operand::ShiftedRegister {
-                reg: 15,
-                shift: ShiftType::Lsl,
-                amount: ShiftAmount::Immediate(2),
-            }],
+            vec![
+                Operand::Register(0),
+                Operand::ShiftedRegister {
+                    reg: 15,
+                    shift: ShiftType::Lsl,
+                    amount: ShiftAmount::Immediate(2),
+                },
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -727,11 +733,14 @@ mod tests {
     fn test_reads_r15_memory_r15_base() {
         let inst = make_inst(
             "LDR",
-            vec![Operand::Register(0), Operand::MemoryAddress {
-                base: 15,
-                offset: gbatopy_disasm::operand::AddressingMode::ImmediateOffset(4),
-                writeback: false,
-            }],
+            vec![
+                Operand::Register(0),
+                Operand::MemoryAddress {
+                    base: 15,
+                    offset: gbatopy_disasm::operand::AddressingMode::ImmediateOffset(4),
+                    writeback: false,
+                },
+            ],
             false,
             ArmMode::Arm,
             0x08000000,

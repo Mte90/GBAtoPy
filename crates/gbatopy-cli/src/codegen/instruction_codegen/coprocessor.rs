@@ -55,7 +55,10 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
             // Fallback: assume r0 as destination (common pattern)
             0
         };
-        return Some(format!("registers[{}] = 0  # MRC from CP15 returns 0 (no cache)", rd));
+        return Some(format!(
+            "registers[{}] = 0  # MRC from CP15 returns 0 (no cache)",
+            rd
+        ));
     }
 
     // MCR: Move to Coprocessor from ARM register (P15)
@@ -130,18 +133,24 @@ fn generate_inner(inst: &DecodedInstruction) -> Option<String> {
                     code.push_str(&format!("cpsr['v'] = ({} >> 28) & 1", source));
                 }
                 if code.is_empty() {
-                    code.push_str("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)");
+                    code.push_str(
+                        "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)",
+                    );
                 }
                 return Some(code);
             }
         }
-        return Some("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string());
+        return Some(
+            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
+        );
     }
     if base_opcode == "MRS" {
         if let Some(Operand::Register(rd)) = ops.first() {
             return Some(format!("registers[{}] = ((cpsr['n'] << 31) | (cpsr['z'] << 30) | (cpsr['c'] << 29) | (cpsr['v'] << 28) | (cpsr['f'] << 6) | (cpsr['i'] << 7) | (cpsr['t'] << 5) | cpsr['mode']) & 0xFFFFFFFF", rd));
         }
-        return Some("_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string());
+        return Some(
+            "_interp_fallback(registers, cpsr, max_steps=1, irq_return_pc=None)".to_string(),
+        );
     }
     if base_opcode == "NOP" {
         return Some("pass  # NOP".to_string());
@@ -265,7 +274,10 @@ mod tests {
     fn test_wrap_conditional_multiline() {
         let code = String::from("line1\nline2\nline3");
         let result = wrap_conditional(code, "ADDne");
-        assert_eq!(result, "if cpsr_check('NE'):\n    line1\n    line2\n    line3");
+        assert_eq!(
+            result,
+            "if cpsr_check('NE'):\n    line1\n    line2\n    line3"
+        );
     }
 
     #[test]
@@ -421,7 +433,10 @@ mod tests {
 
     #[test]
     fn test_generate_msr_immediate_source() {
-        let inst = make_inst("MSR", vec![Operand::Immediate(0x8), Operand::Immediate(0x20000000)]);
+        let inst = make_inst(
+            "MSR",
+            vec![Operand::Immediate(0x8), Operand::Immediate(0x20000000)],
+        );
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
@@ -470,7 +485,14 @@ mod tests {
     // === MUL/MLA tests ===
     #[test]
     fn test_generate_mul() {
-        let inst = make_inst("MUL", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)]);
+        let inst = make_inst(
+            "MUL",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
+        );
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
@@ -481,7 +503,15 @@ mod tests {
 
     #[test]
     fn test_generate_mla() {
-        let inst = make_inst("MLA", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2), Operand::Register(3)]);
+        let inst = make_inst(
+            "MLA",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+                Operand::Register(3),
+            ],
+        );
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
@@ -493,7 +523,14 @@ mod tests {
 
     #[test]
     fn test_generate_mla_without_accumulator() {
-        let inst = make_inst("MLA", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)]);
+        let inst = make_inst(
+            "MLA",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
+        );
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
@@ -505,7 +542,15 @@ mod tests {
     // === UMULL/SMULL tests ===
     #[test]
     fn test_generate_umull() {
-        let inst = make_inst("UMULL", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2), Operand::Register(3)]);
+        let inst = make_inst(
+            "UMULL",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+                Operand::Register(3),
+            ],
+        );
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
@@ -515,7 +560,15 @@ mod tests {
 
     #[test]
     fn test_generate_smull() {
-        let inst = make_inst("SMULL", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2), Operand::Register(3)]);
+        let inst = make_inst(
+            "SMULL",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+                Operand::Register(3),
+            ],
+        );
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
@@ -527,7 +580,15 @@ mod tests {
     fn test_generate_smull_sign_extension() {
         // Verify SMULL generates code that sign-extends operands
         // This test ensures negative values are properly handled
-        let inst = make_inst("SMULL", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2), Operand::Register(3)]);
+        let inst = make_inst(
+            "SMULL",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+                Operand::Register(3),
+            ],
+        );
         let result = generate(&inst);
         assert!(result.is_some());
         let code = result.unwrap();
@@ -546,7 +607,14 @@ mod tests {
 
     #[test]
     fn test_generate_muls_flag_setting() {
-        let inst = make_inst("MULS", vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)]);
+        let inst = make_inst(
+            "MULS",
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
+        );
         let result = generate(&inst);
         // MULS is not explicitly handled, so it returns None
         assert!(result.is_none());

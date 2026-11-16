@@ -3,8 +3,8 @@
 > **Role:** Strategy, sequencing, and remaining work.
 > For the current verification status, see [reference/test-roms.md](reference/test-roms.md).
 
-> **Last updated**: 2026-11-04  
-> **Current state**: L3 (Visual) verification on 91 ROMs: 86 PASS, 4 FAIL, 1 INCONCLUSIVE (mode2), 0 SKIP. Build: 0 errors, 0 warnings.
+> **Last updated**: 2026-11-06  
+> **Current state**: L3 (Visual) verification on 91 ROMs: 88 PASS, 2 FAIL, 1 INCONCLUSIVE (mode2), 0 SKIP. Build: 0 errors, 0 warnings.
 > **Note**: Counts must match WORKPLAN.md Current Ground Truth header before any status claim.
 > **Status**: IN ACTIVE DEVELOPMENT — Core transpiler works end-to-end; remaining work focuses on PPU edge cases, audio synthesis, and runtime hang diagnosis.
 
@@ -12,7 +12,7 @@
 
 GBAtoPy is a **transpiler** that converts GBA ROMs into standalone Python files playable with pygame. NOT an emulator — the output is human-readable Python source code that can be read, modified, and extended.
 
-**Test suite:** 817 Python tests PASS · 443 Rust tests PASS · L3 Visual: 86/91 ROMs PASS.
+**Test suite:** 817 Python tests PASS · 443 Rust tests PASS · L3 Visual: 88/91 ROMs PASS.
 
 ---
 
@@ -144,14 +144,14 @@ Failed: 0
 
 ### Visual Verification (ScreenshotGolden vs mGBA)
 ```
-Total: 91 ROMs (2026-11-04 verification)
+Total: 91 ROMs (2026-11-06 verification)
 L3 PASS: 86
 L3 FAIL: 4 (fantasy-knight, proposal_proposal-demo, irq_delay, dynamic-isometric)
 L3 INCONCLUSIVE: 1 (mode2)
 SKIP: 0
 ```
 
-**Note:** All 91 ROMs verified at L3 (visual comparison). 86 PASS, 4 FAIL (all architecture-blocked), 1 INCONCLUSIVE (mode2 — requires cycle-accurate DMA). Zero SKIP per zero-skip policy.
+**Note:** All 91 ROMs verified at L3 (visual comparison). 88 PASS, 2 FAIL (architecture-blocked), 1 INCONCLUSIVE (mode2 — requires cycle-accurate DMA). Zero SKIP per zero-skip policy.
 
 ### Golden Screenshot Coverage Audit (2026-10-03, updated 2026-11-04)
 - **Total f60 golden files**: 91 in `test-reports/goldens/`
@@ -159,7 +159,7 @@ SKIP: 0
 - **Golden coverage**: 91/91 (100%)
 - **V1 milestone (2026-11-03):** All 81 Smoke ROMs promoted to ScreenshotMgba. Zero SKIP ROMs remain.
 
-**Level 2 (Assertion Text) Results:** 81/82 PASS (1 timeout: gbarcade). Includes status-irq-dma (CpuFastSet mask fix), dispcnt-latch (IRQ return alignment fix), and all L1 ROMs.
+**Level 2 (Assertion Text) Results:** 82/82 PASS (2026-11-06 sweep). Includes status-irq-dma (CpuFastSet mask fix), dispcnt-latch (IRQ return alignment fix), and all L1 ROMs.
 
 ---
 
@@ -181,17 +181,13 @@ SKIP: 0
 - **helloAudio.gba**: RESOLVED — F45 fix (SWI halt + IRQ IF clear) → PASS (0% diff)
 - **rates.gba**: RESOLVED — F46 fix (MUL decode + CRT0) → PASS (3.65% diff)
 
-### Visual Verification Failures (4 ROMs, all architecture-blocked)
-- **fantasy-knight.gba**: L3 FAIL (92.5% teal backdrop) — root cause: VCOUNT polling stall at 0x080182C6. Game polls VCOUNT in tight loop waiting for VBlank, consuming 64.3% of execution time. Timing model (1 instr = 1 cycle vs real ~3 CPI) makes VCOUNT advance 3x slower. Vtable dispatch is NOT the problem — all 24 vtable functions discovered (commit b2dbee8). Architecture-blocked on timing model.
-- **proposal_proposal-demo.gba**: L3 FAIL — mGBA segfaults on headless screenshot generation (no valid golden possible). Different execution profile from fantasy-knight (no VCOUNT polling, top consumer is memory zero-fill at 54.8%). Architecture-blocked on mGBA compatibility.
-- **irq_delay.gba**: L3 FAIL (45.73% diff) — ROM measures IRQ entry latency (2-4 cycles on real GBA). Transpiler delivers IRQs instantly with zero latency. Architecture-blocked on per-instruction IRQ delivery model (mGBA uses GBA_IRQ_DELAY 7 cycles).
+### Visual Verification Failures (2 ROMs, all architecture-blocked)
 - **dynamic-isometric.gba**: L3 FAIL — 7th state sync bug at call #9 (0x0800C790). Set aside.
+- **fantasy-knight.gba**: L3 FAIL (97.18% teal backdrop) — root cause: VCOUNT polling stall at 0x080182C6. Game polls VCOUNT in tight loop waiting for VBlank, consuming 64.3% of execution time. Timing model (1 instr = 1 cycle vs real ~3 CPI) makes VCOUNT advance 3x slower. Vtable dispatch is NOT the problem — all 24 vtable functions discovered (commit b2dbee8). Architecture-blocked on timing model.
 
 ### Architecture-Limited ROMs (require major feature work)
 - **mode2.gba**: INCONCLUSIVE — requires cycle-accurate DMA with sub-scanline timing model. Current PPU advances one scanline per instruction budget, not per cycle.
 - **fantasy-knight.gba**: timing model limitation (VCOUNT polling stall, not vtable dispatch — vtable scan fixed in commit b2dbee8).
-- **proposal_proposal-demo.gba**: mGBA segfault prevents golden generation.
-- **irq_delay.gba**: requires per-instruction IRQ delivery latency model.
 
 ### Recently Fixed (2026-09-01)
 - **blindjump_BlindJump**: PASS at 9.39% diff. Root causes: (F54) Thumb format-7 selector used bit 12 + bits 11-10 instead of bits 11-9, mis-decoding all register-offset load/store; (F12) DISPSTAT read path used stale Python attrs instead of the live MMIO buffer `io[4]/io[5]` that `step_scanline()` writes. Size tracked as F64.
@@ -206,6 +202,7 @@ SKIP: 0
 - **Sprite rendering**: Implemented and verified (sprite-hmosaic PASS, proposal_proposal-demo PASS)
 - **Audio synthesis**: Infrastructure exists, some verification (helloAudio PASS 0% diff, song PASS 1.12% diff, rates PASS 3.65% diff)
 - **RTC**: Implemented (rtc-demo.gba PASS)
+- **Per-instruction IRQ delivery**: IMPLEMENTED (irq_delay PASS)
 - **Automated ScreenshotGolden**: 69 f60 goldens in `test-reports/goldens/`, comparison wired into `regress_all.sh` and Rust `ScreenshotGoldenVerifier`
 
 ---
@@ -259,7 +256,7 @@ python3 scripts/run_tests.py --level 3 --rom stripes
 | BIOS handlers | 13 live (F181 removed 40 dead) |
 | ARM instructions | ~160 unique opcodes |
 | Thumb instructions | ~60 unique opcodes |
-| Test pass rate | 86/91 L3 PASS (94.5%); 4 FAIL (architecture-blocked); 1 INCONCLUSIVE; 0 SKIP |
+| Test pass rate | 88/91 L3 PASS (96.7%); 2 FAIL (architecture-blocked); 1 INCONCLUSIVE; 0 SKIP |
 | Build time | ~30s (release) |
 | Transpile time | ~1-5s per ROM |
 
@@ -301,7 +298,7 @@ Numba is referenced in 4 runtime files:
 - `arm7tdmi.py` - CPU core JIT decorators
 - `ppu.py` - PPU rendering JIT decorators  
 - `apu.py` - Audio channel JIT decorators
-- `numba.py` - Fallback stub module
+- `numba.py` - Optional numba JIT shim with graceful ImportError fallback
 
 **Implementation:**
 - Graceful fallback when numba not installed (no-op decorators)
@@ -324,7 +321,7 @@ Numba is referenced in 4 runtime files:
 
 ## Appendix: Phase 16/17 Runtime Fixes (2026-08-04 to 2026-08-17)
 
-These fixes brought the test suite to initial L3 (Visual) verification baseline. Current status (2026-11-04): 86 PASS / 4 FAIL / 1 INCONCLUSIVE / 0 SKIP out of 91 ROMs.
+These fixes brought the test suite to initial L3 (Visual) verification baseline. Current status (2026-11-06): 88 PASS / 2 FAIL / 1 INCONCLUSIVE / 0 SKIP out of 91 ROMs.
 
 ### Phase 16 (2026-08-04 to 2026-08-13)
 

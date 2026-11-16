@@ -62,11 +62,11 @@ This is a **transpiler**, not an emulator with approximate behavior. The generat
 ## PPU Rendering Modes
 
 - Mode 0: 4BPP text tiles — VERIFIED (shades, hello, helloWorld, hello_world)
-- Mode 1: affine BG2 + text BG0/1 — verified (F252, 5 unit tests PASS)
-- Mode 2: affine BG2/3 — VERIFIED (mode2)
+- Mode 1: affine BG2 + text BG0/1 — implemented (not verified)
+- Mode 2: affine BG2/3 — INCONCLUSIVE (all-black screen, CFG builder misses affine register setup — F369 pending)
 - Mode 3: 16-bit bitmap — VERIFIED (stripes, mode3, bgx)
 - Mode 4: 8BPP bitmap — VERIFIED (mode4)
-- Mode 5: 160x128 bitmap — implemented
+- Mode 5: 160x128 bitmap — implemented (not verified)
 - Windows, blend, mosaic: implemented and verified
 
 ### Mode 2 VRAM Layout
@@ -101,3 +101,26 @@ When debugging Mode 2 rendering, probe the **tilemap** at `VRAM[screen_block × 
 - MUST handle both absolute addresses (e.g., `0x06000000`) and relative addresses correctly
 - Memory regions include mirrors and aliases — verify correct mapping for all accesses
 - See `docs/runtime-architecture.md` § "Address Mapping: `_map_address()`" for implementation details
+
+## BIOS SWI Handlers
+
+### VBlankIntrWait (SWI 0x05)
+
+The mGBA HLE BIOS VBlankIntrWait handler at 0x01C4 performs:
+1. If `checkFlag == 1`: reads IF, clears VBlank bit (IF.0), writes back, HALT
+2. Writes IME=0 (to 0x04000208)
+3. Polls IF for VBlank bit
+4. If set: clear IF, write IME=1, return
+5. If not set: HALT, loop to step 3
+
+**Does NOT set:**
+- IE.0 (Interrupt Enable bit 0 — VBlank enable)
+- DISPSTAT.3 (VBlank IRQ enable)
+
+**Does set:**
+- IME=1 (Interrupt Master Enable)
+- IF.0 clear (acknowledge pending VBlank)
+
+Game ROM code is responsible for setting IE.0 and DISPSTAT.3 before calling VBlankIntrWait. All working ROMs do this (verified: mGBA's `GBATestIRQ` requires `IE & IF != 0` to schedule IRQ, and `_triggerIRQ` requires both `IE & IF != 0` AND `IME` to fire).
+
+**Runtime implementation:** The transpiler's VBlankIntrWait handler (in `game_loop.py`, `cpu.py`, `arm7tdmi.py`) matches HLE BIOS behavior: sets IME=1, clears IF.0, halts. Does NOT set IE.0 or DISPSTAT.3.

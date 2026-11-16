@@ -101,8 +101,6 @@ impl Disassembler {
         stats
     }
 
-
-
     pub fn disassemble(&mut self, rom_data: &[u8], base_address: u32) -> Vec<DecodedInstruction> {
         let mut instructions = Vec::new();
         let mut address = base_address;
@@ -273,7 +271,6 @@ impl Disassembler {
 
         instructions
     }
-
 }
 
 impl Default for Disassembler {
@@ -283,7 +280,6 @@ impl Default for Disassembler {
 }
 
 impl Disassembler {
-
     /// Disassemble ONLY the specified addresses (for CFG-first/reachable code analysis).
     /// This prevents linear sweep on large ROMs by disassembling only reachable code.
     ///
@@ -346,6 +342,12 @@ impl Disassembler {
                     });
                 }
                 ArmMode::Thumb => {
+                    // Skip odd-address Thumb entries: they are CFG artifacts (mid-ARM-word
+                    // bytes visited in Thumb mode). Thumb instructions are 2-byte aligned,
+                    // so odd addresses cannot be real instruction boundaries.
+                    if addr & 1 != 0 {
+                        continue;
+                    }
                     if rom_offset + 2 > rom.len() {
                         continue;
                     }
@@ -408,9 +410,9 @@ mod tests {
     fn test_disassembler_new() {
         let rom: Vec<u8> = vec![0x00, 0x00, 0x00, 0x00];
         let mut disassembler = Disassembler::new();
-        
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         // Should decode at least one instruction
         assert!(!instructions.is_empty());
         // Initial mode should be ARM
@@ -423,9 +425,9 @@ mod tests {
     fn test_decode_arm_nop() {
         let rom: Vec<u8> = vec![0x00, 0x00, 0xA0, 0xE1]; // ARM NOP (MOV R0, R0)
         let mut disassembler = Disassembler::new();
-        
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         assert!(!instructions.is_empty());
         assert_eq!(instructions[0].opcode, "MOV");
         assert_eq!(instructions[0].width, 4);
@@ -437,12 +439,14 @@ mod tests {
     fn test_decode_thumb_mov() {
         let rom: Vec<u8> = vec![0x00, 0x20]; // MOV R0, #0
         let mut disassembler = Disassembler::new();
-        
+
         // Force Thumb mode by switching
-        disassembler.mode_tracker.switch_to(0x08000000, ArmMode::Thumb);
-        
+        disassembler
+            .mode_tracker
+            .switch_to(0x08000000, ArmMode::Thumb);
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         assert!(!instructions.is_empty());
         assert_eq!(instructions[0].opcode, "MOV");
         assert_eq!(instructions[0].width, 2);
@@ -454,9 +458,9 @@ mod tests {
     fn test_decode_arm_branch() {
         let rom: Vec<u8> = vec![0x00, 0x00, 0x00, 0xEA]; // B . (branch to self)
         let mut disassembler = Disassembler::new();
-        
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         assert!(!instructions.is_empty());
         assert_eq!(instructions[0].opcode, "B");
         assert_eq!(instructions[0].width, 4);
@@ -467,9 +471,9 @@ mod tests {
     fn test_mode_detection_arm() {
         let rom: Vec<u8> = vec![0x00, 0x00, 0xA0, 0xE1]; // ARM NOP
         let mut disassembler = Disassembler::new();
-        
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         // Default mode is ARM
         assert_eq!(instructions[0].mode, ArmMode::Arm);
     }
@@ -479,12 +483,14 @@ mod tests {
     fn test_mode_detection_thumb() {
         let rom: Vec<u8> = vec![0x00, 0x20, 0x00, 0x00]; // Thumb MOV R0, #0 + padding
         let mut disassembler = Disassembler::new();
-        
+
         // Simulate Thumb entry point - start at aligned address but in Thumb mode
-        disassembler.mode_tracker.switch_to(0x08000000, ArmMode::Thumb);
-        
+        disassembler
+            .mode_tracker
+            .switch_to(0x08000000, ArmMode::Thumb);
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         assert!(!instructions.is_empty());
         assert_eq!(instructions[0].mode, ArmMode::Thumb);
         assert_eq!(instructions[0].width, 2);
@@ -500,9 +506,9 @@ mod tests {
             0x02, 0x00, 0xA0, 0xE1, // 0x08: MOV R0, R0, LSL #4
         ];
         let mut disassembler = Disassembler::new();
-        
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         // Verify first instruction at 0x08000000
         assert_eq!(instructions[0].address, 0x08000000);
         // Verify second instruction at 0x08000004
@@ -518,9 +524,9 @@ mod tests {
             0x10, 0xFF, 0x2F, 0xE1, // BX R0
         ];
         let mut disassembler = Disassembler::new();
-        
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         assert!(!instructions.is_empty());
         assert_eq!(instructions[0].opcode, "BX");
         assert_eq!(instructions[0].mode, ArmMode::Arm);
@@ -531,14 +537,14 @@ mod tests {
     fn test_decode_data_region() {
         let rom: Vec<u8> = vec![0x00, 0x00, 0x00, 0x00]; // All zeros - likely data
         let mut disassembler = Disassembler::new();
-        
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         assert!(!instructions.is_empty());
         // Zero bytes decode to some instruction (MOV R0, R0 in ARM), but we test
         // that the disassembler handles it without crashing
         assert_eq!(instructions[0].width, 4);
-        
+
         // Test data region marking
         let mut stats = disassembler.mark_data_regions(&mut instructions.clone());
         // All-zero pattern may or may not be marked as data depending on the algorithm
@@ -556,11 +562,13 @@ mod tests {
             0x00, 0xF8, // BL_SUFFIX
         ];
         let mut disassembler = Disassembler::new();
-        
-        disassembler.mode_tracker.switch_to(0x08000000, ArmMode::Thumb);
-        
+
+        disassembler
+            .mode_tracker
+            .switch_to(0x08000000, ArmMode::Thumb);
+
         let instructions = disassembler.disassemble(&rom, 0x08000000);
-        
+
         assert!(!instructions.is_empty());
         // Should recognize as BL (or BL_PREFIX if suffix not valid)
         assert!(instructions[0].opcode == "BL" || instructions[0].opcode == "BL_PREFIX");
@@ -575,14 +583,12 @@ mod tests {
             0x01, 0x00, 0xA0, 0xE1, // ARM: MOV R0, R0, LSL #2
         ];
         let mut disassembler = Disassembler::new();
-        
-        let mode_map = vec![
-            (0x08000000, ArmMode::Arm),
-            (0x08000004, ArmMode::Arm),
-        ];
-        
-        let instructions = disassembler.selective_disassemble(&rom, &[0x08000000, 0x08000004], &mode_map);
-        
+
+        let mode_map = vec![(0x08000000, ArmMode::Arm), (0x08000004, ArmMode::Arm)];
+
+        let instructions =
+            disassembler.selective_disassemble(&rom, &[0x08000000, 0x08000004], &mode_map);
+
         assert_eq!(instructions.len(), 2);
         assert_eq!(instructions[0].address, 0x08000000);
         assert_eq!(instructions[1].address, 0x08000004);
@@ -627,13 +633,13 @@ mod tests {
                 is_data: false,
             },
         ];
-        
+
         let mut disassembler = Disassembler::new();
         let stats = disassembler.mark_data_regions(&mut instructions);
-        
+
         // Verify stats are updated
         assert!(stats.unknown_regions_found >= 0);
-        
+
         // Some instructions should be marked as data
         let data_count = instructions.iter().filter(|i| i.is_data).count();
         // At least the UNKNOWN/UNDEFINED ones should potentially be marked

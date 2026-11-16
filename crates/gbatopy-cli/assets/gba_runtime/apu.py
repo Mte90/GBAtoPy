@@ -351,21 +351,6 @@ class APU:
             # Use larger buffer for smoother playback
             pygame.mixer.init(frequency=self.SAMPLE_RATE, size=-8, channels=2, buffer=2048)
 
-    def _audio_worker(self):
-        """Background thread that continuously generates and queues audio buffers."""
-        while not self._stop_event.is_set():
-            try:
-                # Generate audio samples
-                samples = self._generate_samples(self._buffer_size)
-                sound = pygame.mixer.Sound(buffer=samples)
-                
-                # Queue the sound (blocks if queue is full)
-                self._sound_queue.put(sound, timeout=0.1)
-            except queue_module.Full:
-                # Queue is full, skip this buffer
-                continue
-            except (pygame.error, ValueError, OverflowError):
-                continue
 
     def stop(self):
         """Stop audio playback"""

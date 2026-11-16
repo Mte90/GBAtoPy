@@ -1,9 +1,6 @@
 use crate::asset_extractor::extract_assets;
 
-
-use gbatopy_disasm::{
-    operand::AddressingMode, operand::Operand, CfgBuilder, Disassembler,
-};
+use gbatopy_disasm::{operand::AddressingMode, operand::Operand, CfgBuilder, Disassembler};
 use std::fs;
 
 /// Feature flags for stripping unused hardware features
@@ -128,8 +125,11 @@ fn disassemble_rom(
 
     // Graceful degradation: if address count is excessive, use fallback-only mode
     if cfg.is_address_count_excessive() {
-        eprintln!("  Warning: {} reachable addresses exceeds limit ({}), using fallback-only mode", 
-                  reachable.len(), CfgBuilder::MAX_REACHABLE_ADDRESSES);
+        eprintln!(
+            "  Warning: {} reachable addresses exceeds limit ({}), using fallback-only mode",
+            reachable.len(),
+            CfgBuilder::MAX_REACHABLE_ADDRESSES
+        );
         // Return empty reachable set to force fallback-only codegen
         return Ok((vec![], cfg));
     }
@@ -204,4 +204,3 @@ pub fn run_pipeline(
         max_output_lines,
     )
 }
-

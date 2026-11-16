@@ -410,7 +410,6 @@ impl RegisterTracker {
     pub fn invalidate(&mut self, rn: u8) {
         self.values.remove(&rn);
     }
-
 }
 
 #[derive(Debug, Default)]
@@ -532,6 +531,9 @@ impl CfgBuilder {
             } else {
                 ArmMode::Arm
             };
+            if looks_like_data_safe(rom, target_addr, tmode, &arm_decoder, &thumb_decoder) {
+                continue;
+            }
             if !decode_is_valid_code(rom, target_addr, tmode, &arm_decoder, &thumb_decoder) {
                 continue;
             }
@@ -599,6 +601,9 @@ impl CfgBuilder {
 
             // LDR-literal targets are already call-confirmed: one valid decode
             // suffices because the code explicitly loaded this address.
+            if looks_like_data_safe(rom, taddr, tmode, &arm_decoder, &thumb_decoder) {
+                continue;
+            }
             if !decode_is_valid_code(rom, taddr, tmode, &arm_decoder, &thumb_decoder) {
                 continue;
             }
@@ -747,8 +752,8 @@ impl CfgBuilder {
             }
 
             // Skip if already discovered
-            let already_discovered =
-                self.branch_targets.contains(&addr) || self.instruction_addresses.contains(&addr)
+            let already_discovered = self.branch_targets.contains(&addr)
+                || self.instruction_addresses.contains(&addr)
                 || self.instruction_addresses.contains(&(addr & !1));
             if already_discovered {
                 continue;
@@ -831,7 +836,10 @@ impl CfgBuilder {
         loop {
             fixpoint_iterations += 1;
             if fixpoint_iterations > MAX_FIXPOINT_ITERATIONS {
-                eprintln!("  CFG: post-indirect sweep hit max iterations ({})", MAX_FIXPOINT_ITERATIONS);
+                eprintln!(
+                    "  CFG: post-indirect sweep hit max iterations ({})",
+                    MAX_FIXPOINT_ITERATIONS
+                );
                 break;
             }
 
@@ -856,10 +864,17 @@ impl CfgBuilder {
                 {
                     continue;
                 }
-                if !decode_is_valid_code(rom, target_addr, target_mode, &arm_decoder, &thumb_decoder) {
+                if !decode_is_valid_code(
+                    rom,
+                    target_addr,
+                    target_mode,
+                    &arm_decoder,
+                    &thumb_decoder,
+                ) {
                     continue;
                 }
-                if looks_like_data_soft(rom, target_addr, target_mode, &arm_decoder, &thumb_decoder) {
+                if looks_like_data_soft(rom, target_addr, target_mode, &arm_decoder, &thumb_decoder)
+                {
                     continue;
                 }
                 new_targets.push((target_addr, target_mode));
@@ -867,13 +882,17 @@ impl CfgBuilder {
             }
 
             if new_targets.is_empty() {
-                eprintln!("  CFG: post-indirect sweep iteration {} found no new targets, done", fixpoint_iterations);
+                eprintln!(
+                    "  CFG: post-indirect sweep iteration {} found no new targets, done",
+                    fixpoint_iterations
+                );
                 break;
             }
 
             eprintln!(
                 "  CFG: post-indirect sweep iteration {} found {} new targets, running mini-pass",
-                fixpoint_iterations, new_targets.len()
+                fixpoint_iterations,
+                new_targets.len()
             );
 
             let mut mini_queue: Vec<(u32, ArmMode)> = new_targets;
@@ -935,8 +954,7 @@ impl CfgBuilder {
             }
 
             if run_values.len() >= VTABLE_MIN_ENTRIES {
-                let unique: std::collections::HashSet<u32> =
-                    run_values.iter().copied().collect();
+                let unique: std::collections::HashSet<u32> = run_values.iter().copied().collect();
                 if unique.len() * 2 >= run_values.len() {
                     for value in &run_values {
                         let target_addr = value & !1u32;
@@ -1409,7 +1427,8 @@ impl CfgBuilder {
                         8,
                         &arm_decoder,
                         &thumb_decoder,
-                    ) && self.branch_targets.insert(blob_target)
+                    )
+                    && self.branch_targets.insert(blob_target)
                 {
                     iwram_entry_targets.push((blob_target, blob_mode));
                 }
@@ -1543,7 +1562,12 @@ impl CfgBuilder {
                 if probe + 4 > rom.len() {
                     break;
                 }
-                let word = u32::from_le_bytes([rom[probe], rom[probe + 1], rom[probe + 2], rom[probe + 3]]);
+                let word = u32::from_le_bytes([
+                    rom[probe],
+                    rom[probe + 1],
+                    rom[probe + 2],
+                    rom[probe + 3],
+                ]);
                 if (word & 0xFFFF0000) == 0xE92D0000 && (word & 0x00004000) != 0 {
                     stmfd_pos = Some(i);
                     break;
@@ -1712,11 +1736,33 @@ impl CfgBuilder {
         if (opcode == "ADD" || opcode == "SUB" || opcode == "ADDS" || opcode == "SUBS")
             && operands.len() >= 2
         {
-            // Track the destination register as being modified by arithmetic
             if let Operand::Register(rd) = operands[0] {
-                // Invalidate the register since its value is now computed
-                // This prevents false positives from stale tracked values
-                self.register_tracker.invalidate(rd);
+                let is_adr = operands.len() >= 3
+                    && matches!(&operands[1], Operand::Register(rn) if *rn == 15);
+
+                if is_adr {
+                    // ADR (ADD/SUB Rd, PC, #imm) already tracked above.
+                } else if operands.len() >= 3 {
+                    // ADD/SUB Rd, Rn, #imm: propagate if Rn is tracked.
+                    let propagated = match (&operands[1], &operands[2]) {
+                        (Operand::Register(rn), Operand::Immediate(imm)) => {
+                            self.register_tracker.get(*rn).map(|base_val| {
+                                let new_val = if opcode.starts_with("ADD") {
+                                    base_val.wrapping_add(*imm)
+                                } else {
+                                    base_val.wrapping_sub(*imm)
+                                };
+                                self.register_tracker.track_mov_immediate(rd, new_val);
+                            })
+                        }
+                        _ => None,
+                    };
+                    if propagated.is_none() {
+                        self.register_tracker.invalidate(rd);
+                    }
+                } else {
+                    self.register_tracker.invalidate(rd);
+                }
             }
         }
 
@@ -1855,14 +1901,14 @@ impl CfgBuilder {
             return targets;
         }
 
-        // BLX (immediate) also stores the full target directly - extract it from the operand
-        // This is distinct from BLX Rm (register variant) which is handled below
-        // Fall-through is handled by the generic mechanism in bfs_pass (addr + instr_width)
+        // BLX (immediate) stores the full target directly — return early.
+        // BLX Rm (register variant) falls through to the BX/BLX register
+        // handler below (line ~1918) for indirect-call resolution.
         if opcode == "BLX" {
             if let Some(Operand::Immediate(target)) = operands.first() {
                 targets.push(*target);
+                return targets;
             }
-            return targets;
         }
 
         // BL_PREFIX just stores the upper target in LR — not a branch itself.
@@ -1917,14 +1963,14 @@ impl CfgBuilder {
                         let pipeline_target = addr + 2 * instr_width;
                         targets.push(pipeline_target);
                     } else {
-                        // Record this register for the post-processing sweep.
                         self.bx_registers.insert(*rn);
                         if let Some(target) = self.register_tracker.get(*rn) {
-                            // Push the raw value with bit 0 intact. bfs_pass reads
-                            // bit 0 to select ARM vs Thumb mode, then normalizes the
-                            // address. Clearing bit 0 here would hide the Thumb flag
-                            // and cause Thumb code to be decoded as ARM.
                             targets.push(target);
+                        }
+                        // BLX Rm is a call — the return address (fallthrough)
+                        // must be explored by the BFS.
+                        if opcode == "BLX" {
+                            targets.push(addr + instr_width);
                         }
                     }
                 }
@@ -1937,8 +1983,6 @@ impl CfgBuilder {
     pub fn get_reachable_addresses(&self) -> &HashSet<u32> {
         &self.instruction_addresses
     }
-
-
 
     /// Runs a single BFS pass over reachable code.
     ///
@@ -2006,7 +2050,13 @@ impl CfgBuilder {
                 ) || (matches!(current_mode, ArmMode::Thumb)
                     && looks_like_data_safe(rom, addr, current_mode, arm_decoder, thumb_decoder))
                     || (matches!(current_mode, ArmMode::Arm)
-                        && looks_like_data_safe(rom, addr, current_mode, arm_decoder, thumb_decoder))
+                        && looks_like_data_safe(
+                            rom,
+                            addr,
+                            current_mode,
+                            arm_decoder,
+                            thumb_decoder,
+                        ))
                 {
                     continue;
                 }
@@ -2065,7 +2115,7 @@ impl CfgBuilder {
                     self.branch_targets.len()
                 );
             }
-            
+
             // Global address budget: if we've already collected too many reachable
             // addresses, stop the BFS. This catches CFG explosion from compressed/
             // encrypted data sections that decode as valid but meaningless instructions.
@@ -2077,7 +2127,7 @@ impl CfgBuilder {
                 );
                 break;
             }
-            
+
             if count >= max_instructions {
                 eprintln!("  CFG {} safety limit reached, stopping", label);
                 break;
@@ -2175,21 +2225,16 @@ impl CfgBuilder {
             // filter — NOT at fall-through or BFS queueing — because false positives here only
             // route instructions to the fallback interpreter (safe), while false positives at
             // fall-through cause BFS to explore alternative paths and INCREASE output size.
-            let is_data = is_data_address(
-                addr,
-                current_mode,
-                data_addresses,
-                rom,
-                arm_decoder,
-                thumb_decoder,
-            ) || looks_like_data_safe(
-                rom,
-                addr,
-                current_mode,
-                arm_decoder,
-                thumb_decoder,
-            ) || (current_mode == ArmMode::Arm
-                && has_uniform_rare_condition_code(rom, addr));
+            let is_data =
+                is_data_address(
+                    addr,
+                    current_mode,
+                    data_addresses,
+                    rom,
+                    arm_decoder,
+                    thumb_decoder,
+                ) || looks_like_data_safe(rom, addr, current_mode, arm_decoder, thumb_decoder)
+                    || (current_mode == ArmMode::Arm && has_uniform_rare_condition_code(rom, addr));
             if !is_data {
                 self.instruction_addresses.insert(addr);
                 self.mode_map.push((addr, current_mode));
@@ -2240,8 +2285,9 @@ impl CfgBuilder {
                                                 self.mode_map.push((target, target_mode));
                                             }
                                             if !own_visited.contains(&(target, target_mode))
-                                                && shared_visited
-                                                    .is_none_or(|s| !s.contains(&(target, target_mode)))
+                                                && shared_visited.is_none_or(|s| {
+                                                    !s.contains(&(target, target_mode))
+                                                })
                                             {
                                                 queue.push((target, target_mode));
                                             }
@@ -2334,7 +2380,11 @@ impl CfgBuilder {
                 // switch to the valid mode. If neither decodes, skip — it is data.
                 let target_mode = if decode_is_valid_code(
                     rom,
-                    if target_mode == ArmMode::Thumb { raw_target & !1 } else { raw_target & !3 },
+                    if target_mode == ArmMode::Thumb {
+                        raw_target & !1
+                    } else {
+                        raw_target & !3
+                    },
                     target_mode,
                     arm_decoder,
                     thumb_decoder,
@@ -2347,7 +2397,11 @@ impl CfgBuilder {
                     };
                     if decode_is_valid_code(
                         rom,
-                        if other_mode == ArmMode::Thumb { raw_target & !1 } else { raw_target & !3 },
+                        if other_mode == ArmMode::Thumb {
+                            raw_target & !1
+                        } else {
+                            raw_target & !3
+                        },
                         other_mode,
                         arm_decoder,
                         thumb_decoder,
@@ -2421,14 +2475,14 @@ mod tests {
     #[test]
     fn test_decode_bl_pair_merges_to_4_bytes() {
         let decoder = ThumbDecoder::new();
-        
+
         // BL_PREFIX: 0xF000 (bit 11 = 0, opcode in 0xF000-0xF3FF range)
         let hw1 = 0xF000u16;
         // BL_SUFFIX: 0xF800 (bit 11 = 1, opcode in 0xF800-0xFBFF range)
         let hw2 = 0xF800u16;
-        
+
         let result = decoder.decode_bl_pair(hw1, hw2, 0x08000000);
-        
+
         assert!(result.is_some(), "BL pair should decode successfully");
         let (opcode, _operands, _fallthrough, width) = result.unwrap();
         assert_eq!(opcode, "BL", "Should decode as BL instruction");
@@ -2440,14 +2494,14 @@ mod tests {
     #[test]
     fn test_decode_bl_pair_rejects_invalid_suffix() {
         let decoder = ThumbDecoder::new();
-        
+
         // BL_PREFIX: 0xF000
         let hw1 = 0xF000u16;
         // Invalid suffix: bit 11 = 0 (not a BL_SUFFIX)
         let hw2 = 0x0000u16;
-        
+
         let result = decoder.decode_bl_pair(hw1, hw2, 0x08000000);
-        
+
         assert!(result.is_none(), "Invalid BL pair should return None");
     }
 
@@ -2457,13 +2511,19 @@ mod tests {
     fn test_looks_like_data_safe_identifies_data() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // Create a ROM with repeating zero bytes (16+ zeros = data pattern)
         let rom_bytes: [u8; 64] = [0u8; 64];
         let addr = 0x08000000;
-        
-        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
-        
+
+        let result = looks_like_data_safe(
+            &rom_bytes,
+            addr,
+            ArmMode::Thumb,
+            &arm_decoder,
+            &thumb_decoder,
+        );
+
         assert!(result, "Zero-filled region should be classified as data");
     }
 
@@ -2473,7 +2533,7 @@ mod tests {
     fn test_looks_like_data_safe_rejects_code() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // Create a ROM with valid Thumb instructions (MOV r0, #0; ADD r1, r0, r0)
         // These should NOT be classified as data
         let rom_bytes: [u8; 80] = [
@@ -2486,19 +2546,22 @@ mod tests {
             0x46, 0x00, // MOV r0, r0
             0x48, 0x00, // LDR r0, [PC, #0]
             // Fill rest with valid instructions
-            0x21, 0x00, 0x22, 0x00, 0x23, 0x00, 0x24, 0x00,
-            0x25, 0x00, 0x26, 0x00, 0x27, 0x00, 0x28, 0x00,
-            0x29, 0x00, 0x2A, 0x00, 0x2B, 0x00, 0x2C, 0x00,
-            0x2D, 0x00, 0x2E, 0x00, 0x2F, 0x00, 0x30, 0x00,
-            0x31, 0x00, 0x32, 0x00, 0x33, 0x00, 0x34, 0x00,
-            0x35, 0x00, 0x36, 0x00, 0x37, 0x00, 0x38, 0x00,
-            0x39, 0x00, 0x3A, 0x00, 0x3B, 0x00, 0x3C, 0x00,
+            0x21, 0x00, 0x22, 0x00, 0x23, 0x00, 0x24, 0x00, 0x25, 0x00, 0x26, 0x00, 0x27, 0x00,
+            0x28, 0x00, 0x29, 0x00, 0x2A, 0x00, 0x2B, 0x00, 0x2C, 0x00, 0x2D, 0x00, 0x2E, 0x00,
+            0x2F, 0x00, 0x30, 0x00, 0x31, 0x00, 0x32, 0x00, 0x33, 0x00, 0x34, 0x00, 0x35, 0x00,
+            0x36, 0x00, 0x37, 0x00, 0x38, 0x00, 0x39, 0x00, 0x3A, 0x00, 0x3B, 0x00, 0x3C, 0x00,
             0x3D, 0x00, 0x3E, 0x00, 0x3F, 0x00, 0x41, 0x00,
         ];
         let addr = 0x08000000;
-        
-        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
-        
+
+        let result = looks_like_data_safe(
+            &rom_bytes,
+            addr,
+            ArmMode::Thumb,
+            &arm_decoder,
+            &thumb_decoder,
+        );
+
         assert!(!result, "Valid Thumb code should NOT be classified as data");
     }
 
@@ -2508,51 +2571,39 @@ mod tests {
     fn test_arm_prologue_scan_finds_push() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // Create a ROM with ARM PUSH {r4, lr} instruction
         // 0xE92D4010 = PUSH {r4, lr} in ARM encoding
         let rom_bytes: [u8; 132] = [
             0x10, 0x40, 0x2D, 0xE9, // PUSH {r4, lr} (little-endian)
             // Fill rest with valid ARM instructions (32 instructions total = 128 bytes)
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
         ];
         let addr = 0x08000000;
-        
+
         // Check that the first instruction decodes as valid ARM code
-        let result = decode_is_valid_code_run(&rom_bytes, addr, ArmMode::Arm, 32, &arm_decoder, &thumb_decoder);
-        
-        assert!(result, "ARM PUSH instruction should be recognized as valid code");
+        let result = decode_is_valid_code_run(
+            &rom_bytes,
+            addr,
+            ArmMode::Arm,
+            32,
+            &arm_decoder,
+            &thumb_decoder,
+        );
+
+        assert!(
+            result,
+            "ARM PUSH instruction should be recognized as valid code"
+        );
     }
 
     /// Test 6: interrupt_handler_heuristic_mmio_range
@@ -2561,7 +2612,7 @@ mod tests {
     fn test_interrupt_handler_heuristic_mmio_range() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // Create a ROM with LDR r0, [PC, #imm] followed by a value in MMIO range
         // LDR r0, [PC, #0x40] = 0x4840 (Thumb encoding)
         // The literal pool value at PC+4+0x40 = 0x08000044 should be 0x040000B0 (DMA register)
@@ -2580,7 +2631,7 @@ mod tests {
             arr
         };
         let addr = 0x08000000;
-        
+
         // The heuristic should detect this as an interrupt handler pattern
         // We test this by checking if the loaded value is in the MMIO range
         let loaded_val = u32::from_le_bytes([
@@ -2589,9 +2640,11 @@ mod tests {
             rom_bytes[0x46],
             rom_bytes[0x47],
         ]);
-        
-        assert!((0x040000B0..=0x0400010F).contains(&loaded_val), 
-            "Loaded value should be in MMIO range");
+
+        assert!(
+            (0x040000B0..=0x0400010F).contains(&loaded_val),
+            "Loaded value should be in MMIO range"
+        );
     }
 
     /// Test 6b: interrupt handler heuristic does NOT trigger for addresses outside MMIO range
@@ -2611,16 +2664,18 @@ mod tests {
             arr[lit_offset + 3] = ((outside_addr >> 24) & 0xFF) as u8;
             arr
         };
-        
+
         let loaded_val = u32::from_le_bytes([
             rom_bytes[0x44],
             rom_bytes[0x45],
             rom_bytes[0x46],
             rom_bytes[0x47],
         ]);
-        
-        assert!(!(0x040000B0..=0x0400010F).contains(&loaded_val), 
-            "Loaded value should NOT be in MMIO range");
+
+        assert!(
+            !(0x040000B0..=0x0400010F).contains(&loaded_val),
+            "Loaded value should NOT be in MMIO range"
+        );
     }
 
     /// Test 7: extract_branch_targets_bl_prefix
@@ -2628,10 +2683,13 @@ mod tests {
     #[test]
     fn test_extract_branch_targets_bl_prefix() {
         let mut cfg = CfgBuilder::new();
-        
+
         let targets = cfg.extract_branch_targets("BL_PREFIX", &[], 0x08000000, 2);
-        
-        assert!(targets.is_empty(), "BL_PREFIX should not have direct branch targets");
+
+        assert!(
+            targets.is_empty(),
+            "BL_PREFIX should not have direct branch targets"
+        );
     }
 
     /// Test 8: thumb_b_target_extraction
@@ -2639,15 +2697,25 @@ mod tests {
     #[test]
     fn test_thumb_b_target_extraction() {
         let mut cfg = CfgBuilder::new();
-        
+
         // BNE instruction with target at 0x08000050
         let operands = vec![Operand::Immediate(0x08000050)];
-        
+
         let targets = cfg.extract_branch_targets("BNE", &operands, 0x08000000, 2);
-        
-        assert_eq!(targets.len(), 2, "Conditional branch should have 2 targets (branch + fallthrough)");
-        assert_eq!(targets[0], 0x08000050, "First target should be the branch target");
-        assert_eq!(targets[1], 0x08000002, "Second target should be fallthrough (addr + 2)");
+
+        assert_eq!(
+            targets.len(),
+            2,
+            "Conditional branch should have 2 targets (branch + fallthrough)"
+        );
+        assert_eq!(
+            targets[0], 0x08000050,
+            "First target should be the branch target"
+        );
+        assert_eq!(
+            targets[1], 0x08000002,
+            "Second target should be fallthrough (addr + 2)"
+        );
     }
 
     /// Test 9: has_long_zero_run_detects_data
@@ -2656,9 +2724,9 @@ mod tests {
     fn test_has_long_zero_run_detects_data() {
         let rom_bytes: [u8; 64] = [0u8; 64];
         let addr = 0x08000000;
-        
+
         let result = has_long_zero_run(&rom_bytes, addr, 16);
-        
+
         assert!(result, "16 consecutive zeros should be detected as data");
     }
 
@@ -2680,10 +2748,13 @@ mod tests {
             arr
         };
         let addr = 0x08000000;
-        
+
         let result = has_repeated_pattern(&rom_bytes, addr);
-        
-        assert!(result, "Repeating 4-byte pattern should be detected as data");
+
+        assert!(
+            result,
+            "Repeating 4-byte pattern should be detected as data"
+        );
     }
 
     /// Test 11: register_tracker_mov_immediate
@@ -2691,10 +2762,14 @@ mod tests {
     #[test]
     fn test_register_tracker_mov_immediate() {
         let mut tracker = RegisterTracker::new();
-        
+
         tracker.track_mov_immediate(0, 0x12345678);
-        
-        assert_eq!(tracker.get(0), Some(0x12345678), "Should retrieve tracked value");
+
+        assert_eq!(
+            tracker.get(0),
+            Some(0x12345678),
+            "Should retrieve tracked value"
+        );
         assert_eq!(tracker.get(1), None, "Other registers should be None");
     }
 
@@ -2703,12 +2778,16 @@ mod tests {
     #[test]
     fn test_register_tracker_invalidate() {
         let mut tracker = RegisterTracker::new();
-        
+
         tracker.track_mov_immediate(0, 0x12345678);
         assert_eq!(tracker.get(0), Some(0x12345678));
-        
+
         tracker.invalidate(0);
-        assert_eq!(tracker.get(0), None, "Invalidate should remove tracked value");
+        assert_eq!(
+            tracker.get(0),
+            None,
+            "Invalidate should remove tracked value"
+        );
     }
 
     /// Test 13: fallthrough_instruction_width_thumb
@@ -2718,8 +2797,11 @@ mod tests {
         let addr = 0x08000000;
         let instr_width: u32 = 2; // Thumb instruction width
         let next_addr = addr + instr_width;
-        
-        assert_eq!(next_addr, 0x08000002, "Thumb fall-through should be addr + 2");
+
+        assert_eq!(
+            next_addr, 0x08000002,
+            "Thumb fall-through should be addr + 2"
+        );
     }
 
     /// Test 14: fallthrough_instruction_width_arm
@@ -2729,7 +2811,7 @@ mod tests {
         let addr = 0x08000000;
         let instr_width: u32 = 4; // ARM instruction width
         let next_addr = addr + instr_width;
-        
+
         assert_eq!(next_addr, 0x08000004, "ARM fall-through should be addr + 4");
     }
 
@@ -2740,8 +2822,11 @@ mod tests {
         let addr = 0x08000000;
         let instr_width: u32 = 4; // Merged BL instruction width
         let next_addr = addr + instr_width;
-        
-        assert_eq!(next_addr, 0x08000004, "Merged BL fall-through should be addr + 4");
+
+        assert_eq!(
+            next_addr, 0x08000004,
+            "Merged BL fall-through should be addr + 4"
+        );
     }
 
     /// Test 16: mmio_range_dma_timer_validation
@@ -2749,13 +2834,28 @@ mod tests {
     #[test]
     fn test_mmio_range_dma_timer_validation() {
         // DMA register addresses
-        assert!((0x040000B0..=0x0400010F).contains(&0x040000B0), "DMA0CNT_SOURC should be in range");
-        assert!((0x040000B0..=0x0400010F).contains(&0x040000B8), "DMA1CNT_SOURC should be in range");
-        assert!((0x040000B0..=0x0400010F).contains(&0x040000DF), "DMA3CNT_SOURC should be in range");
-        
+        assert!(
+            (0x040000B0..=0x0400010F).contains(&0x040000B0),
+            "DMA0CNT_SOURC should be in range"
+        );
+        assert!(
+            (0x040000B0..=0x0400010F).contains(&0x040000B8),
+            "DMA1CNT_SOURC should be in range"
+        );
+        assert!(
+            (0x040000B0..=0x0400010F).contains(&0x040000DF),
+            "DMA3CNT_SOURC should be in range"
+        );
+
         // Timer register addresses
-        assert!((0x040000B0..=0x0400010F).contains(&0x04000100), "TM0CNT_L should be in range");
-        assert!((0x040000B0..=0x0400010F).contains(&0x0400010F), "TM3CNT_H should be in range");
+        assert!(
+            (0x040000B0..=0x0400010F).contains(&0x04000100),
+            "TM0CNT_L should be in range"
+        );
+        assert!(
+            (0x040000B0..=0x0400010F).contains(&0x0400010F),
+            "TM3CNT_H should be in range"
+        );
     }
 
     /// Test 17: mmio_range_rejects_invalid_addresses
@@ -2763,14 +2863,26 @@ mod tests {
     #[test]
     fn test_mmio_range_rejects_invalid_addresses() {
         // Addresses just below the range
-        assert!(!(0x040000B0..=0x0400010F).contains(&0x040000AF), "0x040000AF should NOT be in range");
-        
+        assert!(
+            !(0x040000B0..=0x0400010F).contains(&0x040000AF),
+            "0x040000AF should NOT be in range"
+        );
+
         // Addresses just above the range
-        assert!(!(0x040000B0..=0x0400010F).contains(&0x04000110), "0x04000110 should NOT be in range");
-        
+        assert!(
+            !(0x040000B0..=0x0400010F).contains(&0x04000110),
+            "0x04000110 should NOT be in range"
+        );
+
         // Other hardware addresses
-        assert!(!(0x040000B0..=0x0400010F).contains(&0x04000000), "DISPCNT should NOT be in range");
-        assert!(!(0x040000B0..=0x0400010F).contains(&0x04000088), "KEYINPUT should NOT be in range");
+        assert!(
+            !(0x040000B0..=0x0400010F).contains(&0x04000000),
+            "DISPCNT should NOT be in range"
+        );
+        assert!(
+            !(0x040000B0..=0x0400010F).contains(&0x04000088),
+            "KEYINPUT should NOT be in range"
+        );
     }
 
     /// Test 18: cross_mode_guard_thumb_to_arm
@@ -2778,14 +2890,17 @@ mod tests {
     #[test]
     fn test_cross_mode_guard_thumb_to_arm() {
         let mut visited: HashSet<(u32, ArmMode)> = HashSet::new();
-        
+
         // ARM mode has already visited 0x08000004
         visited.insert((0x08000004, ArmMode::Arm));
-        
+
         // Thumb mode tries to visit the same address
         let should_skip = visited.contains(&(0x08000004, ArmMode::Arm));
-        
-        assert!(should_skip, "Thumb should skip address already visited by ARM");
+
+        assert!(
+            should_skip,
+            "Thumb should skip address already visited by ARM"
+        );
     }
 
     /// Test 19: cross_mode_guard_arm_to_thumb
@@ -2793,14 +2908,17 @@ mod tests {
     #[test]
     fn test_cross_mode_guard_arm_to_thumb() {
         let mut visited: HashSet<(u32, ArmMode)> = HashSet::new();
-        
+
         // Thumb mode has already visited 0x08000002
         visited.insert((0x08000002, ArmMode::Thumb));
-        
+
         // ARM mode tries to visit the same address
         let should_skip = visited.contains(&(0x08000002, ArmMode::Thumb));
-        
-        assert!(should_skip, "ARM should skip address already visited by Thumb");
+
+        assert!(
+            should_skip,
+            "ARM should skip address already visited by Thumb"
+        );
     }
 
     /// Test 20: bl_prefix_no_targets
@@ -2809,7 +2927,7 @@ mod tests {
     fn test_bl_prefix_no_targets() {
         let mut cfg = CfgBuilder::new();
         let targets = cfg.extract_branch_targets("BL_PREFIX", &[], 0x08000000, 2);
-        
+
         assert!(targets.is_empty(), "BL_PREFIX should return no targets");
     }
 
@@ -2818,13 +2936,13 @@ mod tests {
     #[test]
     fn test_bl_suffix_combines_lr_with_offset() {
         let mut cfg = CfgBuilder::new();
-        
+
         // Simulate LR being set by BL_PREFIX
         cfg.register_tracker.track_mov_immediate(14, 0x08000100);
-        
+
         let operands = vec![Operand::Immediate(0x50)]; // Offset
         let targets = cfg.extract_branch_targets("BL_SUFFIX", &operands, 0x08000000, 4);
-        
+
         assert_eq!(targets.len(), 1, "BL_SUFFIX should have 1 target");
         assert_eq!(targets[0], 0x08000150, "Target should be LR + offset");
     }
@@ -2835,13 +2953,19 @@ mod tests {
     fn test_looks_like_data_safe_zero_run() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // 16+ consecutive zeros
         let rom_bytes: [u8; 64] = [0u8; 64];
         let addr = 0x08000000;
-        
-        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
-        
+
+        let result = looks_like_data_safe(
+            &rom_bytes,
+            addr,
+            ArmMode::Thumb,
+            &arm_decoder,
+            &thumb_decoder,
+        );
+
         assert!(result, "Zero-run should be detected as data");
     }
 
@@ -2851,7 +2975,7 @@ mod tests {
     fn test_looks_like_data_safe_repeated_pattern() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // Repeating 4-byte pattern
         let rom_bytes: [u8; 64] = {
             let mut arr = [0u8; 64];
@@ -2861,9 +2985,15 @@ mod tests {
             arr
         };
         let addr = 0x08000000;
-        
-        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
-        
+
+        let result = looks_like_data_safe(
+            &rom_bytes,
+            addr,
+            ArmMode::Thumb,
+            &arm_decoder,
+            &thumb_decoder,
+        );
+
         assert!(result, "Repeated pattern should be detected as data");
     }
 
@@ -2873,7 +3003,7 @@ mod tests {
     fn test_looks_like_data_safe_valid_code() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // Valid Thumb instructions (MOV r0, #0; ADD r1, r0, r0; etc.)
         let rom_bytes: [u8; 78] = [
             0x20, 0x00, // MOV r0, #0
@@ -2884,42 +3014,22 @@ mod tests {
             0x44, 0x00, // ADD r0, r0
             0x46, 0x00, // MOV r0, r0
             0x48, 0x00, // LDR r0, [PC, #0]
-            0x22, 0x00,
-            0x23, 0x00,
-            0x24, 0x00,
-            0x25, 0x00,
-            0x26, 0x00,
-            0x27, 0x00,
-            0x28, 0x00,
-            0x29, 0x00,
-            0x2A, 0x00,
-            0x2B, 0x00,
-            0x2C, 0x00,
-            0x2D, 0x00,
-            0x2E, 0x00,
-            0x2F, 0x00,
-            0x30, 0x00,
-            0x31, 0x00,
-            0x32, 0x00,
-            0x33, 0x00,
-            0x34, 0x00,
-            0x35, 0x00,
-            0x36, 0x00,
-            0x37, 0x00,
-            0x38, 0x00,
-            0x39, 0x00,
-            0x3A, 0x00,
-            0x3B, 0x00,
-            0x3C, 0x00,
-            0x3D, 0x00,
-            0x3E, 0x00,
-            0x3F, 0x00,
-            0x41, 0x00,
+            0x22, 0x00, 0x23, 0x00, 0x24, 0x00, 0x25, 0x00, 0x26, 0x00, 0x27, 0x00, 0x28, 0x00,
+            0x29, 0x00, 0x2A, 0x00, 0x2B, 0x00, 0x2C, 0x00, 0x2D, 0x00, 0x2E, 0x00, 0x2F, 0x00,
+            0x30, 0x00, 0x31, 0x00, 0x32, 0x00, 0x33, 0x00, 0x34, 0x00, 0x35, 0x00, 0x36, 0x00,
+            0x37, 0x00, 0x38, 0x00, 0x39, 0x00, 0x3A, 0x00, 0x3B, 0x00, 0x3C, 0x00, 0x3D, 0x00,
+            0x3E, 0x00, 0x3F, 0x00, 0x41, 0x00,
         ];
         let addr = 0x08000000;
-        
-        let result = looks_like_data_safe(&rom_bytes, addr, ArmMode::Thumb, &arm_decoder, &thumb_decoder);
-        
+
+        let result = looks_like_data_safe(
+            &rom_bytes,
+            addr,
+            ArmMode::Thumb,
+            &arm_decoder,
+            &thumb_decoder,
+        );
+
         assert!(!result, "Valid Thumb code should NOT be detected as data");
     }
 
@@ -2928,10 +3038,10 @@ mod tests {
     #[test]
     fn test_conditional_branch_has_fallthrough() {
         let mut cfg = CfgBuilder::new();
-        
+
         let operands = vec![Operand::Immediate(0x08000050)];
         let targets = cfg.extract_branch_targets("BNE", &operands, 0x08000000, 2);
-        
+
         assert_eq!(targets.len(), 2, "Conditional branch should have 2 targets");
         assert_eq!(targets[0], 0x08000050, "Branch target");
         assert_eq!(targets[1], 0x08000002, "Fallthrough");
@@ -2942,11 +3052,15 @@ mod tests {
     #[test]
     fn test_unconditional_branch_no_fallthrough() {
         let mut cfg = CfgBuilder::new();
-        
+
         let operands = vec![Operand::Immediate(0x08000050)];
         let targets = cfg.extract_branch_targets("B", &operands, 0x08000000, 2);
-        
-        assert_eq!(targets.len(), 1, "Unconditional branch should have 1 target");
+
+        assert_eq!(
+            targets.len(),
+            1,
+            "Unconditional branch should have 1 target"
+        );
         assert_eq!(targets[0], 0x08000050, "Branch target");
     }
 
@@ -2955,11 +3069,15 @@ mod tests {
     #[test]
     fn test_bl_instruction_returns_target() {
         let mut cfg = CfgBuilder::new();
-        
+
         let operands = vec![Operand::Immediate(0x08000100)];
         let targets = cfg.extract_branch_targets("BL", &operands, 0x08000000, 2);
-        
-        assert_eq!(targets.len(), 1, "BL should have 1 target (fall-through handled in bfs_pass)");
+
+        assert_eq!(
+            targets.len(),
+            1,
+            "BL should have 1 target (fall-through handled in bfs_pass)"
+        );
         assert_eq!(targets[0], 0x08000100, "Call target");
     }
 
@@ -2969,7 +3087,7 @@ mod tests {
     fn test_decode_is_valid_code_run_arm() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // Valid ARM instructions (NOP, MOV, ADD, etc.)
         let rom_bytes: [u8; 160] = {
             let mut arr = [0u8; 160];
@@ -2983,9 +3101,16 @@ mod tests {
             arr
         };
         let addr = 0x08000000;
-        
-        let result = decode_is_valid_code_run(&rom_bytes, addr, ArmMode::Arm, 32, &arm_decoder, &thumb_decoder);
-        
+
+        let result = decode_is_valid_code_run(
+            &rom_bytes,
+            addr,
+            ArmMode::Arm,
+            32,
+            &arm_decoder,
+            &thumb_decoder,
+        );
+
         assert!(result, "Valid ARM code run should decode successfully");
     }
 
@@ -2995,7 +3120,7 @@ mod tests {
     fn test_decode_is_valid_code_run_thumb() {
         let arm_decoder = ArmDecoder::new();
         let thumb_decoder = ThumbDecoder::new();
-        
+
         // Valid Thumb instructions
         let rom_bytes: [u8; 80] = {
             let mut arr = [0u8; 80];
@@ -3006,9 +3131,16 @@ mod tests {
             arr
         };
         let addr = 0x08000000;
-        
-        let result = decode_is_valid_code_run(&rom_bytes, addr, ArmMode::Thumb, 32, &arm_decoder, &thumb_decoder);
-        
+
+        let result = decode_is_valid_code_run(
+            &rom_bytes,
+            addr,
+            ArmMode::Thumb,
+            32,
+            &arm_decoder,
+            &thumb_decoder,
+        );
+
         assert!(result, "Valid Thumb code run should decode successfully");
     }
 
@@ -3018,11 +3150,11 @@ mod tests {
     fn test_interrupt_handler_pattern_ldr_pc() {
         // LDR r0, [PC, #imm] Thumb encoding: 0x48xx where xx is immediate/4
         let hw = 0x4840u16; // LDR r0, [PC, #0x100]
-        
+
         // Check opcode pattern
         let is_ldr_pc = (hw & 0xF800) == 0x4800;
         let ldr_imm = ((hw & 0xFF) * 4) as u32;
-        
+
         assert!(is_ldr_pc, "Should match LDR Rx, [PC, #imm] pattern");
         assert_eq!(ldr_imm, 0x100, "Immediate should be 0x100");
     }

@@ -28,7 +28,10 @@ fn is_sbit_block(inst: &gbatopy_disasm::DecodedInstruction) -> Option<(u8, &Vec<
     }
     for opnd in &inst.operands {
         if let Operand::MemoryAddress { base, offset, .. } = opnd {
-            if let AddressingMode::Multi { registers, s_bit, .. } = offset {
+            if let AddressingMode::Multi {
+                registers, s_bit, ..
+            } = offset
+            {
                 if *s_bit {
                     let is_load = op.starts_with("LDM");
                     return Some((*base, registers, *s_bit, is_load));
@@ -39,7 +42,16 @@ fn is_sbit_block(inst: &gbatopy_disasm::DecodedInstruction) -> Option<(u8, &Vec<
     None
 }
 
-fn scan_rom(path: &Path) -> (usize, usize, usize, usize, usize, Vec<(String, u32, u8, Vec<u8>, bool, bool)>) {
+fn scan_rom(
+    path: &Path,
+) -> (
+    usize,
+    usize,
+    usize,
+    usize,
+    usize,
+    Vec<(String, u32, u8, Vec<u8>, bool, bool)>,
+) {
     // returns (total_sbit, exception_return, user_bank, ub_base_not_in_list, ub_base_in_list, samples)
     let rom = match fs::read(path) {
         Ok(d) => d,
@@ -70,7 +82,11 @@ fn scan_rom(path: &Path) -> (usize, usize, usize, usize, usize, Vec<(String, u32
                 exc_ret += 1;
             } else {
                 user_bank += 1;
-                if base_in_list { ub_base_in_list += 1; } else { ub_base_not_in_list += 1; }
+                if base_in_list {
+                    ub_base_in_list += 1;
+                } else {
+                    ub_base_not_in_list += 1;
+                }
                 if ub_samples.len() < 8 {
                     ub_samples.push((
                         inst.opcode.clone(),
@@ -84,7 +100,14 @@ fn scan_rom(path: &Path) -> (usize, usize, usize, usize, usize, Vec<(String, u32
             }
         }
     }
-    (total, exc_ret, user_bank, ub_base_not_in_list, ub_base_in_list, ub_samples)
+    (
+        total,
+        exc_ret,
+        user_bank,
+        ub_base_not_in_list,
+        ub_base_in_list,
+        ub_samples,
+    )
 }
 
 fn main() {
@@ -132,7 +155,13 @@ fn main() {
         }
         if ub > 0 {
             roms_ub += 1;
-            roms_with_ub.push((r.file_name().unwrap().to_string_lossy().into(), total, exc, ub, samples));
+            roms_with_ub.push((
+                r.file_name().unwrap().to_string_lossy().into(),
+                total,
+                exc,
+                ub,
+                samples,
+            ));
         }
         if total > 0 {
             eprintln!(
@@ -147,24 +176,53 @@ fn main() {
         }
     }
     println!("\n===== REACHABILITY-FILTERED SUMMARY (real reachable ARM code only) =====");
-    println!("ROMs scanned:                                   {}", roms.len());
-    println!("ROMs with any S-bit LDM/STM:                    {}", roms_sbit);
-    println!("ROMs with USER-BANK variant (S=1, not LDM+PC):  {}", roms_ub);
-    println!("Total S-bit LDM/STM (reachable):                 {}", grand_total);
-    println!("  exception_return (LDM^ with PC, HANDLED):      {}", grand_exc);
+    println!(
+        "ROMs scanned:                                   {}",
+        roms.len()
+    );
+    println!(
+        "ROMs with any S-bit LDM/STM:                    {}",
+        roms_sbit
+    );
+    println!(
+        "ROMs with USER-BANK variant (S=1, not LDM+PC):  {}",
+        roms_ub
+    );
+    println!(
+        "Total S-bit LDM/STM (reachable):                 {}",
+        grand_total
+    );
+    println!(
+        "  exception_return (LDM^ with PC, HANDLED):      {}",
+        grand_exc
+    );
     println!("  user_bank (STM^, LDM^ w/o PC):  {}", grand_ub);
-    println!("    of which base NOT in list (task framing):       {}", grand_ub_bnil);
-    println!("    of which base IN list (still user-bank!):       {}", grand_ub_bil);
+    println!(
+        "    of which base NOT in list (task framing):       {}",
+        grand_ub_bnil
+    );
+    println!(
+        "    of which base IN list (still user-bank!):       {}",
+        grand_ub_bil
+    );
 
     if !roms_with_ub.is_empty() {
         println!("\n--- USER-BANK S-bit LDM/STM samples (REACHABLE, real code) ---");
         for (name, total, exc, ub, samples) in &roms_with_ub {
-            println!("\n  {} (total_sbit={}, exc_ret={}, user_bank={})", name, total, exc, ub);
+            println!(
+                "\n  {} (total_sbit={}, exc_ret={}, user_bank={})",
+                name, total, exc, ub
+            );
             for (op, addr, base, regs, is_load, base_in) in samples {
                 let r: Vec<String> = regs.iter().map(|r| format!("R{r}")).collect();
                 println!(
                     "    {} R{}, {{{}}}  @0x{:08X}  is_load={} base_in_list={}",
-                    op, base, r.join(","), addr, is_load, base_in
+                    op,
+                    base,
+                    r.join(","),
+                    addr,
+                    is_load,
+                    base_in
                 );
             }
         }

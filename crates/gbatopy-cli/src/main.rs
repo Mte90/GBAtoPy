@@ -1,5 +1,5 @@
-mod asset_extractor;
 mod analysis;
+mod asset_extractor;
 mod benchmark;
 mod cmds;
 mod codegen;

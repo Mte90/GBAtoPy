@@ -65,6 +65,9 @@
         _pending = _irq.if_reg & _irq.ie_reg
         if not _pending:
             return
+        # Check CPSR.I flag (bit 7) - IRQs are masked when I=1
+        if cpsr.get('i', 0):
+            return
         ime_live = (memory.io[0x208] | (memory.io[0x209] << 8)) & 0x0001
         if not ime_live:
             return
@@ -82,7 +85,7 @@
         _irq_saved_r12 = registers[12]
         _switch_mode(0x12)
         cpsr['i'] = 1
-        registers[14] = (registers[15] + 4) & 0xFFFFFFFF
+        registers[14] = ((registers[15] + 4) & 0xFFFFFFFF) | (1 if cpsr['t'] else 0)
         registers[15] = _handler & 0xFFFFFFFE
         cpsr['t'] = 1 if (_handler & 1) else 0
         _interp_cpu.thumb_mode = bool(cpsr['t'])

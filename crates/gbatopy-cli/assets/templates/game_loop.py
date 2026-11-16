@@ -57,6 +57,8 @@ def swi_handler(swi_field):
     Handler receives the 8-bit SWI number directly."""
     global _cpu_halted, _halt_reason, _swi_lr, _swi_caller_pc
     swi_num = swi_field & 0xFF
+    # Save CPSR to SPSR_svc (ARM SWI exception entry)
+    cpsr['spsr_svc'] = _cpsr_to_int(cpsr)
     if swi_num == 0x00:  # SoftReset
         registers[0] = 0
         registers[13] = 0x03007F00
@@ -64,10 +66,8 @@ def swi_handler(swi_field):
         registers[15] = 0x08000000
     elif swi_num == 0x01:  # RegisterRamReset
         flags = registers[0] & 0xFF
-        # Per GBA spec: bit 7 (0x80) means "reset display registers"
-        # When set, DISPCNT resets to 0x0000 (NOT 0x0080). When not set, DISPCNT untouched.
-        if flags & 0x80:
-            memory.write_u16(0x04000000, 0x0000)
+        # Per mGBA bios.c:38: DISPCNT = 0x0080 (forced blank) unconditionally
+        memory.write_u16(0x04000000, 0x0080)
         if flags & 0x01:
             for addr in range(0x02000000, 0x02040000, 4):
                 memory.write_u32(addr, 0)
@@ -159,16 +159,8 @@ def swi_handler(swi_field):
     elif swi_num == 0x02:  # Halt — wakes on ANY enabled IRQ
         _swi_lr = registers[14]
         _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
-        # Clear enabled IF bits so the next IRQ can wake the CPU.
-        # Without this, a stale IF from a previous VBlank causes _deliver_irq()
-        # to clear _cpu_halted on every scanline, creating a 1-scanline-per-HALT
-        # spin-loop instead of halting until the next VBlank.
-        _irq_obj = getattr(memory, '_interrupts', None)
-        if _irq_obj is not None:
-            _irq_obj.if_reg &= ~(_irq_obj.ie_reg)
         _cpu_halted = True
         _halt_reason = "any"
-        # Also set CPU's internal flag for consistency with fallback interpreter
         if '_interp_cpu' in globals() and _interp_cpu is not None:
             _interp_cpu._halted = True
             _interp_cpu._halt_reason = "any"
@@ -198,15 +190,10 @@ def swi_handler(swi_field):
     elif swi_num == 0x05:  # VBlankIntrWait — wakes on VBlank IRQ ONLY
         _swi_lr = registers[14]  # Save LR_svc (SWI return address)
         _swi_caller_pc = (registers[15] + (2 if cpsr.get('t', 0) else 4)) & 0xFFFFFFFF
-        # Per GBATEK: set IE.0 (VBlank enable), clear IF.0 (acknowledge pending VBlank)
+        # Per HLE BIOS: clear IF.0, set IME=1, halt. IE.0/DISPSTAT.3 managed by game ROM.
         _irq_obj = getattr(memory, '_interrupts', None)
         if _irq_obj is not None:
-            _irq_obj.ie_reg |= 0x0001
             _irq_obj.if_reg &= ~0x0001
-        # Set DISPSTAT.3 (VBlank IRQ enable) so step_scanline fires vblank_irq()
-        _dispstat = memory.read_u16(0x04000004)
-        memory.write_u16(0x04000004, _dispstat | 0x0008)
-        # Enable IME so the VBlank IRQ can actually wake the CPU
         memory.write_u16(0x04000208, 0x0001)
         _cpu_halted = True
         _halt_reason = "vblank"
@@ -484,6 +471,7 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
     _dt_arm = dispatch_table_arm
     _dt_thumb = dispatch_table_thumb
     _has_timers = timers_instance is not None
+    _irq_obj = getattr(memory, '_interrupts', None)
     while ic < mi:
         if frame_limit and fc >= frame_limit: break
         for _scanline in range(228):
@@ -526,6 +514,10 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                         ic += _steps
                         if _has_timers:
                             timers_instance.step(4 * _steps)
+                        if _irq_return_pc is not None:
+                            _rpc = registers[15]
+                            if _rpc == _irq_return_pc or _rpc == ((_irq_return_pc + 4) & 0xFFFFFFFF) or _rpc == ((_irq_return_pc + 4) & 0xFFFFFFFC) or _rpc == ((_irq_return_pc + 2) & 0xFFFFFFFF):
+                                _deliver_irq()
                     else:
                         # ROM address not in dispatch table - use fallback interpreter
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
@@ -540,6 +532,8 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                             break
                 else:
                     func(registers, cpsr); ic += 1
+                    if _irq_obj is not None and _irq_obj.ime_reg and (_irq_obj.if_reg & _irq_obj.ie_reg):
+                        _deliver_irq()
                     if _has_timers:
                         timers_instance.step(4)
                     if registers[15] == pc:
@@ -548,6 +542,10 @@ def run_transpiled(headless=False, frame_limit=None, screenshot_path=None, scale
                             break
                     else:
                         _inner_stalls = 0
+                    if _irq_return_pc is not None:
+                        _rpc = registers[15]
+                        if _rpc == _irq_return_pc or _rpc == ((_irq_return_pc + 4) & 0xFFFFFFFF) or _rpc == ((_irq_return_pc + 4) & 0xFFFFFFFC) or _rpc == ((_irq_return_pc + 2) & 0xFFFFFFFF):
+                            _deliver_irq()
             _deliver_irq()
             ppu_instance.step_scanline()
             _deliver_irq()
@@ -682,6 +680,10 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         ic += _steps
                         if _has_timers:
                             timers_instance.step(4 * _steps)
+                        if _irq_return_pc is not None:
+                            _rpc = registers[15]
+                            if _rpc == _irq_return_pc or _rpc == ((_irq_return_pc + 4) & 0xFFFFFFFF) or _rpc == ((_irq_return_pc + 4) & 0xFFFFFFFC) or _rpc == ((_irq_return_pc + 2) & 0xFFFFFFFF):
+                                _deliver_irq()
                     else:
                         # ROM address not in dispatch table - use fallback interpreter
                         _budget = instr_per_scanline - (ic - _inner_ic_start)
@@ -696,6 +698,8 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                             break
                     continue
                 func(registers, cpsr); ic += 1
+                if _irq_obj is not None and _irq_obj.ime_reg and (_irq_obj.if_reg & _irq_obj.ie_reg):
+                    _deliver_irq()
                 if _has_timers:
                     timers_instance.step(4)
                 _cur_w = registers[_watch_reg_idx] if _watch_reg_idx is not None else None
@@ -718,6 +722,10 @@ def run_with_pygame(headless=False, frame_limit=None, screenshot_path=None, scal
                         break
                 else:
                     inner_loop_stalls = 0
+                if _irq_return_pc is not None:
+                    _rpc = registers[15]
+                    if _rpc == _irq_return_pc or _rpc == ((_irq_return_pc + 4) & 0xFFFFFFFF) or _rpc == ((_irq_return_pc + 4) & 0xFFFFFFFC) or _rpc == ((_irq_return_pc + 2) & 0xFFFFFFFF):
+                        _deliver_irq()
                 if hook_manager and hook_manager.has_hooks():
                     if hook_manager.check_hooks(registers[15], 'instruction'):
                         print("Execution paused at breakpoint")

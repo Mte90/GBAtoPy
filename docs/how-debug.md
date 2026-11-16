@@ -1,6 +1,6 @@
 # GBA ROM Debug Skill
 
-Last updated: 2026-10-30
+Last updated: 2026-11-10
 
 ## Overview
 
@@ -440,6 +440,27 @@ The fast-path CPU in cpu.py did not implement IRQ vector delivery. ROMs that rel
 - **Symptom:** Window-enabled ROMs render backdrop everywhere (window ignored). window_midframe at 43-87% diff.
 - **Status:** Window register check moved before generic PPU range check.
 
+### Bug Class: Per-instruction IRQ return check ✅ FIXED (commit 411cc51, 2026-11-06)
+- **Symptom:** ROMs with IRQ-driven rendering time out (11 timeouts) or misrender; irq_delay FAIL.
+- **Root cause:** `_deliver_irq` uses a lazy return mechanism — CPSR, mode, and R0-R3/R12 are restored only at scanline boundaries. When an IRQ handler ran as dispatched code and did `BX LR`, the next dispatch iteration ran with IRQ mode + the handler's garbage registers.
+- **Status:** The transpiled dispatch loop checks `_irq_return_pc` after every instruction (after `func()`, after `_interp_fallback`, in the ROM fallback path). No-op when `_irq_return_pc is None`.
+- **Impact:** Eliminated all 11 timeouts and fixed irq_delay (+9 PASS in the full L3 sweep).
+
+### Bug Class: SPSR_svc not saved on SWI entry ✅ FIXED (commit 31d9d5c, 2026-11-06)
+- **Symptom:** Nested SWI/exception returns corrupt register state.
+- **Root cause:** SWI entry saved CPSR to SPSR_svc but didn't preserve the previous SPSR_svc value, corrupting nested exception returns.
+- **Status:** SPSR_svc is saved before being overwritten with CPSR on SWI entry.
+
+### Bug Class: Thumb BLX Rm LR offset wrong (PC+4 instead of PC+2) ✅ FIXED (commit a76feb3, 2026-11-10)
+- **Symptom:** All Thumb `BLX Rm` calls return to the wrong address.
+- **Root cause:** Thumb `BLX Rm` is 2 bytes, but codegen set LR = PC+4 (ARM-style 4-byte offset), corrupting the return address for all Thumb BLX Rm calls.
+- **Status:** LR = (PC + 2) | 1 (2-byte offset + Thumb bit for interworking).
+
+### Bug Class: CPSR initial state wrong (SVC mode, IRQs disabled) ✅ FIXED (commit e43d7b4, 2026-11-06)
+- **Symptom:** Transpiled ROM starts in a different CPU state than mGBA; frame 1 diverges from golden.
+- **Root cause:** Transpiler started CPU in SVC mode (0x13) with IRQs disabled. Real GBA BIOS hands control in System mode (0x1F) with IRQs enabled.
+- **Status:** Initial CPSR = 0x1F (System mode), i=0 (IRQ enabled), f=0 (FIQ enabled), SP_svc=0x03007FF0.
+
 ## Additional Fixed Bug Classes
 
 ### F215: ASR sign-extension / ROR dead code ✅ FIXED (commits 3002-3008)
@@ -520,7 +541,7 @@ Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets
 **Permanent Fix**: Changed from fixed value 10 to dynamic `max(50, instr_per_scanline // 2)` ≈ 616 in `game_loop.py` (fallback interpreter budget).
 **Verification**: Trace shows loop completing all iterations (e.g., 32 iterations for tile loop)
 
-### Issue 4: Frame Rendering Too Early
+### Issue 4: Frame Rendering Too Early ✅ FIXED
 
 **Symptom**: Frame renders before initialization complete, black screen or partial graphics
 **Root Cause**: `target_cycles_per_frame // 4` executes too few instructions before first render
@@ -528,7 +549,7 @@ Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets
 **Fix**: Increase instructions per frame multiplier (e.g., `target_cycles_per_frame * 10`)
 **Verification**: Frame 1 screenshot should match golden screenshot for static ROMs
 
-### Issue 5: Wrong Immediate Values in ADD/MOV
+### Issue 5: Wrong Immediate Values in ADD/MOV ✅ FIXED
 
 **Symptom**: VRAM/palette addresses are wrong, graphics appear in wrong location
 **Root Cause**: Immediate rotation/parsing bug in disassembler
@@ -536,7 +557,7 @@ Runtime bugs are defects in the Python runtime layer (`crates/gbatopy-cli/assets
 **Fix**: Check immediate rotation calculation in disassembler
 **Verification**: Binary encoding shows `rotate = ((word >> 8) & 0xF) * 2`, value = `((imm >> rot) | (imm << (32 - rot))) & 0xFFFFFFFF`
 
-### Issue 6: Branch Skips Setup Code
+### Issue 6: Branch Skips Setup Code ✅ FIXED
 
 **Symptom**: Loop executes but with wrong register values (e.g., R0=0 instead of expected value)
 **Root Cause**: Branch target calculation wrong, or dispatch table missing intermediate functions

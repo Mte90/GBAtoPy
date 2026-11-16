@@ -22,8 +22,7 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 };
                 return Some(format!(
                     "registers[14] = {}\nregisters[15] = 0x{:08X}",
-                    lr_expr,
-                    target
+                    lr_expr, target
                 ));
             }
             return Some(format!("registers[15] = 0x{:08X}", target));
@@ -58,7 +57,11 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
             }
             if !cond_str.is_empty() {
                 let lr_set = if is_blx {
-                    "    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n".to_string()
+                    if inst.mode == ArmMode::Thumb {
+                        "    registers[14] = ((registers[15] + 2) | 1) & 0xFFFFFFFF\n".to_string()
+                    } else {
+                        "    registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n".to_string()
+                    }
                 } else {
                     String::new()
                 };
@@ -68,7 +71,11 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
                 ));
             }
             let lr_set = if is_blx {
-                "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n".to_string()
+                if inst.mode == ArmMode::Thumb {
+                    "registers[14] = ((registers[15] + 2) | 1) & 0xFFFFFFFF\n".to_string()
+                } else {
+                    "registers[14] = (registers[15] + 4) & 0xFFFFFFFF\n".to_string()
+                }
             } else {
                 String::new()
             };
@@ -95,11 +102,18 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
     if opcode.len() == 3 && opcode.starts_with('B') && opcode != "BX" && opcode != "BLX" {
         if let Some(Operand::Immediate(target)) = ops.first() {
             let cond = &opcode[1..];
-            let pc_advance = if inst.mode == gbatopy_disasm::ArmMode::Thumb { 2 } else { 4 };
+            let pc_advance = if inst.mode == gbatopy_disasm::ArmMode::Thumb {
+                2
+            } else {
+                4
+            };
             if *target > 0x08000000 && *target < 0x0A000000 {
                 return Some(format!("if cpsr_check('{}'):\n    registers[15] = 0x{:08X}\nelse:\n    registers[15] = (registers[15] + {}) & 0xFFFFFFFF", cond, target, pc_advance));
             }
-            return Some(format!("registers[15] = (registers[15] + {}) & 0xFFFFFFFF", pc_advance));
+            return Some(format!(
+                "registers[15] = (registers[15] + {}) & 0xFFFFFFFF",
+                pc_advance
+            ));
         }
     }
     // Conditional BL: BLEQ, BLNE, etc. (4 chars, starts with "BL", not "BLX")
@@ -224,12 +238,7 @@ mod tests {
     // === BX (branch and exchange) tests ===
     #[test]
     fn test_generate_bx_register() {
-        let inst = make_inst(
-            "BX",
-            vec![Operand::Register(14)],
-            ArmMode::Arm,
-            0x08000000,
-        );
+        let inst = make_inst("BX", vec![Operand::Register(14)], ArmMode::Arm, 0x08000000);
         let code = generate(&inst).unwrap();
         assert_eq!(
             code,
@@ -268,12 +277,7 @@ mod tests {
     // === BLX (branch with link and exchange) tests ===
     #[test]
     fn test_generate_blx_register() {
-        let inst = make_inst(
-            "BLX",
-            vec![Operand::Register(14)],
-            ArmMode::Arm,
-            0x08000000,
-        );
+        let inst = make_inst("BLX", vec![Operand::Register(14)], ArmMode::Arm, 0x08000000);
         let code = generate(&inst).unwrap();
         assert_eq!(
             code,
@@ -558,8 +562,6 @@ mod tests {
         assert_eq!(code, "registers[15] = (registers[15] + 4) & 0xFFFFFFFF");
     }
 
-
-
     // === Conditional BL tests (BLEQ, BLNE, etc.) ===
     #[test]
     fn test_generate_bleq() {
@@ -767,8 +769,6 @@ mod tests {
         let code = generate(&inst).unwrap();
         assert_eq!(code, "registers[15] = (registers[15] + 4) & 0xFFFFFFFF");
     }
-
-
 
     // === Edge cases ===
     #[test]

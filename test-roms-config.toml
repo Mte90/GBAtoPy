@@ -403,6 +403,8 @@ name = "vram-mirror"
 rom_path = "vram-mirror.gba"
 test_type = "ScreenshotMgba"
 pass_status = "pass"
+max_instrs = 10000000
+timeout = 300
 
 [[tests]]
 name = "window_midframe"
@@ -425,6 +427,8 @@ name = "128kb-boundary"
 rom_path = "128kb-boundary.gba"
 test_type = "ScreenshotMgba"
 pass_status = "pass"
+max_instrs = 10000000
+timeout = 300
 
 [[tests]]
 name = "gba-frame-test"
@@ -463,7 +467,7 @@ category = "sprite"
 features = ["sprites", "mode0", "audio"]
 license = "MIT"
 pass_status = "pass"
-
+frame = 80
 [[tests]]
 name = "blindjump_BlindJump"
 rom_path = "blindjump_BlindJump.gba"

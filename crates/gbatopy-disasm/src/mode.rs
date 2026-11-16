@@ -38,8 +38,6 @@ impl ModeTracker {
             self.current_mode = new_mode;
         }
     }
-
-
 }
 
 impl Default for ModeTracker {

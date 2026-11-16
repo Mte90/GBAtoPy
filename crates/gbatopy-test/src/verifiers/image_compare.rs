@@ -454,7 +454,11 @@ mod tests {
     use tempfile::TempDir;
 
     /// Create a test image with specified dimensions and pixel fill function
-    fn create_test_image(width: u32, height: u32, pixel_fn: impl Fn(u32, u32) -> Rgba<u8>) -> image::RgbaImage {
+    fn create_test_image(
+        width: u32,
+        height: u32,
+        pixel_fn: impl Fn(u32, u32) -> Rgba<u8>,
+    ) -> image::RgbaImage {
         let mut img = ImageBuffer::new(width, height);
         for (x, y, pixel) in img.enumerate_pixels_mut() {
             *pixel = pixel_fn(x, y);
@@ -473,7 +477,7 @@ mod tests {
     fn test_identical_images_zero_mse() {
         // Two identical all-white images
         let img = create_test_image(100, 100, |_x, _y| Rgba([255, 255, 255, 255]));
-        
+
         let temp_dir = TempDir::new().unwrap();
         let golden_path = save_test_image(&img, &temp_dir, "golden.png");
         let transpiled_path = save_test_image(&img, &temp_dir, "transpiled.png");
@@ -486,7 +490,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(result.passed);
         assert_eq!(result.metrics.diff_pixels, 0);
@@ -513,13 +518,16 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!result.passed);
         assert_eq!(result.metrics.diff_pixels, 10000);
         assert_eq!(result.metrics.diff_percent, 100.0);
         assert_eq!(result.metrics.match_percent, 0.0);
-        assert!(result.failure_reasons.contains(&"diff_percent_above_threshold".to_string()));
+        assert!(result
+            .failure_reasons
+            .contains(&"diff_percent_above_threshold".to_string()));
     }
 
     #[test]
@@ -527,7 +535,7 @@ mod tests {
         // Identical images except one pixel with significant color change
         let mut img1 = create_test_image(100, 100, |_x, _y| Rgba([128, 128, 128, 255]));
         let img2 = create_test_image(100, 100, |_x, _y| Rgba([128, 128, 128, 255]));
-        
+
         // Change one pixel significantly (exceeds tolerance=2)
         img1.put_pixel(50, 50, Rgba([255, 0, 0, 255]));
 
@@ -543,7 +551,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1/10000 = 0.01% < 0.5% threshold, so it should PASS despite the color difference
         // The test verifies that a single pixel difference doesn't cause failure
@@ -556,7 +565,7 @@ mod tests {
         // 1 pixel difference in 100x100 = 0.01%, well below 0.5% threshold
         let mut img1 = create_test_image(100, 100, |_x, _y| Rgba([100, 100, 100, 255]));
         let img2 = create_test_image(100, 100, |_x, _y| Rgba([100, 100, 100, 255]));
-        
+
         img1.put_pixel(50, 50, Rgba([105, 105, 105, 255])); // Small change, exceeds tolerance=2
 
         let temp_dir = TempDir::new().unwrap();
@@ -571,7 +580,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1/10000 = 0.01% < 0.5% threshold → PASS
         assert!(result.passed);
@@ -596,11 +606,17 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!result.passed);
-        assert_eq!(result.failure_classification, Some(FailureClassification::SizeMismatch));
-        assert!(result.failure_reasons.contains(&"size_mismatch".to_string()));
+        assert_eq!(
+            result.failure_classification,
+            Some(FailureClassification::SizeMismatch)
+        );
+        assert!(result
+            .failure_reasons
+            .contains(&"size_mismatch".to_string()));
     }
 
     #[test]
@@ -621,7 +637,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(result.passed);
         assert_eq!(result.metrics.total_pixels, 4);
@@ -646,10 +663,14 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!result.passed);
-        assert_eq!(result.failure_classification, Some(FailureClassification::EmptyOutput));
+        assert_eq!(
+            result.failure_classification,
+            Some(FailureClassification::EmptyOutput)
+        );
         assert!(result.failure_reasons.contains(&"empty_output".to_string()));
         assert_eq!(result.metrics.golden_nonblack_pixels, 10000);
         assert_eq!(result.metrics.transpiled_nonblack_pixels, 0);
@@ -685,11 +706,17 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!result.passed);
-        assert_eq!(result.failure_classification, Some(FailureClassification::NearBlackOutput));
-        assert!(result.failure_reasons.contains(&"near_black_output".to_string()));
+        assert_eq!(
+            result.failure_classification,
+            Some(FailureClassification::NearBlackOutput)
+        );
+        assert!(result
+            .failure_reasons
+            .contains(&"near_black_output".to_string()));
         assert_eq!(result.metrics.golden_nonblack_pixels, 1000);
         assert_eq!(result.metrics.transpiled_nonblack_pixels, 50);
     }
@@ -698,19 +725,19 @@ mod tests {
     fn test_pixel_tolerance_boundary() {
         // Test pixel_match_tolerance function directly
         let pixel1 = Rgba([100, 100, 100, 255]);
-        
+
         // Within tolerance (diff = 2)
         let pixel2 = Rgba([102, 102, 102, 255]);
         assert!(pixels_match_tolerance(&pixel1, &pixel2, 2));
-        
+
         // At tolerance boundary (diff = 3)
         let pixel3 = Rgba([103, 103, 103, 255]);
         assert!(!pixels_match_tolerance(&pixel1, &pixel3, 2));
-        
+
         // Exactly at tolerance (diff = 2 in one channel)
         let pixel4 = Rgba([102, 100, 100, 255]);
         assert!(pixels_match_tolerance(&pixel1, &pixel4, 2));
-        
+
         // Exceeds tolerance in one channel
         let pixel5 = Rgba([100, 103, 100, 255]);
         assert!(!pixels_match_tolerance(&pixel1, &pixel5, 2));
@@ -771,7 +798,7 @@ mod tests {
         // Create images with exactly 0.4% difference (below 0.5% threshold)
         let mut img1 = create_test_image(100, 100, |_x, _y| Rgba([100, 100, 100, 255]));
         let img2 = create_test_image(100, 100, |_x, _y| Rgba([100, 100, 100, 255]));
-        
+
         // 4 pixels out of 10000 = 0.04% (well below 0.5%)
         for i in 0..4 {
             img1.put_pixel(i, 0, Rgba([200, 200, 200, 255]));
@@ -789,7 +816,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Should pass: 0.04% < 0.5%
         assert!(result.passed);
@@ -802,7 +830,7 @@ mod tests {
         // Create images with exactly 0.6% difference (above 0.5% threshold)
         let mut img1 = create_test_image(100, 100, |_x, _y| Rgba([100, 100, 100, 255]));
         let img2 = create_test_image(100, 100, |_x, _y| Rgba([100, 100, 100, 255]));
-        
+
         // 60 pixels out of 10000 = 0.6% (above 0.5%)
         for y in 0..1 {
             for x in 0..60 {
@@ -822,11 +850,14 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Should fail: 0.6% > 0.5%
         assert!(!result.passed);
-        assert!(result.failure_reasons.contains(&"diff_percent_above_threshold".to_string()));
+        assert!(result
+            .failure_reasons
+            .contains(&"diff_percent_above_threshold".to_string()));
     }
 
     #[test]
@@ -901,7 +932,7 @@ mod tests {
         // Test with stricter tolerance
         let mut img1 = create_test_image(50, 50, |_x, _y| Rgba([100, 100, 100, 255]));
         let img2 = create_test_image(50, 50, |_x, _y| Rgba([100, 100, 100, 255]));
-        
+
         // Change 1 pixel with diff of 5 (exceeds tolerance of 2)
         img1.put_pixel(25, 25, Rgba([105, 105, 105, 255]));
 
@@ -923,7 +954,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
         // 1/2500 = 0.04% < 0.5%, so pixel diff passes. SSIM may or may not fail for single pixel.
         // The test verifies the function runs without crashing
         assert!(result_strict.passed || !result_strict.passed); // Just verify it returns a result
@@ -942,7 +974,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
         // With tolerance 10, the diff of 5 should match
     }
 
@@ -962,10 +995,18 @@ mod tests {
         // Golden has 1000 non-black pixels, transpiled has 800
         // Content loss = (1000 - 800) / 1000 * 100 = 20%
         let golden = create_test_image(100, 100, |x, _y| {
-            if x < 10 { Rgba([255, 255, 255, 255]) } else { Rgba([0, 0, 0, 255]) }
+            if x < 10 {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([0, 0, 0, 255])
+            }
         });
         let transpiled = create_test_image(100, 100, |x, _y| {
-            if x < 8 { Rgba([255, 255, 255, 255]) } else { Rgba([0, 0, 0, 255]) }
+            if x < 8 {
+                Rgba([255, 255, 255, 255])
+            } else {
+                Rgba([0, 0, 0, 255])
+            }
         });
 
         let temp_dir = TempDir::new().unwrap();
@@ -980,7 +1021,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(result.metrics.golden_nonblack_pixels, 1000);
         assert_eq!(result.metrics.transpiled_nonblack_pixels, 800);
@@ -1002,7 +1044,7 @@ mod tests {
         // Large structural mismatch should be classified as Offset
         let mut img1 = create_test_image(100, 100, |_x, _y| Rgba([0, 0, 0, 255]));
         let img2 = create_test_image(100, 100, |_x, _y| Rgba([255, 255, 255, 255]));
-        
+
         // Add enough white pixels to img1 to avoid empty_output classification
         // Need transpiled_nonblack > golden_nonblack * 0.1 = 10000 * 0.1 = 1000
         for x in 0..40 {
@@ -1025,7 +1067,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Large diff (>40%) should be classified as Offset
         // 8400/10000 = 84% diff
@@ -1053,7 +1096,8 @@ mod tests {
             "test",
             "unit",
             temp_dir.path(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // All pixels differ but match_percent should be 0%, not >80%
         // So this won't be classified as ColorShift, let me adjust
@@ -1073,9 +1117,9 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let path = save_test_image(&img, &temp_dir, "test.png");
-        
+
         assert!(path.exists());
-        
+
         // Load and verify
         let loaded = image::open(&path).unwrap().to_rgba8();
         assert_eq!(loaded.width(), 10);

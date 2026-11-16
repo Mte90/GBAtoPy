@@ -1,9 +1,12 @@
 pub mod instruction_codegen;
 
-pub use instruction_codegen::generate_instruction_python;
-use crate::analysis::{detect_memset_loop_pattern, detect_memset_loop_pattern_across_blocks, extract_bl_targets, is_conditional_non_branch, reads_r15, writes_r15};
+use crate::analysis::{
+    detect_memset_loop_pattern, detect_memset_loop_pattern_across_blocks, extract_bl_targets,
+    is_conditional_non_branch, reads_r15, writes_r15,
+};
 use crate::asset_extractor::ExtractedAssets;
 use gbatopy_disasm::{operand::Operand, ArmMode, CfgBuilder, DecodedInstruction};
+pub use instruction_codegen::generate_instruction_python;
 
 use std::fs;
 
@@ -230,9 +233,9 @@ pub fn generate_python_code(
     code.push('\n');
 
     code.push_str("registers[15] = 0x08000000\n");
-    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 'q': 0, 't': 0, 'mode': 0x13, 'i': 1, 'f': 1, 'spsr_fiq': 0, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
+    code.push_str("cpsr = {'n': 0, 'z': 0, 'c': 0, 'v': 0, 'q': 0, 't': 0, 'mode': 0x1F, 'i': 0, 'f': 0, 'spsr_fiq': 0, 'spsr_irq': 0, 'spsr_svc': 0, 'spsr_abt': 0, 'spsr_und': 0, 'spsr_sys': 0}\n");
     code.push_str("_user_sys_bank = {'sp': 0x03007FE0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}\n");
-    code.push_str("banked_sp_lr = {0x10: {'sp': 0x03007FA0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x1F: _user_sys_bank, 0x11: {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0x03007FA0, 'lr': 0}, 0x13: {'sp': 0x03007FE0, 'lr': 0}, 0x17: {'sp': 0x03007FE0, 'lr': 0}, 0x1B: {'sp': 0x03007F00, 'lr': 0}}\n");
+    code.push_str("banked_sp_lr = {0x10: {'sp': 0x03007FA0, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x1F: _user_sys_bank, 0x11: {'sp': 0x03007F00, 'lr': 0, 'r8': 0, 'r9': 0, 'r10': 0, 'r11': 0, 'r12': 0}, 0x12: {'sp': 0x03007FA0, 'lr': 0}, 0x13: {'sp': 0x03007FF0, 'lr': 0}, 0x17: {'sp': 0x03007FE0, 'lr': 0}, 0x1B: {'sp': 0x03007F00, 'lr': 0}}\n");
     code.push_str("\ndef _switch_mode(new_mode):\n");
     code.push_str("    old_mode = cpsr.get('mode', 0x1F)\n");
     code.push_str("    if new_mode == old_mode:\n");
@@ -357,10 +360,8 @@ pub fn generate_python_code(
         let next_expected = prev_addr.map(|a| a + prev_width);
         let is_branch = writes_r15(inst);
 
-
         // CRITICAL: Branch instructions ALWAYS start their own block and terminate it
         if is_branch {
-
             // Start a new block for this branch instruction
             current_block_start = Some((addr, mode));
             // Add this instruction to its own block
@@ -538,8 +539,6 @@ pub fn generate_python_code(
     // Worklist algorithm: process functions and recursively follow BL targets
     let mut processed_funcs: std::collections::HashSet<(u64, ArmMode)> =
         std::collections::HashSet::new();
-
-
 
     while let Some(&(func_start, func_mode_key)) = dispatch_worklist.first() {
         // Remove from worklist
@@ -786,11 +785,9 @@ pub fn generate_python_code(
             false
         });
 
-
         if is_nop {
             // NOP block: skip generating function, will redirect func_map
             // NOP blocks are implicitly handled by chaining
-
         } else {
             let func_code = format!("\ndef {}(registers, cpsr):\n", func_name) + &body;
             let lines_to_add = func_code.lines().count() as u64;
@@ -833,16 +830,22 @@ pub fn generate_python_code(
                     current_run.push(inst);
                 } else {
                     if !current_run.is_empty() {
-                    let start = run_start.ok_or_else(|| "Data section detected but run_start is None — codegen logic error".to_string())?;
-                    data_sections.push((start, std::mem::take(&mut current_run)));
-                }
+                        let start = run_start.ok_or_else(|| {
+                            "Data section detected but run_start is None — codegen logic error"
+                                .to_string()
+                        })?;
+                        data_sections.push((start, std::mem::take(&mut current_run)));
+                    }
                     run_start = Some(addr);
                     current_run.push(inst);
                 }
                 prev_data_end = Some(end);
             } else {
                 if !current_run.is_empty() {
-                    let start = run_start.ok_or_else(|| "Data section detected but run_start is None — codegen logic error".to_string())?;
+                    let start = run_start.ok_or_else(|| {
+                        "Data section detected but run_start is None — codegen logic error"
+                            .to_string()
+                    })?;
                     data_sections.push((start, std::mem::take(&mut current_run)));
                     run_start = None;
                 }
@@ -850,7 +853,10 @@ pub fn generate_python_code(
             }
         }
         if !current_run.is_empty() {
-            let start = run_start.ok_or_else(|| "Final data section detected but run_start is None — codegen logic error".to_string())?;
+            let start = run_start.ok_or_else(|| {
+                "Final data section detected but run_start is None — codegen logic error"
+                    .to_string()
+            })?;
             data_sections.push((start, current_run));
         }
 
@@ -1050,7 +1056,7 @@ fn generate_game_loop() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gbatopy_disasm::{Condition, DecodedInstruction, Operand, ArmMode};
+    use gbatopy_disasm::{ArmMode, Condition, DecodedInstruction, Operand};
 
     #[test]
     fn test_strip_inline_comment_basic() {
@@ -1145,7 +1151,11 @@ mod tests {
         let inst = DecodedInstruction {
             address: 0x08000000,
             opcode: "ADDne".to_string(),
-            operands: vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(10)],
+            operands: vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(10),
+            ],
             condition: Some(Condition::Ne),
             mode: ArmMode::Arm,
             raw: 0,
@@ -1248,7 +1258,11 @@ mod tests {
         let inst = DecodedInstruction {
             address: 0x08000000,
             opcode: "MUL".to_string(),
-            operands: vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            operands: vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             condition: Some(Condition::Al),
             mode: ArmMode::Arm,
             raw: 0,

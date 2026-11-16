@@ -114,5 +114,4 @@ impl Operand {
             Operand::Label(s) => s.clone(),
         }
     }
-
 }

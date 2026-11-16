@@ -121,6 +121,9 @@ class DMAChannel:
             self._orig_src = self.src_addr
             self._orig_dst = self.dst_addr
             self._orig_count = self.count
+            # Special mode (timing=3) needs pending flag set to fire on trigger
+            if self._timing_bits() == 3:
+                self.pending = True
         elif not new_enabled:
             self.src_addr = self.mem.io[b] | (self.mem.io[b+1] << 8) | (self.mem.io[b+2] << 16) | (self.mem.io[b+3] << 24)
             self.dst_addr = self.mem.io[b+4] | (self.mem.io[b+5] << 8) | (self.mem.io[b+6] << 16) | (self.mem.io[b+7] << 24)

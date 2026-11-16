@@ -338,7 +338,11 @@ mod tests {
     #[test]
     fn test_path_with_multiple_dots() {
         // Path with multiple dots in filename
-        let stem = Path::new("game.v1.0.gba").file_stem().unwrap().to_str().unwrap();
+        let stem = Path::new("game.v1.0.gba")
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert_eq!(stem, "game.v1.0");
     }
 
@@ -352,15 +356,27 @@ mod tests {
     #[test]
     fn test_nested_path() {
         // Deeply nested path
-        let stem = Path::new("a/b/c/d/e/rom.gba").file_stem().unwrap().to_str().unwrap();
+        let stem = Path::new("a/b/c/d/e/rom.gba")
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert_eq!(stem, "rom");
     }
 
     #[test]
     fn test_absolute_vs_relative_paths() {
         // Both absolute and relative paths should extract stem correctly
-        let abs_stem = Path::new("/absolute/path/rom.gba").file_stem().unwrap().to_str().unwrap();
-        let rel_stem = Path::new("relative/path/rom.gba").file_stem().unwrap().to_str().unwrap();
+        let abs_stem = Path::new("/absolute/path/rom.gba")
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let rel_stem = Path::new("relative/path/rom.gba")
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert_eq!(abs_stem, rel_stem);
         assert_eq!(abs_stem, "rom");
     }

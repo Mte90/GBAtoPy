@@ -345,42 +345,53 @@ fn test_sp_initialized_to_0x03007f00() {
     // - crates/gbatopy-cli/src/codegen/mod.rs:224 (inline Python generation)
     //
     // We verify by reading the header template and checking the SP value.
-    
+
     const EXPECTED_SP_VALUE: &str = "0x03007F00";
-    
+
     // Read the header template file
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let header_path = format!("{}/assets/templates/header.py", manifest_dir);
-    let header_content = std::fs::read_to_string(&header_path)
-        .expect(&format!("Failed to read header template at {}", header_path));
-    
+    let header_content = std::fs::read_to_string(&header_path).expect(&format!(
+        "Failed to read header template at {}",
+        header_path
+    ));
+
     // Verify the header contains the correct SP initialization
     assert!(
         header_content.contains(&format!("registers[13] = {}", EXPECTED_SP_VALUE)),
         "Header template must initialize SP (R13) to {}, but not found. Content snippet:\n{}",
         EXPECTED_SP_VALUE,
-        header_content.lines().take(30).collect::<Vec<_>>().join("\n")
+        header_content
+            .lines()
+            .take(30)
+            .collect::<Vec<_>>()
+            .join("\n")
     );
-    
+
     // Also verify the codegen module's inline header generation (mod.rs:224)
     let codegen_mod_path = format!("{}/src/codegen/mod.rs", manifest_dir);
-    let codegen_content = std::fs::read_to_string(&codegen_mod_path)
-        .expect(&format!("Failed to read codegen/mod.rs at {}", codegen_mod_path));
-    
+    let codegen_content = std::fs::read_to_string(&codegen_mod_path).expect(&format!(
+        "Failed to read codegen/mod.rs at {}",
+        codegen_mod_path
+    ));
+
     // Check that the _user_sys_bank dictionary has the correct SP value
     assert!(
         codegen_content.contains(&format!("'sp': {}", EXPECTED_SP_VALUE)),
         "codegen/mod.rs must initialize _user_sys_bank['sp'] to {}, but not found",
         EXPECTED_SP_VALUE
     );
-    
+
     // Verify that banked_sp_lr also contains the correct SP value for relevant modes
     assert!(
         codegen_content.contains("0x1F: _user_sys_bank"),
         "banked_sp_lr must reference _user_sys_bank for User/System mode (0x1F)"
     );
-    
-    eprintln!("  ✓ Pitfall #8: SP correctly initialized to {} in header template and codegen", EXPECTED_SP_VALUE);
+
+    eprintln!(
+        "  ✓ Pitfall #8: SP correctly initialized to {} in header template and codegen",
+        EXPECTED_SP_VALUE
+    );
 }
 
 // ============================================================================
@@ -397,7 +408,7 @@ fn test_sp_initialized_to_0x03007f00() {
 // - Codegen must emit: LR = (PC+4), then PC = target
 
 /// Test 1: Verify that a merged BL instruction (via decode_bl_pair) emits correct LR and PC assignment.
-/// 
+///
 /// Construct BL_PREFIX (0xF000 family) + BL_SUFFIX (0xF800 family) encoding target 0x08001000.
 /// After decode_bl_pair, feed the merged "BL" instruction to codegen.
 /// Assert output contains registers[14] (LR) AND registers[15] (PC) set to correct target.
@@ -418,21 +429,21 @@ fn test_thumb_bl_merged_emits_correct_target() {
         is_data: false,
     };
     let code = generate_instruction_python(&inst);
-    
+
     // BL must set LR (R14) to return address
     assert!(
         code.contains("registers[14]"),
         "Merged BL must set LR (R14), got: {}",
         code
     );
-    
+
     // BL must branch to target (write PC/R15)
     assert!(
         code.contains("registers[15] = 0x08001000"),
         "Merged BL must branch to target 0x08001000, got: {}",
         code
     );
-    
+
     // LR must be set BEFORE PC is modified (order matters for correct return address)
     let lr_pos = code.find("registers[14]").unwrap();
     let pc_pos = code.find("registers[15] = 0x08001000").unwrap();
@@ -446,7 +457,7 @@ fn test_thumb_bl_merged_emits_correct_target() {
 }
 
 /// Test 2: Verify that decode_bl_pair returns width=4, not width=2.
-/// 
+///
 /// This ensures the CFG BFS will advance by 4 bytes when it sees a BL instruction,
 /// consuming both halfwords and not treating the suffix as a separate instruction.
 #[test]
@@ -463,15 +474,14 @@ fn test_thumb_bl_merged_advances_4_bytes() {
         width: 4, // Critical: merged BL is 4 bytes, not 2
         is_data: false,
     };
-    
+
     // Verify the width field is correct
     assert_eq!(
-        bl_inst.width,
-        4,
+        bl_inst.width, 4,
         "Merged BL instruction must have width=4, got {}",
         bl_inst.width
     );
-    
+
     // A regular Thumb branch (B) should still be 2 bytes
     let b_inst = DecodedInstruction {
         address: 0x08000004,
@@ -484,17 +494,16 @@ fn test_thumb_bl_merged_advances_4_bytes() {
         width: 2, // Regular Thumb branch is 2 bytes
         is_data: false,
     };
-    
+
     assert_eq!(
-        b_inst.width,
-        2,
+        b_inst.width, 2,
         "Regular Thumb B instruction must have width=2, got {}",
         b_inst.width
     );
 }
 
 /// Test 3: Verify the LR value is correct for a BL instruction.
-/// 
+///
 /// BL at address A should set LR = (A + 4) & 0xFFFFFFFF (return address in Thumb mode).
 /// Construct a BL at a known address and assert the codegen produces the correct LR value.
 #[test]
@@ -512,15 +521,19 @@ fn test_thumb_bl_lr_value_correct() {
         is_data: false,
     };
     let code = generate_instruction_python(&inst);
-    
-    // LR must be set to (PC + 4), which is the return address
-    // The codegen should emit: registers[14] = (registers[15] + 4) & 0xFFFFFFFF
+
+    // LR must be set to (PC + 4) with the T bit for Thumb mode
+    // The codegen should emit either:
+    // - registers[14] = (registers[15] + 4) & 0xFFFFFFFF (ARM mode)
+    // - registers[14] = ((registers[15] + 4) | 1) & 0xFFFFFFFF (Thumb mode, sets T bit)
+    let expected_arm = "registers[14] = (registers[15] + 4)";
+    let expected_thumb = "registers[14] = ((registers[15] + 4) | 1)";
     assert!(
-        code.contains("registers[14] = (registers[15] + 4)"),
-        "BL must set LR = (PC + 4), got: {}",
+        code.contains(expected_arm) || code.contains(expected_thumb),
+        "BL must set LR = (PC + 4) [or (PC + 4) | 1 for Thumb], got: {}",
         code
     );
-    
+
     // Verify the masking to 32 bits
     assert!(
         code.contains("& 0xFFFFFFFF"),
@@ -530,7 +543,7 @@ fn test_thumb_bl_lr_value_correct() {
 }
 
 /// Test 4: Verify target address calculation for BL instructions with various offsets.
-/// 
+///
 /// Target = PC + 4 + sign_extended_offset * 2 (where PC = instruction address + 4 in Thumb mode).
 /// Test positive, negative, zero, and maximum offsets.
 #[test]
@@ -553,7 +566,7 @@ fn test_thumb_bl_target_address_calculation() {
         "BL target 0x08002000 must appear in codegen, got: {}",
         code1
     );
-    
+
     // Test case 2: BL with target 0x08000001 (minimal positive offset - Thumb entry point)
     // Note: 0x08000000 is rejected by branch.rs validation (> 0x08000000 required)
     let inst2 = DecodedInstruction {
@@ -573,7 +586,7 @@ fn test_thumb_bl_target_address_calculation() {
         "BL target 0x08000001 must appear in codegen, got: {}",
         code2
     );
-    
+
     // Test case 3: BL with target 0x08000100 (small positive offset)
     let inst3 = DecodedInstruction {
         address: 0x08000000,
@@ -592,7 +605,7 @@ fn test_thumb_bl_target_address_calculation() {
         "BL target 0x08000100 must appear in codegen, got: {}",
         code3
     );
-    
+
     // Test case 4: BL with target in upper range (0x09FFFFFF - max valid GBA ARM region)
     let inst4 = DecodedInstruction {
         address: 0x08000000,
@@ -624,9 +637,13 @@ fn test_thumb_bl_target_address_calculation() {
 #[test]
 fn test_mov_immediate_is_not_nop() {
     // MOV R0, #0x03007F00 - initialization instruction, must NOT be NOP
-    let inst = arm_inst("MOV", vec![Operand::Register(0), Operand::Immediate(0x03007F00)], false);
+    let inst = arm_inst(
+        "MOV",
+        vec![Operand::Register(0), Operand::Immediate(0x03007F00)],
+        false,
+    );
     let code = generate_instruction_python(&inst);
-    
+
     // The generated code should write to a register, not just pass
     assert!(
         code.contains("registers[0]"),
@@ -658,7 +675,7 @@ fn test_ldr_pc_relative_is_not_nop() {
         false,
     );
     let code = generate_instruction_python(&inst);
-    
+
     // The generated code should read from memory and write to a register
     assert!(
         code.contains("registers[0]"),
@@ -690,7 +707,7 @@ fn test_str_is_not_nop() {
         false,
     );
     let code = generate_instruction_python(&inst);
-    
+
     // The generated code should write to memory
     assert!(
         code.contains("write_u32") || code.contains("memory"),
@@ -709,9 +726,13 @@ fn test_str_is_not_nop() {
 #[test]
 fn test_real_nop_is_nop() {
     // MOV R0, R0 - the canonical ARM NOP instruction
-    let inst = arm_inst("MOV", vec![Operand::Register(0), Operand::Register(0)], false);
+    let inst = arm_inst(
+        "MOV",
+        vec![Operand::Register(0), Operand::Register(0)],
+        false,
+    );
     let code = generate_instruction_python(&inst);
-    
+
     // MOV R0, R0 is semantically a NOP - it should emit pass or a no-op assignment
     // The codegen may emit "registers[0] = registers[0]" or "pass"
     // Either is acceptable as it doesn't change state
@@ -739,7 +760,7 @@ fn test_thumb_nop_is_nop() {
         is_data: false,
     };
     let code = generate_instruction_python(&inst);
-    
+
     // MOV R8, R8 is semantically a NOP
     assert!(
         code.contains("pass") || code.contains("registers[8] = registers[8]"),
@@ -754,11 +775,11 @@ fn test_thumb_nop_is_nop() {
 // ============================================================================
 
 /// Regression test: CFG explosion prevention.
-/// 
+///
 /// These ROMs previously triggered CFG fall-through walking through 14MB of data,
 /// causing 87.6% of BFS queue pushes to be fall-through walks. The fix ensures
 /// fall-through only happens for linear instruction sequences, not through data.
-/// 
+///
 /// This test verifies that transpilation completes successfully and stays well
 /// below the safety bounds:
 /// - MAX_REACHABLE_ADDRESSES = 200,000
@@ -780,7 +801,7 @@ fn test_cfg_explosion_prevention_the_purple_night_gba() {
 
 fn cfg_explosion_test(rom_name: &str, output_name: &str) {
     use std::process::Command;
-    
+
     // Use absolute path from project root
     // CARGO_MANIFEST_DIR for gbatopy-cli is crates/gbatopy-cli
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -789,12 +810,12 @@ fn cfg_explosion_test(rom_name: &str, output_name: &str) {
         .unwrap()
         .parent()
         .unwrap();
-    
+
     let rom_path = project_root.join("test_roms/roms").join(rom_name);
-    
+
     // Output to /tmp to avoid polluting project directory
     let output_path = format!("/tmp/{}", output_name);
-    
+
     // Find the CLI binary in target/debug
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let project_root = std::path::Path::new(manifest_dir)
@@ -802,14 +823,17 @@ fn cfg_explosion_test(rom_name: &str, output_name: &str) {
         .unwrap()
         .parent()
         .unwrap();
-    let cli_path = project_root.join("target").join("debug").join("gbatopy-cli");
-    
+    let cli_path = project_root
+        .join("target")
+        .join("debug")
+        .join("gbatopy-cli");
+
     assert!(
         cli_path.exists(),
         "gbatopy-cli binary not found at {:?}. Run: cargo build -p gbatopy-cli",
         cli_path
     );
-    
+
     let output = Command::new(&cli_path)
         .args([
             "pipeline",
@@ -820,10 +844,10 @@ fn cfg_explosion_test(rom_name: &str, output_name: &str) {
         ])
         .output()
         .expect("Failed to execute gbatopy-cli");
-    
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // Check exit code
     assert!(
         output.status.success(),
@@ -832,7 +856,7 @@ fn cfg_explosion_test(rom_name: &str, output_name: &str) {
         stdout,
         stderr
     );
-    
+
     // Check that stderr does NOT contain the actual explosion safety-net trigger
     // The warning message is: "Warning: {} reachable addresses exceeds limit ({}), using fallback-only mode"
     assert!(
@@ -841,14 +865,14 @@ fn cfg_explosion_test(rom_name: &str, output_name: &str) {
         rom_name,
         stderr
     );
-    
+
     // Verify output file exists and is reasonable size (< 5MB)
     assert!(
         std::path::Path::new(&output_path).exists(),
         "Transpiled output file not created at {}",
         output_path
     );
-    
+
     let file_size = std::fs::metadata(&output_path)
         .expect("Failed to get file metadata")
         .len();
@@ -861,7 +885,7 @@ fn cfg_explosion_test(rom_name: &str, output_name: &str) {
         file_size,
         file_size as f64 / (1024.0 * 1024.0)
     );
-    
+
     // Also verify line count is below 2M limit (ESTIMATED_LINES_PER_INSTRUCTION = 8)
     let line_count = std::fs::read_to_string(&output_path)
         .map(|content| content.lines().count())
@@ -872,14 +896,14 @@ fn cfg_explosion_test(rom_name: &str, output_name: &str) {
         rom_name,
         line_count
     );
-    
+
     eprintln!(
         "  ✓ {} transpiled successfully: {} bytes ({:.2} MB)",
         rom_name,
         file_size,
         file_size as f64 / (1024.0 * 1024.0)
     );
-    
+
     // Clean up
     let _ = std::fs::remove_file(&output_path);
 }

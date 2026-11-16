@@ -1,4 +1,6 @@
-use gbatopy_disasm::{operand::ShiftAmount, operand::ShiftType, ArmMode, DecodedInstruction, Operand};
+use gbatopy_disasm::{
+    operand::ShiftAmount, operand::ShiftType, ArmMode, DecodedInstruction, Operand,
+};
 
 /// ARM: PC = instruction_address + 8 (pipeline offset)
 const ARM_PC_OFFSET: u32 = 8;
@@ -84,7 +86,14 @@ fn shifted_reg_expr(reg: u8, shift: &ShiftType, amount: &ShiftAmount) -> String 
 
 /// Check if operand is RRX (ROR #0 with immediate shift amount).
 fn is_rrx(op: &Operand) -> bool {
-    matches!(op, Operand::ShiftedRegister { shift: ShiftType::Ror, amount: ShiftAmount::Immediate(0), .. })
+    matches!(
+        op,
+        Operand::ShiftedRegister {
+            shift: ShiftType::Ror,
+            amount: ShiftAmount::Immediate(0),
+            ..
+        }
+    )
 }
 
 /// Extract the source register from a ShiftedRegister operand.
@@ -108,13 +117,21 @@ fn shifter_carry_code(op: &Operand) -> Option<String> {
                     let amt = *amt as u32;
                     match (shift, amt) {
                         (ShiftType::Lsl, 0) => None,
-                        (ShiftType::Lsl, n) => Some(format!("cpsr['c'] = (({} >> (32 - {})) & 1)", r, n)),
+                        (ShiftType::Lsl, n) => {
+                            Some(format!("cpsr['c'] = (({} >> (32 - {})) & 1)", r, n))
+                        }
                         (ShiftType::Lsr, 0) => Some(format!("cpsr['c'] = (({} >> 31) & 1)", r)),
-                        (ShiftType::Lsr, n) => Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n)),
+                        (ShiftType::Lsr, n) => {
+                            Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n))
+                        }
                         (ShiftType::Asr, 0) => Some(format!("cpsr['c'] = (({} >> 31) & 1)", r)),
-                        (ShiftType::Asr, n) => Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n)),
+                        (ShiftType::Asr, n) => {
+                            Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n))
+                        }
                         (ShiftType::Ror, 0) => None,
-                        (ShiftType::Ror, n) => Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n)),
+                        (ShiftType::Ror, n) => {
+                            Some(format!("cpsr['c'] = (({} >> ({} - 1)) & 1)", r, n))
+                        }
                     }
                 }
                 ShiftAmount::Register(_) => None,
@@ -143,9 +160,20 @@ fn operand_to_expr(op: &Operand) -> String {
 
 /// Replace R15 (PC) **source** operands with the computed PC value as an Immediate.
 /// ARM: PC = instruction_address + 8.
-/// Thumb: PC = (addr + 4) & !3 (word-aligned for literal pool).
+/// Thumb: PC = (addr + 4) & !3 (word-aligned).
 /// The destination register (ops[0] for instructions with Rd) is never replaced.
-fn resolve_pc_operands(ops: &[Operand], inst: &DecodedInstruction, base_opcode: &str) -> Vec<Operand> {
+///
+/// NOTE: Per ARM7TDMI spec, Thumb format 5 (high reg, no immediate) should use
+/// (addr + 4) & !1 (halfword-aligned), and format 12 (ADR, immediate) should use
+/// (addr + 4) & !3 (word-aligned). The codegen uses & !3 for ALL Thumb instructions
+/// as a compensating fix: applying spec-correct & !1 to format 5 exposes a deeper
+/// codegen control flow bug that causes the-dungeon-puzzlers-lament to enter an
+/// infinite IWRAM loop. F407 is PARKED until the deeper bug is identified and fixed.
+fn resolve_pc_operands(
+    ops: &[Operand],
+    inst: &DecodedInstruction,
+    base_opcode: &str,
+) -> Vec<Operand> {
     let pc_val = if inst.mode == gbatopy_disasm::ArmMode::Thumb {
         (inst.address + 4) & !3
     } else {
@@ -188,7 +216,9 @@ pub fn generate(inst: &DecodedInstruction) -> Option<String> {
         "MVN" => generate_mvn(&ops, inst.sets_flags),
         "ADD" | "ADC" => generate_add(&ops, base_opcode, inst.sets_flags),
         "SUB" | "SBC" | "RSB" | "RSC" => generate_sub(&ops, base_opcode, inst.sets_flags),
-        "AND" | "EOR" | "ORR" | "BIC" => generate_logic(&ops, base_opcode, inst.sets_flags, inst.mode),
+        "AND" | "EOR" | "ORR" | "BIC" => {
+            generate_logic(&ops, base_opcode, inst.sets_flags, inst.mode)
+        }
         "LSL" | "LSR" | "ASR" | "ROR" => generate_shift(&ops, base_opcode, inst.sets_flags),
         "CLZ" => generate_clz(&ops),
         "CMP" => generate_cmp(&ops),
@@ -240,7 +270,11 @@ fn generate_mov(ops: &[Operand], sets_flags: bool, mode: ArmMode) -> Option<Stri
                 }
                 if ops.len() >= 2 {
                     if let Operand::Register(rn) = &ops[1] {
-                        let mask = if mode == ArmMode::Thumb { "0xFFFFFFFE" } else { "0xFFFFFFFC" };
+                        let mask = if mode == ArmMode::Thumb {
+                            "0xFFFFFFFE"
+                        } else {
+                            "0xFFFFFFFC"
+                        };
                         return Some(format!("registers[15] = registers[{}] & {}", rn, mask));
                     }
                 }
@@ -311,7 +345,10 @@ fn generate_mvn(ops: &[Operand], sets_flags: bool) -> Option<String> {
                     rd, src, rd
                 ));
             }
-            return Some(format!("registers[{}] = ({} ^ 0xFFFFFFFF) & 0xFFFFFFFF", rd, src));
+            return Some(format!(
+                "registers[{}] = ({} ^ 0xFFFFFFFF) & 0xFFFFFFFF",
+                rd, src
+            ));
         }
     }
     None
@@ -489,7 +526,11 @@ fn generate_logic(ops: &[Operand], op: &str, sets_flags: bool, mode: ArmMode) ->
                             Operand::Immediate(i) => *i,
                             _ => 0,
                         };
-                        let mask = if mode == ArmMode::Thumb { "0xFFFFFFFE" } else { "0xFFFFFFFC" };
+                        let mask = if mode == ArmMode::Thumb {
+                            "0xFFFFFFFE"
+                        } else {
+                            "0xFFFFFFFC"
+                        };
                         return Some(format!(
                             "registers[15] = (registers[{}] | {}) & {}",
                             rn_reg, imm, mask
@@ -630,21 +671,20 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
             };
             let expr = match op {
                 "LSL" => format!("({} << {})", rn, shift),
-                "LSR" => {
-                    match &ops[2] {
-                        Operand::Immediate(0) => format!("({} >> 32)", rn),
-                        _ => format!("({} >> {})", rn, shift),
-                    }
-                }
-                "ASR" => {
-                    match &ops[2] {
-                        Operand::Immediate(0) => format!("((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> 32)", rn, rn, rn),
-                        _ => format!(
-                            "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
-                            rn, rn, rn, shift
-                        ),
-                    }
-                }
+                "LSR" => match &ops[2] {
+                    Operand::Immediate(0) => format!("({} >> 32)", rn),
+                    _ => format!("({} >> {})", rn, shift),
+                },
+                "ASR" => match &ops[2] {
+                    Operand::Immediate(0) => format!(
+                        "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> 32)",
+                        rn, rn, rn
+                    ),
+                    _ => format!(
+                        "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
+                        rn, rn, rn, shift
+                    ),
+                },
                 "ROR" => format!(
                     "(({} >> ({} & 31)) | ({} << (32 - ({} & 31))))",
                     rn, shift, rn, shift
@@ -653,7 +693,11 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
             };
             if sets_flags {
                 let carry_line = shift_carry_code(op, &rn, &ops[2]);
-                let carry_prefix = if carry_line.is_empty() { String::new() } else { format!("{}\n", carry_line) };
+                let carry_prefix = if carry_line.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n", carry_line)
+                };
                 return Some(format!(
                     "{}registers[{}] = ({}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
                     carry_prefix, rd, expr, rd
@@ -671,21 +715,20 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
             };
             let expr = match op {
                 "LSL" => format!("({} << {})", rn, shift),
-                "LSR" => {
-                    match &ops[1] {
-                        Operand::Immediate(0) => format!("({} >> 32)", rn),
-                        _ => format!("({} >> {})", rn, shift),
-                    }
-                }
-                "ASR" => {
-                    match &ops[1] {
-                        Operand::Immediate(0) => format!("((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> 32)", rn, rn, rn),
-                        _ => format!(
-                            "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
-                            rn, rn, rn, shift
-                        ),
-                    }
-                }
+                "LSR" => match &ops[1] {
+                    Operand::Immediate(0) => format!("({} >> 32)", rn),
+                    _ => format!("({} >> {})", rn, shift),
+                },
+                "ASR" => match &ops[1] {
+                    Operand::Immediate(0) => format!(
+                        "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> 32)",
+                        rn, rn, rn
+                    ),
+                    _ => format!(
+                        "((({} - 0x100000000) if ({} & 0x80000000) else ({})) >> {})",
+                        rn, rn, rn, shift
+                    ),
+                },
                 "ROR" => format!(
                     "(({} >> ({} & 31)) | ({} << (32 - ({} & 31))))",
                     rn, shift, rn, shift
@@ -694,7 +737,11 @@ fn generate_shift(ops: &[Operand], op: &str, sets_flags: bool) -> Option<String>
             };
             if sets_flags {
                 let carry_line = shift_carry_code(op, &rn, &ops[1]);
-                let carry_prefix = if carry_line.is_empty() { String::new() } else { format!("{}\n", carry_line) };
+                let carry_prefix = if carry_line.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n", carry_line)
+                };
                 return Some(format!(
                     "{}registers[{}] = ({}) & 0xFFFFFFFF\n_result = registers[{}]\ncpsr['n'] = (_result >> 31) & 1\ncpsr['z'] = 1 if _result == 0 else 0",
                     carry_prefix, rd, expr, rd
@@ -736,7 +783,10 @@ fn generate_mul(ops: &[Operand], sets_flags: bool) -> Option<String> {
                     rd, rm, rs, rd
                 ));
             }
-            return Some(format!("registers[{}] = ({} * {}) & 0xFFFFFFFF", rd, rm, rs));
+            return Some(format!(
+                "registers[{}] = ({} * {}) & 0xFFFFFFFF",
+                rd, rm, rs
+            ));
         }
     }
     None
@@ -905,7 +955,9 @@ registers[{}] = acc_hi & 0xFFFFFFFF"#,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gbatopy_disasm::{operand::ShiftAmount, operand::ShiftType, ArmMode, Condition, DecodedInstruction, Operand};
+    use gbatopy_disasm::{
+        operand::ShiftAmount, operand::ShiftType, ArmMode, Condition, DecodedInstruction, Operand,
+    };
 
     fn make_inst(
         opcode: &str,
@@ -970,9 +1022,9 @@ mod tests {
     #[test]
     fn test_generate_mov_sets_flags() {
         let inst = make_inst(
-            "MOV",  // Use "MOV" not "MOVS" - the S suffix is handled via sets_flags field
+            "MOV", // Use "MOV" not "MOVS" - the S suffix is handled via sets_flags field
             vec![Operand::Register(0), Operand::Immediate(42)],
-            true,  // sets_flags = true
+            true, // sets_flags = true
             ArmMode::Arm,
             0x08000000,
         );
@@ -1019,7 +1071,10 @@ mod tests {
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(code, "registers[0] = (registers[1] ^ 0xFFFFFFFF) & 0xFFFFFFFF");
+        assert_eq!(
+            code,
+            "registers[0] = (registers[1] ^ 0xFFFFFFFF) & 0xFFFFFFFF"
+        );
     }
 
     // === ADD tests ===
@@ -1027,7 +1082,11 @@ mod tests {
     fn test_generate_add_register_register() {
         let inst = make_inst(
             "ADD",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1043,24 +1102,29 @@ mod tests {
     fn test_generate_add_register_immediate() {
         let inst = make_inst(
             "ADD",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(5)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(5),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(
-            code,
-            "registers[0] = (registers[1] + 5) & 0xFFFFFFFF"
-        );
+        assert_eq!(code, "registers[0] = (registers[1] + 5) & 0xFFFFFFFF");
     }
 
     #[test]
     fn test_generate_add_sets_flags() {
         let inst = make_inst(
-            "ADD",  // Use "ADD" not "ADDS" - the S suffix is handled via sets_flags field
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(100)],
-            true,  // sets_flags = true
+            "ADD", // Use "ADD" not "ADDS" - the S suffix is handled via sets_flags field
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(100),
+            ],
+            true, // sets_flags = true
             ArmMode::Arm,
             0x08000000,
         );
@@ -1077,7 +1141,11 @@ mod tests {
     fn test_generate_adc() {
         let inst = make_inst(
             "ADC",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1091,7 +1159,11 @@ mod tests {
     fn test_generate_sub_register_register() {
         let inst = make_inst(
             "SUB",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1107,23 +1179,28 @@ mod tests {
     fn test_generate_sub_register_immediate() {
         let inst = make_inst(
             "SUB",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(10)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(10),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(
-            code,
-            "registers[0] = (registers[1] - 10) & 0xFFFFFFFF"
-        );
+        assert_eq!(code, "registers[0] = (registers[1] - 10) & 0xFFFFFFFF");
     }
 
     #[test]
     fn test_generate_rsb() {
         let inst = make_inst(
             "RSB",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1136,7 +1213,11 @@ mod tests {
     fn test_generate_sbc() {
         let inst = make_inst(
             "SBC",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1150,7 +1231,11 @@ mod tests {
     fn test_generate_and() {
         let inst = make_inst(
             "AND",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1166,7 +1251,11 @@ mod tests {
     fn test_generate_eor() {
         let inst = make_inst(
             "EOR",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1182,7 +1271,11 @@ mod tests {
     fn test_generate_orr() {
         let inst = make_inst(
             "ORR",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1198,7 +1291,11 @@ mod tests {
     fn test_generate_bic() {
         let inst = make_inst(
             "BIC",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(2)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(2),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1212,7 +1309,11 @@ mod tests {
     fn test_generate_lsl() {
         let inst = make_inst(
             "LSL",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(5)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(5),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1226,7 +1327,11 @@ mod tests {
     fn test_generate_lsr() {
         let inst = make_inst(
             "LSR",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(10)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(10),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1240,7 +1345,11 @@ mod tests {
     fn test_generate_asr() {
         let inst = make_inst(
             "ASR",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(3)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(3),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1255,7 +1364,11 @@ mod tests {
     fn test_generate_ror() {
         let inst = make_inst(
             "ROR",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(7)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(7),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1350,10 +1463,10 @@ mod tests {
         let inst = make_inst(
             "UMLAL",
             vec![
-                Operand::Register(0),  // RdLo
-                Operand::Register(1),  // RdHi
-                Operand::Register(2),  // Rm
-                Operand::Register(3),  // Rs
+                Operand::Register(0), // RdLo
+                Operand::Register(1), // RdHi
+                Operand::Register(2), // Rm
+                Operand::Register(3), // Rs
             ],
             false,
             ArmMode::Arm,
@@ -1506,7 +1619,11 @@ mod tests {
     fn test_generate_add_pc_source() {
         let inst = make_inst(
             "ADD",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(15)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(15),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
@@ -1514,41 +1631,56 @@ mod tests {
         let code = generate(&inst).unwrap();
         // PC should be resolved to address + 8 = 0x08000008 = 134217736 (decimal)
         // The operand_to_expr function formats immediates as decimal
-        assert!(code.contains("134217736"), "Expected PC value 134217736 (0x08000008) in: {}", code);
+        assert!(
+            code.contains("134217736"),
+            "Expected PC value 134217736 (0x08000008) in: {}",
+            code
+        );
     }
 
     #[test]
     fn test_generate_add_pc_source_thumb() {
         // Test Thumb-mode PC resolution: PC = (address + 4) & !3 (word-aligned)
-        // Reverted from & !1 to & !3 to restore jump table dispatch for some ROMs
-        
-        // Case 1: address mod 4 == 2 (where & !1 and & !3 differ)
-        // address = 0x08008F0A, (address + 4) = 0x08008F0E
-        // & !3 = 0x08008F0C = 134254348 (reverted value)
+        // address = 0x08008F0A, (address + 4) = 0x08008F0E, & !3 = 0x08008F0C = 134254348
         let inst = make_inst(
             "ADD",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(15)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(15),
+            ],
             false,
             ArmMode::Thumb,
             0x08008F0A,
         );
         let code = generate(&inst).unwrap();
-        // 0x08008F0C = 134254348 (decimal) - the reverted value
-        assert!(code.contains("134254348"), "Expected PC value 134254348 (0x08008F0C) for Thumb addr mod 4 == 2 in: {}", code);
-        
+        // 0x08008F0C = 134254348 (decimal)
+        assert!(
+            code.contains("134254348"),
+            "Expected PC value 134254348 (0x08008F0C) for Thumb & !3 in: {}",
+            code
+        );
+
         // Case 2: address mod 4 == 0 (no difference between & !1 and & !3)
         // address = 0x08000000, (address + 4) = 0x08000004
-        // & !3 = 0x08000004
         let inst2 = make_inst(
             "ADD",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Register(15)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Register(15),
+            ],
             false,
             ArmMode::Thumb,
             0x08000000,
         );
         let code2 = generate(&inst2).unwrap();
         // 0x08000004 = 134217732 (decimal)
-        assert!(code2.contains("134217732"), "Expected PC value 134217732 (0x08000004) for Thumb addr mod 4 == 0 in: {}", code2);
+        assert!(
+            code2.contains("134217732"),
+            "Expected PC value 134217732 (0x08000004) for Thumb addr mod 4 == 0 in: {}",
+            code2
+        );
     }
 
     // === Conditional execution tests ===
@@ -1562,29 +1694,39 @@ mod tests {
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(code, "if cpsr_check('EQ'):\n    registers[0] = registers[1]");
+        assert_eq!(
+            code,
+            "if cpsr_check('EQ'):\n    registers[0] = registers[1]"
+        );
     }
 
     #[test]
     fn test_generate_add_conditional_ne() {
         let inst = make_inst(
             "ADDne",
-            vec![Operand::Register(0), Operand::Register(1), Operand::Immediate(42)],
+            vec![
+                Operand::Register(0),
+                Operand::Register(1),
+                Operand::Immediate(42),
+            ],
             false,
             ArmMode::Arm,
             0x08000000,
         );
         let code = generate(&inst).unwrap();
-        assert_eq!(code, "if cpsr_check('NE'):\n    registers[0] = (registers[1] + 42) & 0xFFFFFFFF");
+        assert_eq!(
+            code,
+            "if cpsr_check('NE'):\n    registers[0] = (registers[1] + 42) & 0xFFFFFFFF"
+        );
     }
 
     // === Exception return tests ===
     #[test]
     fn test_generate_movs_pc_lr_exception_return() {
         let inst = make_inst(
-            "MOV",  // Use "MOV" not "MOVS" - the S suffix is handled via sets_flags field
+            "MOV", // Use "MOV" not "MOVS" - the S suffix is handled via sets_flags field
             vec![Operand::Register(15), Operand::Register(14)],
-            true,  // sets_flags = true
+            true, // sets_flags = true
             ArmMode::Arm,
             0x08000000,
         );
@@ -1598,9 +1740,13 @@ mod tests {
     #[test]
     fn test_generate_subs_pc_lr_exception_return() {
         let inst = make_inst(
-            "SUB",  // Use "SUB" not "SUBS" - the S suffix is handled via sets_flags field
-            vec![Operand::Register(15), Operand::Register(14), Operand::Immediate(0)],
-            true,  // sets_flags = true
+            "SUB", // Use "SUB" not "SUBS" - the S suffix is handled via sets_flags field
+            vec![
+                Operand::Register(15),
+                Operand::Register(14),
+                Operand::Immediate(0),
+            ],
+            true, // sets_flags = true
             ArmMode::Arm,
             0x08000000,
         );
