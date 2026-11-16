@@ -92,6 +92,7 @@ def load_rom_config(rom_filename):
             return {
                 "timeout": test.get("timeout", DEFAULT_TIMEOUT),
                 "max_instrs": test.get("max_instrs", DEFAULT_MAX_INSTRS),
+                "frame": test.get("frame"),
             }
     return {}
 
@@ -186,7 +187,7 @@ def check_syntax(output_path):
 
 
 def execute_rom(output_path, frame=10, timeout=DEFAULT_TIMEOUT, max_instrs=DEFAULT_MAX_INSTRS):
-    """Run generated script headless. Returns (success, screenshot_path, error_msg).
+    """Run generated script headless. Returns (success, screenshot_path, error_msg, swallowed_count).
     Non-HALT ROMs need ~20.6M instructions to reach frame 60 at ~100K instr/s (~240s).
     25M instructions + 300s timeout covers both HALT and non-HALT ROMs."""
     screenshot_path = output_path.replace('.py', f'_frame{frame}.png')
@@ -200,14 +201,29 @@ def execute_rom(output_path, frame=10, timeout=DEFAULT_TIMEOUT, max_instrs=DEFAU
         )
         if result.returncode != 0:
             stderr_tail = result.stderr[-300:] if result.stderr else ""
-            return False, None, f"execution_failed: {stderr_tail}"
+            return False, None, f"execution_failed: {stderr_tail}", 0
         if not os.path.exists(screenshot_path):
-            return False, None, "no_screenshot_produced"
-        return True, screenshot_path, None
+            return False, None, "no_screenshot_produced", 0
+        # Check for _SWALLOWED_COUNT in the transpiled output (codegen bug indicator)
+        swallowed_count = 0
+        try:
+            with open(output_path, 'r') as f:
+                content = f.read(50000)  # Read first 50KB where _SWALLOWED_COUNT is typically declared
+                if '_SWALLOWED_COUNT' in content:
+                    # Extract the value from the declaration: _SWALLOWED_COUNT = N
+                    import re
+                    match = re.search(r'_SWALLOWED_COUNT\s*=\s*(\d+)', content)
+                    if match:
+                        swallowed_count = int(match.group(1))
+                        if swallowed_count != 0:
+                            print(f"WARNING: _SWALLOWED_COUNT={swallowed_count} in {os.path.basename(output_path)} - indicates codegen bug")
+        except Exception:
+            pass  # Non-fatal: just log the warning
+        return True, screenshot_path, None, swallowed_count
     except subprocess.TimeoutExpired:
-        return False, None, "execution_timeout"
+        return False, None, "execution_timeout", 0
     except Exception as e:
-        return False, None, f"execution_error: {e}"
+        return False, None, f"execution_error: {e}", 0
 
 
 def compare_screenshot(transpiled_screenshot, rom_name, frame=60):
@@ -256,6 +272,7 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
         "level3": False,
         "level3_status": "skipped",
         "level3_detail": None,
+        "swallowed_count": 0,
         "elapsed": 0.0,
     }
 
@@ -291,7 +308,8 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
     rom_config = load_rom_config(rom_path.name)
     timeout = rom_config.get("timeout", DEFAULT_TIMEOUT)
     max_instrs = rom_config.get("max_instrs", DEFAULT_MAX_INSTRS)
-    success, screenshot_path, err = execute_rom(output_py, frame=frame, timeout=timeout, max_instrs=max_instrs)
+    frame = rom_config.get("frame") or frame
+    success, screenshot_path, err, swallowed_count = execute_rom(output_py, frame=frame, timeout=timeout, max_instrs=max_instrs)
     if not success:
         result["level2"] = False
         result["level2_status"] = err or "execution_failed"
@@ -300,6 +318,8 @@ def test_rom_worker(rom_path, max_level, frame, test_type="Smoke"):
 
     result["level2"] = True
     result["level2_status"] = "pass"
+    # Store swallowed_count for reporting (non-fatal warning only)
+    result["swallowed_count"] = swallowed_count
 
     if max_level < 3:
         result["elapsed"] = round(time() - start, 2)
